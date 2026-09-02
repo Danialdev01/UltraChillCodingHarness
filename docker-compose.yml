@@ -1,0 +1,101 @@
+# UCCH deployment target for Dokploy.
+#
+# Deploy this as a Docker Compose application. Set the variables in Dokploy's
+# Environment tab (see README section "Deploying on Dokploy") -- Dokploy
+# substitutes them into this file at deploy time.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ucch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ucch
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # The server runs migrations on boot, so it must not start against a
+      # database that is still initialising.
+      test: ["CMD-SHELL", "pg_isready -U ucch -d ucch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://ucch:${POSTGRES_PASSWORD}@postgres:5432/ucch
+      ROOT_DOMAIN: ${ROOT_DOMAIN}
+      PUBLIC_SCHEME: https
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      SECRET_KEY: ${SECRET_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      WORKSPACE_ROOT: /srv/ucch/workspaces
+      PREVIEW_ROOT: /srv/ucch/previews
+      PROJECT_NETWORK: ucch-projects
+      BASE_IMAGE: ucch/base:latest
+      IDLE_STOP_MINUTES: ${IDLE_STOP_MINUTES:-30}
+    volumes:
+      # The Docker socket is how the server creates project containers. This
+      # is root-equivalent on the host: see the README's Security note.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Workspaces are bind-mounted from the host so that the same directory
+      # is visible to the server and to each project container.
+      - /srv/ucch/workspaces:/srv/ucch/workspaces
+      - /srv/ucch/previews:/srv/ucch/previews
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.ucch-api.rule=Host(`api.${ROOT_DOMAIN}`)
+      - traefik.http.routers.ucch-api.entrypoints=websecure
+      - traefik.http.routers.ucch-api.tls.certresolver=letsencrypt
+      - traefik.http.services.ucch-api.loadbalancer.server.port=3001
+    networks:
+      - internal
+      - dokploy-network
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Inlined into the client bundle at build time, not read at runtime.
+        NEXT_PUBLIC_WS_ORIGIN: https://api.${ROOT_DOMAIN}
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      NODE_ENV: production
+      SERVER_ORIGIN: http://server:3001
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.ucch-web.rule=Host(`${ROOT_DOMAIN}`)
+      - traefik.http.routers.ucch-web.entrypoints=websecure
+      - traefik.http.routers.ucch-web.tls.certresolver=letsencrypt
+      - traefik.http.services.ucch-web.loadbalancer.server.port=3000
+    networks:
+      - internal
+      - dokploy-network
+
+volumes:
+  postgres-data:
+
+networks:
+  internal:
+  # Created by Dokploy; Traefik reaches published services through it.
+  dokploy-network:
+    external: true
