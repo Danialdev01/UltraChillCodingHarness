@@ -30,7 +30,15 @@ const ProjectCreated = z.object({
   workspaceId: z.string().uuid(),
   hash: ProjectHash,
   name: z.string(),
-  repoUrl: z.string().url(),
+  /**
+   * Null for a project started empty, which has no remote to clone and
+   * nothing to push to until somebody adds one.
+   *
+   * Nullable rather than optional so the absence is recorded rather than
+   * merely missing, and so every event written since this existed says which
+   * kind of project it opened.
+   */
+  repoUrl: z.string().url().nullable(),
   defaultBranch: z.string(),
 });
 
@@ -57,10 +65,63 @@ const ThreadCreated = z.object({
   title: z.string(),
 });
 
+/**
+ * One image a message showed the model.
+ *
+ * Carries the name and type beside the id so the record is self-describing.
+ * Replay must not depend on a staging lookup: the bytes are swept on a TTL,
+ * and a thread read back a week later still has to say what was attached
+ * even when it can no longer show it.
+ */
+export const MessageImage = z.object({
+  uploadId: z.string().min(1).max(200),
+  name: z.string().max(400),
+  type: z.string().max(200),
+});
+export type MessageImage = z.infer<typeof MessageImage>;
+
+/**
+ * The one way a message can ask for something other than a coding turn.
+ *
+ * An enum with a single member rather than a boolean, so a second mode is a
+ * new member rather than a second flag that has to agree with the first.
+ */
+export const MessageMode = z.enum(["research"]);
+export type MessageMode = z.infer<typeof MessageMode>;
+
 const UserMessage = z.object({
   type: z.literal("user.message"),
   threadId: z.string().uuid(),
   text: z.string(),
+  /**
+   * Attachments the model is shown as pictures rather than described to.
+   *
+   * Optional, and absent on every message that has none: an ordinary message
+   * is not reshaped by a feature it did not use, and neither is a log full
+   * of them.
+   */
+  images: z.array(MessageImage).max(8).optional(),
+  /**
+   * Recorded on the event, not only on the command: the reactor reads the
+   * event to start the turn, and the chat shows a reader which of their
+   * messages asked for research. Absent on an ordinary message.
+   */
+  mode: MessageMode.optional(),
+});
+
+/**
+ * A cancellation was asked for. The turn is not over at this point: the
+ * reactor aborts the run in flight, and the loop still closes it with an
+ * `agent.turn_completed` carrying `stopReason: "cancelled"`.
+ *
+ * It is recorded rather than left implicit because `threads.status` is a
+ * projection: without an event, the `cancelling` state could not be rebuilt
+ * by replaying the log, and a reader would see a thread sitting in `running`
+ * with nothing explaining why the stream had stopped.
+ */
+const ThreadCancelRequested = z.object({
+  type: z.literal("thread.cancel_requested"),
+  threadId: z.string().uuid(),
 });
 
 /**
@@ -72,12 +133,99 @@ const UserMessage = z.object({
 const ContextInjected = z.object({
   type: z.literal("context.injected"),
   threadId: z.string().uuid(),
-  source: z.enum(["system_prompt", "project_context", "agents_md", "file_tree", "compaction"]),
+  /**
+   * `research` is the brief a research phase produced for a CLI provider's
+   * turn: gathered on OpenRouter, then appended to the prompt the CLI was
+   * given. Recorded so the log says exactly what the CLI was handed.
+   */
+  source: z.enum([
+    "system_prompt",
+    "project_context",
+    "agents_md",
+    "file_tree",
+    "compaction",
+    "research",
+  ]),
   content: z.string(),
   tokens: z.number().int().nonnegative().optional(),
 });
 
 // -- Agent turn --------------------------------------------------------------
+
+/**
+ * Which backend answers a turn.
+ *
+ * `native` is the harness's own loop against OpenRouter. `claude` and `codex`
+ * are the vendors' CLIs, run as processes and billed to the person's own
+ * subscription. Every provider normalises into the same events below: the
+ * browser never needs to know which one produced a line, and must not.
+ */
+export const ProviderId = z.enum(["native", "claude", "codex"]);
+export type ProviderId = z.infer<typeof ProviderId>;
+
+/** The providers that keep a session of their own to resume. */
+export const CliProviderId = z.enum(["claude", "codex"]);
+export type CliProviderId = z.infer<typeof CliProviderId>;
+
+/**
+ * A turn has begun. The reactor mints the `turnId` and emits this before the
+ * first model call, which makes it the anchor for the whole turn: the
+ * projection inserts the `turns` row and moves the thread to `running`, and
+ * every later event of the turn refers back to this id.
+ *
+ * The reactor owns it rather than `decide()` because a turn is a lifecycle,
+ * not a decision -- minting an id inside the pure layer would make it
+ * non-deterministic. It is deliberately durable: the `turns` row, the
+ * one-turn-at-a-time guard and cancellation all depend on it surviving a
+ * restart.
+ */
+const TurnStarted = z.object({
+  type: z.literal("turn.started"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  /**
+   * The model the turn will be billed against, resolved from the command's
+   * choice or the harness default. Optional so events appended before the
+   * field existed still parse; the usage breakdown counts those as unknown.
+   */
+  model: z.string().optional(),
+  /**
+   * The backend the turn runs under. Optional for the same reason as
+   * `model`: earlier events predate it, and absent reads as `native`.
+   */
+  provider: ProviderId.optional(),
+});
+
+/**
+ * A CLI provider has opened or resumed its own session for this thread.
+ *
+ * The `sessionId` is the provider's resume token -- what `--resume` (Claude)
+ * or `exec resume` (Codex) is given next turn. Durable, and recorded the
+ * moment the CLI reports it rather than at the end of the turn: a turn that
+ * is killed part-way still has a session to pick up, which is how the CLI
+ * itself recovers an unfinished turn.
+ */
+const AgentSessionStarted = z.object({
+  type: z.literal("agent.session_started"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  provider: CliProviderId,
+  sessionId: z.string().min(1),
+});
+
+/**
+ * The provider is waiting out a transient API error. Transient here too: it
+ * is a progress note for whoever is watching, not a fact about the thread.
+ */
+const AgentRetry = z.object({
+  type: z.literal("agent.retry"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  attempt: z.number().int().nonnegative(),
+  maxRetries: z.number().int().nonnegative(),
+  delayMs: z.number().int().nonnegative(),
+  category: z.string(),
+});
 
 const AgentThinkingDelta = z.object({
   type: z.literal("agent.thinking_delta"),
@@ -240,7 +388,11 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ContainerStateChanged,
   ThreadCreated,
   UserMessage,
+  ThreadCancelRequested,
   ContextInjected,
+  TurnStarted,
+  AgentSessionStarted,
+  AgentRetry,
   AgentThinkingDelta,
   AgentTextDelta,
   AgentToolUse,
@@ -283,6 +435,7 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "terminal.output",
   "agent.thinking_delta",
   "agent.text_delta",
+  "agent.retry",
 ]);
 
 export function isTransient(type: DomainEventType): boolean {

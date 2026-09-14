@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseHost, parsePathAlias, previewUrl, projectUrl } from "./hostname.js";
+import { parseHost, parsePathAlias, parsePreviewAlias, previewUrl, projectUrl } from "./hostname.js";
 
 const ROOT = "ucch.danialirfan.dev";
 const HASH = "a1b2c3d4e5f6";
@@ -107,5 +107,31 @@ describe("parsePathAlias", () => {
   it("returns null for non-alias paths", () => {
     expect(parsePathAlias("/dashboard")).toBeNull();
     expect(parsePathAlias(`/${HASH}/port:80/x`)).toBeNull();
+  });
+});
+
+describe("projectUrl with a public port", () => {
+  it("appends the gateway port when given", () => {
+    expect(projectUrl(HASH, 8001, "ucch.localhost", "http", 3001)).toBe(
+      `http://p8001-${HASH}.ucch.localhost:3001`,
+    );
+    expect(projectUrl(HASH, 8001, ROOT)).toBe(`https://p8001-${HASH}.${ROOT}`);
+  });
+});
+
+describe("parsePreviewAlias", () => {
+  it("parses the bare alias and one with a rest path", () => {
+    expect(parsePreviewAlias(`/${HASH}/preview`)).toEqual({ projectHash: HASH, rest: "/" });
+    expect(parsePreviewAlias(`/${HASH}/preview/dashboard?x=1`)).toEqual({
+      projectHash: HASH,
+      rest: "/dashboard?x=1",
+    });
+  });
+
+  it("rejects malformed hashes and near-miss paths", () => {
+    expect(parsePreviewAlias(`/${HASH.slice(1)}/preview`)).toBeNull();
+    expect(parsePreviewAlias(`/${HASH}x/preview`)).toBeNull();
+    expect(parsePreviewAlias(`/${HASH}/preview2`)).toBeNull();
+    expect(parsePreviewAlias(`/${HASH}/port:8001`)).toBeNull();
   });
 });

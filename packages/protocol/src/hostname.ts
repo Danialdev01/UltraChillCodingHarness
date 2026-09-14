@@ -64,10 +64,22 @@ export function parseHost(host: string, rootDomain: string): HostTarget {
 
 // -- URL construction (used by the UI) --------------------------------------
 
-export function projectUrl(hash: string, port: number, rootDomain: string, scheme = "https"): string {
+/**
+ * `publicPort` is the port the gateway itself is reached on, appended when
+ * there is no reverse proxy in front of it (development: `:3001`). It is
+ * not the project's port -- that one lives in the hostname.
+ */
+export function projectUrl(
+  hash: string,
+  port: number,
+  rootDomain: string,
+  scheme = "https",
+  publicPort?: number,
+): string {
   if (!HASH.test(hash)) throw new Error(`invalid project hash: ${hash}`);
   if (port < MIN_PORT || port > MAX_PORT) throw new Error(`port out of range: ${port}`);
-  return `${scheme}://p${port}-${hash}.${rootDomain}`;
+  const suffix = publicPort ? `:${publicPort}` : "";
+  return `${scheme}://p${port}-${hash}.${rootDomain}${suffix}`;
 }
 
 export function previewUrl(hash: string, rootDomain: string, scheme = "https"): string {
@@ -94,4 +106,15 @@ export function parsePathAlias(pathname: string): { projectHash: string; port: n
   const port = Number(m[2]);
   if (port < MIN_PORT || port > MAX_PORT) return null;
   return { projectHash: m[1]!, port, rest: m[3] ?? "/" };
+}
+
+/**
+ * Parses the shareable entry point `/{projectHash}/preview[/rest]`. The port
+ * is not in the URL: the server resolves it from the project's stored
+ * preview port and redirects to the matching subdomain.
+ */
+export function parsePreviewAlias(pathname: string): { projectHash: string; rest: string } | null {
+  const m = /^\/([a-z0-9]{12})\/preview(\/.*)?$/.exec(pathname);
+  if (!m) return null;
+  return { projectHash: m[1]!, rest: m[2] ?? "/" };
 }

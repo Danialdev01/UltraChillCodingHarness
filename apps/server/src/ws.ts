@@ -153,6 +153,7 @@ export class WebSocketGateway {
             kind: "push",
             subscriptionId,
             seq: publication.seq,
+            at: new Date().toISOString(),
             event: publication.event,
           });
         });
@@ -166,6 +167,7 @@ export class WebSocketGateway {
               kind: "push",
               subscriptionId,
               seq: stored.seq,
+              at: stored.createdAt,
               event: stored.event,
             });
           }
@@ -176,6 +178,7 @@ export class WebSocketGateway {
               kind: "push",
               subscriptionId,
               seq: stored.seq < 0 ? null : stored.seq,
+              at: stored.createdAt,
               event: stored.event,
             });
           }

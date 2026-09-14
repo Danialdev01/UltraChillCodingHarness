@@ -1,4 +1,5 @@
-import type { Command, ContainerState, DomainEvent } from "@ucch/protocol";
+import { normalizeWorkspacePath } from "@ucch/protocol";
+import type { Command, ContainerState, DomainEvent, ProviderId } from "@ucch/protocol";
 
 /**
  * The decision function: given current state and a command, what actually
@@ -36,6 +37,8 @@ export interface ThreadSnapshot {
   id: string;
   projectId: string;
   status: "idle" | "running" | "cancelling" | "error";
+  /** The backend its first turn bound it to; null until one has run. */
+  provider: ProviderId | null;
 }
 
 export interface TurnSnapshot {
@@ -91,8 +94,18 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
         return fail("not_found", "workspace not found");
       }
 
-      const name = command.name?.trim() || deriveName(command.repoUrl);
-      if (!name) return fail("invalid", "could not derive a project name from the repository URL");
+      // A project with no repository has no URL to fall back on, so the name
+      // is the only thing that can supply one and the command is refused
+      // without it.
+      const name = command.name?.trim() || (command.repoUrl ? deriveName(command.repoUrl) : "");
+      if (!name) {
+        return fail(
+          "invalid",
+          command.repoUrl
+            ? "could not derive a project name from the repository URL"
+            : "a project with no repository needs a name",
+        );
+      }
 
       return ok([
         {
@@ -101,7 +114,9 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           workspaceId: state.workspace.id,
           hash: ctx.newHash(),
           name,
-          repoUrl: command.repoUrl,
+          // Null rather than absent: "this project has no remote" is the
+          // fact the clone reactor reads to start one instead of fetching it.
+          repoUrl: command.repoUrl ?? null,
           defaultBranch: command.branch ?? "main",
         },
       ]);
@@ -168,8 +183,26 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
         return fail("conflict", "this thread already has a turn in progress");
       }
 
+      // A CLI provider's session belongs to that provider: Claude Code cannot
+      // resume a Codex rollout, and the native loop cannot see either. A
+      // thread that has run is bound, and switching means a new thread.
+      if (command.provider && thread.value.provider && command.provider !== thread.value.provider) {
+        return fail(
+          "conflict",
+          `this thread runs on ${thread.value.provider}; start a new thread to switch provider`,
+        );
+      }
+
       return ok([
-        { type: "user.message", threadId: thread.value.id, text: command.text },
+        {
+          type: "user.message",
+          threadId: thread.value.id,
+          text: command.text,
+          // Only when there are some: an ordinary message keeps the shape it
+          // has always had, and so does the log.
+          ...(command.images?.length ? { images: command.images } : {}),
+          ...(command.mode ? { mode: command.mode } : {}),
+        },
       ]);
     }
 
@@ -179,7 +212,11 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if (thread.value.status !== "running") {
         return fail("conflict", "no turn is running on this thread");
       }
-      return ok([]);
+      // The turn is not over yet -- the reactor aborts the run in flight and
+      // the loop closes it with `agent.turn_completed`. This records only
+      // that stopping was asked for, which is what moves the thread to
+      // `cancelling` and keeps a second message out until the loop unwinds.
+      return ok([{ type: "thread.cancel_requested", threadId: thread.value.id }]);
     }
 
     case "thread.revert": {
@@ -234,7 +271,16 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     // accepted and routed straight to the runtime; only `terminal.output` is
     // published, and it is transient.
 
-    case "terminal.create":
+    case "terminal.create": {
+      // The only one of the four that names a project, and so the only one
+      // that can be checked against its owner. The reactor holds the rest:
+      // a session remembers who opened it, and refuses input from anyone
+      // else.
+      const project = requireProject(state, ctx);
+      if ("error" in project) return project.decision;
+      return passthrough();
+    }
+
     case "terminal.input":
     case "terminal.resize":
     case "terminal.close":
@@ -311,25 +357,4 @@ function deriveName(repoUrl: string): string {
   const trimmed = repoUrl.replace(/\.git$/, "").replace(/\/+$/, "");
   const last = trimmed.split("/").pop() ?? "";
   return last.slice(0, 100);
-}
-
-/**
- * Rejects any path that escapes `/workspace`. This runs before a path reaches
- * the container, so it is the boundary that keeps a client -- or an agent
- * tool -- from writing to the host mount's parent.
- */
-export function normalizeWorkspacePath(input: string): string | null {
-  if (input.includes("\0")) return null;
-  const segments: string[] = [];
-  for (const segment of input.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      if (segments.length === 0) return null;
-      segments.pop();
-      continue;
-    }
-    segments.push(segment);
-  }
-  if (segments.length === 0) return null;
-  return segments.join("/");
 }

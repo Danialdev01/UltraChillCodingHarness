@@ -1,0 +1,152 @@
+"use client"
+
+import * as React from "react"
+import { FitAddon } from "@xterm/addon-fit"
+import { WebLinksAddon } from "@xterm/addon-web-links"
+import { Terminal } from "@xterm/xterm"
+
+import "@xterm/xterm/css/xterm.css"
+
+/**
+ * One xterm.js screen, wired to a session on the server.
+ *
+ * The terminal here does no interpreting of its own. Keystrokes go out as
+ * bytes and output comes back as bytes; escape sequences, line editing, the
+ * alternate screen and the cursor are all handled by the shell on one end and
+ * the emulator on the other, which is what makes vim and top work rather than
+ * a list of features that had to be implemented.
+ *
+ * The instance is created once and kept in a ref. React never re-renders it:
+ * a terminal holds tens of thousands of lines of scrollback and a cursor
+ * position, and rebuilding that on a parent's render would lose both.
+ */
+export function XtermPane({
+  hidden,
+  data,
+  onInput,
+  onResize,
+}: {
+  hidden: boolean
+  /** Output as it arrives. Each chunk is written once, in order. */
+  data: readonly string[]
+  onInput: (data: string) => void
+  onResize: (cols: number, rows: number) => void
+}) {
+  const host = React.useRef<HTMLDivElement>(null)
+  const terminal = React.useRef<Terminal | null>(null)
+  const fit = React.useRef<FitAddon | null>(null)
+  /** How much of `data` has been written, so nothing is written twice. */
+  const written = React.useRef(0)
+
+  // The callbacks are read through refs so the terminal can be created once
+  // and never torn down when a parent re-renders with new closures.
+  const handlers = React.useRef({ onInput, onResize })
+  handlers.current = { onInput, onResize }
+
+  React.useEffect(() => {
+    const element = host.current
+    if (!element) return
+
+    const term = new Terminal({
+      // Read from the app's own tokens, so a terminal follows the theme
+      // rather than being the one black rectangle in a light interface.
+      theme: readTheme(element),
+      fontFamily: "var(--app-font), ui-monospace, monospace",
+      fontSize: 13,
+      lineHeight: 1.2,
+      cursorBlink: true,
+      // Enough to hold a build log without holding a session's whole life.
+      scrollback: 10_000,
+      // The shell draws its own selection and the OS draws ours; letting
+      // xterm scroll on every keystroke fights both.
+      convertEol: false,
+      allowProposedApi: true,
+    })
+
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.loadAddon(new WebLinksAddon())
+    term.open(element)
+
+    term.onData((input) => handlers.current.onInput(input))
+    // The pty has to be told, or `tput cols` is wrong and anything that draws
+    // a full screen wraps against the wrong width.
+    term.onResize(({ cols, rows }) => handlers.current.onResize(cols, rows))
+
+    terminal.current = term
+    fit.current = fitAddon
+
+    return () => {
+      term.dispose()
+      terminal.current = null
+      fit.current = null
+      written.current = 0
+    }
+  }, [])
+
+  // New output only. `data` grows; rewriting it whole would redraw the screen
+  // from the beginning on every chunk.
+  React.useEffect(() => {
+    const term = terminal.current
+    if (!term) return
+    for (let i = written.current; i < data.length; i++) term.write(data[i]!)
+    written.current = data.length
+  }, [data])
+
+  /**
+   * Refits on anything that changes the box: the window, the file panel
+   * opening beside it, and becoming visible again after another tab was
+   * shown -- a terminal measured while hidden has no size at all.
+   */
+  React.useEffect(() => {
+    const element = host.current
+    if (!element || hidden) return
+
+    const refit = () => {
+      try {
+        fit.current?.fit()
+      } catch {
+        // Fitting a detached or zero-sized element throws; the next
+        // observation will have real numbers.
+      }
+    }
+
+    refit()
+    terminal.current?.focus()
+
+    const observer = new ResizeObserver(refit)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [hidden])
+
+  return (
+    <div
+      ref={host}
+      // `hidden` rather than unmounted: a terminal switched away from and
+      // back keeps its scrollback and whatever was half-typed.
+      className={hidden ? "hidden" : "min-h-0 flex-1 overflow-hidden p-2"}
+    />
+  )
+}
+
+/**
+ * The palette, taken from the app's CSS variables.
+ *
+ * Resolved once at creation because xterm wants concrete colours rather than
+ * `var(...)`. A theme changed while a terminal is open keeps the colours it
+ * opened with until the tab is reopened -- worth far less than the complexity
+ * of restyling a live screen.
+ */
+function readTheme(element: HTMLElement): Record<string, string> {
+  const styles = getComputedStyle(element)
+  const token = (name: string, fallback: string) =>
+    styles.getPropertyValue(name).trim() || fallback
+
+  return {
+    background: token("--background", "#0b0b0c"),
+    foreground: token("--foreground", "#fafafa"),
+    cursor: token("--ucch-active", "#7aa2f7"),
+    cursorAccent: token("--background", "#0b0b0c"),
+    selectionBackground: token("--ucch-active-bg", "rgba(122,162,247,0.3)"),
+  }
+}

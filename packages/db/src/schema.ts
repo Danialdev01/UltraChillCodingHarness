@@ -37,6 +37,61 @@ export const users = pgTable("users", {
   avatarUrl: text("avatar_url"),
   /** GitHub OAuth token, encrypted at rest. Never leaves the server. */
   accessTokenEncrypted: text("access_token_encrypted"),
+  /**
+   * OpenRouter key, encrypted at rest. Held per user rather than per project
+   * so one key serves every project the person owns, and decrypted only when
+   * a turn is about to call the API. Never returned to a client -- the
+   * settings page is told whether one is set, and shown its last four
+   * characters, never the key.
+   */
+  openrouterKeyEncrypted: text("openrouter_key_encrypted"),
+  /**
+   * Resend key, encrypted at rest and never returned to a client -- the same
+   * treatment as the OpenRouter one above, and for the same reason.
+   *
+   * Held per user rather than per workspace because it is the account's own
+   * sending identity: verification mail, and whatever else needs to leave the
+   * harness by email later.
+   */
+  resendKeyEncrypted: text("resend_key_encrypted"),
+  /**
+   * GitHub personal access token, encrypted at rest. Read when the new-project
+   * dialog lists the repositories you can see, and when a clone needs
+   * credentials for a private one.
+   *
+   * Separate from `accessTokenEncrypted` above, which is the OAuth token the
+   * login flow minted: that one proves who you are and is replaced on every
+   * sign-in, while this one is a capability you chose to grant and must
+   * survive signing in again. A token is resolved from this column first and
+   * falls back to the OAuth one, so signing in with GitHub already works for
+   * public repositories without setting anything.
+   */
+  githubTokenEncrypted: text("github_token_encrypted"),
+  /**
+   * The OpenRouter model this account's turns use when nothing names one.
+   *
+   * Null means "whatever the server is configured with" rather than "none", so
+   * an account that has never chosen follows `DEFAULT_MODEL` and keeps
+   * following it when the operator changes it. Held per user rather than per
+   * project because it is a preference about how you work; a project still
+   * remembers the last model it was actually talked to with.
+   */
+  defaultModel: text("default_model"),
+  /**
+   * The backend this account's turns run under when a message names none:
+   * `native`, `claude` or `codex`. Null follows the server's default, which
+   * is the native loop.
+   */
+  defaultProvider: text("default_provider"),
+  /**
+   * A `claude setup-token` OAuth token, encrypted at rest. The headless
+   * alternative to signing the CLI in from a terminal: injected as
+   * `CLAUDE_CODE_OAUTH_TOKEN` for exactly one spawn and never read otherwise.
+   * One-year lifetime, hence the issue date beside it -- the settings page
+   * warns at eleven months.
+   */
+  claudeOauthTokenEncrypted: text("claude_oauth_token_encrypted"),
+  claudeTokenIssuedAt: timestamp("claude_token_issued_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -88,12 +143,24 @@ export const projects = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    repoUrl: text("repo_url").notNull(),
+    /**
+     * Null for a project started empty rather than cloned. Nullable because
+     * "no remote yet" is a real state: the working tree is a git repository
+     * from the first commit, and a remote is added when there is somewhere to
+     * push it.
+     */
+    repoUrl: text("repo_url"),
     defaultBranch: text("default_branch").notNull().default("main"),
     /** Detected stack: laravel | nextjs | vite | php | static | node | unknown. */
     stack: text("stack").notNull().default("unknown"),
     containerState: text("container_state").notNull().default("absent"),
     containerError: text("container_error"),
+    /**
+     * The port the owner's dev server listens on, set from the Preview
+     * dialog; null until then. The preview proxy only serves the subdomain
+     * whose port matches this, so a stored port is the whole grant.
+     */
+    previewPort: integer("preview_port"),
     lastActiveAt: timestamp("last_active_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -118,6 +185,18 @@ export const threads = pgTable(
     /** Set when this thread was forked from another, for provenance. */
     forkedFromThreadId: uuid("forked_from_thread_id"),
     forkedFromTurnSeq: integer("forked_from_turn_seq"),
+    /**
+     * The backend this thread is bound to, set by its first turn. Null until
+     * then. A CLI provider's session cannot be handed to another provider,
+     * so a bound thread refuses a `thread.send` naming a different one.
+     */
+    provider: text("provider"),
+    /**
+     * The CLI provider's own session id -- what the next turn resumes with.
+     * Projected from `agent.session_started`. Null for the native loop, whose
+     * conversation is this log.
+     */
+    providerSessionId: text("provider_session_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("threads_project_idx").on(t.projectId)],
@@ -163,6 +242,16 @@ export const turns = pgTable(
     checkpointAfter: text("checkpoint_after"),
     usage: jsonb("usage").$type<TokenUsage>(),
     costUsd: real("cost_usd").notNull().default(0),
+    /**
+     * The model this turn was billed against, as the provider names it.
+     *
+     * Recorded per turn rather than per thread because the picker can be
+     * changed between messages -- a thread is not one model's worth of
+     * spend. Null on turns written before the column existed, which the
+     * usage breakdown reports as "Unknown" rather than folding into
+     * whichever model happens to be first.
+     */
+    model: text("model"),
     stopReason: text("stop_reason"),
     error: text("error"),
     revertedAt: timestamp("reverted_at", { withTimezone: true }),

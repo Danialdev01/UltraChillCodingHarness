@@ -61,11 +61,20 @@ const Err = z.object({
   message: z.string(),
 });
 
-/** A live event on a subscribed topic. `seq` is null for transient events. */
+/**
+ * An event on a subscribed topic. `seq` is null for transient events.
+ *
+ * `at` is when the event happened: its `createdAt` for one replayed from the
+ * log, the moment of publication for a live one. Without it a client that
+ * reloads would date every past turn to the reload, and "done 6:42 PM" under
+ * a message would read "done just now" for the whole history. Optional so a
+ * server that predates it still speaks the protocol.
+ */
 const Push = z.object({
   kind: z.literal("push"),
   subscriptionId: z.string(),
   seq: z.number().int().nonnegative().nullable(),
+  at: z.string().datetime().optional(),
   event: DomainEvent,
 });
 

@@ -1,8 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { BellIcon, FolderGitIcon, ListTodoIcon, StickyNoteIcon } from "lucide-react";
 
+import { NewProjectDialog } from "@/components/new-project-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
@@ -14,32 +15,34 @@ import { cn } from "@/lib/utils";
  * a no-op -- a button that looks live and silently does nothing is the worst
  * of the three options.
  */
-export function QuickActions() {
-  const router = useRouter();
+export function QuickActions({ workspaceId }: { workspaceId: string }) {
+  const [creating, setCreating] = useState(false);
 
   return (
-    <div className="grid grid-cols-4 gap-1">
-      <Action
-        icon={ListTodoIcon}
-        label="New todo"
-        unavailable="Todos arrive with the agent core"
-      />
-      <Action
-        icon={FolderGitIcon}
-        label="New project"
-        onClick={() => router.push("/dashboard#clone")}
-      />
-      <Action
-        icon={BellIcon}
-        label="New reminder"
-        unavailable="Reminders arrive with the agent core"
-      />
-      <Action
-        icon={StickyNoteIcon}
-        label="New note"
-        unavailable="Notes arrive with the agent core"
-      />
-    </div>
+    <>
+      <div className="grid grid-cols-4 gap-1">
+        <Action
+          icon={ListTodoIcon}
+          label="New todo"
+          unavailable="Todos arrive with the agent core"
+        />
+        <Action icon={FolderGitIcon} label="New project" onClick={() => setCreating(true)} />
+        <Action
+          icon={BellIcon}
+          label="New reminder"
+          unavailable="Reminders arrive with the agent core"
+        />
+        <Action
+          icon={StickyNoteIcon}
+          label="New note"
+          unavailable="Notes arrive with the agent core"
+        />
+      </div>
+
+      {/* Outside the grid: the dialog renders no element of its own, and a
+          fifth child in a four-column grid is a trap for the next change. */}
+      <NewProjectDialog workspaceId={workspaceId} open={creating} onOpenChange={setCreating} />
+    </>
   );
 }
 

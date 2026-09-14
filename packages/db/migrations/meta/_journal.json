@@ -22,6 +22,55 @@
       "when": 1788317638601,
       "tag": "0002_high_deadpool",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788420877021,
+      "tag": "0003_foamy_ser_duncan",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788753081173,
+      "tag": "0004_elite_nighthawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789008318381,
+      "tag": "0005_blue_abomination",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789026264228,
+      "tag": "0006_curved_callisto",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789028605184,
+      "tag": "0007_productive_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789285194389,
+      "tag": "0008_greedy_blur",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789374719937,
+      "tag": "0009_preview_port",
+      "breakpoints": true
     }
   ]
 }

@@ -39,6 +39,19 @@ function DialogOverlay({
   )
 }
 
+/**
+ * The popup itself.
+ *
+ * Width follows shadcn's own pattern: a sensible default here, overridden per
+ * dialog through `className`. The default is `sm:max-w-lg` -- the width shadcn
+ * ships -- and `cn` is `tailwind-merge`, so a `sm:max-w-xl` passed by a caller
+ * replaces it rather than fighting it. There is no width prop, and there should
+ * not be: a dialog's width is a property of what is inside it, so it belongs
+ * with the dialog that knows.
+ *
+ * Below the `sm` breakpoint every dialog is `max-w-[calc(100%-2rem)]` instead,
+ * which is what keeps a wide one from running off a phone screen.
+ */
 function DialogContent({
   className,
   children,
@@ -53,7 +66,7 @@ function DialogContent({
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-lg data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}

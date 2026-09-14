@@ -74,13 +74,13 @@ export function WorkspaceSwitcher({
               <ChevronsUpDownIcon className="ml-auto" />
             </DropdownMenuTrigger>
 
-            {/* Pulled left past the icon rail so the panel covers it
-                rail rather than sitting inside the second column, and
-                widened to the whole sidebar to match. The menu is portalled
-                to <body>, so the sidebar's overflow-hidden does not clip it
-                -- and for the same reason its width comes from the :root
-                token rather than the provider's inline --sidebar-width,
-                which does not inherit across a portal. */}
+            {/* Overshot left so it clamps flush to the sidebar's edge rather
+                than sitting inset by the header's padding, and widened to the
+                whole sidebar to match. The menu is portalled to <body>, so the
+                sidebar's overflow-hidden does not clip it -- and for the same
+                reason its width comes from the :root token rather than the
+                provider's inline --sidebar-width, which does not inherit
+                across a portal. */}
             <DropdownMenuContent
               side="bottom"
               align="start"

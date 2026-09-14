@@ -5,8 +5,24 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-    --font-heading: var(--font-sans);
-    --font-sans: var(--font-sans);
+    /*
+     * JetBrains Mono, everywhere.
+     *
+     * All three tokens resolve to the same face, so `font-sans`, `font-mono`
+     * and `font-heading` are one typeface and no component has to ask for it.
+     * The stack itself lives in `--app-font` at :root: `@theme inline` writes
+     * the value straight into the utilities rather than emitting a variable,
+     * so a definition here alone would be invisible to the inline styles that
+     * read it -- the CodeMirror editor is one.
+     *
+     * These read `var(--font-sans)`, which was defined nowhere, so the whole
+     * app was falling through to the browser's default serif.
+     */
+    --font-mono: var(--app-font);
+    --font-sans: var(--app-font);
+    --font-heading: var(--app-font);
+    --color-ucch-active: var(--ucch-active);
+    --color-ucch-active-bg: var(--ucch-active-bg);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -80,6 +96,14 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+
+    /*
+     * The one chromatic colour in an otherwise neutral palette, so "this is
+     * the selected one" never has to be read off a grey a shade away from
+     * hover. Lightened in dark mode to keep contrast against --sidebar.
+     */
+    --ucch-active: oklch(0.55 0.22 264);
+    --ucch-active-bg: oklch(0.55 0.22 264 / 12%);
 }
 
 .dark {
@@ -114,6 +138,51 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
+
+    --ucch-active: oklch(0.72 0.16 264);
+    --ucch-active-bg: oklch(0.72 0.16 264 / 18%);
+}
+
+/*
+ * Code colours for the file view, one variable per kind of token; see
+ * lib/syntax-theme.ts, which also holds these same values as the shipped
+ * defaults. A custom set from the theme settings is painted inline onto
+ * <html> and wins over both blocks.
+ */
+:root {
+  --syn-keyword: #7c3aed;
+  --syn-string: #a31515;
+  --syn-number: #0f766e;
+  --syn-comment: #6b7280;
+  --syn-function: #1d4ed8;
+  --syn-variable: #1f2937;
+  --syn-property: #0e7490;
+  --syn-type: #b45309;
+  --syn-operator: #374151;
+  --syn-punctuation: #6b7280;
+  --syn-tag: #166534;
+  --syn-attribute: #92400e;
+  --syn-heading: #1d4ed8;
+  --syn-link: #0369a1;
+  --syn-invalid: #dc2626;
+}
+
+.dark {
+  --syn-keyword: #c678dd;
+  --syn-string: #98c379;
+  --syn-number: #d19a66;
+  --syn-comment: #7f848e;
+  --syn-function: #61afef;
+  --syn-variable: #e5e7eb;
+  --syn-property: #e06c75;
+  --syn-type: #e5c07b;
+  --syn-operator: #56b6c2;
+  --syn-punctuation: #abb2bf;
+  --syn-tag: #e06c75;
+  --syn-attribute: #d19a66;
+  --syn-heading: #61afef;
+  --syn-link: #56b6c2;
+  --syn-invalid: #f87171;
 }
 
 @layer base {
@@ -126,7 +195,53 @@
   html {
     @apply font-sans;
     }
+
+  /*
+   * Tailwind v3's preflight gave buttons `cursor: pointer`; v4's does not, so
+   * they fall back to the browser's arrow. Restored once here rather than as
+   * a class on each component, so a button added later -- including the
+   * generated ones under ui/ -- is right without anyone remembering.
+   *
+   * Anything that deliberately wants another cursor still wins: utilities are
+   * a later layer than base, so the menu items' `cursor-default` survives.
+   */
+  button:not(:disabled):not([aria-disabled="true"]),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+    }
 }
+/*
+ * Scrolls without a visible scrollbar. Already referenced by the sidebar and
+ * the command palette, which were relying on a class nothing defined.
+ */
+/*
+ * The streaming cursor, at the end of rendered Markdown.
+ *
+ * A pseudo-element on the last block rather than a node appended after it:
+ * the prose is a tree of headings, lists and tables, and the only way to put
+ * the caret at the end of the final *line* -- rather than on a line of its
+ * own below the whole message -- is to hang it off whatever element that
+ * line belongs to.
+ */
+@utility streaming-caret {
+  & > *:last-child::after {
+    content: "";
+    display: inline-block;
+    width: 0.375rem;
+    height: 1em;
+    margin-left: 0.125rem;
+    vertical-align: text-bottom;
+    background-color: var(--ucch-active);
+  }
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 :root {
   /*
    * The app sidebar's total width (icon rail + panel).
@@ -137,4 +252,97 @@
    * portal boundary.
    */
   --ucch-sidebar-width: 19.8rem;
+
+  /*
+   * The second column's width: the sidebar less the icon rail.
+   *
+   * Its own token rather than a `calc()` at the use site, because the rail's
+   * width lives on the sidebar provider's element and the collapsed rail's
+   * hover flyout is portalled to <body> -- outside it. A calc referring to
+   * `--sidebar-width-icon` there resolves against nothing, which invalidates
+   * the whole declaration and leaves the flyout sized to its own text.
+   */
+  --ucch-sidebar-panel-width: 16.8rem;
+
+  /*
+   * The application typeface.
+   *
+   * `--font-jetbrains-mono` is the self-hosted family `next/font` puts on
+   * <html> in layout.tsx; the rest is the fallback the browser uses for the
+   * moment before it loads. Read both by the Tailwind font tokens above and
+   * by the components that set `font-family` in an inline style.
+   */
+  --app-font: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/*
+ * Page changes as view transitions -- see lib/view-transitions.tsx for what
+ * starts one.
+ *
+ * Only the page box moves. It carries `view-transition-name: page` (set in
+ * app-shell.tsx), so the browser snapshots it on its own and the rest of the
+ * document under `root`. The root's default crossfade is switched off: the
+ * sidebar and header are the same before and after, and fading identical
+ * pixels into each other only softens every edge on screen for a frame. The
+ * page's old snapshot fades out while lifting a touch, and the new one fades
+ * in from a touch below -- short, so a fast reader clicking through the rail
+ * never waits on it.
+ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(page) {
+  animation: 110ms cubic-bezier(0.4, 0, 1, 1) both ucch-page-out;
+}
+
+::view-transition-new(page) {
+  animation: 180ms cubic-bezier(0, 0, 0.2, 1) both ucch-page-in;
+}
+
+/* The two snapshots overlap; without this the old one shows through the new
+   one's skeleton while both are mid-fade. */
+::view-transition-image-pair(page) {
+  isolation: isolate;
+}
+
+@keyframes ucch-page-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes ucch-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* A skeleton that gives way to the real page should not pop: the content
+   fades in over the bars it replaces. Only on the page box's direct children
+   so a component further down that mounts later is not animated twice. */
+.ucch-page > * {
+  animation: 160ms ease-out both ucch-content-in;
+}
+
+@keyframes ucch-content-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+
+  .ucch-page > * {
+    animation: none;
+  }
 }

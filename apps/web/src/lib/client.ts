@@ -14,6 +14,11 @@ export type ConnectionState = "idle" | "connecting" | "ready" | "reconnecting" |
 export interface ClientEvent {
   seq: number | null;
   event: DomainEvent;
+  /**
+   * When the event happened, as a Unix time in ms. The server's clock, from
+   * the frame -- so a replayed event is dated to when it was recorded, not
+   * to the reload that fetched it.
+   */
   receivedAt: number;
 }
 
@@ -36,6 +41,15 @@ export class UcchClient {
   #listeners = new Set<Listener>();
   #pending = new Map<string, { resolve: (v: StoredEvent[]) => void; reject: (e: Error) => void }>();
   #subscriptions = new Map<string, { topic: SubscribeTopic; lastSeq: number }>();
+  /**
+   * Durable events already recorded, keyed by scope and sequence.
+   *
+   * The same event arrives twice by design: once as the ack to the command
+   * that caused it, and again as a push to whoever is subscribed to its
+   * topic. Both paths matter -- a client that never subscribed still needs
+   * the ack -- so the duplicate is resolved here rather than by dropping one.
+   */
+  #seen = new Set<string>();
   #attempt = 0;
   #closed = false;
   #nextId = 0;
@@ -73,6 +87,12 @@ export class UcchClient {
       return;
     }
 
+    // `close()` may have been called while the ticket was in flight -- an
+    // unmount during connect is the common case, not a rare one. Without this
+    // the socket opens anyway and lives on unreferenced, holding a
+    // subscription nothing will ever read.
+    if (this.#closed) return;
+
     const socket = new WebSocket(`${websocketOrigin()}/ws?ticket=${ticket}`);
     this.#socket = socket;
 
@@ -86,6 +106,35 @@ export class UcchClient {
       if (!this.#closed) this.#scheduleReconnect();
     };
     socket.onerror = () => socket.close();
+  }
+
+  /**
+   * Resolves once the socket has authenticated and can carry a command.
+   *
+   * `connect()` returns as soon as the socket exists, which is before it
+   * opens; a `dispatch` in between is rejected as not connected. Callers that
+   * need to send something right after connecting wait here first.
+   */
+  whenReady(timeoutMs = 10_000): Promise<void> {
+    if (this.#state === "ready") return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        unsubscribe();
+        reject(new Error("could not reach the server"));
+      }, timeoutMs);
+      const unsubscribe = this.subscribeToChanges(() => {
+        if (this.#state === "failed") {
+          clearTimeout(timer);
+          unsubscribe();
+          reject(new Error("could not reach the server"));
+          return;
+        }
+        if (this.#state !== "ready") return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      });
+    });
   }
 
   close(): void {
@@ -108,8 +157,24 @@ export class UcchClient {
   }
 
   async subscribe(topic: SubscribeTopic): Promise<void> {
+    // Subscribing to the same topic twice would have the server push every
+    // event to this socket once per registration.
+    const key = topicKey(topic);
+    for (const [, existing] of this.#subscriptions) {
+      if (topicKey(existing.topic) === key) return;
+    }
+
     const id = String(this.#nextId++);
     this.#subscriptions.set(id, { topic, lastSeq: -1 });
+
+    // `connect()` returns once the socket exists, which is before it opens, so
+    // this is the common case rather than the exceptional one. Registering the
+    // topic is the whole job: the `ready` handler replays every registered
+    // subscription. Waiting on an ack here would mean waiting on a frame that
+    // `#send` had already dropped for not being open yet -- a promise nothing
+    // could ever answer, left to be rejected on teardown.
+    if (this.#socket?.readyState !== WebSocket.OPEN) return;
+
     await new Promise<void>((resolve, reject) => {
       this.#pending.set(id, { resolve: () => resolve(), reject });
       this.#send({ kind: "subscribe", id, topic });
@@ -146,7 +211,8 @@ export class UcchClient {
       case "ack": {
         this.#pending.get(frame.id)?.resolve(frame.events);
         this.#pending.delete(frame.id);
-        for (const stored of frame.events) this.#record(stored.seq, stored.event);
+        for (const stored of frame.events)
+          this.#record(stored.seq, stored.event, Date.parse(stored.createdAt));
         break;
       }
 
@@ -161,7 +227,7 @@ export class UcchClient {
       case "push": {
         const sub = this.#subscriptions.get(frame.subscriptionId);
         if (sub && frame.seq !== null && frame.seq > sub.lastSeq) sub.lastSeq = frame.seq;
-        this.#record(frame.seq, frame.event);
+        this.#record(frame.seq, frame.event, frame.at ? Date.parse(frame.at) : Date.now());
         break;
       }
 
@@ -170,8 +236,31 @@ export class UcchClient {
     }
   }
 
-  #record(seq: number | null, event: DomainEvent): void {
-    this.#events = [...this.#events, { seq, event, receivedAt: Date.now() }].slice(-500);
+  /**
+   * `at` is when the event happened, by the server's clock -- which for a
+   * replayed event is long before now. Falls back to now for a frame without
+   * one, so an older server still dates live events well enough.
+   */
+  #record(seq: number | null, event: DomainEvent, at: number = Date.now()): void {
+    // (scope, seq) is what the server's unique index enforces, so it is what
+    // identifies an event here too. Transient events carry no sequence and
+    // arrive only once, by push.
+    if (seq !== null) {
+      const scope =
+        "threadId" in event && event.threadId
+          ? `t:${event.threadId}`
+          : "projectId" in event && event.projectId
+            ? `p:${event.projectId}`
+            : "";
+      const key = `${scope}:${seq}`;
+      if (this.#seen.has(key)) return;
+      this.#seen.add(key);
+    }
+
+    this.#events = [
+      ...this.#events,
+      { seq, event, receivedAt: Number.isFinite(at) ? at : Date.now() },
+    ].slice(-500);
     this.#emit();
   }
 
@@ -215,6 +304,17 @@ function websocketOrigin(): string {
   if (configured) return configured.replace(/^http/, "ws").replace(/\/$/, "");
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   return `${scheme}://${window.location.host}`;
+}
+
+function topicKey(topic: SubscribeTopic): string {
+  switch (topic.name) {
+    case "thread":
+      return `thread:${topic.threadId}`;
+    case "project":
+      return `project:${topic.projectId}`;
+    case "terminal":
+      return `terminal:${topic.terminalId}`;
+  }
 }
 
 export type SubscribeTopic =

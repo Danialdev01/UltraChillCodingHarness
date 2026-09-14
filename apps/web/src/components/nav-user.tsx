@@ -21,9 +21,9 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { ChevronsUpDownIcon, BadgeCheckIcon, LogOutIcon } from "lucide-react"
-import { useRouter } from "next/navigation"
 
 import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics"
+import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
 
 export function NavUser({
   user,
@@ -32,7 +32,8 @@ export function NavUser({
   user: {
     name: string
     email: string
-    avatar: string
+    /** Absent when no picture is set; the initials stand in for it. */
+    avatar?: string
   }
   /**
    * Renders the avatar alone, for the icon rail where nothing else fits.
@@ -42,7 +43,7 @@ export function NavUser({
   compact?: boolean
 }) {
   const { isMobile } = useSidebar()
-  const router = useRouter()
+  const router = useTransitionRouter()
 
   async function onLogout() {
     // The session cookie is HttpOnly, so it can only be cleared by the server.
@@ -81,11 +82,10 @@ export function NavUser({
               </>
             )}
           </DropdownMenuTrigger>
-          {/* Expanded, this trigger sits in the second column, so the menu
-              is pulled left over the icon rail and widened to the sidebar --
-              matching the workspace switcher at the other end. Collapsed,
-              the trigger IS the rail, so there is nothing to overlap and it
-              opens to the side as usual. */}
+          {/* Expanded, the menu is overshot left so it clamps flush to the
+              sidebar's edge and widened to match it -- the same treatment as
+              the workspace switcher at the other end. Collapsed, the sidebar
+              is only as wide as the rail, so it opens to the side instead. */}
           <DropdownMenuContent
             className={
               compact
@@ -114,7 +114,10 @@ export function NavUser({
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              <DropdownMenuItem>
+              {/* A link rather than a click handler: the account tab has an
+                  address, so it should be openable in a new tab and readable
+                  in the status bar like any other. */}
+              <DropdownMenuItem render={<TransitionLink href="/setting#account" />}>
                 <BadgeCheckIcon />
                 Account
               </DropdownMenuItem>

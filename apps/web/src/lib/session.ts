@@ -73,6 +73,144 @@ export interface Project {
   name: string;
   stack: string;
   containerState: string;
+  /**
+   * The columns the project tables show and the sidebar has no room for.
+   * Optional because `getProjectByHash` serves the single-project shape,
+   * which does not carry them.
+   */
+  repoUrl?: string | null;
+  defaultBranch?: string;
+  /** ISO strings: JSON has no date, and nothing here needs one. */
+  lastActiveAt?: string;
+  createdAt?: string;
+  running?: boolean;
+  threadCount?: number;
+  /** Every token the project's turns were billed for, and what they cost. */
+  tokens?: number;
+  costUsd?: number;
+  /** The port the owner's dev server listens on; null until set. */
+  previewPort?: number | null;
+  /** The subdomain the preview proxy serves, once a port is set. */
+  previewUrl?: string | null;
+  /** The shareable `/{hash}/preview` entry point on this app. */
+  previewAliasUrl?: string;
+}
+
+/** What the account's OpenRouter key has left. Mirrors the server's `KeyQuota`. */
+export interface OpenRouterQuota {
+  label: string | null;
+  usageUsd: number;
+  limitUsd: number | null;
+  limitRemainingUsd: number | null;
+  freeTier: boolean;
+  credits: { totalUsd: number; usedUsd: number } | null;
+}
+
+/**
+ * The quota, or why there is none to show.
+ *
+ * Three states rather than null: a missing key and an unreachable OpenRouter
+ * call for different words on the card, and collapsing them would tell the
+ * person to add a key they already have.
+ */
+export type QuotaResult =
+  | { status: "ok"; quota: OpenRouterQuota }
+  | { status: "no_key" }
+  | { status: "unavailable" };
+
+export async function getOpenRouterQuota(): Promise<QuotaResult> {
+  const jar = await cookies();
+  const token = jar.get("ucch_session");
+  if (!token) return { status: "unavailable" };
+
+  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
+  try {
+    const response = await fetch(`${origin}/api/account/openrouter/quota`, {
+      headers: { cookie: `ucch_session=${token.value}` },
+      cache: "no-store",
+    });
+    if (response.status === 404) return { status: "no_key" };
+    if (!response.ok) return { status: "unavailable" };
+    return { status: "ok", quota: (await response.json()) as OpenRouterQuota };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+/** The Dashboard's headline numbers. Mirrors the server's `WorkspaceStats`. */
+export interface WorkspaceStats {
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  costUsd: number;
+  turnCount: number;
+  projects: { total: number; running: number; containersUp: number };
+  previews: { total: number; live: number; expiringSoon: number };
+  /** Null while there is no todos table to count. */
+  todo: { due: number; open: number } | null;
+}
+
+/**
+ * The workspace's aggregates, or null when the request failed.
+ *
+ * Null rather than a zeroed object: a dashboard that shows 0 tokens because
+ * the API was unreachable is worse than one that says it could not load.
+ */
+export async function getWorkspaceStats(workspaceId: string): Promise<WorkspaceStats | null> {
+  if (!workspaceId) return null;
+  const jar = await cookies();
+  const token = jar.get("ucch_session");
+  if (!token) return null;
+
+  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
+  try {
+    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/stats`, {
+      headers: { cookie: `ucch_session=${token.value}` },
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as WorkspaceStats;
+  } catch {
+    return null;
+  }
+}
+
+/** One model's share of the workspace's bill. Mirrors the server. */
+export interface ModelUsage {
+  /** Null on turns recorded before the model was stored with them. */
+  model: string | null;
+  costUsd: number;
+  requests: number;
+  tokens: number;
+}
+
+/** Spend, requests and tokens for a workspace, split by model. */
+export interface WorkspaceUsage {
+  totals: { costUsd: number; requests: number; tokens: number };
+  models: ModelUsage[];
+}
+
+/**
+ * The per-model breakdown behind the Usage tab, or null when it failed.
+ *
+ * Null rather than an empty breakdown, for the same reason `getWorkspaceStats`
+ * is: a spend of $0.00 because the API was down reads as a fact.
+ */
+export async function getWorkspaceUsage(workspaceId: string): Promise<WorkspaceUsage | null> {
+  if (!workspaceId) return null;
+  const jar = await cookies();
+  const token = jar.get("ucch_session");
+  if (!token) return null;
+
+  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
+  try {
+    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/usage`, {
+      headers: { cookie: `ucch_session=${token.value}` },
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as WorkspaceUsage;
+  } catch {
+    return null;
+  }
 }
 
 /** Projects in a workspace. Empty when the workspace is not the caller's. */

@@ -48,6 +48,14 @@ services:
       PROJECT_NETWORK: ucch-projects
       BASE_IMAGE: ucch/base:latest
       IDLE_STOP_MINUTES: ${IDLE_STOP_MINUTES:-30}
+      # Terminals (and so the live preview's dev servers) are host processes
+      # inside this container until the container runtime lands. Production
+      # refuses them unless told to; see the README's Security note.
+      AGENT_ALLOW_HOST_SHELL: "true"
+      # Password sign-in for the first account, so GitHub OAuth is optional.
+      DEFAULT_USER_EMAIL: ${DEFAULT_USER_EMAIL:-}
+      DEFAULT_USER_PASSWORD: ${DEFAULT_USER_PASSWORD:-}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-}
     volumes:
       # The Docker socket is how the server creates project containers. This
       # is root-equivalent on the host: see the README's Security note.
@@ -63,6 +71,16 @@ services:
       - traefik.http.routers.ucch-api.entrypoints=websecure
       - traefik.http.routers.ucch-api.tls.certresolver=letsencrypt
       - traefik.http.services.ucch-api.loadbalancer.server.port=3001
+      # Live previews: every p{port}-{hash} subdomain lands on the same
+      # server, which proxies it to the project's dev server. The wildcard
+      # certificate needs a DNS-01 resolver (see README, "Deploying").
+      # `$$` is a literal `$` to Compose's interpolation.
+      - traefik.http.routers.ucch-preview.rule=HostRegexp(`^p[0-9]+-[a-z0-9]{12}\.${ROOT_DOMAIN}$$`)
+      - traefik.http.routers.ucch-preview.entrypoints=websecure
+      - traefik.http.routers.ucch-preview.tls.certresolver=letsencrypt
+      - traefik.http.routers.ucch-preview.tls.domains[0].main=${ROOT_DOMAIN}
+      - traefik.http.routers.ucch-preview.tls.domains[0].sans=*.${ROOT_DOMAIN}
+      - traefik.http.routers.ucch-preview.service=ucch-api
     networks:
       - internal
       - dokploy-network
@@ -72,11 +90,14 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        # Inlined into the client bundle at build time, not read at runtime.
+        # Both are fixed at build time, not read at runtime: the first is
+        # inlined into the client bundle, the second into the rewrite table.
         NEXT_PUBLIC_WS_ORIGIN: https://api.${ROOT_DOMAIN}
+        SERVER_ORIGIN: http://server:3001
     restart: unless-stopped
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       SERVER_ORIGIN: http://server:3001

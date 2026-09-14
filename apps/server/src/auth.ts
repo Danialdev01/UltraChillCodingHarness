@@ -1,7 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { sessions, users, type Database } from "@ucch/db";
-import type { Scope } from "@ucch/protocol";
+import { isAvatarDataUrl, type Scope } from "@ucch/protocol";
 import type { Config } from "./config.js";
 import { hashPassword, verifyPassword } from "./password.js";
 
@@ -104,10 +104,6 @@ export class AuthService {
     email: string | null;
     avatarUrl: string | null;
   } | null> {
-    if (this.config.DEV_AUTH_BYPASS && userId === DEV_USER_ID) {
-      return { login: "dev", name: "Local Developer", email: null, avatarUrl: null };
-    }
-
     const [row] = await this.db
       .select({
         login: users.login,
@@ -119,10 +115,144 @@ export class AuthService {
       .where(eq(users.id, userId))
       .limit(1);
 
-    return row ?? null;
+    // The bypass user is a real row -- it is inserted at boot, because
+    // projects carry a foreign key to it -- so it is read like any other and
+    // only stood in for when it is genuinely missing. Returning a hardcoded
+    // profile here instead meant every edit on the settings page saved and
+    // then vanished: the row changed and the response did not.
+    if (row) return row;
+    if (this.config.DEV_AUTH_BYPASS && userId === DEV_USER_ID) {
+      return { login: "dev", name: "Local Developer", email: null, avatarUrl: null };
+    }
+    return null;
   }
 
-  async verifyCredentials(email: string, password: string): Promise<string | null> {
+/**
+   * Changes the display name -- what the sidebar and every profile menu show.
+   *
+   * No password is asked for, unlike the email: a name is not a credential,
+   * and changing it cannot be used to take an account over. It is stored
+   * trimmed, and an empty name is stored as null so the display falls back
+   * to the login rather than rendering a blank row.
+   */
+  async updateName(
+    userId: string,
+    name: string,
+  ): Promise<{ name: string | null } | { error: "not_found" }> {
+    const trimmed = name.trim();
+    const stored = trimmed.length > 0 ? trimmed : null;
+
+    const [row] = await this.db
+      .update(users)
+      .set({ name: stored })
+      .where(eq(users.id, userId))
+      .returning({ name: users.name });
+
+    if (!row) return { error: "not_found" };
+    return { name: row.name };
+  }
+
+  /**
+   * Changes the address the account signs in with.
+   *
+   * The current password is required whenever the account has one. Holding a
+   * session is not enough on its own: the email *is* the login identifier,
+   * and an unattended browser could otherwise be used to take an account
+   * over silently. An account that signs in through GitHub alone has no
+   * password to ask for, so it is asked for nothing.
+   */
+  async updateEmail(
+    userId: string,
+    email: string,
+    currentPassword: string | null,
+  ): Promise<{ email: string } | { error: "wrong_password" | "taken" | "not_found" }> {
+    const [row] = await this.db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!row) return { error: "not_found" };
+
+    if (row.passwordHash) {
+      const valid = await verifyPassword(currentPassword ?? "", row.passwordHash);
+      if (!valid) return { error: "wrong_password" };
+    }
+
+    const normalized = normalizeEmail(email);
+    try {
+      await this.db.update(users).set({ email: normalized }).where(eq(users.id, userId));
+      return { email: normalized };
+    } catch (error) {
+      // The unique index is the authority on whether an address is free: a
+      // select first would leave a window in which two accounts both saw it
+      // as available.
+      if (isUniqueViolation(error)) return { error: "taken" };
+      throw error;
+    }
+  }
+
+  /**
+   * Sets a new password, or adds the first one to a GitHub-only account.
+   *
+   * Every other session is revoked on success, and this one is not. Changing
+   * a password is what someone does when they think it is known, and leaving
+   * the sessions it protects alive would make the change cosmetic.
+   */
+  async changePassword(
+    userId: string,
+    currentPassword: string | null,
+    newPassword: string,
+    keepSessionId: string,
+  ): Promise<{ ok: true; hadPassword: boolean } | { error: "wrong_password" | "not_found" }> {
+    const [row] = await this.db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!row) return { error: "not_found" };
+
+    if (row.passwordHash) {
+      const valid = await verifyPassword(currentPassword ?? "", row.passwordHash);
+      if (!valid) return { error: "wrong_password" };
+    }
+
+    await this.db
+      .update(users)
+      .set({ passwordHash: await hashPassword(newPassword) })
+      .where(eq(users.id, userId));
+
+    await this.db
+      .delete(sessions)
+      .where(and(eq(sessions.userId, userId), ne(sessions.id, keepSessionId)));
+
+    return { ok: true, hadPassword: row.passwordHash !== null };
+  }
+
+  /**
+   * Stores or clears the profile picture.
+   *
+   * The value is checked against `isAvatarDataUrl` here as well as in the
+   * browser, because the browser's copy is a convenience and this one is the
+   * rule: it is what stops an arbitrary URL -- or an SVG, which can carry
+   * script -- being written into a column every page renders into an `img`.
+   */
+  async updateAvatar(userId: string, dataUrl: string | null): Promise<boolean> {
+    if (dataUrl !== null && !isAvatarDataUrl(dataUrl)) return false;
+    await this.db.update(users).set({ avatarUrl: dataUrl }).where(eq(users.id, userId));
+    return true;
+  }
+
+  /** Whether the account can sign in with a password at all. */
+  async hasPassword(userId: string): Promise<boolean> {
+    const [row] = await this.db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return Boolean(row?.passwordHash);
+  }
+
+    async verifyCredentials(email: string, password: string): Promise<string | null> {
     const [row] = await this.db
       .select({ id: users.id, passwordHash: users.passwordHash })
       .from(users)
@@ -183,7 +313,10 @@ export class AuthService {
         target: users.githubId,
         set: {
           login: profile.login,
-          name: profile.name,
+          // Whatever the account already has wins: a name edited in Settings
+          // must not be undone by the next sign-in. GitHub's own name still
+          // fills an account that has never had one.
+          name: sql`coalesce(${users.name}, excluded.name)`,
           avatarUrl: profile.avatarUrl,
           accessTokenEncrypted: profile.accessTokenEncrypted,
         },
@@ -215,6 +348,21 @@ function normalizeEmail(email: string): string {
 }
 
 /** Fixed uuid so the bypass user is stable across restarts in development. */
+/**
+ * Whether a database error is a unique-index conflict.
+ *
+ * Postgres reports these as SQLSTATE 23505. Matched on the code rather than
+ * the message, which is localised and names the index.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "23505"
+  );
+}
+
 export const DEV_USER_ID = "00000000-0000-4000-8000-000000000001";
 
 /**

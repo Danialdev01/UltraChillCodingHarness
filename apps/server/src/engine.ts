@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   generateHash,
   hasScope,
@@ -7,6 +7,7 @@ import {
   type Command,
   type ContainerState,
   type DomainEvent,
+  type ProviderId,
   type StoredEvent,
 } from "@ucch/protocol";
 import { previews, projects, threads, turns, workspaces, type Database, type Transaction } from "@ucch/db";
@@ -104,7 +105,7 @@ export class OrchestrationEngine {
       }
 
       stored = await this.store.append(target, decision.events, (tx) =>
-        project(tx, decision.events, principal),
+        applyProjection(tx, decision.events, principal),
       );
     }
 
@@ -126,6 +127,7 @@ export class OrchestrationEngine {
           id: row.id,
           projectId: row.projectId,
           status: row.status as "idle" | "running" | "cancelling" | "error",
+          provider: (row.provider as ProviderId | null) ?? null,
         };
       }
     }
@@ -180,22 +182,44 @@ export class OrchestrationEngine {
 }
 
 /**
+ * Whoever the events are being projected on behalf of.
+ *
+ * Only `project.created` needs one, to own the new row. A reactor appending
+ * turn events has no principal to speak of and passes `null` rather than
+ * inventing one; a `Principal` satisfies this structurally.
+ */
+export interface ProjectionActor {
+  userId: string;
+}
+
+/**
  * Applies events to the read model inside the append transaction, so the
  * projections can never durably disagree with the log.
+ *
+ * Every writer to the log must run this -- the engine for command events, the
+ * agent reactor for turn events. An append with the projection skipped is how
+ * the read model silently drifts from the log.
+ *
+ * Exported for its tests: these rules are the only thing keeping the read
+ * model honest, and they are worth asserting statement by statement.
  */
-async function project(
+export async function applyProjection(
   tx: Transaction,
   batch: readonly DomainEvent[],
-  principal: Principal,
+  actor: ProjectionActor | null,
 ): Promise<void> {
   for (const event of batch) {
     switch (event.type) {
       case "project.created":
+        // Only reachable through a command, which always has a principal.
+        // Reaching here without one is a wiring mistake, and a loud one beats
+        // a project row owned by nobody.
+        if (!actor) throw new Error("project.created cannot be projected without an actor");
         await tx.insert(projects).values({
           id: event.projectId,
           hash: event.hash,
           workspaceId: event.workspaceId,
-          userId: principal.userId,
+          userId: actor.userId,
           name: event.name,
           repoUrl: event.repoUrl,
           defaultBranch: event.defaultBranch,
@@ -218,6 +242,51 @@ async function project(
             lastActiveAt: new Date(),
           })
           .where(eq(projects.id, event.projectId));
+        break;
+
+      case "turn.started":
+        // The turn's ordinal comes from a sub-select rather than a read
+        // followed by a write: one statement, evaluated against the same
+        // snapshot that inserts, so there is no window for a concurrent
+        // turn to take the same seq. The unique index on
+        // (thread_id, seq) is the backstop if one ever tries.
+        await tx.insert(turns).values({
+          id: event.turnId,
+          threadId: event.threadId,
+          seq: sql`(select coalesce(max(${turns.seq}) + 1, 0) from ${turns} where ${turns.threadId} = ${event.threadId})`,
+          model: event.model ?? null,
+        });
+        // Until this landed nothing ever set `running`, so `thread.cancel`
+        // always failed its guard and `thread.send` never rejected a second
+        // concurrent turn. Both guards start working here.
+        await tx.update(threads).set({ status: "running" }).where(eq(threads.id, event.threadId));
+        // The first turn binds the thread to its backend; later ones cannot
+        // move it (see `decide()`), so a set value is left alone.
+        if (event.provider) {
+          await tx
+            .update(threads)
+            .set({ provider: sql`coalesce(${threads.provider}, ${event.provider})` })
+            .where(eq(threads.id, event.threadId));
+        }
+        break;
+
+      case "agent.session_started":
+        // The resume token, the moment the CLI names it. A turn killed after
+        // this point still has a session to continue from.
+        await tx
+          .update(threads)
+          .set({ provider: event.provider, providerSessionId: event.sessionId })
+          .where(eq(threads.id, event.threadId));
+        break;
+
+      case "thread.cancel_requested":
+        // Not `idle`: the loop is still unwinding, and letting a new message
+        // in before it finishes is exactly what the guard exists to stop.
+        // `agent.turn_completed` moves it the rest of the way.
+        await tx
+          .update(threads)
+          .set({ status: "cancelling" })
+          .where(eq(threads.id, event.threadId));
         break;
 
       case "thread.created":

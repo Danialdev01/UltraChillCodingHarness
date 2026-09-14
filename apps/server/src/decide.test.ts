@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { Command } from "@ucch/protocol";
 import {
   decide,
-  normalizeWorkspacePath,
   type DecisionContext,
   type DecisionState,
   type ProjectSnapshot,
@@ -46,6 +45,7 @@ const thread = (over: Partial<ThreadSnapshot> = {}): ThreadSnapshot => ({
   id: THREAD,
   projectId: PROJECT,
   status: "idle",
+  provider: null,
   ...over,
 });
 
@@ -89,6 +89,37 @@ describe("project.create", () => {
       ok: true,
       events: [{ name: "My App", defaultBranch: "develop" }],
     });
+  });
+
+  it("records a project with no repository as having none", () => {
+    // The New repository tab: no URL at all, which the clone reactor reads as
+    // "initialise one" rather than as a missing field.
+    const d = run({ workspace: workspace() }, {
+      type: "project.create",
+      workspaceId: WORKSPACE,
+      name: "my-new-app",
+    });
+    expect(d).toMatchObject({
+      ok: true,
+      events: [{ type: "project.created", name: "my-new-app", repoUrl: null, defaultBranch: "main" }],
+    });
+  });
+
+  it("refuses a project that has neither a repository nor a name", () => {
+    // There is nothing left to derive a name from, and a project called ""
+    // is worse than a refused command.
+    const d = run({ workspace: workspace() }, { type: "project.create", workspaceId: WORKSPACE });
+    expect(d).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
+
+  it("starts an empty project on the branch it was given", () => {
+    const d = run({ workspace: workspace() }, {
+      type: "project.create",
+      workspaceId: WORKSPACE,
+      name: "trunk",
+      branch: "develop",
+    });
+    expect(d).toMatchObject({ ok: true, events: [{ repoUrl: null, defaultBranch: "develop" }] });
   });
 
   // The workspace boundary has to be enforced, not advisory: without these
@@ -181,6 +212,98 @@ describe("thread.send", () => {
     });
     expect(d).toMatchObject({ ok: false, error: { code: "conflict" } });
   });
+
+  // A Claude Code session cannot be resumed by Codex, or by the native loop.
+  it("refuses a different provider once the thread is bound to one", () => {
+    const d = run({ project: project(), thread: thread({ provider: "claude" }) }, {
+      type: "thread.send",
+      threadId: THREAD,
+      text: "hi",
+      provider: "codex",
+    });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect((d as { error: { message: string } }).error.message).toMatch(/runs on claude/);
+  });
+
+  it("accepts the bound provider, or no provider at all", () => {
+    for (const provider of ["claude", undefined] as const) {
+      const d = run({ project: project(), thread: thread({ provider: "claude" }) }, {
+        type: "thread.send",
+        threadId: THREAD,
+        text: "hi",
+        ...(provider ? { provider } : {}),
+      });
+      expect(d).toMatchObject({ ok: true });
+    }
+  });
+
+  it("lets an unbound thread pick any provider", () => {
+    const d = run({ project: project(), thread: thread() }, {
+      type: "thread.send",
+      threadId: THREAD,
+      text: "hi",
+      provider: "codex",
+    });
+    expect(d).toMatchObject({ ok: true });
+  });
+
+  it("records the research mode on the message", () => {
+    const d = run({ project: project(), thread: thread() }, {
+      type: "thread.send",
+      threadId: THREAD,
+      text: "what changed in next 15?",
+      mode: "research",
+    });
+    expect(d).toMatchObject({
+      ok: true,
+      events: [{ type: "user.message", mode: "research" }],
+    });
+  });
+
+  // On a CLI provider the reactor runs the research first and hands the CLI
+  // the brief, so the mode is allowed on any thread -- bound ones included.
+  it("allows research on a CLI provider, requested or bound", () => {
+    const requested = run({ project: project(), thread: thread() }, {
+      type: "thread.send",
+      threadId: THREAD,
+      text: "hi",
+      mode: "research",
+      provider: "claude",
+    });
+    expect(requested).toMatchObject({
+      ok: true,
+      events: [{ type: "user.message", mode: "research" }],
+    });
+
+    const bound = run({ project: project(), thread: thread({ provider: "codex" }) }, {
+      type: "thread.send",
+      threadId: THREAD,
+      text: "hi",
+      mode: "research",
+    });
+    expect(bound).toMatchObject({ ok: true, events: [{ mode: "research" }] });
+  });
+});
+
+describe("thread.cancel", () => {
+  it("records the request while the turn is running", () => {
+    const d = run({ project: project(), thread: thread({ status: "running" }) }, {
+      type: "thread.cancel",
+      threadId: THREAD,
+    });
+    expect(d).toMatchObject({
+      ok: true,
+      events: [{ type: "thread.cancel_requested", threadId: THREAD }],
+    });
+  });
+
+  it.each(["idle", "cancelling", "error"] as const)("refuses while a thread is %s", (status) => {
+    const d = run({ project: project(), thread: thread({ status }) }, {
+      type: "thread.cancel",
+      threadId: THREAD,
+    });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
 });
 
 describe("thread.revert", () => {
@@ -253,27 +376,9 @@ describe("terminal commands", () => {
   });
 });
 
-describe("normalizeWorkspacePath", () => {
-  it("normalizes ordinary paths", () => {
-    expect(normalizeWorkspacePath("app/Http/Controllers/X.php")).toBe("app/Http/Controllers/X.php");
-    expect(normalizeWorkspacePath("/routes/web.php")).toBe("routes/web.php");
-    expect(normalizeWorkspacePath("./a//b/./c")).toBe("a/b/c");
-    expect(normalizeWorkspacePath("a/b/../c")).toBe("a/c");
-  });
-
-  // The boundary that stops a client or an agent tool writing outside the mount.
-  it("rejects traversal outside the workspace", () => {
-    expect(normalizeWorkspacePath("../etc/passwd")).toBeNull();
-    expect(normalizeWorkspacePath("a/../../etc/passwd")).toBeNull();
-    expect(normalizeWorkspacePath("/../x")).toBeNull();
-  });
-
-  it("rejects empty paths and null bytes", () => {
-    expect(normalizeWorkspacePath("")).toBeNull();
-    expect(normalizeWorkspacePath("/")).toBeNull();
-    expect(normalizeWorkspacePath("a\0b")).toBeNull();
-  });
-
+describe("workspace paths", () => {
+  // normalizeWorkspacePath itself is tested in @ucch/protocol; this is the
+  // one thing decide() is responsible for -- refusing the command.
   it("rejects a traversing path in file.write", () => {
     const d = run({ project: project() }, {
       type: "file.write",

@@ -19,8 +19,11 @@ COPY apps/web ./apps/web
 
 # NEXT_PUBLIC_* values are inlined into the client bundle at build time, so
 # the WebSocket origin has to be known here rather than at container start.
+# The same goes for SERVER_ORIGIN: `next.config.ts` reads it when the
+# rewrite table is compiled, so the runtime environment cannot change it.
 ARG NEXT_PUBLIC_WS_ORIGIN
-ENV NEXT_PUBLIC_WS_ORIGIN=$NEXT_PUBLIC_WS_ORIGIN
+ARG SERVER_ORIGIN=http://server:3001
+ENV NEXT_PUBLIC_WS_ORIGIN=$NEXT_PUBLIC_WS_ORIGIN SERVER_ORIGIN=$SERVER_ORIGIN
 ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app/apps/web
 RUN pnpm exec next build

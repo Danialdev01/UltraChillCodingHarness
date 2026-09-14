@@ -79,7 +79,17 @@ export class EventStore {
     }
 
     // Committed. Now it is safe to tell subscribers.
-    const bySeq = new Map(stored.map((s) => [s.event, s.seq]));
+    //
+    // Keyed by position rather than by the stored event: `stored[i].event` is
+    // the payload Postgres handed back, a different object from the one that
+    // went in, so an identity lookup against `batch` never matches and every
+    // publication would go out with a null sequence. `durable` holds the
+    // original objects and lines up with `stored` one for one.
+    const bySeq = new Map<DomainEvent, number>();
+    durable.forEach((event, i) => {
+      const row = stored[i];
+      if (row) bySeq.set(event, row.seq);
+    });
     for (const event of batch) {
       const publication: Publication = {
         seq: bySeq.get(event) ?? null,

@@ -65,7 +65,7 @@ export function NewWorkspaceDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-md">
         <form onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>New workspace</DialogTitle>

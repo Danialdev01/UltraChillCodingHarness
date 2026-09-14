@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
   BellIcon,
@@ -15,6 +14,7 @@ import {
   LayersIcon,
 } from "lucide-react";
 
+import { NewProjectDialog } from "@/components/new-project-dialog";
 import { NewWorkspaceDialog, selectWorkspace } from "@/components/new-workspace-dialog";
 import {
   CommandDialog,
@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/command";
 import type { Project } from "@/lib/session";
 import type { Workspace } from "@/components/workspace-switcher";
+import { useTransitionRouter } from "@/lib/view-transitions";
 
 /**
  * The search field and the command palette behind it.
@@ -43,13 +44,16 @@ import type { Workspace } from "@/components/workspace-switcher";
 export function QuickMenu({
   projects,
   workspaces,
+  activeWorkspaceId,
 }: {
   projects: Project[];
   workspaces: Workspace[];
+  activeWorkspaceId: string;
 }) {
-  const router = useRouter();
+  const router = useTransitionRouter();
   const [open, setOpen] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
 
   // The conventional palette shortcut. Registered on the window so it works
   // wherever focus happens to be, except inside a text field.
@@ -99,7 +103,7 @@ export function QuickMenu({
           <CommandEmpty>No results.</CommandEmpty>
 
           <CommandGroup heading="Create">
-            <CommandItem onSelect={() => run(() => router.push("/dashboard#clone"))}>
+            <CommandItem onSelect={() => run(() => setCreatingProject(true))}>
               <FolderGitIcon />
               New project
               <CommandShortcut>from a repository</CommandShortcut>
@@ -176,6 +180,12 @@ export function QuickMenu({
           </CommandGroup>
         </CommandList>
       </CommandDialog>
+
+      <NewProjectDialog
+        workspaceId={activeWorkspaceId}
+        open={creatingProject}
+        onOpenChange={setCreatingProject}
+      />
 
       <NewWorkspaceDialog
         open={creatingWorkspace}

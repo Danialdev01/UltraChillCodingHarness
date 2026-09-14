@@ -223,7 +223,7 @@ interface Tool<I> {
 }
 ```
 
-**Every tool executes inside the project container via `docker exec`.** The server never touches workspace files directly. A rogue command is confined to the container, and the tool surface is identical regardless of where the loop runs.
+**Every tool executes inside the project container via `docker exec`.** (Today they execute on the host through `HostExecutor`, behind the same `Executor` interface, until §6.2 lands.) The server never touches workspace files directly. A rogue command is confined to the container, and the tool surface is identical regardless of where the loop runs.
 
 Plugins register tool sets; presets select them.
 
@@ -232,8 +232,8 @@ Plugins register tool sets; presets select them.
 | `fs` | `read_file`, `write_file`, `edit_file` (str-replace), `list_dir` |
 | `search` | `glob`, `grep` (ripgrep) |
 | `shell` | `bash` (streams into the terminal pane as it runs) |
-| `git` | `git_status`, `git_diff`, `git_log`, `git_commit` |
-| `project` | `restart_dev_server`, `list_ports`, `read_logs` |
+| `git` | `git_status`, `git_diff`, `git_log`, `git_commit` — **not built.** Git is reachable only through `bash`, which production withholds by default. |
+| `project` | `restart_dev_server`, `list_ports`, `read_logs` — **not built.** Waiting on the container runtime (§6.2), which is what there would be to restart. |
 
 Note there is **no `git_push` tool**. Pushing is outward-facing and hard to reverse: the agent can commit, only a person can push.
 
@@ -311,37 +311,56 @@ Event-sourced core per §5.1, with commands serialized through a single worker f
 
 ### 6.4 Agent (`packages/agent`)
 
-A **manual streaming loop** against `client.messages.stream()`.
+A **manual streaming loop** over an injected `Complete` function, whose one implementation is `apps/server/src/openrouter.ts` — SSE against OpenRouter's `/chat/completions`.
 
-The SDK's `beta.messages.toolRunner` would work, but every stream event must land in the append-only log with a monotonic sequence number, turns are bracketed by checkpoints, and cancellation must interrupt between tool calls. Owning the loop is clearer than threading all of that through runner hooks, and keeps a beta dependency out of the hot path.
+This section originally specified the Anthropic SDK directly. It is written against OpenRouter instead, and the difference is not cosmetic: the key is the user's, the model is whatever the composer selected from the catalogue, and none of Anthropic's context-management betas are reachable through it. Everything below is therefore implemented in the harness rather than asked for in a header. Owning the loop was the right call for the original reason — every stream event lands in the append-only log with a monotonic sequence number, and cancellation must interrupt between tool calls.
 
 ```ts
-model: "claude-opus-5"
-max_tokens: 64000
-thinking: { type: "adaptive", display: "summarized" }  // reasoning shown in the UI
-output_config: { effort: "xhigh" }                     // best setting for coding work
+model: <whatever the composer selected>   // DEFAULT_MODEL when it did not
+max_tokens: 16_000
+reasoning: { effort }                     // omitted entirely when effort is "off"
+usage: { include: true }                  // or no cache or cost figures come back
 ```
 
-Per iteration: stream deltas → append to the log and push over the WebSocket → on `stop_reason === "tool_use"`, execute all tool-use blocks **in parallel** and return every `tool_result` in a **single** user message → repeat.
+Per iteration: stream deltas → append to the log and push over the WebSocket → if the reply carried tool calls, run them and return every result before the next request → repeat. The loop branches on **whether there are tool calls**, never on `finish_reason`: some providers report `"stop"` with calls present, and believing them ends the turn with the work undone.
 
 Non-obvious rules that are easy to get wrong:
 
-- **Splitting tool results across multiple user messages silently trains Claude out of parallel calls.** One message, always.
-- A failed tool returns `tool_result` with `is_error: true` — never a dropped result.
-- `stop_reason === "pause_turn"` pushes the assistant turn back and continues.
-- **Thinking blocks must be echoed back unchanged.** They carry signatures; text deltas cannot reconstruct them. This is why `agent.message` stores raw content blocks verbatim — see §7.2.
+- **Splitting tool results across messages, or reordering them, silently trains the model out of parallel calls.** Results go back in the assistant's `tool_calls` order, never in completion order.
+- A failed tool returns its result with `isError` — never a dropped result. A call that never ran returns `INTERRUPTED`, so any prefix of the log still rebuilds.
+- `agent.message` stores each tool call's `arguments` **verbatim** as the string the wire carried. Re-stringifying a parsed object reorders keys and respaces separators, and a replayed conversation one byte different from the original loses the cache for the whole turn.
 
-**Context management**, in escalation order:
+**Tool dispatch.** Reads overlap, up to ten at once. A write or a shell command drains the pool, runs alone, and finishes before anything after it starts — two `edit_file` calls on one path used to interleave, and the file that landed was whichever finished second.
 
-1. **Prompt caching** — 4 breakpoints ordered `tools` → `system` → project context → conversation prefix. The tool list must be deterministically ordered and the system prompt must contain no timestamps, or every request silently misses cache.
-2. **Context editing** — `clear_tool_uses_20250919` (beta `context-management-2025-06-27`). A coding agent's context is mostly file reads that went stale three edits ago.
-3. **Compaction** — beta `compact-2026-01-12` for very long threads. Append the whole `response.content` back into messages, not just extracted text, or the compaction state is silently lost.
+**Context management**, in escalation order. All three are the harness's own:
 
-**System prompt** is assembled stable → volatile so caching holds: fixed harness rules, then detected stack, then `AGENTS.md`/`CLAUDE.md` if present, then a shallow file tree.
+1. **Prompt caching** — up to 4 breakpoints, spent as `harness rules` → `project context` → and two rolling along the tail of the conversation. The tool block sits ahead of the system prompt in the cached prefix, so the first mark covers it. Two things make this hold, and both are load-bearing: the tool list comes from one frozen array literal with each schema object created once and handed out by reference, and the system prompt contains no interpolated value of any kind — no timestamp, no working directory, no model name.
+
+   The system prompt is sent as **spans, not one joined string**. Joined, a repository that gained a file re-bought the harness rules and `AGENTS.md` along with the tree. The rolling pair matters at least as much: a mark pinned to the last *user* message never moves inside a turn, so iteration two re-bought every tool result iteration one had just paid to write.
+
+   The rolling marks go on `user` and `assistant` messages only. OpenRouter documents `cache_control` on system and user content parts and says nothing about `tool` messages, and a tool result is the one shape where rewriting a string into a content-parts array could be dropped in translation or refused outright. The cost of that caution is the most recent iteration's tool results, paid for once; the accumulation is what was expensive. Worth re-testing against a real key — `canMark` in `apps/server/src/openrouter.ts` is the only thing standing between here and the last of it.
+
+2. **Tool-result pruning** — the oldest oversized tool results are cut to a bounded head and tail once the conversation passes 70% of the usable window. A coding agent's context is mostly file reads that went stale three edits ago. The six most recent are never touched: they are what the model is working from.
+
+3. **Compaction** — past 85%, the older 60% of the conversation folds into one summary written by `SEARCH_MODEL`, recorded as a `context.injected` event with `source: "compaction"`. The log is never rewritten; `rebuild()` projects from the last checkpoint forward, so the UI still shows every turn the model can no longer see. The boundary never falls between an assistant's call and its result.
+
+   Pruning and compaction both rewrite the middle of the prefix and so cost the cache from the point they touch. Each is therefore gated on actually reclaiming something, and compaction's own token usage is folded into the turn that bought it.
+
+If it still does not fit, the six protected results are given up before the turn is: a cut-down file the model can re-read beats an error it cannot act on. Only beyond that does the turn fail, with a plain message naming the problem rather than a provider length error.
+
+The reserve held back for the reply is a flat 24k or a fifth of the window, whichever is smaller. Flat, it was absurd on a small model — holding back 24k of a 32k window leaves a quarter of it usable and compacts threads that were never in trouble.
+
+**Caching fails silently** — every reply still looks right, the turn just costs several times what it should. So the loop carries a canary: from the second iteration of a turn, a request over 4k input tokens that reads nothing back from cache emits a diagnostic naming the likely invalidators. §10 named this check; until the breakpoints above existed it could only ever have read zero.
+
+**System prompt** is assembled stable → volatile so caching holds: fixed harness rules, then detected stack, then `AGENTS.md`/`CLAUDE.md` if present, then a shallow file tree. The tree comes from `rg --no-config --files` and is cached per workspace, invalidated on `file.changed` and by a short TTL for the changes the agent did not make itself.
+
+**Web access** sits behind a `WebProvider` seam. The one implementation asks the same provider again with its search plugin switched on — but at `SEARCH_MODEL`, not the coding model. Reading result pages is the cheapest thing a model does here, and billing it at the coding rate made a single search cost about as much as a turn of real work. The seam exists so a real search backend can replace it without moving a byte of the `web_search` schema, which is in the cached prefix.
+
+**Programmatic tool calling** (DeepSeek Harness's `code` mode: render the schemas as a typed SDK and let the model write one program instead of N round trips) is **not built**. The generated SDK is itself prompt tokens, and dsh's own documentation is blunt that with few tools the net saving may be negative. This harness has thirteen. `ToolPresentation` and the `ptc` preset mark where the decision lands; the gate is a measurement — prompt tokens per turn, retained result tokens across a session, latency, error-recovery cost — not a preference.
 
 ### 6.5 Git (`packages/vcs`)
 
-- **Clone** — GitHub OAuth (`repo` scope). Token encrypted at rest (AES-256-GCM), injected per-command via `GIT_ASKPASS`, never written to `.git/config` or the workspace
+- **Clone** — a GitHub token (`repo` scope), either a personal access token set in Settings → API or the one from signing in with GitHub. Encrypted at rest (AES-256-GCM) and injected per-command through a `credential.helper` that reads it from the environment — never on the command line, never in `.git/config`, never in the workspace. A project may also be created with **no remote**, in which case the workspace is `git init`-ed with one commit instead of cloned
 - **Commit** — UI button (with "draft message from diff") and the `git_commit` tool
 - **Push** — explicit user action only, `admin` scope, no agent tool
 - **Branch** — `ucch/{thread-slug}` created on a thread's first commit, so `main` is never written to by accident
@@ -417,7 +436,15 @@ Three things worth recording, because two were real bugs and one is a design con
 
 **Deltas cannot reconstruct an assistant message.** Thinking blocks carry signatures that must be echoed back to the API unchanged when a thread continues on the same model. Reconstructing from text deltas drops the signature and invalidates the turn. This is why the `agent.message` event stores raw content blocks verbatim — without it, threads would appear resumable and fail in practice.
 
-### 7.3 Known gaps
+### 7.3 Agent providers (integration-spec-1)
+
+Delivered 2026-09-13: `packages/providers` (Claude Code and Codex CLIs as providers, normalised
+into the existing event vocabulary), per-user credential directories under `CREDS_ROOT`, in-browser
+sign-in terminals, the Claude `setup-token` paste path, the Agent Providers settings tab and the
+composer's provider picker. Host-mode until Phase 2: see the note at the top of
+`documentation/integration-spec-1.md`.
+
+### 7.4 Known gaps
 
 - The browser half of Phase 1 has not been exercised interactively (Chrome extension unavailable). The page renders, the `/api` proxy works, and the build is clean, but the connect-and-subscribe path is unverified in a real browser.
 - Next 15.5.25's Turbopack build fails on a packaging bug (looks for `server-external-packages.jsonc`, package ships `.json`). The webpack builder is used instead; `next.config.ts` carries an `extensionAlias` so webpack resolves the protocol package's NodeNext `.js` specifiers.
