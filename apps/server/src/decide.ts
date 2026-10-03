@@ -219,6 +219,19 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       return ok([{ type: "thread.cancel_requested", threadId: thread.value.id }]);
     }
 
+    case "thread.permission_reply": {
+      const thread = requireThread(state);
+      if ("error" in thread) return thread.decision;
+      if (thread.value.status !== "running") {
+        return fail("conflict", "no turn is waiting on this thread");
+      }
+      // Nothing to record here: the CLI's stream carries the resolution as
+      // `agent.permission_resolved` once the answer has actually reached
+      // it, in order with the tool result that follows. The reactor is
+      // handed the command and does the delivering.
+      return ok([]);
+    }
+
     case "thread.revert": {
       const thread = requireThread(state);
       if ("error" in thread) return thread.decision;

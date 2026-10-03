@@ -13,6 +13,7 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { FileTypeIcon } from "@/components/file-type-icon"
+import { TREE_FONT_SIZE, treeIconSize, treeRowSpacing } from "@/lib/tree-font-size"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Dialog,
@@ -34,19 +35,27 @@ import {
 } from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
 import {
+  basename,
   createEntry,
   deleteEntry,
-  fetchFile,
+  FileConflictError,
+  fetchFileVersion,
   fetchTree,
   isFolder,
+  moveEntry,
   saveFile,
   type FileNode,
 } from "@/lib/files-api"
+import { movableInto } from "@/lib/file-drop"
 import { isPreviewable } from "@ucch/protocol"
 import type { Project } from "@/lib/session"
+import { isOwnChange, useProjectEvents, useToast } from "@/lib/realtime"
 import { codeReference, type CodeReference } from "@/lib/code-chat"
 
 export type { FileNode as Node }
+
+/** The transfer type a row drag carries, so a folder ignores anything else dropped on it. */
+const DRAG_TYPE = "application/x-ucch-file"
 
 /** What the project page is showing: the conversation, the files, or a shell. */
 export type ViewMode = "chat" | "file" | "terminal" | "git"
@@ -194,6 +203,22 @@ interface FilesPanelContextValue {
   /** The paths awaiting a delete confirmation, and the act itself. */
   askDelete: (paths: readonly string[]) => void
   remove: (paths: readonly string[]) => Promise<void>
+
+  /** Moves each path into `folder` ("" for the project root), keeping its name. */
+  move: (paths: readonly string[], folder: string) => Promise<void>
+  /**
+   * The folder a drag is hovering, so it can light up: "" is the root, null
+   * means nothing is being dragged over the tree.
+   */
+  dropTarget: string | null
+  setDropTarget: (folder: string | null) => void
+  /**
+   * The paths a drag is carrying, or null when nothing is being dragged. Kept
+   * here rather than read off the transfer: the browser hides the transfer's
+   * data from everything but the drop itself.
+   */
+  dragging: readonly string[] | null
+  setDragging: (paths: readonly string[] | null) => void
 }
 
 const FilesPanelContext = React.createContext<FilesPanelContextValue | null>(null)
@@ -227,6 +252,12 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   const [activeTab, setActiveTab] = React.useState<string | null>(null)
   const [buffers, setBuffers] = React.useState<Record<string, string>>({})
   const [saved, setSaved] = React.useState<Record<string, string>>({})
+  /**
+   * The version of each open file as it was read, so a save goes over that
+   * version or not at all -- never over a change made elsewhere since.
+   */
+  const versions = React.useRef<Record<string, string | null>>({})
+  const toast = useToast()
   const [loadingFiles, setLoadingFiles] = React.useState<ReadonlySet<string>>(new Set())
   const [savingFiles, setSavingFiles] = React.useState<ReadonlySet<string>>(new Set())
   const [fileErrors, setFileErrors] = React.useState<Record<string, string>>({})
@@ -240,6 +271,8 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   const [changed, setChanged] = React.useState<ReadonlySet<string>>(new Set())
   const [creating, setCreating] = React.useState<"file" | "folder" | null>(null)
   const [deleting, setDeleting] = React.useState<readonly string[] | null>(null)
+  const [dropTarget, setDropTarget] = React.useState<string | null>(null)
+  const [dragging, setDragging] = React.useState<readonly string[] | null>(null)
   const [terminals, setTerminals] = React.useState<FilesPanelContextValue["terminals"]>({
     count: 0,
     closeAll: () => {},
@@ -268,6 +301,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
    * just navigated away from cannot overwrite the one you are looking at.
    */
   const treeRequest = React.useRef(0)
+  const treeLoadFailed = React.useRef(false)
   const refreshTree = React.useCallback(() => {
     if (!hash) return
     const ticket = ++treeRequest.current
@@ -277,11 +311,19 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         if (ticket !== treeRequest.current) return
         setTree(result.tree)
         setTreeTruncated(result.truncated)
-        setTreeError(null)
+        // A load that works clears the last load that did not -- and only
+        // that. A move or delete that failed reports here too, and it
+        // refreshes the tree right after, so clearing every time would
+        // wipe its message before anyone read it.
+        if (treeLoadFailed.current) {
+          treeLoadFailed.current = false
+          setTreeError(null)
+        }
       })
       .catch((error: unknown) => {
         if (ticket !== treeRequest.current) return
         setTree([])
+        treeLoadFailed.current = true
         setTreeError(error instanceof Error ? error.message : String(error))
       })
       .finally(() => {
@@ -292,6 +334,8 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   // The tree belongs to the project, so it is refetched when that changes --
   // including on first sight of one.
   React.useEffect(() => {
+    setTreeError(null)
+    treeLoadFailed.current = false
     if (!hash) {
       setTree([])
       return
@@ -303,8 +347,9 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     (path: string) => {
       if (!hash) return
       setLoadingFiles((current) => new Set(current).add(path))
-      void fetchFile(hash, path)
-        .then((content) => {
+      void fetchFileVersion(hash, path)
+        .then(({ content, version }) => {
+          versions.current[path] = version
           setBuffers((current) => ({ ...current, [path]: content }))
           setSaved((current) => ({ ...current, [path]: content }))
           setFileErrors((current) => {
@@ -373,6 +418,12 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       })
     }
 
+    // Shuts the tree or the search, whichever is up; the chat column is not
+    // theirs to close.
+    function closeFileSidebar() {
+      setSidebar((current) => (current === "files" || current === "search" ? null : current))
+    }
+
     return {
       project,
       sidebar,
@@ -386,6 +437,10 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       openSearch: () => setSidebar("search"),
       closeSearch: () => setSidebar((current) => (current === "search" ? null : current)),
       setCurrentProject: (next) => {
+        // The tree and the search belong to the project they were opened
+        // for; a page showing another one folds them away rather than
+        // leaving one project's files beside another's conversation.
+        if (project?.id !== next.id) closeFileSidebar()
         show(next)
         // Every view of a project starts as the conversation; a file view
         // left over from the last project would open on nothing.
@@ -466,12 +521,35 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         if (!hash || text === undefined) return
         setSavingFiles((current) => new Set(current).add(path))
         try {
-          await saveFile(hash, path, text)
+          versions.current[path] = await saveFile(hash, path, text, versions.current[path])
           // What is on disk is now what is in the buffer, so the tab stops
           // reading as modified.
           setSaved((current) => ({ ...current, [path]: text }))
           refreshTree()
         } catch (error) {
+          if (error instanceof FileConflictError) {
+            // Changed elsewhere since it was opened -- another window, or the
+            // agent. What is on disk stands; the edit here is reverted to it
+            // and the person is told, rather than one silently overwriting
+            // the other.
+            toast({
+              tone: "error",
+              title: `${path} was changed elsewhere`,
+              description:
+                error.content === null
+                  ? "It was deleted in another window. Your edits were not saved."
+                  : "Your unsaved edits were reverted to the version on disk.",
+            })
+            if (error.content !== null) {
+              const content = error.content
+              versions.current[path] = error.version
+              setBuffers((current) => ({ ...current, [path]: content }))
+              setSaved((current) => ({ ...current, [path]: content }))
+            } else {
+              setFileErrors((current) => ({ ...current, [path]: error.message }))
+            }
+            return
+          }
           setFileErrors((current) => ({
             ...current,
             [path]: error instanceof Error ? error.message : String(error),
@@ -559,6 +637,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         if (!trimmed || !creating || !hash) return
 
         const path = createTarget ? `${createTarget}/${trimmed}` : trimmed
+        setTreeError(null)
         void createEntry(hash, path, creating === "folder" ? "directory" : "file")
           .then(() => {
             refreshTree()
@@ -576,6 +655,8 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       askDelete: setDeleting,
       remove: async (paths) => {
         if (!hash) return
+        // The message is about the latest thing you did.
+        setTreeError(null)
         // A path inside a selected folder goes with the folder; deleting it
         // separately would only fail once the folder is gone.
         const roots = paths.filter(
@@ -604,6 +685,54 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         setExpandedSet((current) => new Set([...current].filter((p) => !inside(p))))
         refreshTree()
       },
+
+      move: async (paths, folder) => {
+        if (!hash) return
+        setTreeError(null)
+        const moves = movableInto(paths, folder).map(
+          (p) => [p, folder ? `${folder}/${basename(p)}` : basename(p)] as const,
+        )
+        if (moves.length === 0) return
+
+        const done: (readonly [string, string])[] = []
+        const failures: string[] = []
+        for (const [from, to] of moves) {
+          try {
+            await moveEntry(hash, from, to)
+            done.push([from, to])
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : String(error))
+          }
+        }
+        if (failures.length > 0) setTreeError(failures.join(" "))
+        // Everything that knew a moved path by name learns its new one, so an
+        // open tab keeps its buffer and a folder stays open where it landed.
+        const renamed = (p: string) => {
+          for (const [from, to] of done) {
+            if (p === from) return to
+            if (p.startsWith(`${from}/`)) return to + p.slice(from.length)
+          }
+          return p
+        }
+        const rekey = (record: Record<string, string>) =>
+          Object.fromEntries(Object.entries(record).map(([p, v]) => [renamed(p), v]))
+        setTabs((current) => current.map(renamed))
+        setActiveTab((current) => (current ? renamed(current) : current))
+        setBuffers(rekey)
+        setSaved(rekey)
+        setSelected((current) => (current ? renamed(current) : current))
+        setSelectedPaths((current) => new Set([...current].map(renamed)))
+        setExpandedSet((current) => {
+          const next = new Set([...current].map(renamed))
+          if (folder) next.add(folder)
+          return next
+        })
+        refreshTree()
+      },
+      dropTarget,
+      setDropTarget,
+      dragging,
+      setDragging,
     }
   }, [
     project,
@@ -627,13 +756,26 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     changed,
     creating,
     createTarget,
+    dropTarget,
+    dragging,
     terminals,
     chatDock,
     codeChat,
     hash,
     readFile,
     refreshTree,
+    toast,
   ])
+
+  // Files changed from another window: the same path as the agent's writes,
+  // so an open, unedited file is reread under the editor. This window's own
+  // saves are already on screen.
+  const noteChangedRef = React.useRef(value.noteChanged)
+  noteChangedRef.current = value.noteChanged
+  useProjectEvents(project?.id, (event) => {
+    if (event.type !== "file.changed" || !event.origin || isOwnChange(event.origin)) return
+    noteChangedRef.current(event.path, event.change)
+  })
 
   return (
     <FilesPanelContext.Provider value={value}>
@@ -656,9 +798,18 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
  * it writes state a parent owns.
  */
 export function useCurrentProject(project: Project) {
-  const { setCurrentProject } = useFilesPanel()
+  const { setCurrentProject, closeFiles, closeSearch } = useFilesPanel()
   React.useEffect(() => {
     setCurrentProject(project)
+    // Leaving the project's page -- for another project, its notes, the
+    // dashboard -- folds the tree away: it was opened for this page, and a
+    // column of files beside a page that cannot open them is only lost width.
+    // "Open Files" from the project list is untouched, since it never
+    // mounts this page.
+    return () => {
+      closeFiles()
+      closeSearch()
+    }
     // Identity is the project, not the object: the page re-renders with a new
     // object on every navigation within the same project.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -672,7 +823,22 @@ export function useCurrentProject(project: Project) {
  * `RightSidebar`, which it shares with the search panel. This is only the tree,
  * its toolbar, and the header naming the project.
  */
+/**
+ * The tree's font size, from the browser preference, kept current while the
+ * tree is open. The default until mount, so the server and the first paint
+ * agree.
+ */
+function useTreeFontSize(): number {
+  const [size, setSize] = React.useState(TREE_FONT_SIZE.defaultSize)
+  React.useEffect(() => {
+    setSize(TREE_FONT_SIZE.read())
+    return TREE_FONT_SIZE.watch(setSize)
+  }, [])
+  return size
+}
+
 export function FilesTree() {
+  const treeFontSize = useTreeFontSize()
   const {
     project,
     closeFiles,
@@ -686,6 +852,10 @@ export function FilesTree() {
     beginCreate,
     selectedPaths,
     askDelete,
+    dragging,
+    dropTarget,
+    setDropTarget,
+    move,
   } = useFilesPanel()
 
   return (
@@ -737,19 +907,53 @@ export function FilesTree() {
           </Button>
         </div>
 
-      {/* Focusable so the Delete key has somewhere to land: a click on a row
-          puts focus inside, and the key bubbles up here. Keeping the handler
-          on the tree rather than the window means Delete in the editor stays
-          an edit. */}
+      {/* Focusable so the tree's keys have somewhere to land: a click on a
+          row puts focus inside, and the key bubbles up here. Keeping the
+          handler on the tree rather than the window means Delete in the
+          editor stays an edit and Shift+F stays a capital F. */}
       <div
-        className="min-h-0 flex-1 overflow-auto outline-hidden"
+        className={cn(
+          "min-h-0 flex-1 overflow-auto outline-hidden",
+          // The rows take their size from the preference rather than the
+          // sidebar's text-sm: the name from the font size, the icon and the
+          // folder chevron two pixels larger, the padding and the gap in
+          // proportion, and the row as tall as that needs -- the fixed h-8
+          // would clip a 24px name and float a 10px one.
+          "[&_[data-sidebar=menu-button]]:h-auto [&_[data-sidebar=menu-button]]:gap-(--ucch-tree-row-space) [&_[data-sidebar=menu-button]]:p-(--ucch-tree-row-space) [&_[data-sidebar=menu-button]]:text-(length:--ucch-tree-font-size)",
+          "[&_[data-sidebar=menu-button]_img]:size-(--ucch-tree-icon-size) [&_[data-sidebar=menu-button]>svg:first-child]:size-(--ucch-tree-icon-size)",
+          // A folder's children indent by the same measure, so the tree's
+          // steps stay in step with its rows.
+          "[&_[data-sidebar=menu-sub]]:mx-(--ucch-tree-row-space) [&_[data-sidebar=menu-sub]]:px-(--ucch-tree-row-space)",
+          dropTarget === "" && "bg-ucch-active-bg/30",
+        )}
+        style={
+          {
+            "--ucch-tree-font-size": `${treeFontSize}px`,
+            "--ucch-tree-icon-size": `${treeIconSize(treeFontSize)}px`,
+            "--ucch-tree-row-space": `${treeRowSpacing(treeFontSize)}px`,
+          } as React.CSSProperties
+        }
         tabIndex={0}
+        // The tree itself is the root: a drop that no folder row claimed --
+        // on a file, in a gap, on the empty space below -- lands at the top.
+        {...dropHandlers({ folder: "", dragging, dropTarget, setDropTarget, move })}
         onKeyDown={(e) => {
-          if (e.key !== "Delete") return
-          if (selectedPaths.size === 0) return
+          // The name input owns its own keys.
           if (e.target instanceof HTMLInputElement) return
-          e.preventDefault()
-          askDelete([...selectedPaths])
+          if (e.key === "Delete") {
+            if (selectedPaths.size === 0) return
+            e.preventDefault()
+            askDelete([...selectedPaths])
+            return
+          }
+          // Shift+F names a new folder, Alt+Shift+F a new file, where a
+          // click on the toolbar button would: inside the selected folder, or
+          // at the root. `code` rather than `key`: with Alt held some layouts
+          // report a different character for the same physical key.
+          if (e.code === "KeyF" && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault()
+            beginCreate(e.altKey ? "file" : "folder")
+          }
         }}
       >
         <SidebarGroup>
@@ -861,6 +1065,87 @@ function NameInput({ kind }: { kind: "file" | "folder" }) {
  * behind a conditional return is a hook that runs on some renders and not
  * others.
  */
+/**
+ * What a row does when picked up: it carries itself, or the whole selection
+ * when it is part of one, so a set built with ctrl-clicks moves together.
+ * `dragend` fires on the source however the drag finished, which makes it the
+ * one place to clear the state whether the drop landed, missed, or was
+ * cancelled with Escape.
+ */
+function dragHandlers(
+  full: string,
+  { selectedPaths, setDragging, setDropTarget }: FilesPanelContextValue,
+): Pick<React.HTMLAttributes<HTMLElement>, "draggable" | "onDragStart" | "onDragEnd"> {
+  return {
+    draggable: true,
+    onDragStart: (e) => {
+      const paths = selectedPaths.has(full) ? [...selectedPaths] : [full]
+      e.dataTransfer.setData(DRAG_TYPE, paths.join("\n"))
+      e.dataTransfer.effectAllowed = "move"
+      setDragging(paths)
+    },
+    onDragEnd: () => {
+      setDragging(null)
+      setDropTarget(null)
+    },
+  }
+}
+
+/**
+ * What a folder (or the root) does while a row is dragged over it.
+ *
+ * Only this app's rows are taken; files dragged in from the desktop pass
+ * through untouched. The events stop here so the tree underneath a folder
+ * does not also light up as the root. `onHover` runs on each move over a
+ * folder that would accept the drop, and `onLeave` when it is left or
+ * dropped on, so a row can open itself after a moment.
+ */
+function dropHandlers({
+  folder,
+  dragging,
+  dropTarget,
+  setDropTarget,
+  move,
+  onHover,
+  onLeave,
+}: Pick<FilesPanelContextValue, "dragging" | "dropTarget" | "setDropTarget" | "move"> & {
+  folder: string
+  onHover?: () => void
+  onLeave?: () => void
+}): Pick<React.HTMLAttributes<HTMLElement>, "onDragOver" | "onDragLeave" | "onDrop"> {
+  return {
+    onDragOver: (e) => {
+      if (!dragging || !e.dataTransfer.types.includes(DRAG_TYPE)) return
+      e.preventDefault()
+      e.stopPropagation()
+      const allowed = movableInto(dragging, folder).length > 0
+      e.dataTransfer.dropEffect = allowed ? "move" : "none"
+      if (!allowed) {
+        if (dropTarget === folder) setDropTarget(null)
+        return
+      }
+      if (dropTarget !== folder) setDropTarget(folder)
+      onHover?.()
+    },
+    onDragLeave: (e) => {
+      // Moving between the row's own children is not leaving it.
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+      onLeave?.()
+      if (dropTarget === folder) setDropTarget(null)
+    },
+    onDrop: (e) => {
+      if (!e.dataTransfer.types.includes(DRAG_TYPE)) return
+      e.preventDefault()
+      e.stopPropagation()
+      onLeave?.()
+      setDropTarget(null)
+      const carried = e.dataTransfer.getData(DRAG_TYPE)
+      const paths = carried ? carried.split("\n") : dragging
+      if (paths && paths.length > 0) void move(paths, folder)
+    },
+  }
+}
+
 function Tree({ node, path }: { node: FileNode; path: string }) {
   const full = path ? `${path}/${node.name}` : node.name
   return node.children ? (
@@ -871,8 +1156,8 @@ function Tree({ node, path }: { node: FileNode; path: string }) {
 }
 
 function FileRow({ name, full }: { name: string; full: string }) {
-  const { openFile, selectRow, selectedPaths, buffers, saved, loadingFiles, changed } =
-    useFilesPanel()
+  const panel = useFilesPanel()
+  const { openFile, selectRow, selectedPaths, buffers, saved, loadingFiles, changed } = panel
 
   // Your own unsaved edit wins over the agent's: it is the later of the two,
   // and it is the one that is still only in this browser.
@@ -885,6 +1170,7 @@ function FileRow({ name, full }: { name: string; full: string }) {
           the selection, so building a set to delete does not open each one. */}
       <SidebarMenuButton
         isActive={selectedPaths.has(full)}
+        {...dragHandlers(full, panel)}
         onClick={(e) => {
           if (e.shiftKey || e.ctrlKey || e.metaKey) {
             selectRow(full, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey })
@@ -937,10 +1223,20 @@ function FolderRow({
   full: string
   children_: readonly FileNode[]
 }) {
-  const { selectRow, selectedPaths, creating, createTarget, expanded, setExpanded } =
-    useFilesPanel()
+  const panel = useFilesPanel()
+  const { selectRow, selectedPaths, creating, createTarget, expanded, setExpanded, dropTarget } =
+    panel
   const open = expanded.has(full)
   const setOpen = (next: boolean) => setExpanded(full, next)
+
+  // Hovering a shut folder with a drag for a moment opens it, so a drop can
+  // reach something inside without letting go first.
+  const expandTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearExpand = React.useCallback(() => {
+    if (expandTimer.current) clearTimeout(expandTimer.current)
+    expandTimer.current = null
+  }, [])
+  React.useEffect(() => clearExpand, [clearExpand])
 
   // This folder is where the node being named will land.
   const isTarget = creating !== null && createTarget === full
@@ -968,6 +1264,20 @@ function FolderRow({
           render={
             <SidebarMenuButton
               isActive={selectedPaths.has(full)}
+              className={cn(
+                dropTarget === full && "ring-ucch-active bg-ucch-active-bg/60 ring-1 ring-inset",
+              )}
+              {...dragHandlers(full, panel)}
+              {...dropHandlers({
+                ...panel,
+                folder: full,
+                onHover: () => {
+                  if (!open && !expandTimer.current) {
+                    expandTimer.current = setTimeout(() => setExpanded(full, true), 600)
+                  }
+                },
+                onLeave: clearExpand,
+              })}
               onClick={(e) => {
                 const modified = e.shiftKey || e.ctrlKey || e.metaKey
                 if (modified) preventToggle(e)

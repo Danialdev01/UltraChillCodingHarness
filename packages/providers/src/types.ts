@@ -1,4 +1,4 @@
-import type { CliProviderId, DomainEvent } from "@ucch/protocol";
+import type { AgentPermissionMode, CliProviderId, DomainEvent } from "@ucch/protocol";
 import type { ProcessHost } from "./process.js";
 
 /**
@@ -55,11 +55,26 @@ export interface ProviderRunInput {
   /** The provider's own session id from a previous turn, to resume. */
   resumeToken?: string;
   model?: string;
+  /** How much the CLI may do unasked. A provider that cannot ask ignores it. */
+  permissionMode?: AgentPermissionMode;
+}
+
+/** What a person said to a CLI's permission prompt. */
+export interface PermissionReply {
+  behavior: "allow" | "deny";
+  /** Handed to the model as the tool's error on a deny. */
+  message?: string;
 }
 
 export interface AgentRun {
   /** Normalised events, in order. Ends when the process has exited. */
   events: AsyncIterable<DomainEvent>;
+  /**
+   * Answers an `agent.permission_requested` this run emitted. False when the
+   * request is unknown or already answered -- a stale click, not an error.
+   * Absent on a provider that never asks.
+   */
+  answerPermission?(requestId: string, reply: PermissionReply): boolean;
   /** End the turn cleanly: SIGINT, and the CLI records what it managed. */
   interrupt(): Promise<void>;
   /** Hard stop: SIGTERM, then SIGKILL. For teardown, not for a stop button. */

@@ -47,6 +47,27 @@ export function formatUsd(value: number): string {
 }
 
 /**
+ * A byte count in the unit it is worth reading in: 812 B, 4.2 MB, 1.3 GB.
+ *
+ * Binary units, because that is what `du` and the container's disk gauge
+ * say, and a figure here that disagreed with the shell by 7% would look like
+ * a bug. One decimal below 100, as `compactNumber` does.
+ */
+export function formatBytes(value: number): string {
+  const n = Math.max(0, Math.round(value));
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = n / 1024;
+  let unit = 0;
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024;
+    unit++;
+  }
+  const digits = scaled < 100 ? scaled.toFixed(1).replace(/\.0$/, "") : String(Math.round(scaled));
+  return `${digits} ${units[unit]}`;
+}
+
+/**
  * How long ago something happened, in the coarsest unit that is still true.
  *
  * `now` is a parameter rather than a call to `Date.now()` so this is

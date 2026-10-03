@@ -7,6 +7,7 @@ import { SectionPanel } from "@/components/section-panel"
 import { SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar"
 import type { Section } from "@/lib/sections"
 import type { Project } from "@/lib/session"
+import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { TransitionLink } from "@/lib/view-transitions"
 
 /**
@@ -29,12 +30,14 @@ export function RailItem({
   section,
   isActive,
   projects,
+  connections,
   activeProjectHash,
   onOpenSidebar,
 }: {
   section: Section
   isActive: boolean
   projects: Project[]
+  connections: DatabaseConnectionSummary[]
   activeProjectHash?: string
   /** Following an icon reopens the panel, so a click does something visible. */
   onOpenSidebar: () => void
@@ -111,6 +114,7 @@ export function RailItem({
             <SectionPanel
               section={section}
               projects={projects}
+              connections={connections}
               activeProjectHash={activeProjectHash}
               compact
               onNavigate={() => setOpen(false)}

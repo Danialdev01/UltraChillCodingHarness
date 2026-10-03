@@ -250,6 +250,36 @@ const AgentToolUse = z.object({
   input: z.unknown(),
 });
 
+/**
+ * A CLI provider has paused a tool call and is waiting for a person.
+ *
+ * The CLI's permission mode covers edits in the workspace; anything past
+ * that -- a shell command, a fetch -- comes here instead of being denied
+ * behind the reader's back. Durable: a page reloaded mid-prompt must still
+ * show the question, or the turn just looks hung. `agent.permission_resolved`
+ * closes it; a turn that ends first closes it as denied.
+ */
+const AgentPermissionRequested = z.object({
+  type: z.literal("agent.permission_requested"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  requestId: z.string().min(1),
+  /** The call it gates, when the CLI names it; the row in the chat. */
+  toolUseId: z.string().nullable(),
+  toolName: z.string(),
+  input: z.unknown(),
+  /** The CLI's one-line gloss of the call, when it offers one. */
+  description: z.string().nullable(),
+});
+
+const AgentPermissionResolved = z.object({
+  type: z.literal("agent.permission_resolved"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  requestId: z.string().min(1),
+  behavior: z.enum(["allow", "deny"]),
+});
+
 const AgentToolResult = z.object({
   type: z.literal("agent.tool_result"),
   threadId: z.string().uuid(),
@@ -303,6 +333,20 @@ const AgentTurnFailed = z.object({
 
 // -- Checkpoints and files ---------------------------------------------------
 
+/**
+ * Who made a change, and from which browser tab.
+ *
+ * Carried on the live notices so the tab that made a change can recognise its
+ * own echo by identity rather than by guessing from a timestamp, and so every
+ * other view can say who it was -- the same person in another window today,
+ * a collaborator once projects are shared.
+ */
+export const ChangeOrigin = z.object({
+  userId: z.string().uuid(),
+  clientId: z.string().min(1).max(64),
+});
+export type ChangeOrigin = z.infer<typeof ChangeOrigin>;
+
 const CheckpointCaptured = z.object({
   type: z.literal("checkpoint.captured"),
   threadId: z.string().uuid(),
@@ -324,6 +368,176 @@ const FileChanged = z.object({
   projectId: z.string().uuid(),
   path: z.string(),
   change: z.enum(["added", "modified", "deleted"]),
+  /** Absent when the agent wrote it rather than a person. */
+  origin: ChangeOrigin.optional(),
+});
+
+/**
+ * A project note was written. Notes are plain rows in Postgres, not
+ * event-sourced -- like `file.changed`, this is a nudge to other open tabs to
+ * refetch, not the change itself, so it is transient.
+ */
+const NoteChanged = z.object({
+  type: z.literal("note.changed"),
+  projectId: z.string().uuid(),
+  noteId: z.string().uuid(),
+  change: z.enum(["created", "updated", "moved", "deleted"]),
+  /** Lets the tab that made the change recognise its own write and skip the refetch. */
+  updatedAt: z.string().datetime(),
+  origin: ChangeOrigin.optional(),
+  /**
+   * What an update wrote, so open tabs can apply it without a round trip.
+   * `content` is left out of a page too large to be worth pushing; a tab
+   * that needs it and does not find it here refetches.
+   */
+  fields: z
+    .object({
+      title: z.string().optional(),
+      icon: z.string().nullable().optional(),
+      cover: z.string().nullable().optional(),
+      content: z.unknown().optional(),
+      /** The body changed but was too large to push: refetch it. */
+      contentOmitted: z.boolean().optional(),
+    })
+    .optional(),
+  /** Where a deleted page's readers should go instead. */
+  parentId: z.string().uuid().nullable().optional(),
+});
+
+/**
+ * A task on the project's timeline was written. The same shape and the same
+ * reason as `note.changed`: a nudge to the project's other open tabs.
+ */
+const TimelineChanged = z.object({
+  type: z.literal("timeline.changed"),
+  projectId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  change: z.enum(["created", "updated", "deleted"]),
+  /** Lets the tab that made the change recognise its own write and skip the refetch. */
+  updatedAt: z.string().datetime(),
+  origin: ChangeOrigin.optional(),
+});
+
+// -- Live collaboration ------------------------------------------------------
+
+/**
+ * What is typed in a thread's prompt box, shared by every tab looking at it.
+ *
+ * Only what can be re-shown elsewhere: an attachment travels once it is
+ * staged on the server, since a file still uploading exists only in the tab
+ * that picked it.
+ */
+export const ComposerDraft = z.object({
+  text: z.string().max(200_000),
+  attachments: z
+    .array(
+      z.object({
+        id: z.string().max(400),
+        name: z.string().max(400),
+        size: z.number().int().nonnegative(),
+        type: z.string().max(200),
+        text: z.string().nullable(),
+        uploadId: z.string().nullable(),
+        status: z.enum(["uploading", "staged", "failed"]),
+        error: z.string().optional(),
+      }),
+    )
+    .max(50),
+  reference: z
+    .object({ path: z.string(), from: z.number().int(), to: z.number().int() })
+    .nullable(),
+  model: z.string().max(200).optional(),
+  effort: z.enum(["off", "low", "medium", "high"]).optional(),
+  research: z.boolean().optional(),
+  provider: z.string().max(40).optional(),
+});
+export type ComposerDraft = z.infer<typeof ComposerDraft>;
+
+export const EMPTY_COMPOSER_DRAFT: ComposerDraft = { text: "", attachments: [], reference: null };
+
+/**
+ * The prompt box of a thread changed. `rev` only goes up; a tab sends the rev
+ * it last saw, and an update made against an older one is refused -- someone
+ * else typed in between.
+ */
+const ComposerChanged = z.object({
+  type: z.literal("composer.changed"),
+  projectId: z.string().uuid(),
+  threadId: z.string().uuid(),
+  rev: z.number().int().nonnegative(),
+  draft: ComposerDraft,
+  /** Null when the server cleared it, on a send. */
+  origin: ChangeOrigin.nullable(),
+});
+
+/** Where a tab is looking: `note:<id>`, `thread:<id>`, `file:<path>`, or a page name. */
+export const PresenceViewer = z.object({
+  userId: z.string().uuid(),
+  clientId: z.string(),
+  location: z.string().max(600),
+  /** Changing something there right now. */
+  editing: z.boolean(),
+});
+export type PresenceViewer = z.infer<typeof PresenceViewer>;
+
+/** Everyone with the project open, sent whole whenever any of it changes. */
+const PresenceChanged = z.object({
+  type: z.literal("presence.changed"),
+  projectId: z.string().uuid(),
+  viewers: z.array(PresenceViewer),
+});
+
+export const LiveResource = z.enum([
+  "keys",
+  "database_connections",
+  "project_settings",
+  "account_settings",
+  "projects",
+  /** The project's git state: the index, branches, the remote. */
+  "git",
+  /** Rows or structure of a table in a database manager connection; `id` is `conn/db/table`. */
+  "database_data",
+]);
+export type LiveResource = z.infer<typeof LiveResource>;
+
+/**
+ * Something without a richer notice of its own changed: a nudge to refetch.
+ * `projectId` is null for what belongs to the account rather than a project,
+ * which is published to the user's own topic instead.
+ */
+const ResourceChanged = z.object({
+  type: z.literal("resource.changed"),
+  projectId: z.string().uuid().nullable(),
+  resource: LiveResource,
+  id: z.string().optional(),
+  origin: ChangeOrigin.optional(),
+});
+
+/** One line of the project's activity log. */
+export const AuditEntry = z.object({
+  id: z.string(),
+  projectId: z.string().uuid().nullable(),
+  userId: z.string().uuid().nullable(),
+  /** The login or email to show, resolved when the entry is read. */
+  actor: z.string().nullable(),
+  clientId: z.string().nullable(),
+  action: z.string(),
+  targetType: z.string(),
+  targetId: z.string().nullable(),
+  summary: z.string(),
+  details: z.record(z.unknown()),
+  /** How many edits this line stands for: repeated saves of one thing coalesce. */
+  count: z.number().int().positive(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type AuditEntry = z.infer<typeof AuditEntry>;
+
+const AuditRecorded = z.object({
+  type: z.literal("audit.recorded"),
+  /** Null for a change to the account, published to the user's own topic. */
+  projectId: z.string().uuid().nullable(),
+  entry: AuditEntry,
 });
 
 // -- Runtime -----------------------------------------------------------------
@@ -396,6 +610,8 @@ export const DomainEvent = z.discriminatedUnion("type", [
   AgentThinkingDelta,
   AgentTextDelta,
   AgentToolUse,
+  AgentPermissionRequested,
+  AgentPermissionResolved,
   AgentToolResult,
   AgentMessage,
   AgentTurnCompleted,
@@ -403,6 +619,12 @@ export const DomainEvent = z.discriminatedUnion("type", [
   CheckpointCaptured,
   CheckpointReverted,
   FileChanged,
+  NoteChanged,
+  TimelineChanged,
+  ComposerChanged,
+  PresenceChanged,
+  ResourceChanged,
+  AuditRecorded,
   PortOpened,
   PortClosed,
   TerminalOutput,
@@ -436,6 +658,12 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "agent.thinking_delta",
   "agent.text_delta",
   "agent.retry",
+  "note.changed",
+  "timeline.changed",
+  "composer.changed",
+  "presence.changed",
+  "resource.changed",
+  "audit.recorded",
 ]);
 
 export function isTransient(type: DomainEventType): boolean {

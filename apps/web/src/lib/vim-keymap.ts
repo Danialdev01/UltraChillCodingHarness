@@ -2,6 +2,7 @@ import { indentUnit } from "@codemirror/language"
 import type { EditorView } from "@codemirror/view"
 import { Vim, type CodeMirrorV, type vimState } from "@replit/codemirror-vim"
 
+import { LEADER, leaderBindings, type LeaderCommand } from "@/lib/leader-keymap"
 import {
   planIndent,
   planLineMove,
@@ -179,6 +180,17 @@ function moveHorizontally(cm: CodeMirrorV, vim: vimState, delta: number): void {
   else indentSelection(cm, vim, delta)
 }
 
+/**
+ * Where a leader command goes: the editor that is on screen.
+ *
+ * The vim layer's keymap is one registry shared by every instance, so the
+ * action is registered once and dispatches through a ref the mounted editor
+ * keeps current -- the same arrangement as `:w` and `:chat` in `vim-editor`.
+ * `line` is the cursor's line, 1-based, for a command that wants to start
+ * from where you are.
+ */
+export const activeLeader = { current: (_command: LeaderCommand, _line: number): void => {} }
+
 let registered = false
 
 /**
@@ -203,5 +215,43 @@ export function registerVimKeymap(): void {
   for (const context of ["normal", "visual"] as const) {
     Vim.mapCommand("L", "action", "ucchMoveRight", {}, { context })
     Vim.mapCommand("H", "action", "ucchMoveLeft", {}, { context })
+  }
+
+  registerLeader()
+}
+
+/**
+ * `SPC` as Doom's leader: `SPC s s` searches the buffer, `SPC .` finds a
+ * file, and so on (see `LEADER_TREE`).
+ *
+ * The vim layer already buffers a multi-key sequence and waits for the rest,
+ * so each leaf is one mapping and the prefixes need none. What it does not
+ * do is prefer the longer sequence: its own `<Space>` (a synonym for `l`) is
+ * a complete match the moment space is pressed, and a complete match beats a
+ * pending one. So that synonym is removed first. `l` itself is untouched;
+ * the one casualty is `d<Space>`, which was `dl` -- and still is, spelled
+ * that way.
+ *
+ * `SPC :` is a plain key-to-key mapping onto `:` rather than an action: it
+ * is the ex line, which only the vim layer can open, and opening it from
+ * inside a running action would be the layer re-entering itself.
+ */
+function registerLeader(): void {
+  // The built-in synonym is registered without a mode, and `unmap` only
+  // removes a mapping whose mode is the one given -- so the mode here has to
+  // be no mode at all, which the signature does not admit.
+  ;(Vim.unmap as (lhs: string, ctx?: string) => unknown)(LEADER)
+
+  Vim.defineAction("ucchLeader", (cm, args) => {
+    // Our own argument, carried through `mapCommand` beside the built-in ones.
+    const command = (args as unknown as { command: LeaderCommand }).command
+    activeLeader.current(command, cm.getCursor().line + 1)
+  })
+
+  for (const { keys, command } of leaderBindings()) {
+    for (const context of ["normal", "visual"] as const) {
+      if (command === "ex") Vim.map(keys, ":", context)
+      else Vim.mapCommand(keys, "action", "ucchLeader", { command }, { context })
+    }
   }
 }

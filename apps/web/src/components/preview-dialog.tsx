@@ -102,8 +102,12 @@ export function PreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <form onSubmit={submit}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+        {/* `min-w-0`: the form is a grid item, and a grid item's default
+            `min-width: auto` lets the nowrap URLs below set its width, which
+            pushed the description and the footer out past the dialog. With a
+            floor of zero the URL rows shrink and truncate as intended. */}
+        <form onSubmit={submit} className="min-w-0">
           <DialogHeader>
             <DialogTitle>Preview</DialogTitle>
             <DialogDescription>

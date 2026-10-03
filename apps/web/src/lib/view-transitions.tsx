@@ -68,7 +68,13 @@ export function ViewTransitionsProvider({ children }: { children: React.ReactNod
           navigate()
           return
         }
-        document.startViewTransition(
+        // A second navigation before the first has painted -- two quick
+        // clicks -- skips the running transition. That is what should
+        // happen; the browser reports it as a rejected promise, which is
+        // not an error to show anyone.
+        release.current?.()
+        release.current = null
+        const started = document.startViewTransition(
           () =>
             new Promise<void>((resolve) => {
               const timer = setTimeout(resolve, RELEASE_TIMEOUT_MS)
@@ -79,6 +85,9 @@ export function ViewTransitionsProvider({ children }: { children: React.ReactNod
               React.startTransition(navigate)
             }),
         )
+        started.ready.catch(() => {})
+        started.finished.catch(() => {})
+        started.updateCallbackDone.catch(() => {})
       },
     }),
     [],

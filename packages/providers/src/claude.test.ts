@@ -55,6 +55,18 @@ describe("claudeArgv", () => {
     }
   });
 
+  it("starts in default mode under Strict, so edits ask too", () => {
+    expect(claudeArgv({ bin: "claude", caps, permissionMode: "strict" }).join(" ")).toContain(
+      "--permission-mode default",
+    );
+    expect(claudeArgv({ bin: "claude", caps, permissionMode: "normal" }).join(" ")).toContain(
+      "--permission-mode acceptEdits",
+    );
+    expect(claudeArgv({ bin: "claude", caps, permissionMode: "allow_all" })).not.toContain(
+      "bypassPermissions",
+    );
+  });
+
   it("drops flags the installed CLI lacks", () => {
     const argv = claudeArgv({ bin: "claude", caps: { permissionPrompts: false, settingSources: false } });
     expect(argv).not.toContain("--permission-prompts");

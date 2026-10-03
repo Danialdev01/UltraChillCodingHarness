@@ -2,20 +2,9 @@
 
 import * as React from "react"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
-import { css } from "@codemirror/lang-css"
-import { html } from "@codemirror/lang-html"
-import { javascript } from "@codemirror/lang-javascript"
-import { json } from "@codemirror/lang-json"
-import { markdown } from "@codemirror/lang-markdown"
-import { php } from "@codemirror/lang-php"
-import {
-  bracketMatching,
-  indentUnit,
-  syntaxHighlighting,
-  type LanguageSupport,
-} from "@codemirror/language"
+import { bracketMatching, indentUnit, syntaxHighlighting } from "@codemirror/language"
 import { search, searchKeymap } from "@codemirror/search"
-import { EditorState, Prec, type Extension } from "@codemirror/state"
+import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state"
 import {
   drawSelection,
   EditorView,
@@ -27,50 +16,68 @@ import {
   rectangularSelection,
 } from "@codemirror/view"
 import { indentationMarkers } from "@replit/codemirror-indentation-markers"
-import { Vim, vim } from "@replit/codemirror-vim"
+import { getCM, Vim, vim } from "@replit/codemirror-vim"
 
 import { replacement } from "@/lib/doc-sync"
+import { languageFor } from "@/lib/languages"
+import { readEditorFontSize, watchEditorFontSize } from "@/lib/editor-font-size"
+import {
+  readEditorKeybindings,
+  watchEditorKeybindings,
+  type EditorKeybindings,
+} from "@/lib/editor-keybindings"
+import { leaderChildren, type LeaderCommand } from "@/lib/leader-keymap"
 import { syntaxHighlightStyle } from "@/lib/syntax-highlight"
-import { registerVimKeymap } from "@/lib/vim-keymap"
+import { activeLeader, registerVimKeymap } from "@/lib/vim-keymap"
+
 
 /**
- * The language mode for a path, or nothing for a file we have no grammar for.
+ * The modal layer for a keybinding choice: on, or nothing at all.
  *
- * Highlighting is a side benefit of moving to CodeMirror rather than the
- * point of it, so an unknown extension renders as plain text instead of being
- * forced through a guess.
+ * On is the vim engine; the emacs chords that make it Doom-like are mappings
+ * on top of it (see `registerVimKeymap`), not a second engine beside it.
+ * Nothing is an empty extension rather than a missing one, so the compartment
+ * it lives in always has something to reconfigure to and the rest of the
+ * stack keeps its order whichever is chosen.
  */
-function languageFor(path: string): LanguageSupport | null {
-  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase()
-  switch (ext) {
-    case "ts":
-    case "tsx":
-      return javascript({ typescript: true, jsx: ext === "tsx" })
-    case "js":
-    case "jsx":
-    case "mjs":
-    case "cjs":
-      return javascript({ jsx: ext === "jsx" })
-    case "json":
-      return json()
-    case "md":
-    case "mdx":
-      return markdown()
-    case "php":
-      return php()
-    case "html":
-      return html()
-    case "css":
-      return css()
-    default:
-      return null
+function keybindingsFor(choice: EditorKeybindings): Extension {
+  switch (choice) {
+    case "vim-emacs":
+      // `status` is what renders the command line, so `:`, `/` and `?` have
+      // somewhere to appear -- without it those modes have no visible prompt.
+      return vim({ status: true })
+    case "none":
+      return []
   }
+}
+
+/**
+ * The slot the modal layer sits in, swapped when the setting changes so an
+ * open file keeps its text, cursor and undo history across the switch.
+ */
+const keybindings = new Compartment()
+
+/**
+ * The font size, in a slot of its own for the same reason. It is a theme
+ * rather than a style on the host element so CodeMirror remeasures its lines
+ * when it changes -- the gutter and the fat cursor are sized from the font.
+ */
+const fontSize = new Compartment()
+
+function fontSizeFor(px: number): Extension {
+  // The line height follows the font once the font outgrows it: 24px is the
+  // shipped look at 12px, and a 20px face on a 24px line would be cramped.
+  const lineHeight = Math.max(24, Math.round(px * 1.5))
+  return EditorView.theme({
+    "&": { fontSize: `${px}px` },
+    ".cm-scroller": { lineHeight: `${lineHeight}px` },
+  })
 }
 
 /**
  * Everything CodeMirror gets, in order.
  *
- * `vim()` must come first: it installs its own keymap at the highest
+ * The modal layer must come first: vim installs its own keymap at the highest
  * precedence, and anything registered ahead of it would win over the mode
  * that is supposed to be interpreting the keystroke.
  */
@@ -81,13 +88,13 @@ function extensions(
 ): Extension[] {
   const language = languageFor(path)
   // Mappings live on a keymap shared by every editor, so they are installed
-  // once here rather than as an extension per instance.
+  // once here rather than as an extension per instance. Harmless when vim is
+  // not the layer in use: they only ever run through vim itself.
   registerVimKeymap()
 
   return [
-    // `status` is what renders the command line, so `:`, `/` and `?` have
-    // somewhere to appear -- without it those modes have no visible prompt.
-    vim({ status: true }),
+    keybindings.of(keybindingsFor(readEditorKeybindings())),
+    fontSize.of(fontSizeFor(readEditorFontSize())),
 
     lineNumbers(),
     highlightActiveLineGutter(),
@@ -126,9 +133,9 @@ function extensions(
     EditorView.lineWrapping,
     ...(language ? [language] : []),
 
-    // Above vim, and the only binding that is: ctrl-S means save everywhere
-    // else in the world, and insert mode would otherwise swallow it before
-    // anything below could see it.
+    // Above the modal layer, and the only binding that is: ctrl-S means save
+    // everywhere else in the world, and insert mode would otherwise swallow
+    // it before anything below could see it.
     Prec.highest(
       keymap.of([
         {
@@ -142,7 +149,8 @@ function extensions(
       ]),
     ),
 
-    // Below vim in precedence: these only see keys vim did not claim.
+    // Below the modal layer in precedence: these only see keys it did not
+    // claim -- which, with none chosen, is all of them.
     keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
 
     EditorView.updateListener.of((update) => {
@@ -159,16 +167,15 @@ function extensions(
  * against the cascade at render time.
  */
 const theme = EditorView.theme({
+  // No font size here: that is the reader's choice, in its own compartment.
   "&": {
     height: "100%",
-    fontSize: "12px",
     color: "var(--foreground)",
     backgroundColor: "transparent",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {
-    fontFamily: "var(--app-font, ui-monospace, SFMono-Regular, Menlo, monospace)",
-    lineHeight: "1.5rem",
+    fontFamily: "var(--app-font-code, ui-monospace, SFMono-Regular, Menlo, monospace)",
   },
   ".cm-content": { padding: "1rem 0", caretColor: "var(--foreground)" },
   ".cm-gutters": {
@@ -223,7 +230,7 @@ const theme = EditorView.theme({
     backgroundColor: "transparent",
     borderTop: "1px solid var(--border)",
     color: "var(--muted-foreground)",
-    fontFamily: "var(--app-font, ui-monospace, monospace)",
+    fontFamily: "var(--app-font-code, ui-monospace, monospace)",
     fontSize: "11px",
     padding: "0.25rem 1rem",
   },
@@ -238,7 +245,33 @@ const theme = EditorView.theme({
 })
 
 /**
- * One file, edited with vim keybindings.
+ * Puts the cursor on a line and scrolls to it.
+ *
+ * The line is clamped to the document: a result from a file the agent has
+ * since shortened would otherwise throw inside CodeMirror rather than simply
+ * landing at the end. `center` rather than the default: a match at the bottom
+ * edge of the viewport is technically visible and practically missed.
+ */
+function jumpToLine(view: EditorView, lineNumber: number): void {
+  const clamped = Math.min(Math.max(1, lineNumber), view.state.doc.lines)
+  const line = view.state.doc.line(clamped)
+  view.dispatch({
+    selection: { anchor: line.from },
+    effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+  })
+  view.focus()
+}
+
+/**
+ * How long a leader prefix sits before its menu is shown, so a sequence typed
+ * straight through never flashes one. Doom's `which-key-idle-delay`, near
+ * enough.
+ */
+const WHICH_KEY_DELAY_MS = 300
+
+/**
+ * One file, edited with vim keybindings -- or plain CodeMirror's, as the
+ * Default settings tab has it.
  *
  * The vim layer is `@replit/codemirror-vim` rather than something hand-rolled:
  * modes, the count/operator/motion grammar, text objects, registers, marks,
@@ -293,6 +326,7 @@ export function VimEditor({
   onChange,
   onSave,
   onChat,
+  onLeader,
   reveal,
 }: {
   path: string
@@ -312,6 +346,11 @@ export function VimEditor({
    */
   onChat: (from: number, to: number, command: string) => void
   /**
+   * A leader-key command -- `SPC s s`, `SPC .` -- for the file view to act
+   * on, with the cursor's line (1-based) at the time.
+   */
+  onLeader: (command: LeaderCommand, line: number) => void
+  /**
    * A line to put the cursor on, from a search result.
    *
    * The token is what makes a second request for the same line work: this
@@ -328,6 +367,10 @@ export function VimEditor({
   latestSave.current = onSave
   const latestChat = React.useRef(onChat)
   latestChat.current = onChat
+  const latestLeader = React.useRef(onLeader)
+  latestLeader.current = onLeader
+  // The keys of a leader sequence typed so far, or nothing.
+  const [pending, setPending] = React.useState("")
 
   React.useEffect(() => {
     const parent = host.current
@@ -336,6 +379,7 @@ export function VimEditor({
     registerExCommands()
     activeSave.current = () => latestSave.current()
     activeChat.current = (from, to, command) => latestChat.current(from, to, command)
+    activeLeader.current = (command, line) => latestLeader.current(command, line)
 
     const view = new EditorView({
       doc: initialText,
@@ -348,7 +392,42 @@ export function VimEditor({
     })
     editor.current = view
     view.focus()
+
+    // The which-key popup follows the vim layer's own key buffer: after each
+    // key it holds whatever sequence is still waiting for more, and it is
+    // empty again once a command has run or Escape has thrown it away. Read
+    // from there rather than tracked here, so the two can never disagree
+    // about what has been typed. The wrapper exists only while the vim layer
+    // is the one in use -- a new one each time it is switched on -- so the
+    // listeners follow the setting.
+    let detach = () => {}
+    const attach = () => {
+      detach()
+      const cm = getCM(view)
+      if (!cm) return
+      const sync = () => setPending(cm.state.vim?.inputState.keyBuffer.join("") ?? "")
+      cm.on("vim-keypress", sync)
+      cm.on("vim-command-done", sync)
+      detach = () => {
+        cm.off("vim-keypress", sync)
+        cm.off("vim-command-done", sync)
+        setPending("")
+      }
+    }
+    attach()
+    // The setting is changed on another page, but the file stays open behind
+    // it -- and a second browser tab reaches this one through `storage`.
+    const unwatchKeys = watchEditorKeybindings((choice) => {
+      view.dispatch({ effects: keybindings.reconfigure(keybindingsFor(choice)) })
+      attach()
+    })
+    const unwatchSize = watchEditorFontSize((px) => {
+      view.dispatch({ effects: fontSize.reconfigure(fontSizeFor(px)) })
+    })
     return () => {
+      unwatchKeys()
+      unwatchSize()
+      detach()
       editor.current = null
       view.destroy()
     }
@@ -375,30 +454,74 @@ export function VimEditor({
   }, [text])
 
   /**
-   * Puts the cursor on the line a search result named, and scrolls to it.
+   * Puts the cursor on the line a search result named.
    *
    * Keyed on the token rather than the line, so clicking the same result twice
-   * scrolls back to it after you have moved away. The line is clamped to the
-   * document: a result from a file the agent has since shortened would otherwise
-   * throw inside CodeMirror rather than simply landing at the end.
-   *
-   * It runs after the mount effect above, so the view is there on the first
-   * reveal of a freshly opened file.
+   * scrolls back to it after you have moved away. It runs after the mount
+   * effect above, so the view is there on the first reveal of a freshly
+   * opened file.
    */
   React.useEffect(() => {
     const view = editor.current
     if (!view || !reveal) return
-
-    const lineNumber = Math.min(Math.max(1, reveal.line), view.state.doc.lines)
-    const line = view.state.doc.line(lineNumber)
-    view.dispatch({
-      selection: { anchor: line.from },
-      // `center` rather than the default: a match at the bottom edge of the
-      // viewport is technically visible and practically missed.
-      effects: EditorView.scrollIntoView(line.from, { y: "center" }),
-    })
-    view.focus()
+    jumpToLine(view, reveal.line)
   }, [reveal?.token, reveal?.line])
 
-  return <div ref={host} className="min-h-0 flex-1 overflow-hidden [&_.cm-editor]:h-full" />
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div ref={host} className="min-h-0 flex-1 overflow-hidden [&_.cm-editor]:h-full" />
+      <WhichKey pending={pending} />
+    </div>
+  )
+}
+
+/**
+ * Doom's which-key popup: the keys that can follow the leader prefix typed
+ * so far, each with what it does.
+ *
+ * Shown after a short delay so a sequence typed straight through never
+ * flashes it. Sits over the foot of the editor, above the vim status line
+ * that is already echoing the pending keys, and takes no focus: it is a
+ * caption for what the keyboard is doing, not a menu to click.
+ */
+function WhichKey({ pending }: { pending: string }) {
+  const rows = leaderChildren(pending)
+  const [shown, setShown] = React.useState(false)
+
+  React.useEffect(() => {
+    if (!rows) {
+      setShown(false)
+      return
+    }
+    const timer = window.setTimeout(() => setShown(true), WHICH_KEY_DELAY_MS)
+    return () => window.clearTimeout(timer)
+    // Only whether there is a prefix and which: the rows are derived from it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending])
+
+  if (!rows || !shown) return null
+
+  // The vim layer spells space `<Space>`; people spell it SPC.
+  const typed = pending.replace("<Space>", "SPC ").trimEnd()
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="bg-popover text-popover-foreground absolute inset-x-4 bottom-8 z-10 rounded-lg border p-3 font-mono text-xs shadow-md"
+    >
+      <div className="text-muted-foreground mb-2">{typed}-</div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-x-4 gap-y-1">
+        {rows.map((row) => (
+          <div key={row.key} className="flex items-baseline gap-2 truncate">
+            <kbd className="text-ucch-active w-4 text-right">{row.key}</kbd>
+            <span className="text-muted-foreground">→</span>
+            <span className={row.prefix ? "text-foreground" : ""}>
+              {row.prefix ? `+${row.desc}` : row.desc}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }

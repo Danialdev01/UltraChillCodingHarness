@@ -1,9 +1,11 @@
-import { execFile } from "node:child_process";
 import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 import type { Command, DomainEvent } from "@ucch/protocol";
+import { CREDENTIAL_HELPER, runGit, safeRepoUrl } from "./git-exec.js";
 import { redactToken, tokenAppliesTo } from "./github.js";
+
+export { CREDENTIAL_HELPER };
 import { DrainableWorker } from "./worker.js";
 
 type ProjectCreated = Extract<DomainEvent, { type: "project.created" }>;
@@ -11,22 +13,6 @@ type ProjectCloned = Extract<DomainEvent, { type: "project.cloned" }>;
 
 /** A clone of a large repository is slow, but it is not slow for ever. */
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
-
-/**
- * Transports git may be asked to use.
- *
- * A whitelist rather than a blacklist, because `ext::sh -c ...` is a valid
- * URL as far as `z.string().url()` is concerned and is a remote shell as far
- * as git is concerned. `file:` is here because a local path is how the tests
- * -- and a self-hosted mirror -- provide a repository.
- */
-const ALLOWED_PROTOCOLS: ReadonlySet<string> = new Set([
-  "https:",
-  "http:",
-  "ssh:",
-  "git:",
-  "file:",
-]);
 
 /**
  * What the owning account brings to a clone: who to commit as, and what to
@@ -145,7 +131,7 @@ export class CloneReactor {
       }
     }
 
-    const headSha = (await git(["rev-parse", "HEAD"], dest, timeoutMs)).trim();
+    const headSha = (await runGit(["rev-parse", "HEAD"], dest, timeoutMs)).trim();
     const stack = await detectStack(dest);
 
     await this.append({ type: "project.cloned", projectId: event.projectId, headSha, stack });
@@ -169,11 +155,11 @@ export class CloneReactor {
 
     await mkdir(dest, { recursive: true });
     try {
-      await git(
+      await runGit(
         ["clone", "--depth", "1", "--branch", event.defaultBranch, "--", url, dest],
         this.options.workspaceRoot,
         timeoutMs,
-        token,
+        { token },
       );
     } catch (error) {
       // `defaultBranch` defaults to "main" when the creating command did
@@ -188,11 +174,11 @@ export class CloneReactor {
       await rm(dest, { recursive: true, force: true });
       await mkdir(dest, { recursive: true });
       try {
-        await git(
+        await runGit(
           ["clone", "--depth", "1", "--", url, dest],
           this.options.workspaceRoot,
           timeoutMs,
-          token,
+          { token },
         );
       } catch (fallback) {
         throw new Error(
@@ -223,7 +209,7 @@ export class CloneReactor {
     timeoutMs: number,
   ): Promise<void> {
     await mkdir(dest, { recursive: true });
-    await git(["init", "-b", event.defaultBranch], dest, timeoutMs);
+    await runGit(["init", "-b", event.defaultBranch], dest, timeoutMs);
 
     // Never clobbered: an empty project is the usual case, but a directory
     // that already has files -- a retry, or a restore -- is committed as it
@@ -232,8 +218,8 @@ export class CloneReactor {
     if (!(await exists(readme))) await writeFile(readme, readmeFor(event.name), "utf8");
 
     const author = credentials.author ?? FALLBACK_AUTHOR;
-    await git(["add", "-A"], dest, timeoutMs);
-    await git(
+    await runGit(["add", "-A"], dest, timeoutMs);
+    await runGit(
       [
         // Passed as config rather than set in the repository: the identity
         // belongs to this commit, and the agent's own commits resolve it the
@@ -281,11 +267,11 @@ export async function listRemoteBranches(
   // says which branch the remote considers default. Tags and pull refs come
   // along instead, and the parser ignores them.
   try {
-    const stdout = await git(
+    const stdout = await runGit(
       ["ls-remote", "--symref", "--", url],
       process.cwd(),
       options.timeoutMs ?? 20_000,
-      token,
+      { token },
     );
     return parseRemoteRefs(stdout);
   } catch (error) {
@@ -376,111 +362,6 @@ export async function ensureWorkspaceRoot(root: string): Promise<void> {
   } catch {
     throw new Error(`WORKSPACE_ROOT ${root} is not writable by this process`);
   }
-}
-
-/**
- * Refuses a URL git would treat as a command rather than a location.
- *
- * `ext::sh -c whoami` parses as a perfectly good URL and runs as a perfectly
- * good shell, so the transport is checked against a whitelist. A leading
- * dash is refused for the same class of reason, even though `--` already
- * separates the options from the operands.
- */
-function safeRepoUrl(repoUrl: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(repoUrl);
-  } catch {
-    throw new Error(`not a valid repository URL: ${repoUrl}`);
-  }
-  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-    throw new Error(`unsupported repository transport: ${parsed.protocol}`);
-  }
-  if (repoUrl.startsWith("-")) throw new Error(`repository URL must not start with a dash`);
-  return repoUrl;
-}
-
-/**
- * The environment variable the credential helper below reads the token from.
- *
- * An environment variable rather than an argument: a process's command line is
- * world-readable on Linux, so a token on it would be visible to every other
- * user on the host for as long as the clone ran.
- */
-const TOKEN_ENV = "UCCH_GIT_TOKEN";
-
-/**
- * A credential helper that answers from the environment, and writes nothing.
- *
- * This is how a token reaches a private clone without ever being stored: not
- * in the URL, which `git clone` copies into the new repository's own
- * `.git/config`; not in a config file, which would outlive the command; and
- * not on the command line, which is readable from `/proc`. A `!` helper is a
- * shell snippet git runs for the one operation that needs a password, and
- * `$UCCH_GIT_TOKEN` is expanded by that shell, from the environment this
- * process handed it.
- *
- * `test "$1" = get` is the guard that makes it read-only: git also calls a
- * helper with `store` and `erase`, and this one declines to do either.
- */
-export const CREDENTIAL_HELPER =
-  `!f() { test "$1" = get && printf 'username=x-access-token\\npassword=%s\\n' ` +
-  `"$${TOKEN_ENV}"; }; f`;
-
-/**
- * Runs git with a rebuilt environment and no way to ask a human anything.
- *
- * The environment matters twice over. The server's own holds `SECRET_KEY`
- * and `DATABASE_URL` and a subprocess has no business reading them; and
- * without `GIT_TERMINAL_PROMPT=0` a private repository does not fail, it
- * *blocks* on a credential prompt no one is there to answer, holding the
- * worker until the timeout. The config files are pinned to /dev/null so the
- * host's `insteadOf` rules and hooks cannot rewrite what gets fetched.
- *
- * A `token` attaches the credential helper above for this one command. It is
- * the caller's job to have checked that the token belongs to the host being
- * contacted -- `tokenAppliesTo` is that check.
- */
-async function git(
-  argv: string[],
-  cwd: string,
-  timeoutMs: number,
-  token: string | null = null,
-): Promise<string> {
-  return new Promise<string>((settle, fail) => {
-    execFile(
-      "git",
-      // Before the subcommand, which is where `-c` has to be.
-      token ? ["-c", `credential.helper=${CREDENTIAL_HELPER}`, ...argv] : argv,
-      {
-        cwd,
-        timeout: timeoutMs,
-        maxBuffer: 8 * 1024 * 1024,
-        env: {
-          PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-          HOME: process.env.HOME ?? "/tmp",
-          LANG: process.env.LANG ?? "C.UTF-8",
-          GIT_TERMINAL_PROMPT: "0",
-          // Left unset with a token: an empty `GIT_ASKPASS` is still a
-          // configured askpass as far as git is concerned, and it takes
-          // precedence over the credential helper.
-          ...(token ? { [TOKEN_ENV]: token } : { GIT_ASKPASS: "" }),
-          GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new",
-          GIT_CONFIG_GLOBAL: "/dev/null",
-          GIT_CONFIG_SYSTEM: "/dev/null",
-        },
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          // git says what went wrong on stderr and nothing useful in the
-          // error itself, so the message is the one worth propagating.
-          fail(new Error(`git ${argv[0]} failed: ${stderr.trim() || describe(error)}`));
-          return;
-        }
-        settle(stdout);
-      },
-    );
-  });
 }
 
 async function exists(path: string): Promise<boolean> {

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { and, asc, eq, getTableName, inArray, sql, type Column, type SQL } from "drizzle-orm";
 import { previews, projects, threads, turns, workspaces, type Database } from "@ucch/db";
 
@@ -381,6 +382,66 @@ export class WorkspaceService {
    * longer exists and fail on the foreign key instead of finishing. Stopping
    * the turn first is one click, and `agent.turn_completed` releases it.
    */
+  /** Whether a project has a public site, and where. */
+  async publicSite(hash: string, userId: string): Promise<PublicSiteState | null> {
+    const project = await this.findByHash(hash, userId);
+    if (!project) return null;
+    const [row] = await this.db
+      .select({ slug: projects.publicSlug, enabled: projects.publicEnabled })
+      .from(projects)
+      .where(eq(projects.id, project.id))
+      .limit(1);
+    return { enabled: row?.enabled ?? false, slug: row?.slug ?? null };
+  }
+
+  /**
+   * Turns the read-only public site on or off.
+   *
+   * The slug is minted on the first enable and never replaced: someone who
+   * was sent the link finds it working again after the owner toggles it off
+   * and back on, and a stale link 404s in the meantime rather than landing
+   * on a different project. Uniqueness is by the database; the six random
+   * characters make a clash unlikely and the retry makes it harmless.
+   */
+  async setPublic(hash: string, userId: string, enabled: boolean): Promise<PublicSiteState | null> {
+    const project = await this.findByHash(hash, userId);
+    if (!project) return null;
+    const current = await this.publicSite(hash, userId);
+    let slug = current?.slug ?? null;
+    if (enabled && !slug) {
+      for (let attempt = 0; attempt < 5 && !slug; attempt++) {
+        const candidate = publicSlugFor(project.name);
+        try {
+          await this.db
+            .update(projects)
+            .set({ publicSlug: candidate, publicEnabled: true })
+            .where(eq(projects.id, project.id));
+          slug = candidate;
+        } catch (error) {
+          if (!isUniqueViolation(error)) throw error;
+        }
+      }
+      if (!slug) throw new Error("could not find an unused public address");
+      return { enabled: true, slug };
+    }
+    await this.db.update(projects).set({ publicEnabled: enabled }).where(eq(projects.id, project.id));
+    return { enabled, slug };
+  }
+
+  /**
+   * The project behind a public address, or null when there is none or it
+   * is switched off -- the two are the same to a visitor.
+   */
+  async findPublic(slug: string): Promise<PublicProject | null> {
+    const [row] = await this.db
+      .select({ id: projects.id, hash: projects.hash, name: projects.name, slug: projects.publicSlug })
+      .from(projects)
+      .where(and(eq(projects.publicSlug, slug), eq(projects.publicEnabled, true)))
+      .limit(1);
+    if (!row || !row.slug) return null;
+    return { id: row.id, hash: row.hash, name: row.name, slug: row.slug };
+  }
+
   /**
    * Records the port the owner's dev server listens on, or clears it. Goes
    * through `findByHash`, so somebody else's hash is refused the same way a
@@ -395,6 +456,15 @@ export class WorkspaceService {
     if (!project) return null;
     await this.db.update(projects).set({ previewPort: port }).where(eq(projects.id, project.id));
     return { ...project, previewPort: port };
+  }
+
+  /**
+   * Where the project's code now lives, once a remote has been added to a
+   * project that was started rather than cloned. By id rather than hash:
+   * the git routes have already resolved the caller's project.
+   */
+  async setRepoUrl(projectId: string, repoUrl: string): Promise<void> {
+    await this.db.update(projects).set({ repoUrl }).where(eq(projects.id, projectId));
   }
 
   /**
@@ -481,6 +551,43 @@ export class WorkspaceService {
     }
     return null;
   }
+}
+
+export interface PublicSiteState {
+  enabled: boolean;
+  /** Null until the site has been enabled once. */
+  slug: string | null;
+}
+
+/** What the public routes know about a project: enough to serve it, no more. */
+export interface PublicProject {
+  id: string;
+  hash: string;
+  name: string;
+  slug: string;
+}
+
+/** The address shape: `{name}-{6 chars}`, which is what the web app routes on. */
+export const PUBLIC_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,60}[a-z0-9])?-[a-z0-9]{6}$/;
+
+/** `my-project-k3f9x2`: the name, made a slug, and six characters of chance. */
+export function publicSlugFor(name: string): string {
+  const base = slugify(name).slice(0, 40).replace(/-+$/, "") || "project";
+  return `${base}-${shortToken()}`;
+}
+
+function shortToken(): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = randomBytes(6);
+  let out = "";
+  for (const b of bytes) out += alphabet[b % alphabet.length];
+  return out;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  const code = (error as { code?: string; cause?: { code?: string } })?.code
+    ?? (error as { cause?: { code?: string } })?.cause?.code;
+  return code === "23505";
 }
 
 export function slugify(name: string): string {

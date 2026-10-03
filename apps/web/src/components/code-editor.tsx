@@ -7,7 +7,12 @@ import { FileIcon, Loader2Icon, SaveIcon, XIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useFilesPanel } from "@/components/files-panel"
 import { FilePreview } from "@/components/file-preview"
+import { FileTypeIcon } from "@/components/file-type-icon"
+import { LeaderPicker, type PickerItem } from "@/components/leader-picker"
+import { flattenTree } from "@/lib/file-tree"
 import { basename } from "@/lib/files-api"
+import type { LeaderCommand } from "@/lib/leader-keymap"
+import { matchLines } from "@/lib/line-search"
 import { cn } from "@/lib/utils"
 import { isPreviewable, previewKindFor } from "@ucch/protocol"
 
@@ -22,7 +27,7 @@ const VimEditor = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="text-muted-foreground min-h-0 flex-1 p-4 font-mono text-xs">Loading…</div>
+      <div className="text-muted-foreground min-h-0 flex-1 p-4 font-code text-xs">Loading…</div>
     ),
   },
 )
@@ -50,9 +55,61 @@ export function CodeEditor() {
     loadingFiles,
     fileErrors,
     reveal,
+    revealInFile,
     openCodeChat,
+    openFile,
+    openSearch,
+    tree,
   } = useFilesPanel()
   const strip = React.useRef<HTMLDivElement>(null)
+
+  /**
+   * The leader menu that is open, if one is: `SPC s s` lists this file's
+   * lines, `SPC .` the project's files, `SPC ,` the open tabs. `line` is
+   * where the cursor was, so the line list opens highlighting it.
+   */
+  const [picker, setPicker] = React.useState<
+    { kind: "lines"; path: string; line: number } | { kind: "files" } | { kind: "buffers" } | null
+  >(null)
+
+  const onLeader = React.useCallback(
+    (command: LeaderCommand, line: number) => {
+      if (!activeTab) return
+      switch (command) {
+        case "search-buffer":
+          setPicker({ kind: "lines", path: activeTab, line })
+          return
+        case "find-file":
+          setPicker({ kind: "files" })
+          return
+        case "switch-buffer":
+          setPicker({ kind: "buffers" })
+          return
+        case "save":
+          void save(activeTab)
+          return
+        case "kill-buffer":
+          closeTab(activeTab)
+          return
+        case "next-buffer":
+        case "prev-buffer": {
+          // Wrapping, as Doom's next-buffer does: from the last tab, next is
+          // the first.
+          const index = tabs.indexOf(activeTab)
+          const step = command === "next-buffer" ? 1 : -1
+          selectTab(tabs[(index + step + tabs.length) % tabs.length]!)
+          return
+        }
+        case "search-project":
+          openSearch()
+          return
+        case "ex":
+          // Handled inside the vim layer; never arrives here.
+          return
+      }
+    },
+    [activeTab, tabs, save, closeTab, selectTab, openSearch],
+  )
 
   // Once the strip overflows, the tab you just switched to may be off the end
   // of it. `nearest` on both axes so it slides sideways only as far as it has
@@ -66,14 +123,16 @@ export function CodeEditor() {
 
   if (tabs.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center p-8">
+      <div className="font-code flex flex-1 items-center justify-center p-8">
         <p className="text-muted-foreground text-sm">Choose a file from the tree to open it.</p>
       </div>
     )
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    // JetBrains Mono, not the UI's faces: the whole editor section -- tabs,
+    // path bar and buffer -- reads as one surface with the code in it.
+    <div className="font-code flex min-h-0 flex-1 flex-col">
       {/* The tab strip scrolls rather than wrapping: a second row would shift
           the contents below it every time a file is opened. */}
       {/* Scrolls sideways rather than shrinking the tabs or wrapping onto a
@@ -196,12 +255,115 @@ export function CodeEditor() {
               onChange={(text) => setBuffer(activeTab, text)}
               onSave={() => void save(activeTab)}
               onChat={(from, to, command) => openCodeChat(activeTab, from, to, command)}
+              onLeader={onLeader}
               // Only when it is this file's: the request outlives the click, and
               // a line number from another file means nothing here.
               reveal={reveal?.path === activeTab ? reveal : null}
             />
           )}
         </>
-      )}    </div>
+      )}
+
+      {picker?.kind === "lines" && (
+        <LineSearch
+          text={buffers[picker.path] ?? ""}
+          line={picker.line}
+          onClose={() => setPicker(null)}
+          onPick={(line) => revealInFile(picker.path, line)}
+        />
+      )}
+      {picker?.kind === "files" && (
+        <LeaderPicker
+          open
+          onOpenChange={(open) => !open && setPicker(null)}
+          title="Find file"
+          placeholder="Find file in project…"
+          items={fileItems(flattenTree(tree))}
+          onPick={openFile}
+        />
+      )}
+      {picker?.kind === "buffers" && (
+        <LeaderPicker
+          open
+          onOpenChange={(open) => !open && setPicker(null)}
+          title="Switch buffer"
+          placeholder="Switch to an open file…"
+          items={fileItems(tabs, (path) =>
+            buffers[path] !== undefined && buffers[path] !== saved[path] ? "modified" : undefined,
+          )}
+          initialValue={activeTab ?? undefined}
+          onPick={selectTab}
+        />
+      )}
+    </div>
   )
+}
+
+/**
+ * `SPC s s`: every line of the file, narrowed by the words typed, Enter to
+ * go there.
+ *
+ * Mounted only while open, so the rows are built from the buffer as it is
+ * now rather than kept in step with every keystroke in the editor.
+ */
+function LineSearch({
+  text,
+  line,
+  onClose,
+  onPick,
+}: {
+  text: string
+  line: number
+  onClose: () => void
+  onPick: (line: number) => void
+}) {
+  const filter = React.useCallback(
+    (query: string): PickerItem[] =>
+      matchLines(text, query).map((match) => ({
+        value: String(match.line),
+        label: (
+          <>
+            <span className="text-muted-foreground w-10 shrink-0 text-right font-mono text-xs">
+              {match.line}
+            </span>
+            <span className="truncate font-mono text-xs">{match.text.trim()}</span>
+          </>
+        ),
+      })),
+    [text],
+  )
+
+  return (
+    <LeaderPicker
+      open
+      onOpenChange={(open) => !open && onClose()}
+      title="Search buffer"
+      placeholder="Search lines…"
+      items={[]}
+      filter={filter}
+      initialValue={String(line)}
+      onPick={(value) => onPick(Number(value))}
+      empty="No matching lines."
+    />
+  )
+}
+
+/** Rows for a list of paths: icon, name, and the folder it is in. */
+function fileItems(paths: readonly string[], hint?: (path: string) => string | undefined): PickerItem[] {
+  return paths.map((path) => {
+    const note = hint?.(path)
+    const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ""
+    return {
+      value: path,
+      keywords: [basename(path)],
+      label: (
+        <>
+          <FileTypeIcon name={basename(path)} kind="file" />
+          <span className="truncate">{basename(path)}</span>
+          {folder && <span className="text-muted-foreground truncate text-xs">{folder}</span>}
+          {note && <span className="text-ucch-active ml-auto shrink-0 text-xs">{note}</span>}
+        </>
+      ),
+    }
+  })
 }

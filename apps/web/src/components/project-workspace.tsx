@@ -3,12 +3,13 @@
 import { ChatDock, ChatPortal } from "@/components/chat-dock"
 import { CodeEditor } from "@/components/code-editor"
 import { useCurrentProject, useFilesPanel } from "@/components/files-panel"
+import { GitView } from "@/components/git/git-view"
 import { ProjectChat } from "@/components/project-chat"
 import { TerminalView } from "@/components/terminal-view"
 import type { Project } from "@/lib/session"
 
 /**
- * A project's three views: the conversation, the files, and a shell.
+ * A project's four views: the conversation, the files, a shell, and git.
  *
  * All are reached from the same URL rather than from separate routes,
  * because the tree stays open across the switch -- the mode is which half of
@@ -42,8 +43,9 @@ export function ProjectWorkspace({ project }: { project: Project }) {
         <TerminalView project={project} active={mode === "terminal"} />
       </div>
 
-      {/* Nothing here yet: the view exists so the switcher has somewhere to go. */}
-      {mode === "git" && <div className="flex min-h-0 flex-1 flex-col" />}
+      {/* Mounted only while shown, like the editor: its socket and poll have
+          no reason to run behind the chat. */}
+      {mode === "git" && <GitView project={project} />}
     </>
   )
 }

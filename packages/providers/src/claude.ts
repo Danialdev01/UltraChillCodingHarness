@@ -1,10 +1,16 @@
 import { isAbsolute, join, relative } from "node:path";
-import { normalizeWorkspacePath, type DomainEvent, type TokenUsage } from "@ucch/protocol";
+import {
+  normalizeWorkspacePath,
+  type AgentPermissionMode,
+  type DomainEvent,
+  type TokenUsage,
+} from "@ucch/protocol";
 import type { ExitStatus } from "./process.js";
 import { exitedBySignal, runCli, type Normaliser } from "./run.js";
 import type {
   AgentProvider,
   AgentRun,
+  PermissionReply,
   ProviderHealth,
   ProviderRunInput,
   RunContext,
@@ -46,6 +52,12 @@ export function claudeArgv(input: {
   model?: string;
   resumeToken?: string;
   caps: ClaudeCapabilities;
+  /**
+   * The account's agent permission mode. Strict starts the CLI in `default`,
+   * where edits ask too; the others in `acceptEdits`, and the harness
+   * answers the prompts its mode does not need a person for.
+   */
+  permissionMode?: AgentPermissionMode;
 }): string[] {
   const argv = [
     input.bin,
@@ -54,14 +66,24 @@ export function claudeArgv(input: {
     "stream-json",
     "--verbose",
     "--include-partial-messages",
+    // The prompt goes in as a JSON line and stdin stays open: that is the
+    // channel the CLI's permission prompts come back on.
+    "--input-format",
+    "stream-json",
     // `-p` starts at manual on every plan, so a mode must be named. Edits in
     // the workspace are the point; nothing here ever ships bypassPermissions.
     "--permission-mode",
-    "acceptEdits",
+    input.permissionMode === "strict" ? "default" : "acceptEdits",
+    // Anything acceptEdits does not cover -- a shell command, a fetch -- is
+    // asked over stdio as a `control_request`, and the person answers it
+    // from the chat. Without this the CLI denies it on its own and the
+    // model is left explaining that it could not run `npm install`.
+    "--permission-prompt-tool",
+    "stdio",
   ];
-  // Tells the CLI nobody can approve and not to wait for anyone: without it
-  // a run that hits something acceptEdits does not cover can stall.
-  if (input.caps.permissionPrompts) argv.push("--permission-prompts", "none");
+  // Newer CLIs default prompts to the host; named so a future default
+  // cannot quietly turn into "none" and stall or deny behind our back.
+  if (input.caps.permissionPrompts) argv.push("--permission-prompts", "host");
   // The user's settings only. A cloned repository's `.claude/settings.json`
   // -- its hooks, its MCP servers -- is model-visible instruction from
   // whoever wrote the repository, and this is a harness that clones anything.
@@ -173,6 +195,14 @@ interface Line {
   type?: string;
   subtype?: string;
   session_id?: string;
+  request_id?: string;
+  request?: {
+    subtype?: string;
+    tool_name?: string;
+    input?: unknown;
+    description?: string;
+    tool_use_id?: string;
+  };
   parent_tool_use_id?: string | null;
   event?: { type?: string; delta?: { type?: string; text?: string; thinking?: string } };
   message?: { id?: string; content?: Block[] };
@@ -202,6 +232,9 @@ export class ClaudeNormaliser implements Normaliser {
   #closed = false;
   #interrupted = false;
   #pending = new Map<string, PendingCall>();
+  /** Permission prompts raised and not yet answered, with the input each gates. */
+  #prompts = new Map<string, unknown>();
+  #io: { write(line: string): void; endStdin(): void } | null = null;
   /** The response being assembled: blocks so far, keyed by message id. */
   #message: { id: string; content: unknown[] } | null = null;
   #usage: TokenUsage = {
@@ -227,6 +260,40 @@ export class ClaudeNormaliser implements Normaliser {
 
   noteInterrupt(): void {
     this.#interrupted = true;
+  }
+
+  bind(io: { write(line: string): void; endStdin(): void }): void {
+    this.#io = io;
+  }
+
+  /**
+   * Answers a prompt on the CLI's stdin, in the shape its `control_response`
+   * expects. An allow echoes the input back unchanged: the CLI treats the
+   * echoed input as authoritative, and the person approved what they saw.
+   */
+  answerPermission(requestId: string, reply: PermissionReply): DomainEvent[] {
+    if (!this.#prompts.has(requestId) || !this.#io) return [];
+    const input = this.#prompts.get(requestId);
+    this.#prompts.delete(requestId);
+    const response =
+      reply.behavior === "allow"
+        ? { behavior: "allow", updatedInput: input }
+        : { behavior: "deny", message: reply.message?.trim() || "The user declined this action." };
+    this.#io.write(
+      JSON.stringify({
+        type: "control_response",
+        response: { subtype: "success", request_id: requestId, response },
+      }),
+    );
+    return [
+      {
+        type: "agent.permission_resolved",
+        threadId: this.ctx.threadId,
+        turnId: this.ctx.turnId,
+        requestId,
+        behavior: reply.behavior,
+      },
+    ];
   }
 
   push(raw: string): DomainEvent[] {
@@ -339,9 +406,31 @@ export class ClaudeNormaliser implements Normaliser {
         return events;
       }
 
+      case "control_request": {
+        if (line.request?.subtype !== "can_use_tool" || !line.request_id) return [];
+        // Hold the prose so far: the prompt refers to the call just made,
+        // and the chat should show that call before the question about it.
+        const events = this.#flushMessage();
+        this.#prompts.set(line.request_id, line.request.input ?? null);
+        events.push({
+          type: "agent.permission_requested",
+          ...ids,
+          requestId: line.request_id,
+          toolUseId: line.request.tool_use_id ?? null,
+          toolName: line.request.tool_name ?? "tool",
+          input: line.request.input ?? null,
+          description: line.request.description ?? null,
+        });
+        return events;
+      }
+
       case "result": {
         this.#closed = true;
         const events = this.#flushMessage();
+        events.push(...this.#closePrompts());
+        // With stdin held for prompts the CLI waits for the next message
+        // after a result; closing it is what lets the process exit.
+        this.#io?.endStdin();
         if (line.session_id) this.#sessionId = line.session_id;
         this.#usage = mapUsage(line.usage);
         // SIGINT gets a result line too, marked as an error with
@@ -375,8 +464,9 @@ export class ClaudeNormaliser implements Normaliser {
       }
 
       default:
-        // `rate_limit_event`, `system/status`, `permission_denied` and whatever
-        // next week's release adds. Unknown is ignored, never fatal.
+        // `rate_limit_event`, `system/status`, `system/permission_denied`
+        // and whatever next week's release adds. Unknown is ignored, never
+        // fatal.
         return [];
     }
   }
@@ -386,6 +476,7 @@ export class ClaudeNormaliser implements Normaliser {
     this.#closed = true;
     const ids = { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
     const events = this.#flushMessage();
+    events.push(...this.#closePrompts());
     if (exit.interrupted && (exitedBySignal(exit) || exit.code === 0)) {
       events.push({
         type: "agent.turn_completed",
@@ -403,6 +494,22 @@ export class ClaudeNormaliser implements Normaliser {
 
   #now(): number {
     return (this.ctx.now ?? Date.now)();
+  }
+
+  /** A turn that ends with prompts open answers them: nobody else will. */
+  #closePrompts(): DomainEvent[] {
+    const events: DomainEvent[] = [];
+    for (const requestId of this.#prompts.keys()) {
+      events.push({
+        type: "agent.permission_resolved",
+        threadId: this.ctx.threadId,
+        turnId: this.ctx.turnId,
+        requestId,
+        behavior: "deny",
+      });
+    }
+    this.#prompts.clear();
+    return events;
   }
 
   #flushMessage(): DomainEvent[] {
@@ -513,11 +620,18 @@ export class ClaudeProvider implements AgentProvider {
           bin: this.bin,
           ...(input.model ? { model: input.model } : {}),
           ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
+          ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
           caps,
         }),
-        stdin: input.prompt,
+        stdin: `${JSON.stringify(userLine(input.prompt))}\n`,
+        holdStdin: true,
       },
       normaliser,
     });
   }
+}
+
+/** The prompt as `--input-format stream-json` wants it. */
+export function userLine(prompt: string): { type: "user"; message: { role: "user"; content: string } } {
+  return { type: "user", message: { role: "user", content: prompt } };
 }

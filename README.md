@@ -120,51 +120,24 @@ On the native harness the research *is* the turn. On **Claude Code or Codex** �
 
 ### Requirements
 
-Node 22+, pnpm 10+, Docker. For the agent's document generation, `pandoc` and `typst` on PATH (the server image installs both; locally, `sudo pacman -S pandoc-cli typst`, `brew install pandoc typst`, or your distribution's equivalent).
+Node 22+, Docker. pnpm comes through corepack. For the agent's document generation, `pandoc` and `typst` on PATH (the server image installs both; locally, `sudo pacman -S pandoc-cli typst`, `brew install pandoc typst`, or your distribution's equivalent).
 
-### The whole thing, one line
-
-Once `pnpm install` has run and `.env` exists, this starts Postgres and both services:
+### One line
 
 ```bash
-docker start ucch-pg-dev 2>/dev/null || docker run -d --name ucch-pg-dev -e POSTGRES_USER=ucch -e POSTGRES_PASSWORD=ucch -e POSTGRES_DB=ucch -p 55432:5432 postgres:16-alpine; pnpm dev
+corepack enable && pnpm dev:up
 ```
 
-It reuses the `ucch-pg-dev` container if it already exists and creates it if it doesn't, then `pnpm dev` runs the API server (:3001) and the web UI (:3000) in parallel. Migrations apply on server boot. Open **http://localhost:3000**.
+([`scripts/dev.sh`](scripts/dev.sh)) does, in order:
 
-The first-time setup, and what each piece does, is below.
+1. creates `.env` from `.env.development.example` if there isn't one, with a fresh `SECRET_KEY` and `DATABASE_URL` pointing at the dev database;
+2. `pnpm install`;
+3. starts PostgreSQL on `localhost:55432` from [`docker-compose.dev.yml`](docker-compose.dev.yml) and waits until it is healthy (if you already have the older `ucch-pg-dev` container, it starts that one instead, so your data stays);
+4. runs the API server (:3001) and the web UI (:3000) with hot reload. Migrations apply on server boot.
 
-### Start it
+Open **http://localhost:3000**. Ctrl-C stops the app; `pnpm dev:down` stops the database too. Want a dev MySQL as well? `docker compose -f docker-compose.dev.yml --profile mysql up -d` (port 53306, user/password `dev`).
 
-```bash
-pnpm install
-
-# 1. A database
-docker run -d --name ucch-pg-dev \
-  -e POSTGRES_USER=ucch -e POSTGRES_PASSWORD=ucch -e POSTGRES_DB=ucch \
-  -p 55432:5432 postgres:16-alpine
-
-# 2. Configure
-cp .env.development.example .env
-```
-
-The defaults in `.env.development.example` are set up for local work (`.env.example` is the production file for Dokploy). Point `DATABASE_URL` at the container above:
-
-```
-DATABASE_URL=postgres://ucch:ucch@localhost:55432/ucch
-```
-
-Then run the two services in separate terminals:
-
-```bash
-# Terminal 1 — API server on :3001 (migrations run automatically on boot)
-pnpm --filter @ucch/server dev
-
-# Terminal 2 — web UI on :3000
-pnpm --filter @ucch/web dev
-```
-
-Open **http://localhost:3000**. You'll be redirected to the sign-in page.
+The defaults in `.env.development.example` are for local work; `.env.example` is the production file for Dokploy. To run the two services in separate terminals instead, use `pnpm --filter @ucch/server dev` and `pnpm --filter @ucch/web dev`.
 
 ### Signing in
 
@@ -215,197 +188,120 @@ Two different things share the word "preview":
 
 ## Deploying on Dokploy
 
-### 1. Prepare the VPS
+UCCH deploys as **one Docker Compose service**. A single deploy builds the images and starts everything in [`docker-compose.yml`](docker-compose.yml):
 
-SSH in and create the shared resources the harness expects:
-
-```bash
-# Project working trees and per-account CLI logins live on the host, bind-
-# mounted into the server, so they survive a redeploy. The server runs as
-# root in its container today; when the container runtime lands, project
-# containers run as uid 1000 and the ownership below already matches.
-mkdir -p /srv/ucch/workspaces /srv/ucch/creds
-chmod 700 /srv/ucch/creds
-chown -R 1000:1000 /srv/ucch
-
-# Only needed once the container runtime is enabled (not yet):
-# docker network create ucch-projects
-```
-
-### 2. DNS
-
-In Cloudflare, on `danialirfan.dev`:
-
-| Type | Name         | Content     | Proxy              |
-| ---- | ------------ | ----------- | ------------------ |
-| A    | `ucch`     | your VPS IP | **DNS only** |
-| A    | `api.ucch` | your VPS IP | **DNS only** |
-| A    | `*.ucch`   | your VPS IP | **DNS only** |
-
-**Grey cloud, not orange.** Cloudflare's proxy breaks WebSockets on arbitrary ports and adds a second TLS layer in front of Traefik's.
-
-### 3. Wildcard certificate
-
-The `*.ucch` record only pays off with a wildcard certificate, and **HTTP-01 cannot issue wildcards** — you need DNS-01. In Dokploy, add a second certificate resolver to Traefik's static configuration (Settings → Web Server → Traefik → File System → `traefik.yml`), keeping the existing HTTP-01 one for Dokploy's own domains:
-
-```yaml
-certificatesResolvers:
-  letsencrypt-dns:
-    acme:
-      email: you@example.com
-      storage: /etc/dokploy/traefik/dynamic/acme-dns.json
-      dnsChallenge:
-        provider: cloudflare
-        resolvers:
-          - "1.1.1.1:53"
-```
-
-Then give the Traefik container a Cloudflare API token scoped to `Zone:DNS:Edit` on this zone, as `CF_DNS_API_TOKEN` (Settings → Web Server → Traefik → Environment Variables), and restart Traefik.
-
-### 4. Create the applications (Dockerfile build type)
-
-UCCH deploys as **two Dokploy Applications built from their Dockerfiles, plus a Dokploy Postgres database**, all in one project. [`deploy.md`](deploy.md) is the long form of these steps, with every field value and a troubleshooting table. Nixpacks is not an option: this is a pnpm monorepo that ships two services, needs a Debian base with `git`, `ripgrep`, `pandoc`, `php` and a glibc-linked native module (`node-pty`), and both Dockerfiles take build arguments. (A `docker-compose.yml` is also kept for a single-file deploy; the steps below are for the Application type.)
-
-Check each image locally first if you like:
-
-```bash
-docker build -f apps/server/Dockerfile -t ucch-server .
-docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_WS_ORIGIN=https://api.ucch.danialirfan.dev --build-arg SERVER_ORIGIN=http://ucch-server:3001 -t ucch-web .
-```
-
-#### 4a. Database
-
-**Create Service → Database → PostgreSQL.** Name it `ucch-db`, user `ucch`, database `ucch`, a long password. Deploy it, then copy the **Internal Connection URL** it shows (`postgres://ucch:...@<db-app-name>:5432/ucch`) — the server reaches it by that name on `dokploy-network`.
-
-#### 4b. Server
-
-**Create Service → Application**, name `ucch-server`, source = this repository, branch `main`.
-
-| Tab | Field | Value |
+| Container | What it is | Replicas |
 | --- | --- | --- |
-| Build Type | Build Type | **Dockerfile** |
-| | Dockerfile Path | `apps/server/Dockerfile` |
-| | Docker Context Path | `.` (repository root — the build copies `packages/*`) |
-| | Docker Build Stage | *(leave empty)* |
-| Environment | Environment Variables | see step 5 |
-| Advanced → Mounts | Bind Mount | host `/srv/ucch/workspaces` → container `/srv/ucch/workspaces` |
-| | Bind Mount | host `/srv/ucch/creds` → container `/srv/ucch/creds` |
-| Domains | Host / Port / HTTPS / Certificate | `api.ucch.danialirfan.dev` / `3001` / on / Let's Encrypt |
+| `secrets` | one-shot: generates every password and key on the first deploy, keeps them in the `secrets` volume | runs, then exits |
+| `postgres` | the harness's own data (database `ucch`) + a `dev` user for your projects | 1 |
+| `mysql` | development databases for your projects | 1 |
+| `server` | API, WebSocket, terminals, agent workers ([`Dockerfile`](Dockerfile) target `server`) | **1** |
+| `web` | Next.js UI ([`Dockerfile`](Dockerfile) target `web`) | `WEB_REPLICAS` (default 2) |
+| `crawl4ai` | research crawler, only with `COMPOSE_PROFILES=research` | 1 |
 
-Both mounts are what survives a redeploy: project working trees and the per-account CLI logins. **Do not mount `/var/run/docker.sock`** — nothing uses it until the container runtime lands, and leaving it out keeps a terminal inside the container from being root on the host.
+You don't generate passwords, copy service names between tabs or write Traefik config. Routing comes from labels in the compose file.
 
-Note the **App Name** Dokploy assigns on the General tab (something like `ucch-server-x1y2z3`). It is the container's DNS name and the next two steps need it.
+### 1. Before you start
 
-#### 4c. Web
+- A VPS with Dokploy installed (`curl -sSL https://dokploy.com/install.sh | sh`), ports 80 and 443 open. 2 vCPU / 4 GB RAM is comfortable (the first build compiles Next.js); add ~1 GB for the research crawler.
+- A domain for UCCH, e.g. `ucch.example.com`, with a DNS **A record** pointing at the VPS. For live previews also add `*.ucch.example.com` (see [Live previews](#live-previews-optional-one-time)). On Cloudflare, set both to **DNS only** (grey cloud).
+- This repository on GitHub (or any Git URL Dokploy can reach).
 
-**Create Service → Application**, name `ucch-web`, same repository.
+### 2. Deploy
 
-| Tab | Field | Value |
-| --- | --- | --- |
-| Build Type | Build Type | **Dockerfile** |
-| | Dockerfile Path | `apps/web/Dockerfile` |
-| | Docker Context Path | `.` |
-| Environment | **Build Time Arguments** | `NEXT_PUBLIC_WS_ORIGIN=https://api.ucch.danialirfan.dev` |
-| | | `SERVER_ORIGIN=http://<server App Name>:3001` |
-| | Environment Variables | `NODE_ENV=production` |
-| Domains | Host / Port / HTTPS / Certificate | `ucch.danialirfan.dev` / `3000` / on / Let's Encrypt |
+1. **Projects → Create Project** → `ucch`.
+2. Inside it: **Create Service → Compose**. **Provider**: this repository, branch `main`. **Compose Type**: Docker Compose. **Compose Path**: `./docker-compose.yml`.
+3. **Environment** tab: paste [`.env.example`](.env.example) and set **`ROOT_DOMAIN`**. That is the only required value. Setting `DEFAULT_USER_EMAIL` / `DEFAULT_USER_PASSWORD` for your first login is recommended.
+4. **Deploy**. The first build takes ~5 minutes; later ones reuse the cache. Leave the **Domains** tab empty. The compose labels already route `ROOT_DOMAIN` and request its Let's Encrypt certificate.
 
-Both values are **build arguments, not runtime variables**: the first is inlined into the browser bundle, the second into Next's rewrite table. Setting them only under Environment Variables has no effect, and a wrong `SERVER_ORIGIN` shows up as every `/api/*` call returning 500. Rebuild the web app whenever the server's App Name changes.
-
-#### 4d. The preview wildcard
-
-Dokploy's Domains tab writes `Host()` rules only, and the live preview needs `HostRegexp` for `p{port}-{hash}.ucch.danialirfan.dev`. Open **Web Server → Traefik → File System**, create `/etc/dokploy/traefik/dynamic/ucch-preview.yml`, and paste [`deploy/dokploy/ucch-preview.yml`](deploy/dokploy/ucch-preview.yml) with its two placeholders filled in (your root domain, and the server's App Name). Traefik loads it immediately; Dokploy leaves files it did not generate alone. This router is what actually requests the wildcard certificate, so it depends on the `letsencrypt-dns` resolver from step 3.
-
-### 5. Environment
-
-[`.env.example`](.env.example) is the server application's production environment, written for `ucch.danialirfan.dev`: paste the whole file into the **server** application's Environment tab and fill in the lines marked `>>> CUSTOMIZE` (database URL, `SECRET_KEY`, the default user's password, optionally GitHub OAuth). The essentials, for reference:
-
-```env
-NODE_ENV=production
-PORT=3001
-HOST=0.0.0.0
-DATABASE_URL=<Internal Connection URL from step 4a>
-ROOT_DOMAIN=ucch.danialirfan.dev
-PUBLIC_SCHEME=https
-
-# The terminal, the live preview's dev servers and the CLI providers all run
-# inside this container until the container runtime lands. Production
-# refuses them without this. See the Security note.
-AGENT_ALLOW_HOST_SHELL=true
-
-# GitHub OAuth App (optional if you set a default user):
-#   Homepage URL  https://ucch.danialirfan.dev
-#   Callback URL  https://ucch.danialirfan.dev/api/auth/github/callback
-GITHUB_CLIENT_ID=<from GitHub>
-GITHUB_CLIENT_SECRET=<from GitHub>
-
-# Encrypts stored tokens at rest and signs preview cookies. openssl rand -hex 32
-SECRET_KEY=<64 hex characters>
-
-# Seeded on first boot, so there is a way in before GitHub OAuth is wired up.
-# Only created if the email is unused. Use a real password here.
-DEFAULT_USER_EMAIL=danialirfan@danialirfan.dev
-DEFAULT_USER_PASSWORD=<a real password, not the local default>
-
-WORKSPACE_ROOT=/srv/ucch/workspaces
-CREDS_ROOT=/srv/ucch/creds
-IDLE_STOP_MINUTES=30
-```
-
-`SECRET_KEY` must be exactly 64 hex characters — the server validates it at boot and refuses to start otherwise, rather than failing later when someone signs in. A variable left blank is treated as unset, so an empty `DEFAULT_USER_EMAIL` is fine. Leave `PUBLIC_PREVIEW_PORT` and `PUBLIC_WEB_ORIGIN` unset: behind Traefik the preview subdomains are on 443 and the web app is on the root domain, which are the defaults.
-
-**Agent providers.** Besides the built-in OpenRouter loop, a project can run on the `claude` or `codex` CLI, billed to the person's own subscription (see `documentation/integration-spec-1.md`). Each account's CLI logins live under `CREDS_ROOT` (default `/srv/ucch/creds`, `0700`) — **exclude that path from backups** and never `docker cp` it. `AGENT_MAX_CONCURRENT_PER_USER` (default 2) caps how many CLI turns one account runs at once. Do **not** set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `CODEX_API_KEY` in the server's environment if you want subscription billing: the CLIs prefer a key over a login, and the server refuses to run a provider with one present. The CLIs themselves are not in the image yet; install them in the Dockerfile when you want those providers.
-
-> **The OAuth callback goes to the root domain, not `api.`** — even though the server handles it. The web app proxies `/api/*` through to the server, so the callback completes on `ucch.danialirfan.dev` and the session cookie is set **first-party on the root domain**. Pointing the callback at `api.ucch.danialirfan.dev` would set the cookie on the wrong host and the browser would never send it. The server derives this URL from `ROOT_DOMAIN`, so it must match the OAuth App exactly.
->
-> The WebSocket still connects directly to `api.` — it authenticates with a ticket rather than the cookie, which is precisely what tickets are for.
-
-### 6. Deploy
-
-Deploy the **server first** (its build is the slow one: apt, PHP and the dependency install, about five minutes cold), wait for its health check to go green — the image declares one against `/health`, and the server applies migrations on boot, so there is no separate migration step — then deploy the **web** app.
-
-Verify:
+Check it:
 
 ```bash
-curl https://api.ucch.danialirfan.dev/health
-# {"status":"ok","version":"0.1.0","connections":0}
-
-curl -o /dev/null -w '%{http_code}\n' https://ucch.danialirfan.dev/api/me
-# 401 -- the rewrite reached the server. A 500 here means SERVER_ORIGIN was wrong at build time.
-
-curl -o /dev/null -w '%{http_code}\n' -H 'Host: p8001-abcdefghijkl.ucch.danialirfan.dev' https://api.ucch.danialirfan.dev/
-# 404 -- the preview proxy answered (unknown project); Traefik's own 404 would be plain text.
-
-UCCH_BASE=https://api.ucch.danialirfan.dev node scripts/smoke-phase1.mjs
+curl -o /dev/null -w '%{http_code}\n' https://ucch.example.com/login    # 200 (web)
+curl -o /dev/null -w '%{http_code}\n' https://ucch.example.com/api/me   # 401 (server reached, no session)
 ```
 
-Then open `https://ucch.danialirfan.dev`, sign in, open a project, start a dev server in its terminal and press the globe in the top bar.
+Database migrations run automatically every time the server starts.
 
-### 7. Verify the wildcard certificate
+### 3. First sign-in
 
-Before relying on project URLs, confirm the wildcard actually issued — this is the single most common thing to get wrong, and it fails silently until a project URL is opened:
+Open `https://<ROOT_DOMAIN>` and sign in with `DEFAULT_USER_EMAIL` (default `admin@<ROOT_DOMAIN>`) and `DEFAULT_USER_PASSWORD`. If you left the password blank, one was generated. Read it from the server container's terminal in Dokploy (or `docker exec <server container> …`):
 
 ```bash
-curl -vI https://anything.ucch.danialirfan.dev 2>&1 | grep -i 'subject\|issuer'
+cat /run/ucch-secrets/default_user_password
 ```
 
-A certificate covering `*.ucch.danialirfan.dev` means DNS-01 worked.
+The account is created on the first boot only, so changing these variables later does not reset it. Then add your OpenRouter key under **Settings → Providers**.
 
-### What routes where today
+Optional GitHub sign-in: create an OAuth App with callback `https://<ROOT_DOMAIN>/api/auth/github/callback`, set `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, redeploy.
 
-| Host                         | Service                                    | Configured in |
-| ---------------------------- | ------------------------------------------ | ------------- |
-| `ucch.danialirfan.dev`     | `web`                                    | Dokploy Domains tab |
-| `api.ucch.danialirfan.dev` | `server` (REST + WebSocket)              | Dokploy Domains tab |
-| `p{port}-{hash}.ucch...`   | `server` (live preview proxy, HTTP + WS) | `deploy/dokploy/ucch-preview.yml` (or the compose labels) |
+### Generated secrets
 
-The preview router carries `tls.domains` for the wildcard, so it **needs the DNS-01 certificate from step 3** — an HTTP-01 resolver cannot issue `*.ucch.danialirfan.dev`. The `web` service is not involved: `/{hash}/preview` on the root domain is a Next rewrite to the server, which answers with a redirect to the subdomain.
+[`deploy/secrets.sh`](deploy/secrets.sh) writes `secret_key`, `postgres_password`, `mysql_root_password`, `dev_db_password`, `default_user_password` and `crawl4ai_api_token` into the `secrets` volume. It only writes a file that is missing, so redeploys keep the values the databases were initialised with. A variable of the same name in the Environment tab takes precedence. Use that only to carry over an existing install's passwords. **Back up the `secrets` volume together with `postgres-data`**: without `secret_key`, stored API keys can't be decrypted.
 
-When `pv-{hash}` previews land, they join the same regexp.
+### Development databases
 
-### Security note
+Your projects (their terminals, dev servers and agents run inside `server`) reach the databases by container name. Use the `dev` user, never the harness's own `ucch` database. The `dev` user can't even connect to it.
 
-With `AGENT_ALLOW_HOST_SHELL=true`, everyone who can sign in gets a shell **inside the server container** — that is where the terminal, the agents' `bash` and the live preview's dev servers run until the container runtime lands. UCCH is single-tenant and should only be exposed to people you trust with the box. The Dockerfile deployment deliberately does not mount `/var/run/docker.sock`; the compose file still does, for the runtime phase, and that socket is root-equivalent on the host.
+| Engine | Host | Port | User | Password | Default DB |
+| --- | --- | --- | --- | --- | --- |
+| PostgreSQL | `postgres` | 5432 | `dev` | `cat /run/ucch-secrets/dev_db_password` | `dev` |
+| MySQL | `mysql` | 3306 | `dev` | same | `dev` |
+
+The `dev` user may create as many databases as you like on both servers; add them in the UI under **Database → New connection**. Neither database is published on a host port; `psql` and `mysql` clients are installed in the server's terminal.
+
+### Scaling
+
+- **Web UI**: stateless. Set `WEB_REPLICAS` (e.g. `4`) and redeploy. Traefik load-balances across every replica and health-checks each one on `/login`.
+- **Server**: always **one replica**. Live terminals, project working trees on its volume, the event bus to WebSocket clients and the background workers all live in that one process, so a second copy would split them. Scale it vertically: give the VPS (or the container, under **Advanced → Resources**) more CPU and RAM. Agent turns are mostly waiting on model APIs, so one server handles many concurrent sessions.
+- **Databases**: PostgreSQL holds only the harness's event log and read models and stays small. For heavy dev-database use, give `mysql`/`postgres` more memory, or point `DATABASE_URL` at a managed PostgreSQL.
+
+### Research crawler (optional)
+
+Set `COMPOSE_PROFILES=research` in the Environment tab and redeploy. The `crawl4ai` container starts and the server connects to it automatically with a generated token. `BROWSER_USE_API_KEY` adds the escalation agent. To use a Crawl4AI server running elsewhere, set `CRAWL4AI_URL` (and `CRAWL4AI_API_TOKEN`) instead.
+
+### Live previews (optional, one-time)
+
+A project's running dev server is shown at `https://p{port}-{hash}.<ROOT_DOMAIN>`. That needs the `*.<ROOT_DOMAIN>` DNS record and a **wildcard certificate**, which Let's Encrypt only issues through a DNS challenge. Everything else works without this step.
+
+With Cloudflare:
+
+1. Cloudflare → **My Profile → API Tokens → Create Token → Edit zone DNS**, limited to your zone.
+2. Dokploy → **Settings → Web Server → Traefik → Environment**: add `CF_DNS_API_TOKEN=<token>`.
+3. Same place, **File System → `traefik.yml`**: next to the existing `letsencrypt` resolver add
+
+   ```yaml
+   certificatesResolvers:
+     letsencrypt-dns:
+       acme:
+         email: you@example.com
+         storage: /etc/dokploy/traefik/dynamic/acme-dns.json
+         dnsChallenge:
+           provider: cloudflare
+   ```
+
+4. **Restart Traefik**. After a minute: `curl -vI https://anything.ucch.example.com 2>&1 | grep -i issuer` shows Let's Encrypt.
+
+Other DNS providers work the same way with their own [Traefik provider name](https://doc.traefik.io/traefik/https/acme/#providers) and token variable.
+
+### Day-to-day
+
+- **Update**: push to `main`, press **Deploy** (or enable Dokploy's auto-deploy webhook). The server gets `SIGTERM` and up to 60 s to finish and record in-flight work; `restart: unless-stopped` brings every container back after a crash or reboot.
+- **Logs**: the service's **Logs** tab, per container.
+- **Backups** (Docker volumes): `postgres-data` + `secrets` (the harness) and `workspaces` (your project files) matter; `mysql-data` holds dev data. `creds` holds per-user Claude/Codex CLI logins. Don't copy it off the box.
+- **Security**: anyone who can sign in gets a shell inside `server` (`AGENT_ALLOW_HOST_SHELL=true`). Only give accounts to people you trust. The Docker socket is deliberately not mounted.
+
+### Try the production stack locally
+
+```bash
+docker network create dokploy-network            # once; Dokploy creates it on the VPS
+echo ROOT_DOMAIN=ucch.localhost > .env.deploy
+docker compose --env-file .env.deploy up -d --build
+docker compose ps                                # secrets exited 0; the rest healthy
+docker compose exec server cat /run/ucch-secrets/default_user_password
+```
+
+Nothing is published on a host port; Traefik on the `dokploy-network` is the way in. Stop with `docker compose down` (add `-v` to wipe all data).
 
 ---
 

@@ -6,21 +6,21 @@
 
 @theme inline {
     /*
-     * JetBrains Mono, everywhere.
+     * Inter for the UI, a serif for prose, iA Writer Mono for code in the UI.
      *
-     * All three tokens resolve to the same face, so `font-sans`, `font-mono`
-     * and `font-heading` are one typeface and no component has to ask for it.
-     * The stack itself lives in `--app-font` at :root: `@theme inline` writes
-     * the value straight into the utilities rather than emitting a variable,
-     * so a definition here alone would be invisible to the inline styles that
-     * read it -- the CodeMirror editor is one.
+     * The stacks themselves live at :root as `--app-font-*`: `@theme inline`
+     * writes the value straight into the utilities rather than emitting a
+     * variable, so a definition here alone would be invisible to the inline
+     * styles that read it -- the terminal and the diagrams are two.
      *
-     * These read `var(--font-sans)`, which was defined nowhere, so the whole
-     * app was falling through to the browser's default serif.
+     * The code editors are the exception: `font-code`, and `--app-font-code`
+     * in their CodeMirror themes, keep them in JetBrains Mono.
      */
-    --font-mono: var(--app-font);
-    --font-sans: var(--app-font);
-    --font-heading: var(--app-font);
+    --font-sans: var(--app-font-sans);
+    --font-serif: var(--app-font-serif);
+    --font-mono: var(--app-font-mono);
+    --font-heading: var(--app-font-sans);
+    --font-code: var(--app-font-code);
     --color-ucch-active: var(--ucch-active);
     --color-ucch-active-bg: var(--ucch-active-bg);
     --color-sidebar-ring: var(--sidebar-ring);
@@ -104,6 +104,18 @@
      */
     --ucch-active: oklch(0.55 0.22 264);
     --ucch-active-bg: oklch(0.55 0.22 264 / 12%);
+
+    /* Named colours for text and callouts in notes: the same eight names
+       on both themes, each tuned to read against that theme's background. */
+    --ucch-note-gray: oklch(0.55 0 0);
+    --ucch-note-red: oklch(0.55 0.2 25);
+    --ucch-note-orange: oklch(0.6 0.17 55);
+    --ucch-note-yellow: oklch(0.6 0.14 90);
+    --ucch-note-green: oklch(0.55 0.15 150);
+    --ucch-note-blue: oklch(0.55 0.2 260);
+    --ucch-note-purple: oklch(0.55 0.2 300);
+    --ucch-note-pink: oklch(0.6 0.2 350);
+    --ucch-note-highlight: oklch(0.9 0.15 95);
 }
 
 .dark {
@@ -141,6 +153,16 @@
 
     --ucch-active: oklch(0.72 0.16 264);
     --ucch-active-bg: oklch(0.72 0.16 264 / 18%);
+
+    --ucch-note-gray: oklch(0.7 0 0);
+    --ucch-note-red: oklch(0.75 0.17 25);
+    --ucch-note-orange: oklch(0.78 0.15 55);
+    --ucch-note-yellow: oklch(0.82 0.13 90);
+    --ucch-note-green: oklch(0.75 0.14 150);
+    --ucch-note-blue: oklch(0.75 0.15 260);
+    --ucch-note-purple: oklch(0.75 0.15 300);
+    --ucch-note-pink: oklch(0.78 0.15 350);
+    --ucch-note-highlight: oklch(0.55 0.13 95);
 }
 
 /*
@@ -184,6 +206,25 @@
   --syn-link: #56b6c2;
   --syn-invalid: #f87171;
 }
+
+/* Code shown outside an editor (the diff view) is coloured by the same roles. */
+.syn-keyword { color: var(--syn-keyword); }
+.syn-string { color: var(--syn-string); }
+.syn-number { color: var(--syn-number); }
+.syn-comment { color: var(--syn-comment); }
+.syn-function { color: var(--syn-function); }
+.syn-variable { color: var(--syn-variable); }
+.syn-property { color: var(--syn-property); }
+.syn-type { color: var(--syn-type); }
+.syn-operator { color: var(--syn-operator); }
+.syn-punctuation { color: var(--syn-punctuation); }
+.syn-tag { color: var(--syn-tag); }
+.syn-attribute { color: var(--syn-attribute); }
+.syn-heading { color: var(--syn-heading); }
+.syn-link { color: var(--syn-link); }
+.syn-invalid { color: var(--syn-invalid); }
+.syn-comment { font-style: italic; }
+.syn-heading { font-weight: bold; }
 
 @layer base {
   * {
@@ -265,14 +306,20 @@
   --ucch-sidebar-panel-width: 16.8rem;
 
   /*
-   * The application typeface.
+   * The application typefaces.
    *
-   * `--font-jetbrains-mono` is the self-hosted family `next/font` puts on
-   * <html> in layout.tsx; the rest is the fallback the browser uses for the
-   * moment before it loads. Read both by the Tailwind font tokens above and
-   * by the components that set `font-family` in an inline style.
+   * Each named face comes first so a locally installed copy wins; the
+   * `--font-*` variable after it is the self-hosted family `next/font` puts on
+   * <html> in layout.tsx (for the serif, Source Serif 4 standing in for the
+   * commercial Lyon Text). The rest is the fallback the browser uses for the
+   * moment before it loads.
    */
-  --app-font: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --app-font-sans: "Inter", var(--font-inter), ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Helvetica, Arial, sans-serif;
+  --app-font-serif: "Lyon-Text", var(--font-source-serif), Georgia, ui-serif, serif;
+  --app-font-mono: "iA Writer Mono", var(--font-ia-writer-mono), Menlo, Courier, monospace;
+  /* The code editors only -- see the editor themes. */
+  --app-font-code: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /*
@@ -344,5 +391,360 @@
 
   .ucch-page > * {
     animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The notes editor.
+
+   Tiptap renders plain elements inside `.ucch-note-editor`, so the page's
+   typography lives here rather than in classes on each node. The choices
+   mirror `markdown.tsx` -- a note and a chat message should read as the same
+   voice -- and every colour is a token, so dark mode needs nothing extra.
+   --------------------------------------------------------------------------- */
+@layer components {
+  .ucch-note-editor {
+    outline: none;
+    font-size: 0.9375rem;
+    line-height: 1.65;
+    min-height: 40vh;
+  }
+  .ucch-note-editor > * + * {
+    margin-top: 0.5rem;
+  }
+  .ucch-note-editor h1 {
+    @apply mt-6 mb-2 border-b pb-1 text-2xl font-semibold;
+  }
+  .ucch-note-editor h2 {
+    @apply mt-5 mb-1.5 text-xl font-semibold;
+  }
+  .ucch-note-editor h3 {
+    @apply mt-4 mb-1 text-lg font-semibold;
+  }
+  .ucch-note-editor ul,
+  .ucch-note-editor ol {
+    @apply my-1 ml-5 space-y-1;
+  }
+  .ucch-note-editor ul {
+    @apply list-disc;
+  }
+  .ucch-note-editor ol {
+    @apply list-decimal;
+  }
+  .ucch-note-editor li > p {
+    margin: 0;
+  }
+  .ucch-note-editor blockquote {
+    @apply text-muted-foreground my-2 border-l-2 pl-3;
+  }
+  .ucch-note-editor a {
+    @apply text-ucch-active underline underline-offset-2;
+  }
+  .ucch-note-editor hr {
+    @apply border-border my-4;
+  }
+  .ucch-note-editor code {
+    @apply bg-muted rounded px-1 py-0.5 font-mono text-[0.85em];
+  }
+  .ucch-note-editor pre {
+    @apply bg-muted/60 my-2 overflow-x-auto rounded-md border p-3 text-xs;
+  }
+  .ucch-note-editor pre code {
+    @apply bg-transparent p-0 text-xs;
+  }
+  .ucch-note-editor img {
+    @apply max-w-full rounded-md;
+  }
+
+  /* Images: a figure sized as a share of the column, aligned by attribute,
+     with a caption under it and handles on its edges while selected. */
+  .ucch-note-image {
+    @apply relative my-2 max-w-full;
+  }
+  .ucch-note-image[data-align="left"] {
+    margin-right: auto;
+  }
+  .ucch-note-image[data-align="center"] {
+    margin-inline: auto;
+  }
+  .ucch-note-image[data-align="right"] {
+    margin-left: auto;
+  }
+  .ucch-note-image img {
+    @apply block w-full;
+  }
+  .ucch-image-handle {
+    @apply bg-foreground/60 absolute top-1/2 h-10 w-1.5 -translate-y-1/2 cursor-ew-resize rounded-full opacity-0 transition-opacity;
+    touch-action: none;
+  }
+  .ucch-note-image:hover .ucch-image-handle,
+  .ucch-note-image.is-selected .ucch-image-handle {
+    opacity: 1;
+  }
+  .ucch-image-caption {
+    @apply text-muted-foreground placeholder:text-muted-foreground/50 mt-1 w-full bg-transparent text-center text-xs outline-none;
+  }
+
+  /* Placeholder: Tiptap marks only the empty block at the cursor, so there
+     is never more than one hint. It shows on an empty page whether or not
+     the editor has focus, and otherwise only on the focused line -- a page
+     that is merely blurred with the cursor on a blank line shows nothing. */
+  .ucch-note-editor .is-editor-empty::before,
+  .ucch-note-editor.ProseMirror-focused .is-empty::before {
+    content: attr(data-placeholder);
+    color: var(--muted-foreground);
+    opacity: 0.6;
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+
+  /* To-do lists: the checkbox sits in the gutter the bullet would use. */
+  .ucch-note-editor ul[data-type="taskList"] {
+    @apply ml-0 list-none;
+  }
+  .ucch-note-editor ul[data-type="taskList"] li {
+    @apply flex items-start gap-2;
+  }
+  .ucch-note-editor ul[data-type="taskList"] li > label {
+    @apply mt-[0.3em] flex shrink-0 select-none;
+  }
+  .ucch-note-editor ul[data-type="taskList"] li > div {
+    @apply min-w-0 flex-1;
+  }
+  .ucch-note-editor ul[data-type="taskList"] li[data-checked="true"] > div {
+    @apply text-muted-foreground line-through;
+  }
+  .ucch-note-editor ul[data-type="taskList"] input[type="checkbox"] {
+    @apply accent-ucch-active size-3.5;
+  }
+
+  /* Tables. */
+  .ucch-note-editor .tableWrapper {
+    @apply my-2 overflow-x-auto;
+  }
+  .ucch-note-editor table {
+    @apply w-full border-collapse text-sm;
+  }
+  .ucch-note-editor th,
+  .ucch-note-editor td {
+    @apply border px-2 py-1 align-top;
+    min-width: 4rem;
+    position: relative;
+  }
+  .ucch-note-editor th {
+    @apply bg-muted/60 text-left font-medium;
+  }
+  .ucch-note-editor th > p,
+  .ucch-note-editor td > p {
+    margin: 0;
+  }
+  .ucch-note-editor .selectedCell::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--ucch-active-bg);
+    pointer-events: none;
+  }
+
+  /* Embedded blocks share one card so a page reads as one thing. */
+  .ucch-note-card {
+    @apply bg-muted/30 my-2 overflow-hidden rounded-md border;
+  }
+  .ucch-note-card-head {
+    @apply text-muted-foreground flex h-7 items-center gap-1.5 border-b px-2 font-mono text-[10px];
+  }
+  .ucch-note-editor .ProseMirror-selectednode > .ucch-note-card {
+    @apply ring-ucch-active ring-2;
+  }
+
+  /* Callouts: a tinted box with an icon at the left. */
+  .ucch-callout {
+    @apply my-2 flex items-start gap-2 rounded-md border px-3 py-2;
+    --ucch-callout-tint: transparent;
+    background: color-mix(in oklch, var(--ucch-callout-tint) 14%, transparent);
+    border-color: color-mix(in oklch, var(--ucch-callout-tint) 30%, var(--border));
+  }
+  .ucch-callout[data-color="gray"] {
+    --ucch-callout-tint: var(--ucch-note-gray);
+  }
+  .ucch-callout[data-color="blue"] {
+    --ucch-callout-tint: var(--ucch-note-blue);
+  }
+  .ucch-callout[data-color="green"] {
+    --ucch-callout-tint: var(--ucch-note-green);
+  }
+  .ucch-callout[data-color="yellow"] {
+    --ucch-callout-tint: var(--ucch-note-yellow);
+  }
+  .ucch-callout[data-color="red"] {
+    --ucch-callout-tint: var(--ucch-note-red);
+  }
+  .ucch-callout[data-color="purple"] {
+    --ucch-callout-tint: var(--ucch-note-purple);
+  }
+  .ucch-callout-body > * + * {
+    margin-top: 0.35rem;
+  }
+
+  /* Toggles: the chevron, the title line, and the content that folds. */
+  .ucch-details {
+    @apply my-1 flex items-start gap-1;
+  }
+  .ucch-details-summary {
+    @apply font-medium;
+  }
+  .ucch-details-content {
+    @apply mt-1 border-l pl-3;
+  }
+  .ucch-details-content > * + * {
+    margin-top: 0.35rem;
+  }
+  .ucch-details[data-open="false"] .ucch-details-content {
+    display: none;
+  }
+
+  /* Columns: a grid; each column is a stack of blocks. */
+  .ucch-columns {
+    @apply my-2 grid gap-4;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .ucch-columns[data-count="3"] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .ucch-column {
+    @apply min-w-0 rounded-md border border-dashed border-transparent px-1;
+  }
+  .ucch-note-editor.ProseMirror-focused .ucch-column {
+    @apply border-border/60;
+  }
+  .ucch-column > * + * {
+    margin-top: 0.35rem;
+  }
+  @media (max-width: 640px) {
+    .ucch-columns,
+    .ucch-columns[data-count="3"] {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Marks: highlighter and named colours. */
+  .ucch-note-editor mark {
+    @apply rounded-sm px-0.5;
+    background: color-mix(in oklch, var(--ucch-note-highlight) 55%, transparent);
+    color: inherit;
+  }
+  .ucch-text-color[data-color="gray"] {
+    color: var(--ucch-note-gray);
+  }
+  .ucch-text-color[data-color="red"] {
+    color: var(--ucch-note-red);
+  }
+  .ucch-text-color[data-color="orange"] {
+    color: var(--ucch-note-orange);
+  }
+  .ucch-text-color[data-color="yellow"] {
+    color: var(--ucch-note-yellow);
+  }
+  .ucch-text-color[data-color="green"] {
+    color: var(--ucch-note-green);
+  }
+  .ucch-text-color[data-color="blue"] {
+    color: var(--ucch-note-blue);
+  }
+  .ucch-text-color[data-color="purple"] {
+    color: var(--ucch-note-purple);
+  }
+  .ucch-text-color[data-color="pink"] {
+    color: var(--ucch-note-pink);
+  }
+
+  /* Picked blocks: a tint over each, drawn above its own background so a
+     card or a callout shows it too. The native highlight is hidden. */
+  .ucch-note-editor .ucch-block-selected {
+    position: relative;
+  }
+  .ucch-note-editor .ucch-block-selected::after {
+    content: "";
+    position: absolute;
+    inset: -2px -6px;
+    border-radius: 4px;
+    background: var(--ucch-active-bg);
+    pointer-events: none;
+    z-index: 1;
+  }
+  .ucch-block-band {
+    position: fixed;
+    z-index: 40;
+    border: 1px solid color-mix(in oklch, var(--ucch-active) 50%, transparent);
+    background: color-mix(in oklch, var(--ucch-active) 10%, transparent);
+    pointer-events: none;
+  }
+
+  /* The drop cursor between blocks, from ProseMirror's dropcursor. */
+  .prosemirror-dropcursor-block {
+    background: var(--ucch-active) !important;
+  }
+
+  /* Sidebar rows while a page is dragged over them: a line above or below. */
+  .ucch-tree-row[data-drop="before"]::before,
+  .ucch-tree-row[data-drop="after"]::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--ucch-active);
+    pointer-events: none;
+  }
+  .ucch-tree-row[data-drop="before"]::before {
+    top: -1px;
+  }
+  .ucch-tree-row[data-drop="after"]::after {
+    bottom: -1px;
+  }
+
+  /* Syntax colours inside code blocks, from the same tokens the code editor uses. */
+  .ucch-note-editor .hljs-keyword,
+  .ucch-note-editor .hljs-selector-tag,
+  .ucch-note-editor .hljs-built_in {
+    color: var(--syn-keyword);
+  }
+  .ucch-note-editor .hljs-string,
+  .ucch-note-editor .hljs-regexp {
+    color: var(--syn-string);
+  }
+  .ucch-note-editor .hljs-number,
+  .ucch-note-editor .hljs-literal {
+    color: var(--syn-number);
+  }
+  .ucch-note-editor .hljs-comment,
+  .ucch-note-editor .hljs-quote {
+    color: var(--syn-comment);
+    font-style: italic;
+  }
+  .ucch-note-editor .hljs-title,
+  .ucch-note-editor .hljs-function {
+    color: var(--syn-function);
+  }
+  .ucch-note-editor .hljs-attr,
+  .ucch-note-editor .hljs-property {
+    color: var(--syn-property);
+  }
+  .ucch-note-editor .hljs-type,
+  .ucch-note-editor .hljs-class {
+    color: var(--syn-type);
+  }
+  .ucch-note-editor .hljs-tag,
+  .ucch-note-editor .hljs-name {
+    color: var(--syn-tag);
+  }
+  .ucch-note-editor .hljs-attribute {
+    color: var(--syn-attribute);
+  }
+  .ucch-note-editor .hljs-symbol,
+  .ucch-note-editor .hljs-meta {
+    color: var(--syn-operator);
   }
 }

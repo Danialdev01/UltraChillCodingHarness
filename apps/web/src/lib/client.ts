@@ -4,10 +4,35 @@ import {
   ServerFrame,
   type ClientFrame,
   type Command,
+  type ComposerDraft,
   type DomainEvent,
   type Scope,
   type StoredEvent,
 } from "@ucch/protocol";
+import { TAB_ID } from "./tab-id";
+
+/**
+ * Live state rather than history: delivered to `onEvent` listeners but kept
+ * out of `events`, whose 500-row window is a conversation's history. A prompt
+ * box shared keystroke by keystroke would otherwise push the conversation
+ * out of it.
+ */
+const EPHEMERAL: ReadonlySet<DomainEvent["type"]> = new Set([
+  "composer.changed",
+  "presence.changed",
+  "audit.recorded",
+  "resource.changed",
+]);
+
+/** A refusal from the server, with its code -- `conflict` is the one callers branch on. */
+export class ServerError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 export type ConnectionState = "idle" | "connecting" | "ready" | "reconnecting" | "failed";
 
@@ -39,6 +64,9 @@ export class UcchClient {
   #scopes: Scope[] = [];
   #events: ClientEvent[] = [];
   #listeners = new Set<Listener>();
+  #eventListeners = new Set<(event: ClientEvent) => void>();
+  /** Where this tab said it was in each project, re-sent after a reconnect. */
+  #presence = new Map<string, { location: string | null; editing: boolean }>();
   #pending = new Map<string, { resolve: (v: StoredEvent[]) => void; reject: (e: Error) => void }>();
   #subscriptions = new Map<string, { topic: SubscribeTopic; lastSeq: number }>();
   /**
@@ -72,6 +100,43 @@ export class UcchClient {
     return () => this.#listeners.delete(listener);
   }
 
+  /** Every event as it arrives, including the live ones `events` does not keep. */
+  onEvent(listener: (event: ClientEvent) => void): () => void {
+    this.#eventListeners.add(listener);
+    return () => this.#eventListeners.delete(listener);
+  }
+
+  /**
+   * Shares what this tab has typed in a thread's prompt box. Rejects with a
+   * `ServerError` coded `conflict` when another window wrote first; by then
+   * this tab has already been sent what that window wrote.
+   */
+  updateComposer(threadId: string, baseRev: number, draft: ComposerDraft): Promise<void> {
+    return this.#request((id) => ({ kind: "composer", id, threadId, baseRev, draft }));
+  }
+
+  /** Where this tab is in a project, or null when it leaves. Kept across reconnects. */
+  setPresence(projectId: string, location: string | null, editing = false): void {
+    const last = this.#presence.get(projectId);
+    if (last && last.location === location && last.editing === editing) return;
+    if (location === null) this.#presence.delete(projectId);
+    else this.#presence.set(projectId, { location, editing });
+    if (this.#socket?.readyState !== WebSocket.OPEN) return;
+    void this.#request((id) => ({ kind: "presence", id, projectId, location, editing })).catch(() => {});
+  }
+
+  #request(frame: (id: string) => ClientFrame): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const id = String(this.#nextId++);
+      if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
+        reject(new ServerError("unavailable", "not connected"));
+        return;
+      }
+      this.#pending.set(id, { resolve: () => resolve(), reject });
+      this.#send(frame(id));
+    });
+  }
+
   async connect(): Promise<void> {
     if (this.#state === "connecting" || this.#state === "ready") return;
     this.#closed = false;
@@ -93,7 +158,7 @@ export class UcchClient {
     // subscription nothing will ever read.
     if (this.#closed) return;
 
-    const socket = new WebSocket(`${websocketOrigin()}/ws?ticket=${ticket}`);
+    const socket = new WebSocket(`${websocketOrigin()}/ws?ticket=${ticket}&client=${TAB_ID}`);
     this.#socket = socket;
 
     socket.onmessage = (message) => this.#onFrame(String(message.data));
@@ -206,6 +271,9 @@ export class UcchClient {
             ...(sub.lastSeq >= 0 ? { sinceSeq: sub.lastSeq } : {}),
           });
         }
+        for (const [projectId, place] of this.#presence) {
+          this.#send({ kind: "presence", id: String(this.#nextId++), projectId, ...place });
+        }
         break;
 
       case "ack": {
@@ -218,7 +286,9 @@ export class UcchClient {
 
       case "error": {
         if (frame.id) {
-          this.#pending.get(frame.id)?.reject(new Error(`${frame.code}: ${frame.message}`));
+          this.#pending
+            .get(frame.id)
+            ?.reject(new ServerError(frame.code, `${frame.code}: ${frame.message}`));
           this.#pending.delete(frame.id);
         }
         break;
@@ -257,10 +327,16 @@ export class UcchClient {
       this.#seen.add(key);
     }
 
-    this.#events = [
-      ...this.#events,
-      { seq, event, receivedAt: Number.isFinite(at) ? at : Date.now() },
-    ].slice(-500);
+    const row = { seq, event, receivedAt: Number.isFinite(at) ? at : Date.now() };
+    for (const listener of this.#eventListeners) {
+      try {
+        listener(row);
+      } catch {
+        // One broken view must not stop the others hearing.
+      }
+    }
+    if (EPHEMERAL.has(event.type)) return;
+    this.#events = [...this.#events, row].slice(-500);
     this.#emit();
   }
 
@@ -314,10 +390,13 @@ function topicKey(topic: SubscribeTopic): string {
       return `project:${topic.projectId}`;
     case "terminal":
       return `terminal:${topic.terminalId}`;
+    case "user":
+      return "user";
   }
 }
 
 export type SubscribeTopic =
   | { name: "thread"; threadId: string }
-  | { name: "project"; projectId: string }
-  | { name: "terminal"; terminalId: string };
+  | { name: "project"; projectId: string; quiet?: boolean }
+  | { name: "terminal"; terminalId: string }
+  | { name: "user" };

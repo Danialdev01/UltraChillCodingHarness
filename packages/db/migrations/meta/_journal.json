@@ -71,6 +71,62 @@
       "when": 1789374719937,
       "tag": "0009_preview_port",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789737818016,
+      "tag": "0010_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789910419804,
+      "tag": "0011_notes_cover_search",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789975244388,
+      "tag": "0012_public_site",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790044106303,
+      "tag": "0013_database_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790066281674,
+      "tag": "0014_timeline_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1790668603436,
+      "tag": "0015_project_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1791026579774,
+      "tag": "0016_agent_permission_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1791031569438,
+      "tag": "0017_audit_log",
+      "breakpoints": true
     }
   ]
 }

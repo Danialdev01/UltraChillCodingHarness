@@ -2,8 +2,10 @@
 
 import { Fragment, Suspense, useEffect, useState } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
-import { GlobeIcon } from "lucide-react"
+import { GlobeIcon, SettingsIcon } from "lucide-react"
 
+import { DocViewToggle } from "@/components/notes/doc-view-toggle"
+import { ConnectionSettingsDialog } from "@/components/database/connection-settings-dialog"
 import { PreviewDialog } from "@/components/preview-dialog"
 import { ViewModeToggle } from "@/components/view-mode-toggle"
 import {
@@ -15,8 +17,18 @@ import {
 } from "@/components/ui/breadcrumb"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { projectHashFromPath, sectionForPath } from "@/lib/sections"
+import {
+  connectionIdFromPath,
+  databasePathFromPath,
+  projectHashFromPath,
+  projectPageById,
+  projectPageFromPath,
+  sectionForPath,
+  settingsPageById,
+  settingsPageFromPath,
+} from "@/lib/sections"
 import type { Project } from "@/lib/session"
+import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { cn } from "@/lib/utils"
 
 /**
@@ -29,25 +41,50 @@ import { cn } from "@/lib/utils"
  * the URL is there from the first frame. A section's name comes from the
  * rail's own list, and a project's from the workspace's project list the
  * layout already holds -- so the crumb is right while the page is still a
- * skeleton, and never flips from one name to another once it lands.
+ * skeleton, and never flips from one name to another once it lands. The
+ * workspace is not a crumb: the switcher at the top of the sidebar already
+ * names it, a hand's width to the left.
  */
 export function AppHeader({
-  workspaceName,
   projects,
+  connections,
 }: {
-  workspaceName: string
   projects: readonly Project[]
+  connections: readonly DatabaseConnectionSummary[]
 }) {
   const pathname = usePathname()
   const projectHash = projectHashFromPath(pathname)
   const project = projectHash ? projects.find((p) => p.hash === projectHash) : undefined
+  // Notes, Timeline, Keys: a page of the project rather than the project.
+  const projectPage = projectPageFromPath(pathname)
+  // Account, Usage, Theme: a page of Settings rather than Settings.
+  const settingsPage = settingsPageFromPath(pathname)
+  // A connection, its database, and perhaps a table: the database pages.
+  const databasePath = databasePathFromPath(pathname)
+  // The connection itself: its page lists the databases on the server.
+  const connectionId = connectionIdFromPath(pathname)
+
+  // The connection any database page is on, for the settings button.
+  const currentConnection = connections.find((c) => c.id === (connectionId ?? databasePath?.connectionId))
 
   const crumbs = projectHash
     ? // A hash the list does not know is a project you have just created, or
       // one that will 404 in a moment; either way there is nothing better to
       // show than that it is a project.
-      [project?.name ?? "Project"]
-    : [workspaceName, sectionForPath(pathname).title]
+      [project?.name ?? "Project", ...(projectPage ? [projectPageById(projectPage).title] : [])]
+    : connectionId
+      ? ["Connections", connections.find((c) => c.id === connectionId)?.name ?? "Connection"]
+      : databasePath
+      ? [
+          "Connections",
+          connections.find((c) => c.id === databasePath.connectionId)?.name ?? "Connection",
+          databasePath.db,
+          ...(databasePath.table ? [databasePath.table] : []),
+        ]
+      : [
+          sectionForPath(pathname).title,
+          ...(settingsPage ? [settingsPageById(settingsPage).title] : []),
+        ]
 
   return (
     <header className="bg-background flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:h-16 sm:px-4">
@@ -71,9 +108,17 @@ export function AppHeader({
           ))}
         </BreadcrumbList>
       </Breadcrumb>
+      {/* On a connection, or any database of it: how the server is reached. */}
+      {currentConnection && <ConnectionSettingsButton connection={currentConnection} />}
+      {/* The documentation's own views, and its settings. */}
+      {projectHash && projectPage === "documentation" && (
+        <Suspense>
+          <DocViewToggle projectHash={projectHash} />
+        </Suspense>
+      )}
       {/* Only a project has views to switch between, or files to put beside
-          them. */}
-      {projectHash && (
+          them -- and only the project itself, not its notes or keys. */}
+      {projectHash && !projectPage && (
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {/* Suspense because the button reads the search params, which
               Next wants fenced off from any static parent. */}
@@ -122,5 +167,24 @@ function PreviewButton({ project }: { project: Project }) {
       </button>
       <PreviewDialog project={project} open={open} onOpenChange={setOpen} />
     </>
+  )
+}
+
+/** Opens the connection's settings: the same dialog as the sidebar's ⋯ menu. */
+function ConnectionSettingsButton({ connection }: { connection: DatabaseConnectionSummary }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="ml-auto flex shrink-0 items-center">
+      <button
+        type="button"
+        title={`Settings for ${connection.name}`}
+        onClick={() => setOpen(true)}
+        className="text-muted-foreground hover:text-foreground flex size-7 items-center justify-center rounded-md transition-colors"
+      >
+        <SettingsIcon className="size-3.5" />
+        <span className="sr-only">Connection settings</span>
+      </button>
+      <ConnectionSettingsDialog connection={connection} open={open} onOpenChange={setOpen} />
+    </div>
   )
 }

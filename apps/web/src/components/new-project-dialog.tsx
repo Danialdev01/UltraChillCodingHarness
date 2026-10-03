@@ -555,7 +555,7 @@ function NoToken() {
       <Button
         variant="outline"
         nativeButton={false}
-        render={<TransitionLink href="/setting#api" />}
+        render={<TransitionLink href="/setting/api" />}
         className="mt-4"
       >
         Open API settings

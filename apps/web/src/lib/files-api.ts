@@ -27,22 +27,69 @@ export async function fetchTree(hash: string): Promise<{ tree: FileNode[]; trunc
 }
 
 export async function fetchFile(hash: string, path: string): Promise<string> {
+  return (await fetchFileVersion(hash, path)).content;
+}
+
+/** A file's text and the version naming it, for a save that must not overwrite another. */
+export async function fetchFileVersion(
+  hash: string,
+  path: string,
+): Promise<{ content: string; version: string | null }> {
   const response = await fetch(
     `/api/projects/${hash}/file?path=${encodeURIComponent(path)}`,
     { credentials: "include" },
   );
   if (!response.ok) await fail(response, "Could not open the file.");
-  return ((await response.json()) as { content: string }).content;
+  const body = (await response.json()) as { content: string; version?: string };
+  return { content: body.content, version: body.version ?? null };
 }
 
-export async function saveFile(hash: string, path: string, content: string): Promise<void> {
+/** A save refused because the file changed elsewhere; carries what is there now. */
+export class FileConflictError extends Error {
+  constructor(
+    message: string,
+    /** The file as it is now, or null when it was deleted. */
+    readonly content: string | null,
+    readonly version: string | null,
+  ) {
+    super(message);
+    this.name = "FileConflictError";
+  }
+}
+
+/**
+ * Saves a file. With `ifVersion`, only over that version: throws
+ * `FileConflictError` when another window or the agent changed it since.
+ * Resolves with the new version.
+ */
+export async function saveFile(
+  hash: string,
+  path: string,
+  content: string,
+  ifVersion?: string | null,
+): Promise<string | null> {
   const response = await fetch(`/api/projects/${hash}/file`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ path, content }),
+    body: JSON.stringify({ path, content, ...(ifVersion ? { ifVersion } : {}) }),
   });
+  if (response.status === 409) {
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      content?: string | null;
+      version?: string | null;
+    };
+    if ("content" in body) {
+      throw new FileConflictError(
+        body.error ?? "This file was changed elsewhere.",
+        body.content ?? null,
+        body.version ?? null,
+      );
+    }
+  }
   if (!response.ok) await fail(response, "Could not save the file.");
+  return ((await response.json()) as { version?: string }).version ?? null;
 }
 
 export async function createEntry(
@@ -57,6 +104,17 @@ export async function createEntry(
     body: JSON.stringify({ path, kind }),
   });
   if (!response.ok) await fail(response, `Could not create ${path}.`);
+}
+
+/** Renames or relocates a file or folder, contents and all. */
+export async function moveEntry(hash: string, from: string, to: string): Promise<void> {
+  const response = await fetch(`/api/projects/${hash}/file`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ from, to }),
+  });
+  if (!response.ok) await fail(response, `Could not move ${from}.`);
 }
 
 export async function deleteEntry(hash: string, path: string): Promise<void> {

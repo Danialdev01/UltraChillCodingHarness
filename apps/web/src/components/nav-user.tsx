@@ -117,7 +117,7 @@ export function NavUser({
               {/* A link rather than a click handler: the account tab has an
                   address, so it should be openable in a new tab and readable
                   in the status bar like any other. */}
-              <DropdownMenuItem render={<TransitionLink href="/setting#account" />}>
+              <DropdownMenuItem render={<TransitionLink href="/setting/account" />}>
                 <BadgeCheckIcon />
                 Account
               </DropdownMenuItem>

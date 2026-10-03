@@ -102,6 +102,12 @@ export interface TurnInput {
    * idle with the real work still to come. Defaults to true.
    */
   conclude?: boolean;
+  /**
+   * Asked before any tool that is not a read runs; the harness decides
+   * whether a person has to answer, and waits for them if so. A deny comes
+   * back to the model as the tool's error. Absent means nothing is asked.
+   */
+  approve?(request: ApprovalRequest): Promise<ApprovalDecision>;
   /** Durable events, appended in one transaction per call. */
   append(events: readonly DomainEvent[]): Promise<void>;
   /** Transient deltas. Not awaited, and never stored. */
@@ -111,6 +117,20 @@ export interface TurnInput {
    * Optional: a harness with nowhere to log simply does not pass one.
    */
   onDiagnostic?(message: string): void;
+}
+
+export interface ApprovalRequest {
+  toolUseId: string;
+  toolName: string;
+  permission: "write" | "exec";
+  /** The arguments as the tool will receive them. */
+  input: unknown;
+}
+
+export interface ApprovalDecision {
+  behavior: "allow" | "deny";
+  /** Handed to the model on a deny. */
+  message?: string;
 }
 
 export interface TurnOutcome {
@@ -650,6 +670,23 @@ export async function runTool(call: ToolCall, input: TurnInput): Promise<ToolOut
   // stalls, and the harness knows what type it asked for. See arguments.ts.
   const parsed = parseToolArguments(name, tool.inputSchema, raw);
   if (!parsed.ok) return finish(parsed.message, true);
+
+  // Before the deadline starts: time spent waiting for a person is not the
+  // tool's. The harness resolves a cancelled turn's question as a deny.
+  if (input.approve && tool.permission !== "read") {
+    const decision = await input.approve({
+      toolUseId: call.id,
+      toolName: name,
+      permission: tool.permission,
+      input: parsed.value,
+    });
+    if (decision.behavior === "deny") {
+      return finish(
+        decision.message?.trim() || `The user declined to run ${name}. Do not retry it; ask or take another route.`,
+        true,
+      );
+    }
+  }
 
   const timeoutMs = tool.timeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
   let timer: NodeJS.Timeout | undefined;

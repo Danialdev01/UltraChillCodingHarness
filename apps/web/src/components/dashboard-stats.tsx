@@ -73,7 +73,7 @@ export function DashboardStats({
           footnote={
             quota.status === "no_key" ? (
               <TransitionLink
-                href="/setting#api"
+                href="/setting/api"
                 className="text-ucch-active underline underline-offset-2"
               >
                 Add one in Settings

@@ -3,6 +3,7 @@ import {
   describeQuota,
   compactNumber,
   describeContainerState,
+  formatBytes,
   formatUsd,
   relativeTime,
   shortRepo,
@@ -161,5 +162,24 @@ describe("the quota card", () => {
     expect(describeQuota(quota()).title).toBe(
       "$12.50 spent through this key · key limit $50.00 · account credits $100.00, used $40.00",
     );
+  });
+});
+
+describe("formatBytes", () => {
+  it("stays in bytes under a kilobyte", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(812)).toBe("812 B");
+  });
+
+  it("uses binary units with one decimal while it adds something", () => {
+    expect(formatBytes(1024)).toBe("1 KB");
+    expect(formatBytes(1536)).toBe("1.5 KB");
+    expect(formatBytes(4.2 * 1024 * 1024)).toBe("4.2 MB");
+    expect(formatBytes(340 * 1024 * 1024)).toBe("340 MB");
+    expect(formatBytes(1.3 * 1024 ** 3)).toBe("1.3 GB");
+  });
+
+  it("never goes negative", () => {
+    expect(formatBytes(-5)).toBe("0 B");
   });
 });

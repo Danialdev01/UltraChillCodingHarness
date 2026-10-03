@@ -1,6 +1,11 @@
 import type { DomainEvent } from "@ucch/protocol";
 import type { ChildHandle, ExitStatus, SpawnSpec } from "./process.js";
-import { forbiddenEnvPresent, type AgentRun, type RunContext } from "./types.js";
+import {
+  forbiddenEnvPresent,
+  type AgentRun,
+  type PermissionReply,
+  type RunContext,
+} from "./types.js";
 
 /**
  * What a provider's stream reader looks like from the driver's side.
@@ -13,6 +18,14 @@ import { forbiddenEnvPresent, type AgentRun, type RunContext } from "./types.js"
 export interface Normaliser {
   /** One line of stdout, already complete. Not necessarily JSON. */
   push(line: string): DomainEvent[];
+  /**
+   * The child's stdin, for a CLI that talks back. Handed over before the
+   * first line is read, so a prompt arriving on the first line has
+   * somewhere to send its answer.
+   */
+  bind?(io: { write(line: string): void; endStdin(): void }): void;
+  /** A person's answer to a prompt this stream raised. See `AgentRun`. */
+  answerPermission?(requestId: string, reply: PermissionReply): DomainEvent[];
   /**
    * An interrupt has been sent. The CLI may still print a result line of
    * its own before it exits -- Claude Code does, and marks it an error --
@@ -62,6 +75,13 @@ export function runCli(input: {
   let interruptTimer: NodeJS.Timeout | undefined;
   let stderrTail = "";
 
+  input.normaliser.bind?.({ write: (line) => child.write(line), endStdin: () => child.endStdin() });
+
+  // An answer produces events of its own -- the prompt's resolution -- and
+  // they must reach the consumer in order with the stream, so they queue
+  // here and the reader drains them between lines.
+  const answered: DomainEvent[] = [];
+
   const events: AsyncIterable<DomainEvent> = {
     async *[Symbol.asyncIterator]() {
       let spawnFailure: string | null = null;
@@ -71,8 +91,10 @@ export function runCli(input: {
             stderrTail = (stderrTail + line + "\n").slice(-STDERR_TAIL_BYTES);
             continue;
           }
+          while (answered.length) yield answered.shift()!;
           for (const event of input.normaliser.push(line)) yield event;
         }
+        while (answered.length) yield answered.shift()!;
       } catch (error) {
         spawnFailure = error instanceof Error ? error.message : String(error);
       }
@@ -90,6 +112,16 @@ export function runCli(input: {
 
   return {
     events,
+    ...(input.normaliser.answerPermission
+      ? {
+          answerPermission(requestId: string, reply: PermissionReply): boolean {
+            const events = input.normaliser.answerPermission!(requestId, reply);
+            if (events.length === 0) return false;
+            answered.push(...events);
+            return true;
+          },
+        }
+      : {}),
     async interrupt() {
       if (interrupted) return;
       interrupted = true;

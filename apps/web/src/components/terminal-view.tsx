@@ -45,13 +45,25 @@ export function TerminalView({ project, active }: { project: Project; active: bo
   const [error, setError] = React.useState<string | null>(null)
 
   const clientRef = React.useRef<UcchClient | null>(null)
+  const unsubscribeRef = React.useRef<() => void>(() => {})
   const seen = React.useRef(0)
+  // The tabs as they are now, for the teardown below: an effect keyed on the
+  // project would otherwise close the tabs it knew at mount -- none.
+  const tabsRef = React.useRef(tabs)
+  tabsRef.current = tabs
   const { registerTerminals } = useFilesPanel()
 
   /**
    * The socket opens the first time the terminal is looked at, not when the
    * project page loads: most visits never open a shell, and a connection for
    * a view nobody opened is a connection wasted.
+   *
+   * Once open it stays open until the view unmounts, whatever `active` does
+   * afterwards. The shells outlive the socket on the server, so closing it
+   * when the user glanced at the chat would leave the tabs pointing at
+   * shells nothing is subscribed to any more: the prompt still on screen,
+   * every keystroke swallowed. Which is exactly the "can't type" that used
+   * to happen after switching views.
    */
   React.useEffect(() => {
     if (!active || clientRef.current) return
@@ -59,7 +71,7 @@ export function TerminalView({ project, active }: { project: Project; active: bo
     const client = new UcchClient()
     clientRef.current = client
 
-    const unsubscribe = client.subscribeToChanges(() => {
+    unsubscribeRef.current = client.subscribeToChanges(() => {
       setReady(client.state === "ready")
       // Output arrives as transient events on the terminal topics this client
       // is subscribed to. Only what has not been folded in yet.
@@ -87,24 +99,27 @@ export function TerminalView({ project, active }: { project: Project; active: bo
 
     void client.connect().catch(() => setError("Could not reach the server."))
 
-    return () => {
-      unsubscribe()
-      client.close()
-      clientRef.current = null
-    }
+    // No cleanup here: this effect re-runs when `active` flips, and a
+    // cleanup would tear the socket down on every switch away. Closing is
+    // the project effect's job below.
   }, [active, project.id])
 
   // The shells belong to a project, so leaving it closes them rather than
-  // leaving a bash running for a page nobody has open.
+  // leaving a bash running for a page nobody has open -- and the socket
+  // goes with them.
   React.useEffect(() => {
     return () => {
       const client = clientRef.current
       if (!client) return
-      for (const tab of tabs) {
+      for (const tab of tabsRef.current) {
         void client.dispatch({ type: "terminal.close", terminalId: tab.id }).catch(() => {})
       }
+      unsubscribeRef.current()
+      client.close()
+      clientRef.current = null
+      seen.current = 0
+      setReady(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id])
 
   const open = React.useCallback(async () => {
@@ -218,6 +233,10 @@ export function TerminalView({ project, active }: { project: Project; active: bo
               role="tab"
               aria-selected={tab.id === activeId}
               onClick={() => setActiveId(tab.id)}
+              // A click must not leave focus on the tab itself: the pane
+              // takes it as it is shown, and a focused button would keep it
+              // away from the shell the user just asked for.
+              onMouseDown={(event) => event.preventDefault()}
               className="outline-hidden"
             >
               {tab.title}
@@ -262,7 +281,10 @@ export function TerminalView({ project, active }: { project: Project; active: bo
         tabs.map((tab) => (
           <XtermPane
             key={tab.id}
-            hidden={tab.id !== activeId}
+            // Hidden when the whole view is, too: a pane that only knew about
+            // its own tab would not refit or refocus when the user switches
+            // from the file browser back to the terminal.
+            hidden={!active || tab.id !== activeId}
             data={output[tab.id] ?? EMPTY}
             onInput={(data) => send(tab.id, data)}
             onResize={(cols, rows) => resize(tab.id, cols, rows)}

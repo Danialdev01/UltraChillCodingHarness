@@ -28,10 +28,12 @@ export function FileTypeIcon({
   name,
   kind = "file",
   className,
+  style,
 }: {
   name: string
   kind?: IconKind
   className?: string
+  style?: React.CSSProperties
 }) {
   const [attempt, setAttempt] = React.useState(0)
   // A change of name or kind is a new image, so its failures start over.
@@ -50,6 +52,7 @@ export function FileTypeIcon({
       height={16}
       decoding="async"
       className={cn("size-4 shrink-0", className)}
+      style={style}
       onError={() => {
         if (attempt >= RETRIES) return
         window.setTimeout(() => setAttempt((current) => current + 1), RETRY_DELAY_MS)

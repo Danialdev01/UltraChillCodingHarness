@@ -99,6 +99,27 @@ const ThreadCancel = z.object({
 });
 
 /**
+ * Answers a CLI provider's permission prompt.
+ *
+ * The CLI paused a tool call that its permission mode does not cover -- a
+ * shell command, typically -- and asked. `allow` runs it as asked; `deny`
+ * hands the model `message` as the tool's error, so it can try something
+ * else or explain what it needed. A request that has already been answered,
+ * or whose turn has ended, is a no-op: the reactor drops it.
+ *
+ * `scope: "session"` with `allow` is the prompt's "Allow All": this prompt
+ * and every later one on the thread are allowed until the server restarts.
+ */
+const ThreadPermissionReply = z.object({
+  type: z.literal("thread.permission_reply"),
+  threadId: z.string().uuid(),
+  requestId: z.string().min(1),
+  behavior: z.enum(["allow", "deny"]),
+  message: z.string().max(2_000).optional(),
+  scope: z.enum(["once", "session"]).optional(),
+});
+
+/**
  * Reverts files *and* thread state to the checkpoint taken before `turnId`.
  * Rolling back only one of the two is the inconsistency this command exists
  * to prevent.
@@ -201,6 +222,7 @@ export const Command = z.discriminatedUnion("type", [
   ThreadCreate,
   ThreadSend,
   ThreadCancel,
+  ThreadPermissionReply,
   ThreadRevert,
   ThreadFork,
   TerminalCreate,

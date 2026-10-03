@@ -21,6 +21,13 @@ export interface SpawnSpec {
   env: Record<string, string>;
   /** Written to the child and closed. Absent closes stdin immediately. */
   stdin?: string;
+  /**
+   * Keep stdin open after the initial write, for a CLI that talks back --
+   * Claude Code's permission prompts arrive on stdout and are answered on
+   * stdin. The caller ends it with `ChildHandle.endStdin()`; a child that
+   * waits for more input would otherwise never exit.
+   */
+  holdStdin?: boolean;
 }
 
 export interface OutputLine {
@@ -38,6 +45,9 @@ export interface ChildHandle {
   lines: AsyncIterable<OutputLine>;
   exited: Promise<ExitStatus>;
   signal(sig: "SIGINT" | "SIGTERM" | "SIGKILL"): void;
+  /** One line to stdin. Only meaningful with `holdStdin`; a no-op after it closes. */
+  write(line: string): void;
+  endStdin(): void;
 }
 
 export interface RunResult extends ExitStatus {
@@ -167,14 +177,18 @@ export class HostProcessHost implements ProcessHost {
       });
     });
 
-    if (spec.stdin !== undefined) {
-      child.stdin.on("error", () => {
-        /* the child closed its end first; its exit status says why */
-      });
-      child.stdin.end(spec.stdin);
-    } else {
+    child.stdin.on("error", () => {
+      /* the child closed its end first; its exit status says why */
+    });
+    let stdinOpen = true;
+    const endStdin = () => {
+      if (!stdinOpen) return;
+      stdinOpen = false;
       child.stdin.end();
-    }
+    };
+    if (spec.stdin !== undefined) child.stdin.write(spec.stdin);
+    if (!spec.holdStdin) endStdin();
+    void exited.then(endStdin);
 
     const lines: AsyncIterable<OutputLine> = {
       [Symbol.asyncIterator]() {
@@ -200,6 +214,11 @@ export class HostProcessHost implements ProcessHost {
     return {
       lines,
       exited,
+      write(line) {
+        if (!stdinOpen || child.stdin.destroyed) return;
+        child.stdin.write(line.endsWith("\n") ? line : `${line}\n`);
+      },
+      endStdin,
       signal(sig) {
         signalGroup(sig);
         if (sig === "SIGTERM" && !killTimer) {

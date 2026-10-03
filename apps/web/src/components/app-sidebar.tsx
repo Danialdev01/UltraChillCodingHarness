@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/sidebar"
 import { SECTIONS, SETTINGS, projectHashFromPath, sectionForPath, type Section } from "@/lib/sections"
 import type { Project } from "@/lib/session"
+import type { DatabaseConnectionSummary } from "@ucch/protocol"
 
 /**
  * The workspace switcher across the top, the profile across the bottom, and
@@ -46,12 +47,14 @@ export function AppSidebar({
   workspaces,
   activeWorkspaceId,
   projects,
+  connections,
   ...props
 }: React.ComponentProps<typeof Sidebar> & {
   user: { name: string; email: string; avatar?: string }
   workspaces: Workspace[]
   activeWorkspaceId: string
   projects: Project[]
+  connections: DatabaseConnectionSummary[]
 }) {
   const { setOpen, state } = useSidebar()
   const collapsed = state === "collapsed"
@@ -66,6 +69,7 @@ export function AppSidebar({
         section={section}
         isActive={active.id === section.id}
         projects={projects}
+        connections={connections}
         activeProjectHash={activeProjectHash}
         onOpenSidebar={() => setOpen(true)}
       />
@@ -120,6 +124,8 @@ export function AppSidebar({
             <SectionPanel
               section={active}
               projects={projects}
+              connections={connections}
+              workspaceId={activeWorkspaceId}
               activeProjectHash={activeProjectHash}
             />
           </SidebarContent>

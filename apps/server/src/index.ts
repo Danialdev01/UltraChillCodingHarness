@@ -8,12 +8,28 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { desc, eq, inArray } from "drizzle-orm";
 import { createDatabase, projects, runMigrations, threads, users } from "@ucch/db";
-import { MAX_AVATAR_BYTES, mediaTypeFor, projectUrl, ProviderId, type Command } from "@ucch/protocol";
+import {
+  AgentPermissionMode,
+  DEFAULT_AGENT_PERMISSION_MODE,
+  MAX_AVATAR_BYTES,
+  mediaTypeFor,
+  projectUrl,
+  ProviderId,
+  type ChangeOrigin,
+  type Command,
+  type DomainEvent,
+} from "@ucch/protocol";
 import { HostProcessHost, createProviders } from "@ucch/providers";
 import { AgentTurnReactor } from "./agent.js";
 import { researchBackends } from "./research.js";
+import { DIAGRAM_FILES, databaseDiagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
 import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.js";
-import { ConflictError, PathError, WorkspaceFiles } from "./files.js";
+import { ConflictError, PathError, StaleWriteError, WorkspaceFiles, contentVersion } from "./files.js";
+import { ProjectAccess } from "./access.js";
+import { AuditLog, textDelta, type AuditInput } from "./audit.js";
+import { ComposerStore } from "./composer.js";
+import { PresenceStore } from "./presence.js";
+import { describeRoute } from "./route-audit.js";
 import { MAX_QUERY_LENGTH, SearchError, searchWorkspace } from "./search.js";
 import {
   UPLOAD_TEXT_PREVIEW_BYTES,
@@ -32,6 +48,21 @@ import { EventStore } from "./eventstore.js";
 import { WebSocketGateway } from "./ws.js";
 import { PreviewGateway } from "./preview.js";
 import { WorkspaceService, type ProjectSummary } from "./workspaces.js";
+import { StorageService } from "./storage.js";
+import { NotesService } from "./notes.js";
+import { registerNoteRoutes } from "./notes-routes.js";
+import { registerTimelineRoutes } from "./timeline-routes.js";
+import { registerKeyRoutes } from "./keys-routes.js";
+import { ProjectKeyService } from "./keys.js";
+import { TimelineService } from "./timeline.js";
+import { registerDatabaseRoutes } from "./database-routes.js";
+import { registerDbManagerRoutes } from "./db-manager-routes.js";
+import { adapterFor } from "./db-manager/index.js";
+import { DatabaseConnectionService } from "./database-connections.js";
+import { probe } from "./database-probe.js";
+import { GitService } from "./git.js";
+import { registerGitRoutes } from "./git-routes.js";
+import { registerPublicRoutes } from "./public-routes.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import {
   GithubError,
@@ -81,7 +112,24 @@ const bus = new EventBus();
 const store = new EventStore(db, bus);
 const auth = new AuthService(db, config);
 const workspaceService = new WorkspaceService(db);
+const access = new ProjectAccess(db);
+const composer = new ComposerStore();
+const presence = new PresenceStore();
+
+/**
+ * The activity log. A project's lines go to the project's topic, so its
+ * Activity page grows as things happen; an account's go to the account's.
+ */
+const audit = new AuditLog(
+  db,
+  (projectId, userId, event) => {
+    if (projectId) bus.publish({ seq: null, projectId, threadId: null, event });
+    else if (userId) bus.publishToUser(userId, event);
+  },
+  (error) => app.log.error({ err: error }, "could not write to the activity log"),
+);
 const workspaceFiles = new WorkspaceFiles(config.WORKSPACE_ROOT);
+const storageService = new StorageService(db, workspaceService, config.WORKSPACE_ROOT);
 
 /**
  * Attachment staging: `WORKSPACE_ROOT/.uploads`, beside the project
@@ -135,6 +183,44 @@ const agentTurns = new AgentTurnReactor(
 );
 
 /**
+ * What a project's owner brings to git: who to commit as, and what to
+ * authenticate with.
+ *
+ * Resolved per operation rather than held: a private repository needs the
+ * account's token for the one clone or push that is about to run, and a
+ * commit needs a name to be made under. The token comes back ungated; the
+ * caller checks it belongs to the host being contacted (`tokenAppliesTo`).
+ */
+async function ownerCredentials(
+  projectId: string,
+): Promise<{ token: string | null; author: { name: string; email: string } }> {
+  const [owner] = await db
+    .select({
+      login: users.login,
+      name: users.name,
+      email: users.email,
+      github: users.githubTokenEncrypted,
+      oauth: users.accessTokenEncrypted,
+    })
+    .from(projects)
+    .innerJoin(users, eq(users.id, projects.userId))
+    .where(eq(projects.id, projectId))
+    .limit(1);
+  if (!owner) return { token: null, author: { name: "UltraChillCodingHarness", email: "harness@localhost" } };
+
+  return {
+    token: decryptOrNull(owner.github) ?? decryptOrNull(owner.oauth),
+    author: {
+      name: owner.name || owner.login,
+      // A commit needs an address and an account may have none. The
+      // `users.noreply.github.com` form is GitHub's own answer to that,
+      // and it attributes the commit to the right person once pushed.
+      email: owner.email || `${owner.login}@users.noreply.github.com`,
+    },
+  };
+}
+
+/**
  * Puts the repository on disk when a project is created, so the file tools
  * have something real to read. Its events carry no thread, so they are
  * appended against the project alone.
@@ -150,32 +236,7 @@ const clones = new CloneReactor(
     // Resolved through the project's owner, and only for the clone that is
     // about to run: a private repository needs the account's token, and an
     // empty one needs a name to make its first commit under.
-    credentials: async (event) => {
-      const [owner] = await db
-        .select({
-          login: users.login,
-          name: users.name,
-          email: users.email,
-          github: users.githubTokenEncrypted,
-          oauth: users.accessTokenEncrypted,
-        })
-        .from(projects)
-        .innerJoin(users, eq(users.id, projects.userId))
-        .where(eq(projects.id, event.projectId))
-        .limit(1);
-      if (!owner) return {};
-
-      return {
-        token: decryptOrNull(owner.github) ?? decryptOrNull(owner.oauth),
-        author: {
-          name: owner.name || owner.login,
-          // A commit needs an address and an account may have none. The
-          // `users.noreply.github.com` form is GitHub's own answer to that,
-          // and it attributes the commit to the right person once pushed.
-          email: owner.email || `${owner.login}@users.noreply.github.com`,
-        },
-      };
-    },
+    credentials: (event) => ownerCredentials(event.projectId),
   },
   (error, event) => app.log.error({ err: error, projectId: event.projectId }, "clone failed"),
 );
@@ -226,7 +287,116 @@ const reactors: Reactors = {
 const engine = new OrchestrationEngine(db, store, reactors, (error, command) => {
   app.log.error({ err: error, command: command.type }, "command failed");
 });
-const gateway = new WebSocketGateway(auth, engine, store, bus);
+const gateway = new WebSocketGateway(auth, engine, store, bus, {
+  access,
+  composer,
+  presence,
+  onDispatched: (principal, clientId, command, result) => {
+    if (!result.ok) return;
+    void auditCommand(principal.userId, clientId, command, result.events).catch((error) =>
+      app.log.error({ err: error }, "could not log a command"),
+    );
+  },
+});
+
+/**
+ * The activity line for a command sent over the socket: the chat, the
+ * terminal, the project's lifecycle. Keystrokes into a terminal are not
+ * lines of their own -- opening one is.
+ */
+async function auditCommand(
+  userId: string,
+  clientId: string,
+  command: Command,
+  events: readonly { projectId: string; event: DomainEvent }[],
+): Promise<void> {
+  const projectId =
+    ("projectId" in command ? command.projectId : null) ??
+    ("threadId" in command && command.threadId ? await access.projectOfThread(command.threadId) : null) ??
+    events[0]?.projectId ??
+    null;
+  const base = { projectId, userId, clientId };
+  const thread = (action: string, summary: string, details?: Record<string, unknown>): AuditInput => ({
+    ...base,
+    action,
+    targetType: "thread",
+    targetId: "threadId" in command ? command.threadId : null,
+    summary,
+    ...(details ? { details } : {}),
+  });
+
+  let entry: AuditInput | null = null;
+  switch (command.type) {
+    case "thread.send": {
+      const line = command.text.trim().split("\n")[0] ?? "";
+      entry = thread("chat.send", `Asked: “${line.length > 120 ? `${line.slice(0, 117)}…` : line}”`, {
+        chars: command.text.length,
+        ...(command.model ? { model: command.model } : {}),
+        ...(command.provider ? { provider: command.provider } : {}),
+        ...(command.mode ? { mode: command.mode } : {}),
+      });
+      break;
+    }
+    case "thread.create": {
+      const created = events.find((e) => e.event.type === "thread.created")?.event;
+      entry = thread("chat.new", "Started a new conversation");
+      entry.targetId = created && "threadId" in created ? created.threadId : null;
+      break;
+    }
+    case "thread.cancel":
+      entry = thread("chat.cancel", "Stopped the agent");
+      break;
+    case "thread.permission_reply":
+      entry = thread(
+        "chat.permission",
+        command.behavior === "allow" ? "Allowed a tool request" : "Denied a tool request",
+        { requestId: command.requestId },
+      );
+      break;
+    case "thread.revert":
+      entry = thread("chat.revert", "Reverted the conversation to an earlier turn", { turnId: command.turnId });
+      break;
+    case "thread.fork":
+      entry = thread("chat.fork", "Forked the conversation");
+      break;
+    case "terminal.create":
+      entry = { ...base, action: "terminal.open", targetType: "terminal", targetId: command.terminalId, summary: "Opened a terminal" };
+      break;
+    case "terminal.close":
+      entry = { ...base, action: "terminal.close", targetType: "terminal", targetId: command.terminalId, summary: "Closed a terminal" };
+      break;
+    case "project.create":
+      entry = { ...base, action: "project.create", targetType: "project", targetId: projectId, summary: "Created the project" };
+      break;
+    case "project.start":
+      entry = { ...base, action: "project.start", targetType: "project", targetId: projectId, summary: "Started the project" };
+      break;
+    case "project.stop":
+      entry = { ...base, action: "project.stop", targetType: "project", targetId: projectId, summary: "Stopped the project" };
+      break;
+    case "file.write":
+      entry = { ...base, action: "file.write", targetType: "file", targetId: command.path, summary: `Saved ${command.path}`, coalesce: true };
+      break;
+    case "git.commit":
+      entry = { ...base, action: "git.commit", targetType: "git", summary: "Committed changes" };
+      break;
+    case "git.push":
+      entry = { ...base, action: "git.push", targetType: "git", summary: "Pushed" };
+      break;
+    case "preview.publish":
+      entry = { ...base, action: "preview.publish", targetType: "preview", summary: "Published a preview" };
+      break;
+    case "preview.delete":
+      entry = { ...base, action: "preview.delete", targetType: "preview", summary: "Deleted a preview" };
+      break;
+    // Deleting the project deletes its log; input and resizes are not changes.
+    case "project.delete":
+    case "terminal.input":
+    case "terminal.resize":
+      break;
+  }
+  if (entry) await audit.record(entry);
+}
 
 /**
  * Live previews are served from in front of the router (see preview.ts):
@@ -506,6 +676,22 @@ app.get<{ Params: { id: string } }>("/api/workspaces/:id/usage", async (request,
   return usage;
 });
 
+/**
+ * Disk and database footprint, for the same tab.
+ *
+ * Separate from `usage` because it walks every project directory, which is
+ * a different order of cost from a grouped query and should not slow the
+ * bill down when the reader only wanted the bill.
+ */
+app.get<{ Params: { id: string } }>("/api/workspaces/:id/storage", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const storage = await storageService.forWorkspace(request.params.id, principal.userId);
+  if (!storage) return reply.code(404).send({ error: "workspace not found" });
+  return storage;
+});
+
 app.get<{ Params: { hash: string } }>("/api/projects/:hash", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
@@ -737,6 +923,109 @@ async function projectFor(
   return workspaceService.findByHash(request.params.hash, principal.userId);
 }
 
+/** The browser tab a request came from, as the web app's fetch stamps it. */
+function clientIdOf(request: { headers: Record<string, string | string[] | undefined> }): string {
+  const header = request.headers["x-ucch-client"];
+  const value = Array.isArray(header) ? header[0] : header;
+  return value && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : "unknown";
+}
+
+/** Who made a change and from which tab, for the notices and the activity log. */
+async function originOf(request: {
+  cookies: Record<string, string | undefined>;
+  headers: Record<string, string | string[] | undefined>;
+}): Promise<ChangeOrigin | undefined> {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return undefined;
+  return { userId: principal.userId, clientId: clientIdOf(request) };
+}
+
+/**
+ * Every other write, logged once it has succeeded.
+ *
+ * The routes with something richer to say log themselves (see
+ * route-audit.ts); this catches the rest from the route's pattern, so a
+ * write cannot reach the database without reaching the history. It also
+ * tells the other tabs to refetch what changed.
+ */
+app.addHook("onResponse", async (request, reply) => {
+  if (reply.statusCode < 200 || reply.statusCode >= 300) return;
+  const change = describeRoute(
+    request.method,
+    request.routeOptions.url,
+    request.params as Record<string, string | undefined>,
+    request.body,
+    request.query as Record<string, string | undefined>,
+  );
+  if (!change) return;
+  try {
+    const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+    if (!principal) return;
+    const hash = (request.params as { hash?: string }).hash;
+    const project =
+      change.scope === "project" && hash ? await workspaceService.findByHash(hash, principal.userId) : null;
+    const origin = { userId: principal.userId, clientId: clientIdOf(request) };
+    await audit.record({
+      projectId: project?.id ?? null,
+      userId: principal.userId,
+      clientId: origin.clientId,
+      action: change.action,
+      targetType: change.targetType,
+      targetId: change.targetId ?? null,
+      summary: change.summary,
+      ...(change.details ? { details: change.details } : {}),
+    });
+    if (change.resource) {
+      const event: DomainEvent = {
+        type: "resource.changed",
+        projectId: project?.id ?? null,
+        resource: change.resource,
+        ...(change.targetId ? { id: change.targetId } : {}),
+        origin,
+      };
+      if (project) bus.publish({ seq: null, projectId: project.id, threadId: null, event });
+      bus.publishToUser(principal.userId, event);
+    }
+  } catch (error) {
+    app.log.error({ err: error }, "could not log a change");
+  }
+});
+
+app.get<{
+  Params: { hash: string };
+  Querystring: { before?: string; limit?: string; action?: string; user?: string };
+}>("/api/projects/:hash/activity", async (request, reply) => {
+  const project = await projectFor(request);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  const before = Number(request.query.before);
+  const limit = Number(request.query.limit);
+  const user = z.string().uuid().safeParse(request.query.user);
+  const entries = await audit.list(project.id, {
+    ...(Number.isInteger(before) && before > 0 ? { before } : {}),
+    ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
+    ...(request.query.action ? { action: request.query.action.slice(0, 64) } : {}),
+    ...(user.success ? { userId: user.data } : {}),
+  });
+  return { entries };
+});
+
+/** The caller's own account-level history: settings, connections, tokens. */
+app.get<{ Querystring: { before?: string; limit?: string; action?: string } }>(
+  "/api/activity",
+  async (request, reply) => {
+    const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+    if (!principal) return reply.code(401).send({ error: "unauthorized" });
+    const before = Number(request.query.before);
+    const limit = Number(request.query.limit);
+    const entries = await audit.listForAccount(principal.userId, {
+      ...(Number.isInteger(before) && before > 0 ? { before } : {}),
+      ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
+      ...(request.query.action ? { action: request.query.action.slice(0, 64) } : {}),
+    });
+    return { entries };
+  },
+);
+
 /**
  * Records the change so every other view of this project hears about it.
  *
@@ -749,11 +1038,116 @@ async function announceFileChange(
   projectId: string,
   path: string,
   change: "added" | "modified" | "deleted",
+  origin?: ChangeOrigin,
 ): Promise<void> {
   await store
-    .append({ projectId, threadId: null }, [{ type: "file.changed", projectId, path, change }])
+    .append({ projectId, threadId: null }, [
+      { type: "file.changed", projectId, path, change, ...(origin ? { origin } : {}) },
+    ])
     .catch((error) => app.log.error({ err: error }, "could not record a file change"));
 }
+
+const gitService = new GitService(config.WORKSPACE_ROOT);
+const notesService = new NotesService(db);
+
+registerNoteRoutes(app, {
+  projectFor,
+  originOf,
+  audit: (input) => audit.record(input),
+  notes: notesService,
+  uploads,
+  maxImageBytes: config.UPLOAD_MAX_BYTES,
+  announce: async (event) => {
+    await store
+      .append({ projectId: event.projectId, threadId: null }, [event])
+      .catch((error) => app.log.error({ err: error }, "could not announce a note change"));
+  },
+});
+
+registerTimelineRoutes(app, {
+  projectFor,
+  originOf,
+  audit: (input) => audit.record(input),
+  timeline: new TimelineService(db),
+  announce: async (event) => {
+    await store
+      .append({ projectId: event.projectId, threadId: null }, [event])
+      .catch((error) => app.log.error({ err: error }, "could not announce a timeline change"));
+  },
+});
+
+registerKeyRoutes(app, {
+  projectFor,
+  keys: config.SECRET_KEY ? new ProjectKeyService(db, config.SECRET_KEY) : null,
+});
+
+const databaseConnections = new DatabaseConnectionService(db);
+
+registerDatabaseRoutes(app, {
+  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  workspaceOwnedBy: (workspaceId, userId) => workspaceService.ownedBy(workspaceId, userId),
+  connections: databaseConnections,
+  secretKey: config.SECRET_KEY,
+  probe,
+  adapterFor,
+});
+
+registerDbManagerRoutes(app, {
+  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  connections: databaseConnections,
+  secretKey: config.SECRET_KEY,
+  adapterFor,
+});
+
+/**
+ * The read-only public site: on or off, and its address.
+ *
+ * Owner-only, like the preview port; the visitor-facing side is in
+ * `registerPublicRoutes` and checks nothing but the slug.
+ */
+const PublicBody = z.object({ enabled: z.boolean() });
+
+function withPublicUrl(state: { enabled: boolean; slug: string | null }) {
+  return { ...state, url: state.slug ? `${webOrigin(config)}/${state.slug}` : null };
+}
+
+app.get<{ Params: { hash: string } }>("/api/projects/:hash/public", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const state = await workspaceService.publicSite(request.params.hash, principal.userId);
+  if (!state) return reply.code(404).send({ error: "project not found" });
+  return withPublicUrl(state);
+});
+
+app.patch<{ Params: { hash: string } }>("/api/projects/:hash/public", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const parsed = PublicBody.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "enabled must be true or false" });
+  const state = await workspaceService.setPublic(request.params.hash, principal.userId, parsed.data.enabled);
+  if (!state) return reply.code(404).send({ error: "project not found" });
+  return withPublicUrl(state);
+});
+
+registerPublicRoutes(app, {
+  findPublic: (slug) => workspaceService.findPublic(slug),
+  notes: notesService,
+  files: workspaceFiles,
+  git: gitService,
+  uploads,
+});
+
+registerGitRoutes(app, {
+  projectFor,
+  git: gitService,
+  credentialsFor: ownerCredentials,
+  remoteAdded: (projectId, url) => workspaceService.setRepoUrl(projectId, url),
+  announce: async (projectId, events) => {
+    await store
+      .append({ projectId, threadId: null }, events)
+      .catch((error) => app.log.error({ err: error }, "could not announce a git change"));
+  },
+});
 
 /** Turns a refused path into a 400 and a clash into a 409. */
 function fileFailure(error: unknown, reply: { code(status: number): { send(body: unknown): unknown } }) {
@@ -779,7 +1173,7 @@ app.get<{ Params: { hash: string }; Querystring: { path?: string } }>(
       const result = await workspaceFiles.read(project.id, request.query.path);
       switch (result.kind) {
         case "text":
-          return { path: request.query.path, content: result.content };
+          return { path: request.query.path, content: result.content, version: result.version };
         case "missing":
           return reply.code(404).send({ error: "file not found" });
         case "directory":
@@ -865,6 +1259,8 @@ app.get<{ Params: { hash: string }; Querystring: { path?: string } }>(
 const FileWrite = z.object({
   path: z.string().min(1).max(1024),
   content: z.string(),
+  /** The version the editor opened; a file changed since is a 409, not an overwrite. */
+  ifVersion: z.string().max(64).optional(),
 });
 
 app.put<{ Params: { hash: string } }>("/api/projects/:hash/file", async (request, reply) => {
@@ -874,14 +1270,122 @@ app.put<{ Params: { hash: string } }>("/api/projects/:hash/file", async (request
   const parsed = FileWrite.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "a path and content are required" });
 
+  const origin = await originOf(request);
+  const { path, content, ifVersion } = parsed.data;
+  // What it held before, for how much this save changed. Read before the
+  // write, best-effort: a file that cannot be read is simply "new".
+  const before = await workspaceFiles.read(project.id, path).catch(() => null);
   try {
-    const change = await workspaceFiles.write(project.id, parsed.data.path, parsed.data.content);
-    await announceFileChange(project.id, parsed.data.path, change);
-    return { path: parsed.data.path, change };
+    const change = await workspaceFiles.write(project.id, path, content, ifVersion);
+    await announceFileChange(project.id, path, change, origin);
+    void audit.record({
+      projectId: project.id,
+      userId: origin?.userId ?? null,
+      clientId: origin?.clientId ?? null,
+      action: change === "added" ? "file.create" : "file.write",
+      targetType: "file",
+      targetId: path,
+      summary: change === "added" ? `Created ${path}` : `Edited ${path}`,
+      details: textDelta(before?.kind === "text" ? before.content : "", content),
+      coalesce: change === "modified",
+    });
+    return { path, change, version: contentVersion(content) };
   } catch (error) {
+    if (error instanceof StaleWriteError) {
+      void audit.record({
+        projectId: project.id,
+        userId: origin?.userId ?? null,
+        clientId: origin?.clientId ?? null,
+        action: "file.conflict",
+        targetType: "file",
+        targetId: path,
+        summary: `Save of ${path} refused: changed elsewhere, reverted`,
+      });
+      return reply.code(409).send({
+        error:
+          error.content === null
+            ? "This file was deleted elsewhere."
+            : "This file was changed elsewhere since you opened it.",
+        content: error.content,
+        version: error.version,
+      });
+    }
     return fileFailure(error, reply);
   }
 });
+
+/**
+ * Redraws one of the documentation page's diagrams from the codebase, and
+ * saves it into the repository where the page reads it.
+ *
+ * A job rather than one long request: the agent takes a minute or more on a
+ * real repository, longer than the web app's proxy holds a request open.
+ * POST starts it and answers at once; GET says how it is going, and after it
+ * finishes, how it went -- until the next POST. One job per diagram at a
+ * time, since a second click would only pay for the same answer twice.
+ * A job that runs past five minutes is stopped.
+ */
+type DiagramJob =
+  | { state: "running" }
+  | { state: "done"; path: string; source: string; model: string }
+  | { state: "failed"; error: string };
+const diagramJobs = new Map<string, DiagramJob>();
+const DIAGRAM_TIMEOUT_MS = 5 * 60_000;
+
+async function runDiagramJob(project: ProjectSummary, kind: DiagramKind): Promise<DiagramJob> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DIAGRAM_TIMEOUT_MS);
+  try {
+    const outcome = await agentTurns.generateFromCodebase({
+      projectId: project.id,
+      stack: project.stack,
+      ask: databaseDiagramAsk(),
+      signal: controller.signal,
+    });
+    const source = extractMermaid(outcome.text);
+    const path = DIAGRAM_FILES[kind];
+    const change = await workspaceFiles.write(project.id, path, source);
+    await announceFileChange(project.id, path, change);
+    return { state: "done", path, source, model: outcome.model };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return { state: "failed", error: "Generating the diagram took too long and was stopped." };
+    }
+    app.log.warn({ err: error }, "diagram generation failed");
+    return { state: "failed", error: error instanceof Error ? error.message : "Could not generate the diagram." };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.post<{ Params: { hash: string; kind: string } }>(
+  "/api/projects/:hash/diagrams/:kind/generate",
+  async (request, reply) => {
+    const project = await projectFor(request);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const { kind } = request.params;
+    if (!isDiagramKind(kind)) return reply.code(400).send({ error: "that diagram cannot be generated yet" });
+    const key = `${project.id}:${kind}`;
+    if (diagramJobs.get(key)?.state === "running") {
+      return reply.code(409).send({ error: "This diagram is already being generated." });
+    }
+    diagramJobs.set(key, { state: "running" });
+    void runDiagramJob(project, kind).then((job) => diagramJobs.set(key, job));
+    return reply.code(202).send({ state: "running" });
+  },
+);
+
+app.get<{ Params: { hash: string; kind: string } }>(
+  "/api/projects/:hash/diagrams/:kind/generate",
+  async (request, reply) => {
+    const project = await projectFor(request);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (!isDiagramKind(request.params.kind)) {
+      return reply.code(400).send({ error: "that diagram cannot be generated yet" });
+    }
+    return diagramJobs.get(`${project.id}:${request.params.kind}`) ?? { state: "idle" };
+  },
+);
 
 const FileCreate = z.object({
   path: z.string().min(1).max(1024),
@@ -897,8 +1401,18 @@ app.post<{ Params: { hash: string } }>("/api/projects/:hash/file", async (reques
 
   try {
     await workspaceFiles.create(project.id, parsed.data.path, parsed.data.kind);
+    const origin = await originOf(request);
     // A new directory holds nothing, so there is no file to announce.
-    if (parsed.data.kind === "file") await announceFileChange(project.id, parsed.data.path, "added");
+    if (parsed.data.kind === "file") await announceFileChange(project.id, parsed.data.path, "added", origin);
+    void audit.record({
+      projectId: project.id,
+      userId: origin?.userId ?? null,
+      clientId: origin?.clientId ?? null,
+      action: parsed.data.kind === "file" ? "file.create" : "folder.create",
+      targetType: parsed.data.kind,
+      targetId: parsed.data.path,
+      summary: `Created ${parsed.data.kind === "file" ? "" : "folder "}${parsed.data.path}`,
+    });
     return reply.code(201).send({ path: parsed.data.path, kind: parsed.data.kind });
   } catch (error) {
     return fileFailure(error, reply);
@@ -915,13 +1429,59 @@ app.delete<{ Params: { hash: string }; Querystring: { path?: string } }>(
     try {
       const removed = await workspaceFiles.remove(project.id, request.query.path);
       if (!removed) return reply.code(404).send({ error: "file not found" });
-      await announceFileChange(project.id, request.query.path, "deleted");
+      const origin = await originOf(request);
+      await announceFileChange(project.id, request.query.path, "deleted", origin);
+      void audit.record({
+        projectId: project.id,
+        userId: origin?.userId ?? null,
+        clientId: origin?.clientId ?? null,
+        action: "file.delete",
+        targetType: "file",
+        targetId: request.query.path,
+        summary: `Deleted ${request.query.path}`,
+      });
       return { path: request.query.path, change: "deleted" };
     } catch (error) {
       return fileFailure(error, reply);
     }
   },
 );
+
+const FileMove = z.object({
+  from: z.string().min(1).max(1024),
+  to: z.string().min(1).max(1024),
+});
+
+app.patch<{ Params: { hash: string } }>("/api/projects/:hash/file", async (request, reply) => {
+  const project = await projectFor(request);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+
+  const parsed = FileMove.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "a from and a to path are required" });
+
+  try {
+    const moved = await workspaceFiles.move(project.id, parsed.data.from, parsed.data.to);
+    if (!moved) return reply.code(404).send({ error: "file not found" });
+    // A move is a departure and an arrival to everyone else: the two events
+    // that already exist say exactly that, so there is no third kind.
+    const origin = await originOf(request);
+    await announceFileChange(project.id, parsed.data.from, "deleted", origin);
+    await announceFileChange(project.id, parsed.data.to, "added", origin);
+    void audit.record({
+      projectId: project.id,
+      userId: origin?.userId ?? null,
+      clientId: origin?.clientId ?? null,
+      action: "file.move",
+      targetType: "file",
+      targetId: parsed.data.to,
+      summary: `Moved ${parsed.data.from} to ${parsed.data.to}`,
+      details: { from: parsed.data.from, to: parsed.data.to },
+    });
+    return { from: parsed.data.from, to: parsed.data.to };
+  } catch (error) {
+    return fileFailure(error, reply);
+  }
+});
 
 // -- Settings ----------------------------------------------------------------
 
@@ -1310,6 +1870,7 @@ app.get("/api/settings", async (request, reply) => {
       oauth: users.accessTokenEncrypted,
       defaultModel: users.defaultModel,
       defaultProvider: users.defaultProvider,
+      agentPermissionMode: users.agentPermissionMode,
     })
     .from(users)
     .where(eq(users.id, principal.userId))
@@ -1333,8 +1894,39 @@ app.get("/api/settings", async (request, reply) => {
     chosenModel: row?.defaultModel ?? null,
     serverDefaultModel: config.DEFAULT_MODEL,
     defaultProvider: row?.defaultProvider ?? "native",
+    agentPermissionMode: agentPermissionModeOf(row?.agentPermissionMode ?? null),
     encryptionAvailable: Boolean(config.SECRET_KEY),
   };
+});
+
+/** A stored mode, or Normal for an account that never chose (or a value from a newer build). */
+function agentPermissionModeOf(stored: string | null): AgentPermissionMode {
+  const parsed = AgentPermissionMode.safeParse(stored);
+  return parsed.success ? parsed.data : DEFAULT_AGENT_PERMISSION_MODE;
+}
+
+const AgentPermissionBody = z.object({ mode: AgentPermissionMode });
+
+/**
+ * How much the agent may do before asking. Applies from the next question
+ * on -- a running turn picks it up too -- except on a chat already set to
+ * "Allow All" from its own prompt.
+ */
+app.put("/api/settings/agent-permission-mode", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const parsed = AgentPermissionBody.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.code(400).send({ error: "mode must be strict, normal or allow_all" });
+  }
+
+  await db
+    .update(users)
+    .set({ agentPermissionMode: parsed.data.mode })
+    .where(eq(users.id, principal.userId));
+
+  return { agentPermissionMode: parsed.data.mode };
 });
 
 const ApiKeyBody = z.object({

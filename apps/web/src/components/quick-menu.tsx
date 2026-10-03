@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  BellIcon,
   CodeIcon,
   DatabaseIcon,
   FolderGitIcon,
@@ -14,6 +13,7 @@ import {
   LayersIcon,
 } from "lucide-react";
 
+import { NewDatabaseDialog } from "@/components/new-database-dialog";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { NewWorkspaceDialog, selectWorkspace } from "@/components/new-workspace-dialog";
 import {
@@ -54,6 +54,7 @@ export function QuickMenu({
   const [open, setOpen] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
+  const [connectingDatabase, setConnectingDatabase] = useState(false);
 
   // The conventional palette shortcut. Registered on the window so it works
   // wherever focus happens to be, except inside a text field.
@@ -107,6 +108,11 @@ export function QuickMenu({
               <FolderGitIcon />
               New project
               <CommandShortcut>from a repository</CommandShortcut>
+            </CommandItem>
+            <CommandItem onSelect={() => run(() => setConnectingDatabase(true))}>
+              <DatabaseIcon />
+              New database connection
+              <CommandShortcut>MySQL or PostgreSQL</CommandShortcut>
             </CommandItem>
             <CommandItem onSelect={() => run(() => setCreatingWorkspace(true))}>
               <LayersIcon />
@@ -170,6 +176,10 @@ export function QuickMenu({
               <CodeIcon />
               Coding
             </CommandItem>
+            <CommandItem onSelect={() => run(() => router.push("/database"))}>
+              <DatabaseIcon />
+              Database
+            </CommandItem>
             {SECTION_LINKS.map((section) => (
               <CommandItem key={section.label} disabled>
                 <section.icon />
@@ -187,6 +197,12 @@ export function QuickMenu({
         onOpenChange={setCreatingProject}
       />
 
+      <NewDatabaseDialog
+        workspaceId={activeWorkspaceId}
+        open={connectingDatabase}
+        onOpenChange={setConnectingDatabase}
+      />
+
       <NewWorkspaceDialog
         open={creatingWorkspace}
         onOpenChange={setCreatingWorkspace}
@@ -202,12 +218,10 @@ export function QuickMenu({
 /** Create actions whose storage does not exist yet. */
 const UNBUILT = [
   { label: "New todo", icon: ListTodoIcon, note: "with the agent core" },
-  { label: "New reminder", icon: BellIcon, note: "with the agent core" },
   { label: "New note", icon: StickyNoteIcon, note: "with the agent core" },
 ] as const;
 
 const SECTION_LINKS = [
-  { label: "Database", icon: DatabaseIcon, note: "with the runtime" },
   { label: "Git", icon: GitBranchIcon, note: "with git integration" },
   { label: "Publish", icon: RocketIcon, note: "with previews" },
   { label: "Todo", icon: ListTodoIcon, note: "with the agent core" },

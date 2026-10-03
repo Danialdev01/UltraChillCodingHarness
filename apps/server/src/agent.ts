@@ -7,12 +7,17 @@ import {
   HostExecutor,
   invalidateTree,
   runTurn,
+  type ApprovalDecision,
+  type ApprovalRequest,
   type RegistryOptions,
   type ResearchBackends,
   type UploadStaging,
 } from "@ucch/agent";
 import {
+  AgentPermissionMode,
+  DEFAULT_AGENT_PERMISSION_MODE,
   isTransient,
+  needsApproval,
   type Command,
   type DomainEvent,
   type MessageMode,
@@ -120,6 +125,24 @@ export class AgentTurnReactor {
   /** CLI runs in flight, to kill on shutdown. */
   readonly #cliRuns = new Set<AgentRun>();
 
+  /** The CLI run per thread, for delivering a permission answer to it. */
+  readonly #cliByThread = new Map<string, AgentRun>();
+
+  /**
+   * Threads whose prompt someone answered with "Allow All": every later
+   * question on them is allowed without asking. In memory on purpose -- it
+   * is "this session", and a restart is a fair place for it to end.
+   */
+  readonly #allowAll = new Set<string>();
+
+  /**
+   * Questions a person has not answered yet, per thread: the native loop's,
+   * which wait on a promise here, and the CLI's, which wait on its stdin.
+   * "Allow All" answers every one of them, not only the one it was on.
+   */
+  readonly #nativePrompts = new Map<string, Map<string, (decision: ApprovalDecision) => void>>();
+  readonly #cliPrompts = new Map<string, Set<string>>();
+
   /** CLI turns in flight per owning account, for the concurrency cap. */
   readonly #perUser = new Map<string, number>();
 
@@ -139,6 +162,22 @@ export class AgentTurnReactor {
       return;
     }
 
+    if (command.type === "thread.permission_reply") {
+      // A reply to a prompt that is gone -- answered from another tab, or
+      // the turn ended -- is dropped: the log already says what happened.
+      const reply: ApprovalDecision = {
+        behavior: command.behavior,
+        ...(command.message ? { message: command.message } : {}),
+      };
+      if (command.scope === "session" && command.behavior === "allow") {
+        this.#allowAll.add(command.threadId);
+        this.#answerAll(command.threadId);
+        return;
+      }
+      this.#answer(command.threadId, command.requestId, reply);
+      return;
+    }
+
     for (const event of batch) {
       if (event.type !== "user.message") continue;
       // The model and effort ride on the command rather than the event: they
@@ -152,6 +191,95 @@ export class AgentTurnReactor {
         // replayed from the log runs the same pipeline the original did.
         mode: event.mode,
       }).catch(this.onError);
+    }
+  }
+
+  /** Delivers one answer to whichever runtime is waiting on it. */
+  #answer(threadId: string, requestId: string, reply: ApprovalDecision): void {
+    const native = this.#nativePrompts.get(threadId)?.get(requestId);
+    if (native) {
+      native(reply);
+      return;
+    }
+    this.#cliByThread.get(threadId)?.answerPermission?.(requestId, reply);
+  }
+
+  /** Allows every question still open on a thread. */
+  #answerAll(threadId: string): void {
+    for (const resolve of [...(this.#nativePrompts.get(threadId)?.values() ?? [])]) {
+      resolve({ behavior: "allow" });
+    }
+    const run = this.#cliByThread.get(threadId);
+    for (const requestId of [...(this.#cliPrompts.get(threadId) ?? [])]) {
+      run?.answerPermission?.(requestId, { behavior: "allow" });
+    }
+  }
+
+  /** The mode a thread's next question is judged under. */
+  #modeFor(threadId: string, owner: { agentPermissionMode: string | null }): AgentPermissionMode {
+    if (this.#allowAll.has(threadId)) return "allow_all";
+    const parsed = AgentPermissionMode.safeParse(owner.agentPermissionMode);
+    return parsed.success ? parsed.data : DEFAULT_AGENT_PERMISSION_MODE;
+  }
+
+  /**
+   * The native loop's gate. Under the thread's mode, either the call runs
+   * at once or a person is asked: the question is recorded as
+   * `agent.permission_requested` -- the same event a CLI's prompt becomes,
+   * so the chat shows one card for both -- and the tool waits for the
+   * answer. A cancelled turn resolves it as a deny.
+   */
+  async #approveNative(input: {
+    threadId: string;
+    turnId: string;
+    owner: { agentPermissionMode: string | null };
+    request: ApprovalRequest;
+    signal: AbortSignal;
+    append: (events: readonly DomainEvent[]) => Promise<unknown>;
+  }): Promise<ApprovalDecision> {
+    const { threadId, turnId, request } = input;
+    const command = shellCommandOf(request.input);
+    const mode = this.#modeFor(threadId, input.owner);
+    if (!needsApproval(mode, { kind: request.permission, command })) return { behavior: "allow" };
+    if (input.signal.aborted) return { behavior: "deny", message: "The turn was cancelled." };
+
+    const requestId = randomUUID();
+    let prompts = this.#nativePrompts.get(threadId);
+    if (!prompts) {
+      prompts = new Map();
+      this.#nativePrompts.set(threadId, prompts);
+    }
+    const open = prompts;
+    const decision = new Promise<ApprovalDecision>((resolve) => {
+      const onAbort = () => resolve({ behavior: "deny", message: "The turn was cancelled." });
+      input.signal.addEventListener("abort", onAbort, { once: true });
+      open.set(requestId, (reply) => {
+        input.signal.removeEventListener("abort", onAbort);
+        resolve(reply);
+      });
+    });
+
+    try {
+      await input.append([
+        {
+          type: "agent.permission_requested",
+          threadId,
+          turnId,
+          requestId,
+          toolUseId: request.toolUseId,
+          toolName: request.toolName,
+          input: request.input,
+          description: null,
+        },
+      ]);
+      const reply = await decision;
+      await input.append([
+        { type: "agent.permission_resolved", threadId, turnId, requestId, behavior: reply.behavior },
+      ]);
+      return reply;
+    } finally {
+      open.delete(requestId);
+      if (open.size === 0) this.#nativePrompts.delete(threadId);
     }
   }
 
@@ -282,6 +410,7 @@ export class AgentTurnReactor {
 
         await this.#runCli(provider, {
           ownerId: owner.id,
+          owner,
           threadId,
           turnId,
           projectId: thread.projectId,
@@ -341,6 +470,15 @@ export class AgentTurnReactor {
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
         complete: streamCompletion,
         signal: controller.signal,
+        approve: (request) =>
+          this.#approveNative({
+            threadId,
+            turnId,
+            owner,
+            request,
+            signal: controller.signal,
+            append,
+          }),
         append: async (events) => {
           await append(events);
         },
@@ -377,6 +515,7 @@ export class AgentTurnReactor {
     provider: "claude" | "codex",
     input: {
       ownerId: string;
+      owner: { agentPermissionMode: string | null };
       threadId: string;
       turnId: string;
       projectId: string;
@@ -424,8 +563,10 @@ export class AgentTurnReactor {
         turnId: input.turnId,
         ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
         ...(input.model ? { model: input.model } : {}),
+        permissionMode: this.#modeFor(input.threadId, input.owner),
       });
       this.#cliRuns.add(run);
+      this.#cliByThread.set(input.threadId, run);
 
       // The stop button is SIGINT: the CLI ends the turn and records what
       // it managed. SIGTERM would strand the turn unfinished (see `killAll`).
@@ -434,8 +575,28 @@ export class AgentTurnReactor {
       input.signal.addEventListener("abort", onAbort, { once: true });
       if (input.signal.aborted) onAbort();
 
+      // Prompts the harness answered itself never reach the log: the CLI
+      // asked because its own mode is coarser than the account's, not
+      // because a person needs to see anything.
+      const autoAnswered = new Set<string>();
+      const open = new Set<string>();
+      this.#cliPrompts.set(input.threadId, open);
       try {
         for await (const event of run.events) {
+          if (event.type === "agent.permission_requested") {
+            const mode = this.#modeFor(input.threadId, input.owner);
+            if (
+              !claudePromptNeedsPerson(mode, event.toolName, event.input) &&
+              current.answerPermission?.(event.requestId, { behavior: "allow" })
+            ) {
+              autoAnswered.add(event.requestId);
+              continue;
+            }
+            open.add(event.requestId);
+          } else if (event.type === "agent.permission_resolved") {
+            open.delete(event.requestId);
+            if (autoAnswered.delete(event.requestId)) continue;
+          }
           if (isTransient(event.type)) {
             // Not awaited, like the loop's `publish`: a token is not worth
             // holding the stream for.
@@ -448,9 +609,13 @@ export class AgentTurnReactor {
         }
       } finally {
         input.signal.removeEventListener("abort", onAbort);
+        if (this.#cliPrompts.get(input.threadId) === open) this.#cliPrompts.delete(input.threadId);
       }
     } finally {
-      if (run) this.#cliRuns.delete(run);
+      if (run) {
+        this.#cliRuns.delete(run);
+        if (this.#cliByThread.get(input.threadId) === run) this.#cliByThread.delete(input.threadId);
+      }
       const left = (this.#perUser.get(input.ownerId) ?? 1) - 1;
       if (left <= 0) this.#perUser.delete(input.ownerId);
       else this.#perUser.set(input.ownerId, left);
@@ -551,6 +716,61 @@ export class AgentTurnReactor {
   }
 
   /**
+   * A one-off read-only run over a project's checkout, outside any thread:
+   * the documentation page's "Update with AI".
+   *
+   * On the account's default model from Settings (or the server's), with the
+   * native loop and the `readonly` preset, so it can look at every file and
+   * change none. The thread and turn ids are made up for the loop's own
+   * bookkeeping, and its events are dropped rather than appended: nothing of
+   * this belongs in a conversation. The caller parses the reply.
+   */
+  async generateFromCodebase(input: {
+    projectId: string;
+    stack: string | null;
+    ask: string;
+    signal: AbortSignal;
+  }): Promise<{ text: string; model: string; usage: TokenUsage; costUsd: number }> {
+    const owner = await this.#owner(input.projectId);
+    if (!owner) throw new Error("project not found");
+    const apiKey = this.#decryptKey(owner.openrouterKeyEncrypted);
+    const model = resolveModel(undefined, owner.defaultModel, this.options.defaultModel);
+    const workspace = join(this.options.workspaceRoot, input.projectId);
+    await mkdir(workspace, { recursive: true });
+
+    const threadId = randomUUID();
+    const [contextLength, canSeeImages] = await Promise.all([
+      contextLengthFor(model),
+      supportsImages(model),
+    ]);
+
+    const outcome = await runTurn({
+      projectId: input.projectId,
+      threadId,
+      turnId: randomUUID(),
+      apiKey,
+      model,
+      history: [{ type: "user.message", threadId, text: input.ask }],
+      stack: input.stack,
+      preset: "readonly",
+      registry: this.options.registry,
+      contextLength,
+      supportsImages: canSeeImages,
+      searchModel: this.options.searchModel,
+      maxIterations: this.options.maxIterations,
+      executor: new HostExecutor(workspace),
+      complete: streamCompletion,
+      signal: input.signal,
+      conclude: false,
+      append: async () => {},
+      publish: () => {},
+      onDiagnostic: (message) => this.onError(new Error(message)),
+    });
+
+    return { text: outcome.text, model, usage: outcome.usage, costUsd: outcome.costUsd };
+  }
+
+  /**
    * What the project's owning account brings to a turn: the key it is billed
    * to, and the model it prefers when the turn names none.
    *
@@ -563,6 +783,7 @@ export class AgentTurnReactor {
     openrouterKeyEncrypted: string | null;
     defaultModel: string | null;
     defaultProvider: string | null;
+    agentPermissionMode: string | null;
   } | null> {
     const [owner] = await this.db
       .select({
@@ -570,6 +791,7 @@ export class AgentTurnReactor {
         openrouterKeyEncrypted: users.openrouterKeyEncrypted,
         defaultModel: users.defaultModel,
         defaultProvider: users.defaultProvider,
+        agentPermissionMode: users.agentPermissionMode,
       })
       .from(projects)
       .innerJoin(users, eq(users.id, projects.userId))
@@ -606,4 +828,26 @@ export function withResearchUsage(
     },
     costUsd: event.costUsd + researched.costUsd,
   };
+}
+
+/** Claude Code's tools that change files; `acceptEdits` covers them inside the workspace. */
+const CLAUDE_EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+/**
+ * Whether a Claude Code prompt goes to a person under `mode`.
+ *
+ * In Normal the CLI runs in `acceptEdits`, so an edit it still asks about
+ * is one outside the workspace -- risky by definition, and asked.
+ */
+function claudePromptNeedsPerson(mode: AgentPermissionMode, toolName: string, input: unknown): boolean {
+  if (CLAUDE_EDIT_TOOLS.has(toolName)) return mode !== "allow_all";
+  const kind = toolName === "Bash" ? "exec" : "other";
+  return needsApproval(mode, { kind, command: shellCommandOf(input) });
+}
+
+/** The shell line a call runs, when it is one: `bash`'s and `Bash`'s `command`. */
+function shellCommandOf(input: unknown): string | null {
+  if (typeof input !== "object" || input === null) return null;
+  const command = (input as Record<string, unknown>).command;
+  return typeof command === "string" ? command : null;
 }

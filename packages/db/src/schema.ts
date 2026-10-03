@@ -2,6 +2,7 @@ import { relations, sql } from "drizzle-orm";
 import {
   bigserial,
   boolean,
+  date,
   index,
   integer,
   jsonb,
@@ -11,8 +12,9 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
-import type { DomainEvent, TokenUsage } from "@ucch/protocol";
+import type { DomainEvent, NoteDoc, TokenUsage } from "@ucch/protocol";
 
 /**
  * `events` is the source of truth. Every other table here is a projection --
@@ -83,6 +85,11 @@ export const users = pgTable("users", {
    * is the native loop.
    */
   defaultProvider: text("default_provider"),
+  /**
+   * `strict`, `normal` or `allow_all`: what an agent may do before this
+   * account is asked (see `AgentPermissionMode`). Null is `normal`.
+   */
+  agentPermissionMode: text("agent_permission_mode"),
   /**
    * A `claude setup-token` OAuth token, encrypted at rest. The headless
    * alternative to signing the CLI in from a terminal: injected as
@@ -161,6 +168,14 @@ export const projects = pgTable(
      * whose port matches this, so a stored port is the whole grant.
      */
     previewPort: integer("preview_port"),
+    /**
+     * The read-only public site's address segment, `{name}-{6 chars}`, minted
+     * the first time the owner makes the project public and kept from then
+     * on: a link that was shared keeps working across a toggle off and on.
+     * Whether it answers at all is `publicEnabled`.
+     */
+    publicSlug: text("public_slug").unique(),
+    publicEnabled: boolean("public_enabled").notNull().default(false),
     lastActiveAt: timestamp("last_active_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -326,6 +341,137 @@ export const secrets = pgTable(
   (t) => [uniqueIndex("secrets_project_key_idx").on(t.projectId, t.key)],
 );
 
+/**
+ * A MySQL or PostgreSQL server the workspace can browse.
+ *
+ * The password is the only secret and is stored the way project secrets are:
+ * AES-256-GCM under `SECRET_KEY`, decrypted only for the moment a query
+ * runs against the server and never sent back to a client.
+ */
+export const databaseConnections = pgTable(
+  "database_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** `mysql` or `postgresql`; the route validates, the column does not. */
+    engine: text("engine").notNull(),
+    host: text("host").notNull(),
+    port: integer("port").notNull(),
+    username: text("username").notNull(),
+    passwordEncrypted: text("password_encrypted").notNull(),
+    /** The database the connection opens by default; null lets the server pick. */
+    database: text("database"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("database_connections_workspace_idx").on(t.workspaceId)],
+);
+
+/**
+ * A project's notes: a tree of pages, Notion-style.
+ *
+ * Plain state rather than a projection of `events`: a note is edited in place
+ * by autosave many times a minute, and nothing replays it. Exactly one row per
+ * project has a null `parent_id` -- the root page -- which the partial unique
+ * index enforces so "create the root if missing" is a conflict-free insert.
+ */
+export const notes = pgTable(
+  "notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** Null exactly once per project: the root page. Children go with their parent. */
+    parentId: uuid("parent_id").references((): AnyPgColumn => notes.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default("Untitled"),
+    /** An emoji, or null for the default page icon. */
+    icon: text("icon"),
+    /** The banner image above the title: an upload's content URL, or null. */
+    cover: text("cover"),
+    /** ProseMirror JSON. The editor's schema is canonical; nothing else parses it. */
+    content: jsonb("content")
+      .$type<NoteDoc>()
+      .notNull()
+      .default(sql`'{"type":"doc","content":[]}'::jsonb`),
+    /** The body as the words a reader sees, kept beside it so search never parses JSON. */
+    searchText: text("search_text").notNull().default(""),
+    /** Order among siblings. */
+    position: integer("position").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("notes_project_parent_idx").on(t.projectId, t.parentId, t.position),
+    uniqueIndex("notes_project_root_idx")
+      .on(t.projectId)
+      .where(sql`${t.parentId} is null`),
+  ],
+);
+
+/**
+ * The tasks on a project's timeline page, drawn there as a Gantt chart.
+ *
+ * Plain rows like `notes`: a task is dragged along the chart and saved on
+ * every release, and nothing replays it. Dates are calendar dates rather than
+ * instants -- a task runs "from the 3rd to the 9th" wherever the reader is --
+ * so they are `date` columns and travel as `YYYY-MM-DD` strings. `ends_on`
+ * is inclusive: a one-day task starts and ends on the same day.
+ */
+export const timelineTasks = pgTable(
+  "timeline_tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    startsOn: date("starts_on").notNull(),
+    endsOn: date("ends_on").notNull(),
+    /** 0..100, the filled part of the bar. */
+    progress: integer("progress").notNull().default(0),
+    /** One of the note colour names, so the bar reads from the same palette as the notes. */
+    colour: text("colour").notNull().default("blue"),
+    /** Order among the project's tasks, top to bottom. */
+    position: integer("position").notNull().default(0),
+    /** The task an arrow is drawn from; cleared rather than cascaded when that task goes. */
+    dependsOnId: uuid("depends_on_id").references((): AnyPgColumn => timelineTasks.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("timeline_tasks_project_idx").on(t.projectId, t.position)],
+);
+
+/**
+ * A project's saved keys: API keys, tokens and passwords that a provider
+ * shows once and cannot show again, kept here so they can be handed back.
+ *
+ * Unlike `secrets` these are for the person, not the runtime: nothing is
+ * injected anywhere. The value is AES-256-GCM under `SECRET_KEY`, left out
+ * of every list, and decrypted only when someone asks to see or copy it.
+ */
+export const projectKeys = pgTable(
+  "project_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    valueEncrypted: text("value_encrypted").notNull(),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    /** Where the key was issued or is used, e.g. the provider's dashboard. */
+    url: text("url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("project_keys_project_idx").on(t.projectId, t.createdAt)],
+);
+
 /** Server-side sessions for the web UI; WebSocket tickets are derived from these. */
 export const sessions = pgTable(
   "sessions",
@@ -343,13 +489,22 @@ export const sessions = pgTable(
 
 export const workspacesRelations = relations(workspaces, ({ many, one }) => ({
   projects: many(projects),
+  databaseConnections: many(databaseConnections),
   owner: one(users, { fields: [workspaces.ownerUserId], references: [users.id] }),
+}));
+
+export const databaseConnectionsRelations = relations(databaseConnections, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [databaseConnections.workspaceId],
+    references: [workspaces.id],
+  }),
 }));
 
 export const projectsRelations = relations(projects, ({ many, one }) => ({
   threads: many(threads),
   previews: many(previews),
   subagents: many(subagents),
+  notes: many(notes),
   workspace: one(workspaces, { fields: [projects.workspaceId], references: [workspaces.id] }),
   owner: one(users, { fields: [projects.userId], references: [users.id] }),
 }));
@@ -368,7 +523,50 @@ export type Project = typeof projects.$inferSelect;
 export type Subagent = typeof subagents.$inferSelect;
 export type Thread = typeof threads.$inferSelect;
 export type Turn = typeof turns.$inferSelect;
+export type Note = typeof notes.$inferSelect;
+export type TimelineTask = typeof timelineTasks.$inferSelect;
+export type ProjectKey = typeof projectKeys.$inferSelect;
 export type Preview = typeof previews.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
+export type DatabaseConnection = typeof databaseConnections.$inferSelect;
+
+/**
+ * What people changed in a project, newest first on its Activity page.
+ *
+ * Not the event log: `events` is what the agent and the runtime did, in the
+ * order that rebuilds the projections, and notes or keys are deliberately not
+ * in it. This is the human-readable history of who changed what -- every
+ * edit, kept whether or not it is replayable -- and nothing is rebuilt from
+ * it.
+ *
+ * Repeated saves of one thing by one person coalesce into one row while they
+ * keep coming (`count` goes up, `updated_at` moves), so typing a paragraph is
+ * one line rather than forty.
+ */
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    /** Null for a change to the account rather than to one project. */
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    /** Null when the actor's account has since been deleted. */
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    /** The browser tab it came from, to tell one person's windows apart. */
+    clientId: text("client_id"),
+    /** `note.update`, `file.write`, `chat.send`, ... */
+    action: text("action").notNull(),
+    targetType: text("target_type").notNull(),
+    targetId: text("target_id"),
+    summary: text("summary").notNull(),
+    details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
+    count: integer("count").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("audit_log_project_idx").on(t.projectId, t.updatedAt),
+    index("audit_log_user_idx").on(t.userId, t.updatedAt),
+  ],
+);

@@ -51,7 +51,7 @@ export function XtermPane({
       // Read from the app's own tokens, so a terminal follows the theme
       // rather than being the one black rectangle in a light interface.
       theme: readTheme(element),
-      fontFamily: "var(--app-font), ui-monospace, monospace",
+      fontFamily: "var(--app-font-mono), ui-monospace, monospace",
       fontSize: 13,
       lineHeight: 1.2,
       cursorBlink: true,
@@ -97,6 +97,13 @@ export function XtermPane({
    * Refits on anything that changes the box: the window, the file panel
    * opening beside it, and becoming visible again after another tab was
    * shown -- a terminal measured while hidden has no size at all.
+   *
+   * Focus is taken on the same occasions, and again once the element has a
+   * size. `focus()` on something still `display: none` -- an ancestor's, not
+   * only ours -- is silently ignored by the browser, and the effect runs
+   * before an ancestor's class change has necessarily painted, so a pane that
+   * only focused here would sometimes come back with the cursor in nothing:
+   * visible, but deaf to every key until clicked.
    */
   React.useEffect(() => {
     const element = host.current
@@ -111,10 +118,25 @@ export function XtermPane({
       }
     }
 
-    refit()
-    terminal.current?.focus()
+    const focus = () => {
+      // Never steal focus from a field the user is typing in elsewhere. A
+      // button -- the toggle that just brought this view up -- does not
+      // count; that click is precisely the reason to take it.
+      const current = document.activeElement
+      if (current instanceof HTMLElement && !element.contains(current) && isEditable(current))
+        return
+      terminal.current?.focus()
+    }
 
-    const observer = new ResizeObserver(refit)
+    refit()
+    focus()
+
+    const observer = new ResizeObserver((entries) => {
+      refit()
+      // The first observation with real dimensions is the moment the pane
+      // actually became visible; focus that was ignored above lands now.
+      if (entries.some((entry) => entry.contentRect.width > 0)) focus()
+    })
     observer.observe(element)
     return () => observer.disconnect()
   }, [hidden])
@@ -125,7 +147,26 @@ export function XtermPane({
       // `hidden` rather than unmounted: a terminal switched away from and
       // back keeps its scrollback and whatever was half-typed.
       className={hidden ? "hidden" : "min-h-0 flex-1 overflow-hidden p-2"}
+      // xterm only fills as many rows as fit; a click in the padding or the
+      // strip left under the last row lands on this div, not on xterm, and
+      // would otherwise leave the terminal looking active but not listening.
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          event.preventDefault()
+          terminal.current?.focus()
+        }
+      }}
     />
+  )
+}
+
+/** Something keystrokes already belong to: a text field, or an editor's contenteditable. */
+function isEditable(node: HTMLElement): boolean {
+  return (
+    node instanceof HTMLInputElement ||
+    node instanceof HTMLTextAreaElement ||
+    node instanceof HTMLSelectElement ||
+    node.isContentEditable
   )
 }
 

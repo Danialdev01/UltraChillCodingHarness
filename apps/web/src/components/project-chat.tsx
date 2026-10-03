@@ -34,6 +34,7 @@ import {
   type ModelChoice,
 } from "@/components/model-picker";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -62,6 +63,7 @@ import { discardUpload, stageUpload, uploadContentUrl } from "@/lib/uploads-api"
 import { ContextMeter } from "@/components/context-meter";
 import { Markdown } from "@/components/markdown";
 import { TurnProgress } from "@/components/turn-progress";
+import { PermissionPromptCard } from "@/components/permission-prompt";
 import { UcchClient, type ClientEvent } from "@/lib/client";
 import {
   readLastModel,
@@ -95,8 +97,11 @@ import { readRatings, transcript, writeRating, type Rating } from "@/lib/chat-fe
 import { copyText } from "@/lib/clipboard";
 import { codeChatPrompt, type CodeReference } from "@/lib/code-chat";
 import { basename } from "@/lib/files-api";
-import type { MessageImage, ReasoningEffort } from "@ucch/protocol";
+import type { ComposerDraft, MessageImage, ReasoningEffort } from "@ucch/protocol";
 import type { Project } from "@/lib/session";
+import { ServerError } from "@/lib/client";
+import { createComposerSync, type ComposerSync } from "@/lib/composer-sync";
+import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents, useToast } from "@/lib/realtime";
 
 /**
  * The conversation view for one project.
@@ -360,6 +365,100 @@ export function ProjectChat({ project }: { project: Project }) {
   }, [project.id, project.hash]);
 
   /**
+   * "Clear context" in another window starts a new thread; this one follows
+   * it when it was showing the newest conversation -- the one the other
+   * window just moved on from. A window deliberately left on an older thread
+   * stays there.
+   */
+  const toast = useToast();
+  const threadIdRef = useRef<string | null>(null);
+  threadIdRef.current = threadId;
+  const newestRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (threadId && newestRef.current === null) newestRef.current = threadId;
+  }, [threadId]);
+
+  useProjectEvents(project.id, (event) => {
+    if (event.type !== "thread.created" || event.projectId !== project.id) return;
+    const followed = threadIdRef.current === newestRef.current;
+    newestRef.current = event.threadId;
+    if (!followed || threadIdRef.current === event.threadId) return;
+    const client = clientRef.current;
+    if (!client) return;
+    void client.subscribe({ name: "thread", threadId: event.threadId }).catch(() => {});
+    setThreadId(event.threadId);
+    setBoundProvider(null);
+  });
+
+  // Where this window is, and whether anyone else is typing into the same box.
+  usePresenceLocation(project.id, threadId ? `thread:${threadId}` : null);
+  const viewers = usePresence(project.id);
+  const othersHere = threadId ? othersAt(viewers, `thread:${threadId}`) : [];
+  const [remoteTypingAt, setRemoteTypingAt] = useState(0);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!remoteTypingAt) return;
+    const id = window.setTimeout(() => tick((n) => n + 1), 2500);
+    return () => window.clearTimeout(id);
+  }, [remoteTypingAt]);
+  const remoteTyping = Date.now() - remoteTypingAt < 2500;
+
+  /**
+   * The prompt box, shared with every window on this thread.
+   *
+   * What is typed here goes to the server after a short pause and appears in
+   * the others as it lands; theirs appears here the same way. Two windows
+   * typing at once is a conflict the server settles: the later one is told,
+   * and its unsent keystrokes are replaced by what the other wrote.
+   */
+  const syncRef = useRef<ComposerSync | null>(null);
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client || !threadId) return;
+    const sync = createComposerSync({
+      delayMs: 120,
+      send: (baseRev, draft) => client.updateComposer(threadId, baseRev, draft),
+      isConflict: (error) => error instanceof ServerError && error.code === "conflict",
+      apply: (draft) => {
+        setDraft(draft.text);
+        // Files still uploading here are this window's own; keep them.
+        setAttachments((current) => [
+          ...draft.attachments,
+          ...current.filter((a) => a.status === "uploading"),
+        ]);
+        setReference(draft.reference);
+        if (draft.research !== undefined) setResearch(draft.research);
+        if (draft.effort !== undefined) setEffort(draft.effort);
+      },
+      onReverted: () =>
+        toast({
+          tone: "error",
+          title: "The prompt was changed in another window",
+          description: "You were both typing; your latest keystrokes were reverted to theirs.",
+        }),
+    });
+    syncRef.current = sync;
+    const off = client.onEvent(({ event }) => {
+      if (event.type !== "composer.changed" || event.threadId !== threadId) return;
+      const own = isOwnChange(event.origin);
+      if (!own && event.origin) setRemoteTypingAt(Date.now());
+      sync.remote({ rev: event.rev, draft: event.draft, own });
+    });
+    return () => {
+      off();
+      sync.dispose();
+      if (syncRef.current === sync) syncRef.current = null;
+    };
+  }, [threadId, toast]);
+
+  // Every local change to the box -- typing, a chip, a toggle -- goes out.
+  // A change that came in from elsewhere is the synced draft already, and
+  // `local` ignores it.
+  useEffect(() => {
+    syncRef.current?.local(composerDraft(draft, attachments, reference, research, effort));
+  }, [draft, attachments, reference, research, effort]);
+
+  /**
    * Whether the thread follows the reply as it streams.
    *
    * It does while the reader is at the bottom, and stops the moment they
@@ -448,7 +547,7 @@ export function ProjectChat({ project }: { project: Project }) {
     [events, threadId],
   );
 
-  const { messages, running, active, contextTokens } = useMemo(
+  const { messages, running, active, prompts, contextTokens } = useMemo(
     () => toMessages(threadEvents),
     [threadEvents],
   );
@@ -546,6 +645,9 @@ export function ProjectChat({ project }: { project: Project }) {
     const images = modelImages(attachments);
 
     const sent = { draft, attachments, reference };
+    // The server empties the box for every window once the message is in;
+    // nothing typed here should race that.
+    syncRef.current?.discard();
     setSending(true);
     setError(null);
     setDraft("");
@@ -674,6 +776,35 @@ export function ProjectChat({ project }: { project: Project }) {
   }, [cancelling, threadId]);
 
   /**
+   * Answers a CLI's permission prompt.
+   *
+   * Like `cancel`, a request rather than a local change: the card stays
+   * until the stream records `agent.permission_resolved`, which is the CLI
+   * confirming it heard the answer. A prompt answered from another tab
+   * disappears here the same way.
+   */
+  const replyPermission = useCallback(
+    async (
+      requestId: string,
+      behavior: "allow" | "deny",
+      message?: string,
+      scope?: "once" | "session",
+    ) => {
+      const client = clientRef.current;
+      if (!client || !threadId) throw new Error("not connected");
+      await client.dispatch({
+        type: "thread.permission_reply",
+        threadId,
+        requestId,
+        behavior,
+        ...(message ? { message } : {}),
+        ...(scope ? { scope } : {}),
+      });
+    },
+    [threadId],
+  );
+
+  /**
    * Empties the context window.
    *
    * A new thread rather than a deletion: the model's context *is* the
@@ -785,7 +916,16 @@ export function ProjectChat({ project }: { project: Project }) {
           {/* Above the box rather than inside it: it is about the turn, not
               about what is being typed, and it must not move the composer
               when it appears and goes. */}
-          {active && <TurnProgress active={active} />}
+          {/* One at a time, oldest first: the CLI blocks on each in turn,
+              so answering the first is what unblocks the rest. */}
+          {prompts[0] && (
+            <PermissionPromptCard
+              key={prompts[0].requestId}
+              prompt={prompts[0]}
+              onReply={replyPermission}
+            />
+          )}
+          {active && !prompts.length && <TurnProgress active={active} />}
           {/* Same place as the progress line, same reason: it is about what
               the send would do, and it goes away when the cause does --
               another model picked, or the picture removed. */}
@@ -1083,6 +1223,23 @@ export function ProjectChat({ project }: { project: Project }) {
               disabled={running || sending || !threadId}
             />
             {error && <span className="text-destructive truncate text-xs">{error}</span>}
+            {!error && othersHere.length > 0 && (
+              <span
+                className={cn(
+                  "flex items-center gap-1 truncate text-xs",
+                  remoteTyping ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+                )}
+                title="This conversation and its prompt are shared live with your other windows."
+              >
+                <span
+                  className={cn(
+                    "size-1.5 shrink-0 rounded-full",
+                    remoteTyping ? "animate-pulse bg-amber-500" : "bg-emerald-500",
+                  )}
+                />
+                {remoteTyping ? "Typing in another window…" : "Open in another window"}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -1619,7 +1776,11 @@ function ToolRow({ call }: { call: ToolPart }) {
         {summary && <span className="text-muted-foreground truncate font-mono">{summary}</span>}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {running ? (
-            <Loader2Icon className="text-muted-foreground size-3 animate-spin" />
+            call.awaitingApproval ? (
+              <span className="text-ucch-active">needs approval</span>
+            ) : (
+              <Loader2Icon className="text-muted-foreground size-3 animate-spin" />
+            )
           ) : (
             <>
               {call.isError && <span className="text-destructive">failed</span>}
@@ -1674,4 +1835,31 @@ function formatInput(input: unknown): string {
 
 function isProviderId(value: unknown): value is ProviderId {
   return value === "native" || value === "claude" || value === "codex";
+}
+
+/** What the prompt box holds, as it is shared: only files that have reached the server travel. */
+function composerDraft(
+  text: string,
+  attachments: readonly Attachment[],
+  reference: CodeReference | null,
+  research: boolean,
+  effort: ReasoningEffort,
+): ComposerDraft {
+  return {
+    text,
+    attachments: attachments
+      .filter((a) => a.status === "staged" && a.uploadId)
+      .map((a) => ({
+        id: a.id,
+        name: a.name,
+        size: a.size,
+        type: a.type,
+        text: a.text,
+        uploadId: a.uploadId,
+        status: a.status,
+      })),
+    reference,
+    research,
+    effort,
+  };
 }

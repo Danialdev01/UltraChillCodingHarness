@@ -894,3 +894,36 @@ describe("keeping a turn inside the context window", () => {
     await expect(runTurn(input)).rejects.toThrow(/no longer fits/);
   });
 });
+
+describe("approval", () => {
+  it("asks before a write and not before a read", async () => {
+    const { input } = harness();
+    const asked: string[] = [];
+    input.approve = async (request) => {
+      asked.push(`${request.toolName}:${request.permission}`);
+      return { behavior: "allow" };
+    };
+
+    await runTool(call("r", "read_file", '{"path":"index.ts"}'), input);
+    const written = await runTool(
+      call("w", "write_file", '{"path":"approved.txt","content":"ok"}'),
+      input,
+    );
+
+    expect(asked).toEqual(["write_file:write"]);
+    expect(written.isError).toBe(false);
+  });
+
+  it("turns a deny into the tool's error, with the person's reason", async () => {
+    const { input } = harness();
+    input.approve = async () => ({ behavior: "deny", message: "use a branch instead" });
+
+    const result = await runTool(
+      call("w", "write_file", '{"path":"denied.txt","content":"no"}'),
+      input,
+    );
+
+    expect(result).toMatchObject({ isError: true, content: "use a branch instead" });
+    await expect(readFile(join(root, "denied.txt"), "utf8")).rejects.toThrow();
+  });
+});

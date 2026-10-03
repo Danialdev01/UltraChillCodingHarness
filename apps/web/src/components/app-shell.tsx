@@ -4,9 +4,11 @@ import { redirect } from "next/navigation"
 import { AppHeader } from "@/components/app-header"
 import { AppSidebar } from "@/components/app-sidebar"
 import { FilesPanelProvider } from "@/components/files-panel"
+import { RealtimeProvider } from "@/lib/realtime"
 import { RightSidebar } from "@/components/right-sidebar"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import { getSession, listProjects, listWorkspaces } from "@/lib/session"
+import { getSession, listDatabaseConnections,
+  listProjects, listWorkspaces } from "@/lib/session"
 
 /**
  * The authenticated chrome every page inside the app renders into: the
@@ -34,7 +36,10 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
   // The cookie may name a workspace that was deleted, or one belonging to a
   // different account after re-login, so it is a hint rather than a fact.
   const active = workspaces.find((w) => w.id === requested) ?? workspaces[0]
-  const projects = await listProjects(active?.id ?? "")
+  const [projects, connections] = await Promise.all([
+    listProjects(active?.id ?? ""),
+    listDatabaseConnections(active?.id ?? ""),
+  ])
 
   // SidebarProvider writes `sidebar_state` on toggle but does not read it
   // back, so without this a collapsed sidebar silently re-expands on reload.
@@ -54,41 +59,47 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
       // dropdown can size itself to the same width. See globals.css.
       style={{ "--sidebar-width": "var(--ucch-sidebar-width)" } as React.CSSProperties}
     >
-      <FilesPanelProvider>
-        <AppSidebar
-          user={{
-            name: session.name ?? session.login ?? "User",
-            email: session.email ?? "",
-            // `undefined`, never "": an empty `src` is a request for the
-            // page itself, which the browser then reports as a broken image.
-            avatar: session.avatarUrl ?? undefined,
-          }}
-          workspaces={workspaces}
-          activeWorkspaceId={active?.id ?? ""}
-          projects={projects}
-        />
-        <SidebarInset className="min-h-0 overflow-hidden">
-          <AppHeader workspaceName={active?.name ?? "Workspace"} projects={projects} />
-          {/* The right-hand column -- the file tree or the search results -- is
-              a flex sibling of the page rather than an overlay, so opening it
-              narrows the content instead of covering it; and it lives inside
-              the inset, below the header, so the header stays one unbroken bar
-              across the app. */}
-          <div className="flex min-h-0 flex-1">
-            {/* The page scrolls here rather than the window: a chat keeps its
-                composer pinned by bounding its own message list, and a page
-                that is simply long -- the dashboard, a section -- scrolls
-                within the same box. */}
-            {/* The one element the view transition animates: the sidebar and
-                header have no transition name, so a page change crossfades
-                this box and leaves the chrome around it still. */}
-            <div className="ucch-page flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto [view-transition-name:page]">
-              {children}
+      <RealtimeProvider>
+        <FilesPanelProvider>
+          <AppSidebar
+            user={{
+              name: session.name ?? session.login ?? "User",
+              email: session.email ?? "",
+              // `undefined`, never "": an empty `src` is a request for the
+              // page itself, which the browser then reports as a broken image.
+              avatar: session.avatarUrl ?? undefined,
+            }}
+            workspaces={workspaces}
+            activeWorkspaceId={active?.id ?? ""}
+            projects={projects}
+            connections={connections}
+          />
+          <SidebarInset className="min-h-0 overflow-hidden">
+            <AppHeader
+              projects={projects}
+              connections={connections}
+            />
+            {/* The right-hand column -- the file tree or the search results -- is
+                a flex sibling of the page rather than an overlay, so opening it
+                narrows the content instead of covering it; and it lives inside
+                the inset, below the header, so the header stays one unbroken bar
+                across the app. */}
+            <div className="flex min-h-0 flex-1">
+              {/* The page scrolls here rather than the window: a chat keeps its
+                  composer pinned by bounding its own message list, and a page
+                  that is simply long -- the dashboard, a section -- scrolls
+                  within the same box. */}
+              {/* The one element the view transition animates: the sidebar and
+                  header have no transition name, so a page change crossfades
+                  this box and leaves the chrome around it still. */}
+              <div className="ucch-page flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto [view-transition-name:page]">
+                {children}
+              </div>
+              <RightSidebar />
             </div>
-            <RightSidebar />
-          </div>
-        </SidebarInset>
-      </FilesPanelProvider>
+          </SidebarInset>
+        </FilesPanelProvider>
+      </RealtimeProvider>
     </SidebarProvider>
   )
 }

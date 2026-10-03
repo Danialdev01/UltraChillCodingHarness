@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
-import { JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono, Source_Serif_4 } from "next/font/google";
+import localFont from "next/font/local";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ViewTransitionsProvider } from "@/lib/view-transitions";
@@ -13,30 +14,60 @@ import {
 import "./globals.css";
 
 /**
- * One typeface for the whole harness.
+ * The harness's typefaces.
  *
- * A monospace everywhere is a deliberate choice rather than a code-only one:
- * this is a tool for reading diffs, paths and tool output, and a proportional
- * UI around monospace content makes the two read as different documents.
- * `next/font` self-hosts it -- the files are fetched at build time and served
- * from this origin, so no page waits on Google at runtime and nothing leaks a
- * request to them.
+ * The UI is set in Inter, long-form prose in a serif and inline code, paths
+ * and terminal output in iA Writer Mono; the code editors alone keep JetBrains
+ * Mono. `next/font` self-hosts all of them -- the files are fetched at build
+ * time (or, for iA Writer Mono, ship in `src/fonts`) and served from this
+ * origin, so no page waits on Google at runtime and nothing leaks a request
+ * to them.
  *
- * Exposed as a variable rather than a class so `--font-sans` and `--font-mono`
- * can both point at it in `globals.css`; every `font-sans` and `font-mono`
- * utility in the app then resolves here without touching a component.
+ * Each is exposed as a variable rather than a class; the stacks that read
+ * them are assembled in `globals.css`, where every `font-sans`, `font-serif`
+ * and `font-mono` utility in the app resolves without touching a component.
+ */
+const inter = Inter({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-inter",
+});
+
+// The free stand-in for Lyon Text, which is commercial: the stack in
+// `globals.css` still prefers Lyon when it is installed locally.
+const sourceSerif = Source_Serif_4({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-source-serif",
+});
+
+// Not on Google Fonts; the webfonts and their licence (OFL) live in the repo.
+// Regular and bold only -- 500 and 600 snap to the nearer of the two.
+const iaWriterMono = localFont({
+  src: [
+    { path: "../fonts/ia-writer-mono/iAWriterMonoS-Regular.woff2", weight: "400", style: "normal" },
+    { path: "../fonts/ia-writer-mono/iAWriterMonoS-Italic.woff2", weight: "400", style: "italic" },
+    { path: "../fonts/ia-writer-mono/iAWriterMonoS-Bold.woff2", weight: "700", style: "normal" },
+    { path: "../fonts/ia-writer-mono/iAWriterMonoS-BoldItalic.woff2", weight: "700", style: "italic" },
+  ],
+  display: "swap",
+  variable: "--font-ia-writer-mono",
+});
+
+/**
+ * The code editors' face. Kept apart from the rest of the UI on purpose:
+ * the editors are tuned around its metrics, and it is what the files were
+ * being read in before the UI moved to Inter.
  */
 const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
-  // The whole weight range in one variable file: the UI leans on 400 and 500,
-  // and headings on 600.
+  // The whole weight range in one variable file.
   weight: ["100", "200", "300", "400", "500", "600", "700", "800"],
   display: "swap",
   variable: "--font-jetbrains-mono",
   // The rest of the stack is left to `next/font`, which appends a
   // metric-matched local fallback of its own so the page does not reflow when
-  // the real face arrives. Repeating the generic families here only
-  // duplicated them in the computed value.
+  // the real face arrives.
 });
 
 export const metadata: Metadata = {
@@ -82,7 +113,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       lang="en"
       // `dark` travels with the variables so Tailwind's `dark:` variants agree
       // with the ink the palette resolved to.
-      className={[jetbrainsMono.variable, theme && deriveTheme(theme).dark ? "dark" : ""]
+      className={[
+        inter.variable,
+        sourceSerif.variable,
+        iaWriterMono.variable,
+        jetbrainsMono.variable,
+        theme && deriveTheme(theme).dark ? "dark" : "",
+      ]
         .filter(Boolean)
         .join(" ")}
       style={theme ? themeToStyle(theme) : undefined}

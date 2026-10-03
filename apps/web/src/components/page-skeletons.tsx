@@ -75,18 +75,12 @@ export function DashboardSkeleton() {
   )
 }
 
-/** Settings: the tab strip, then a form's worth of fields. */
+/** Settings: a form's worth of fields. The pages themselves are sidebar rows. */
 export function SettingsSkeleton() {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto p-4">
       <div className="w-full max-w-3xl">
-        <div className="flex gap-1 border-b pb-2">
-          <Skeleton className="h-7 w-20" />
-          <Skeleton className="h-7 w-24" />
-          <Skeleton className="h-7 w-16" />
-          <Skeleton className="h-7 w-20" />
-        </div>
-        <div className="mt-6 flex flex-col gap-6">
+        <div className="flex flex-col gap-6">
           {Array.from({ length: 3 }, (_, i) => (
             <div key={i} className="flex flex-col gap-2">
               <Skeleton className="h-3.5 w-24" />
@@ -145,6 +139,243 @@ export function ProjectSkeleton() {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Notes: the notes' own top bar, an empty page, and the tree column at the
+ * right. The bar and the column are drawn at their real sizes -- 2.5rem and
+ * 15rem -- so the live ones take their place without the page shifting.
+ */
+export function NotesSkeleton() {
+  return (
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex h-10 items-center gap-2 border-b pr-2 pl-4">
+          <div className="flex flex-1 items-center gap-2">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-3 w-3 opacity-50" />
+            <Skeleton className="h-3 w-24" />
+          </div>
+          <Skeleton className="size-6 rounded-md" />
+          <Skeleton className="size-6 rounded-md" />
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <div className="mx-auto w-full max-w-3xl px-8 py-12">
+            <Skeleton className="mb-6 h-9 w-2/5" />
+            <Skeleton className="mb-3 h-4 w-full" />
+            <Skeleton className="mb-3 h-4 w-11/12" />
+            <Skeleton className="h-4 w-3/5" />
+          </div>
+        </div>
+      </div>
+      <aside className="bg-sidebar/40 flex w-60 shrink-0 flex-col border-l">
+        <div className="flex h-10 items-center justify-between border-b px-3">
+          <Skeleton className="h-3 w-12" />
+          <Skeleton className="size-6 rounded-md" />
+        </div>
+        <div className="flex flex-col gap-1 px-3 py-2">
+          {Array.from({ length: 5 }, (_, i) => (
+            <div key={i} className="flex items-center gap-2 py-1" style={{ paddingLeft: i === 0 ? 0 : 12 }}>
+              <Skeleton className="size-3.5 rounded-sm" />
+              <Skeleton className="h-3" style={{ width: `${45 + ((i * 23) % 40)}%` }} />
+            </div>
+          ))}
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+/**
+ * The Git view: the toolbar's two wide buttons, the changes column with its
+ * tab strip and rows, and a diff on the right. Drawn at the real widths --
+ * 3rem toolbar, 20rem column -- so the live view slots in without a jump.
+ */
+export function GitSkeleton() {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-12 items-stretch border-b">
+        {[0, 1].map((i) => (
+          <div key={i} className="flex w-44 items-center gap-3 border-r px-3">
+            <Skeleton className="size-4 rounded-sm" />
+            <div className="flex flex-1 flex-col gap-1.5">
+              <Skeleton className="h-3" style={{ width: i === 0 ? "55%" : "70%" }} />
+              <Skeleton className="h-2.5 opacity-60" style={{ width: i === 0 ? "80%" : "60%" }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex min-h-0 flex-1">
+        <div className="flex w-72 shrink-0 flex-col border-r sm:w-80">
+          <div className="grid h-9 grid-cols-2 border-b">
+            <div className="flex items-center justify-center">
+              <Skeleton className="h-3 w-16" />
+            </div>
+            <div className="flex items-center justify-center">
+              <Skeleton className="h-3 w-14 opacity-60" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2 border-b px-3 py-2">
+            <Skeleton className="size-3.5 rounded-sm" />
+            <Skeleton className="h-3 w-24" />
+          </div>
+          <div className="flex flex-col gap-1 px-3 py-2">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="flex items-center gap-2 py-1">
+                <Skeleton className="size-3.5 rounded-sm" />
+                <Skeleton className="size-3.5 rounded-sm" />
+                <Skeleton className="h-3" style={{ width: `${45 + ((i * 23) % 40)}%` }} />
+                <Skeleton className="ml-auto size-4 rounded-sm" />
+              </div>
+            ))}
+          </div>
+          <div className="mt-auto flex flex-col gap-2 border-t p-3">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-7 w-full" />
+          </div>
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex h-8 items-center gap-2 border-b px-3">
+            <Skeleton className="size-3.5 rounded-sm" />
+            <Skeleton className="h-3 w-40" />
+          </div>
+          <div className="flex flex-col gap-1.5 p-3">
+            {Array.from({ length: 12 }, (_, i) => (
+              <div key={i} className="flex items-center gap-3">
+                <Skeleton className="h-3 w-6 opacity-50" />
+                <Skeleton className="h-3 w-6 opacity-50" />
+                <Skeleton className="h-3" style={{ width: `${20 + ((i * 37) % 55)}%` }} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A database view: the tab strip across the top and a table of rows below
+ * it. This is what a page under the database layout shows while it loads,
+ * inside the shell the layout already drew.
+ */
+export function DatabaseViewSkeleton() {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex h-10 items-center gap-4 border-b px-4">
+        {[14, 8, 12, 12, 20].map((w, i) => (
+          <Skeleton key={i} className="h-3" style={{ width: `${w * 4}px` }} />
+        ))}
+      </div>
+      <div className="flex flex-col gap-3 p-4">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-8 w-40" />
+          <Skeleton className="ml-auto h-8 w-24" />
+        </div>
+        <div className="rounded-lg border">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="flex items-center gap-4 border-b px-3 py-2.5 last:border-b-0">
+              <Skeleton className="h-3" style={{ width: `${20 + ((i * 17) % 30)}%` }} />
+              <Skeleton className="h-3 w-12" />
+              <Skeleton className="ml-auto h-3 w-16" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A database before its connection is known: the view, and the tables
+ * column at the right at its real 16rem so the live one takes its place
+ * without the page shifting.
+ */
+export function DatabaseSkeleton() {
+  return (
+    <div className="flex min-h-0 flex-1">
+      <DatabaseViewSkeleton />
+      <aside className="bg-sidebar/40 hidden w-64 shrink-0 flex-col border-l md:flex">
+        <div className="flex h-10 items-center justify-between border-b px-3">
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className="size-6 rounded-md" />
+        </div>
+        <div className="flex flex-col gap-1 px-3 py-2">
+          {Array.from({ length: 7 }, (_, i) => (
+            <div key={i} className="flex items-center gap-2 py-1">
+              <Skeleton className="size-3.5 rounded-sm" />
+              <Skeleton className="h-3" style={{ width: `${40 + ((i * 23) % 45)}%` }} />
+            </div>
+          ))}
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+/**
+ * The timeline before its tasks arrive: the toolbar, then rows of a name
+ * beside a bar, each bar starting and ending somewhere different so it
+ * reads as a chart rather than a table.
+ */
+export function TimelineSkeleton({ rows = 5 }: { rows?: number }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b pr-2 pl-4">
+        <Skeleton className="size-4 rounded-sm" />
+        <Skeleton className="h-3 w-16" />
+        <div className="flex-1" />
+        <Skeleton className="h-7 w-36 rounded-lg" />
+        <Skeleton className="h-7 w-20 rounded-lg" />
+      </div>
+      <div className="flex min-h-0 flex-1">
+        <div className="w-64 shrink-0 border-r">
+          <div className="h-11 border-b" />
+          {Array.from({ length: rows }, (_, i) => (
+            <div key={i} className="flex h-9 items-center gap-2 border-b px-3">
+              <Skeleton className="size-2.5 rounded-full" />
+              <Skeleton className="h-3" style={{ width: `${35 + ((i * 29) % 40)}%` }} />
+            </div>
+          ))}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="h-11 border-b" />
+          {Array.from({ length: rows }, (_, i) => (
+            <div key={i} className="flex h-9 items-center border-b">
+              <Skeleton
+                className="h-5 rounded-md"
+                style={{ marginLeft: `${5 + ((i * 17) % 40)}%`, width: `${15 + ((i * 13) % 30)}%` }}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** A project's keys: the toolbar, then name, masked value, tags and URL per row. */
+export function KeysSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b pr-2 pl-4">
+        <Skeleton className="size-4 rounded-sm" />
+        <Skeleton className="h-3 w-12" />
+        <div className="flex-1" />
+        <Skeleton className="h-7 w-20 rounded-lg" />
+      </div>
+      <div className="h-10 border-b" />
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="flex h-11 items-center gap-6 border-b px-4">
+          <Skeleton className="h-3" style={{ width: `${10 + ((i * 7) % 8)}%` }} />
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-4 w-16 rounded-md" />
+          <Skeleton className="h-3 w-32" />
+        </div>
+      ))}
     </div>
   )
 }

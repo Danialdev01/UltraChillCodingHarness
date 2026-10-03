@@ -1,5 +1,16 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { normalizeWorkspacePath } from "@ucch/protocol";
 
@@ -58,7 +69,8 @@ export type RawReadResult =
   | { kind: "directory" };
 
 export type ReadResult =
-  | { kind: "text"; content: string }
+  /** `version` names these exact bytes, for a save that must not overwrite another. */
+  | { kind: "text"; content: string; version: string }
   | { kind: "binary" }
   | { kind: "too_large"; size: number }
   | { kind: "missing" }
@@ -130,7 +142,7 @@ export class WorkspaceFiles {
     // text": handing an image to a text editor produces mojibake going in and
     // a corrupted file coming out.
     if (buffer.subarray(0, 8000).includes(0)) return { kind: "binary" };
-    return { kind: "text", content: buffer.toString("utf8") };
+    return { kind: "text", content: buffer.toString("utf8"), version: contentVersion(buffer) };
   }
 
   /**
@@ -159,15 +171,55 @@ export class WorkspaceFiles {
     return { kind: "file", bytes: await readFile(absolute) };
   }
 
-  /** Creates or overwrites a file. Returns what happened, for the event. */
-  async write(projectId: string, path: string, content: string): Promise<"added" | "modified"> {
+  /**
+   * Creates or overwrites a file. Returns what happened, for the event.
+   *
+   * With `ifVersion`, only over the exact bytes that version names: a file
+   * saved, rewritten by the agent, or deleted since the editor opened it is
+   * a `StaleWriteError` carrying what is there now, never a silent
+   * overwrite. Writes to one path are taken one at a time so two saves
+   * cannot both pass the check.
+   */
+  async write(
+    projectId: string,
+    path: string,
+    content: string,
+    ifVersion?: string,
+  ): Promise<"added" | "modified"> {
     if (Buffer.byteLength(content, "utf8") > MAX_WRITE_BYTES) {
       throw new PathError("file is too large to save");
     }
     const absolute = this.resolve(projectId, path);
-    const existed = await exists(absolute);
-    if (existed) await this.#refuseEscapingSymlink(projectId, absolute);
+    return this.#serially(absolute, async () => {
+      const existed = await exists(absolute);
+      if (existed) await this.#refuseEscapingSymlink(projectId, absolute);
+      if (ifVersion !== undefined) {
+        const current = existed ? await readFile(absolute) : null;
+        if (!current || contentVersion(current) !== ifVersion) {
+          throw new StaleWriteError(
+            current ? current.toString("utf8") : null,
+            current ? contentVersion(current) : null,
+          );
+        }
+      }
+      return this.#writeFile(absolute, existed, content);
+    });
+  }
 
+  #locks = new Map<string, Promise<unknown>>();
+
+  async #serially<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const before = this.#locks.get(key) ?? Promise.resolve();
+    const next = before.catch(() => {}).then(run);
+    this.#locks.set(key, next);
+    try {
+      return await next;
+    } finally {
+      if (this.#locks.get(key) === next) this.#locks.delete(key);
+    }
+  }
+
+  async #writeFile(absolute: string, existed: boolean, content: string): Promise<"added" | "modified"> {
     // A file saved into a folder that is not there yet means to create it,
     // the same way the agent's `write_file` tool does.
     await mkdir(dirname(absolute), { recursive: true });
@@ -204,6 +256,29 @@ export class WorkspaceFiles {
   }
 
   /**
+   * Moves a file or directory, keeping its contents. Reports a source that
+   * was not there, and refuses to clobber whatever is at the destination.
+   */
+  async move(projectId: string, from: string, to: string): Promise<boolean> {
+    const source = this.resolve(projectId, from);
+    const destination = this.resolve(projectId, to);
+    if (source === this.root(projectId)) throw new PathError("the project root cannot be moved");
+    // A directory cannot end up inside itself: `rename` would refuse, but
+    // with an error that says nothing about why.
+    if (destination === source || destination.startsWith(source + sep)) {
+      throw new PathError(`${from} cannot be moved into itself`);
+    }
+    if (!(await exists(source))) return false;
+
+    await this.#refuseEscapingSymlink(projectId, source);
+    if (await exists(destination)) throw new ConflictError(`${to} already exists`);
+
+    await mkdir(dirname(destination), { recursive: true });
+    await rename(source, destination);
+    return true;
+  }
+
+  /**
    * Refuses a path that only *lexically* sits inside the workspace.
    *
    * `resolve()` cannot see a symlink; this can, because the file is there to
@@ -232,6 +307,22 @@ export class PathError extends Error {}
 
 /** The target is already there. Reported as 409. */
 export class ConflictError extends Error {}
+
+/** A save made against a version of the file that is no longer there. */
+export class StaleWriteError extends Error {
+  constructor(
+    /** The file as it is now, or null when it has been deleted. */
+    readonly content: string | null,
+    readonly version: string | null,
+  ) {
+    super("the file was changed elsewhere");
+  }
+}
+
+/** Names a file's exact bytes. Not a security boundary: a cheap equality check. */
+export function contentVersion(bytes: Buffer | string): string {
+  return createHash("sha1").update(bytes).digest("hex").slice(0, 16);
+}
 
 async function walk(dir: string, budget: { left: number }): Promise<FileNode[]> {
   let entries;

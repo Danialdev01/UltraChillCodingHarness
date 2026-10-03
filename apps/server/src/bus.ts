@@ -10,7 +10,8 @@ export interface Publication {
 export type Topic =
   | { name: "thread"; threadId: string }
   | { name: "project"; projectId: string }
-  | { name: "terminal"; terminalId: string };
+  | { name: "terminal"; terminalId: string }
+  | { name: "user"; userId: string };
 
 export function topicKey(topic: Topic): string {
   switch (topic.name) {
@@ -20,6 +21,8 @@ export function topicKey(topic: Topic): string {
       return `project:${topic.projectId}`;
     case "terminal":
       return `terminal:${topic.terminalId}`;
+    case "user":
+      return `user:${topic.userId}`;
   }
 }
 
@@ -65,6 +68,18 @@ export class EventBus {
       keys.push(`terminal:${publication.event.terminalId}`);
     }
 
+    this.#deliver(keys, publication);
+  }
+
+  /**
+   * To one account's own topic: what changed belongs to a person rather
+   * than a project -- their settings, their list of projects.
+   */
+  publishToUser(userId: string, event: DomainEvent): void {
+    this.#deliver([`user:${userId}`], { seq: null, projectId: "", threadId: null, event });
+  }
+
+  #deliver(keys: readonly string[], publication: Publication): void {
     for (const key of keys) {
       const listeners = this.#subscribers.get(key);
       if (!listeners) continue;

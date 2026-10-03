@@ -9,6 +9,8 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm -r --parallel dev",
+    "dev:up": "bash scripts/dev.sh",
+    "dev:down": "docker compose -f docker-compose.dev.yml down; docker stop ucch-pg-dev 2>/dev/null || true",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
     "test:watch": "vitest",

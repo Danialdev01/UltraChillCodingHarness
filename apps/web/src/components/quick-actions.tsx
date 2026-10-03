@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { BellIcon, FolderGitIcon, ListTodoIcon, StickyNoteIcon } from "lucide-react";
+import { DatabaseIcon, FolderGitIcon, ListTodoIcon, StickyNoteIcon } from "lucide-react";
 
+import { NewDatabaseDialog } from "@/components/new-database-dialog";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -10,13 +11,14 @@ import { cn } from "@/lib/utils";
 /**
  * One-tap creation for the things you add most often.
  *
- * Only "project" has somewhere to store anything today. The other three are
- * rendered disabled with a tooltip saying so, rather than omitted or wired to
- * a no-op -- a button that looks live and silently does nothing is the worst
- * of the three options.
+ * Only "project" and "database" have somewhere to store anything today. The
+ * other two are rendered disabled with a tooltip saying so, rather than
+ * omitted or wired to a no-op -- a button that looks live and silently does
+ * nothing is the worst of the three options.
  */
 export function QuickActions({ workspaceId }: { workspaceId: string }) {
   const [creating, setCreating] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   return (
     <>
@@ -28,9 +30,9 @@ export function QuickActions({ workspaceId }: { workspaceId: string }) {
         />
         <Action icon={FolderGitIcon} label="New project" onClick={() => setCreating(true)} />
         <Action
-          icon={BellIcon}
-          label="New reminder"
-          unavailable="Reminders arrive with the agent core"
+          icon={DatabaseIcon}
+          label="New database connection"
+          onClick={() => setConnecting(true)}
         />
         <Action
           icon={StickyNoteIcon}
@@ -39,9 +41,10 @@ export function QuickActions({ workspaceId }: { workspaceId: string }) {
         />
       </div>
 
-      {/* Outside the grid: the dialog renders no element of its own, and a
+      {/* Outside the grid: the dialogs render no element of their own, and a
           fifth child in a four-column grid is a trap for the next change. */}
       <NewProjectDialog workspaceId={workspaceId} open={creating} onOpenChange={setCreating} />
+      <NewDatabaseDialog workspaceId={workspaceId} open={connecting} onOpenChange={setConnecting} />
     </>
   );
 }

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConflictError, PathError, WorkspaceFiles } from "./files.js";
+import { ConflictError, PathError, StaleWriteError, WorkspaceFiles, contentVersion } from "./files.js";
 
 const PROJECT = "33333333-3333-3333-3333-333333333333";
 
@@ -101,7 +101,11 @@ describe("tree", () => {
 describe("read", () => {
   it("returns text", async () => {
     await writeFile(join(dir, "a.txt"), "hello");
-    expect(await files.read(PROJECT, "a.txt")).toEqual({ kind: "text", content: "hello" });
+    expect(await files.read(PROJECT, "a.txt")).toEqual({
+      kind: "text",
+      content: "hello",
+      version: contentVersion("hello"),
+    });
   });
 
   it("reports what it will not open", async () => {
@@ -159,6 +163,40 @@ describe("readBytes", () => {
   });
 });
 
+describe("write with ifVersion", () => {
+  it("saves over the version it was opened at", async () => {
+    await writeFile(join(dir, "a.txt"), "one");
+    await files.write(PROJECT, "a.txt", "two", contentVersion("one"));
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("two");
+  });
+
+  it("refuses a save over a file changed since, and hands back what is there", async () => {
+    await writeFile(join(dir, "a.txt"), "theirs");
+    const error = await files.write(PROJECT, "a.txt", "mine", contentVersion("one")).catch((e) => e);
+    expect(error).toBeInstanceOf(StaleWriteError);
+    expect(error.content).toBe("theirs");
+    expect(error.version).toBe(contentVersion("theirs"));
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("theirs");
+  });
+
+  it("refuses a save over a file deleted since", async () => {
+    const error = await files.write(PROJECT, "gone.txt", "mine", contentVersion("one")).catch((e) => e);
+    expect(error).toBeInstanceOf(StaleWriteError);
+    expect(error.content).toBeNull();
+  });
+
+  it("lets only one of two saves from the same version through", async () => {
+    await writeFile(join(dir, "a.txt"), "base");
+    const v = contentVersion("base");
+    const results = await Promise.allSettled([
+      files.write(PROJECT, "a.txt", "first", v),
+      files.write(PROJECT, "a.txt", "second", v),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("first");
+  });
+});
+
 describe("write", () => {
   it("creates a file, and says so", async () => {
     expect(await files.write(PROJECT, "src/new.ts", "export {}")).toBe("added");
@@ -201,6 +239,43 @@ describe("create", () => {
     await writeFile(join(dir, "a.txt"), "keep me");
     await expect(files.create(PROJECT, "a.txt", "file")).rejects.toThrow(ConflictError);
     expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("keep me");
+  });
+});
+
+describe("move", () => {
+  it("moves a file into a folder that is not there yet", async () => {
+    await writeFile(join(dir, "a.txt"), "x");
+    expect(await files.move(PROJECT, "a.txt", "src/a.txt")).toBe(true);
+    expect(await readFile(join(dir, "src/a.txt"), "utf8")).toBe("x");
+    await expect(readFile(join(dir, "a.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("moves a directory with everything in it", async () => {
+    await mkdir(join(dir, "src/lib"), { recursive: true });
+    await writeFile(join(dir, "src/lib/x.ts"), "x");
+    expect(await files.move(PROJECT, "src", "packages/src")).toBe(true);
+    expect(await readFile(join(dir, "packages/src/lib/x.ts"), "utf8")).toBe("x");
+  });
+
+  it("refuses a directory into itself", async () => {
+    await mkdir(join(dir, "src"), { recursive: true });
+    await expect(files.move(PROJECT, "src", "src/src")).rejects.toThrow(PathError);
+    await expect(files.move(PROJECT, "src", "src")).rejects.toThrow(PathError);
+  });
+
+  it("refuses to clobber what is already there", async () => {
+    await writeFile(join(dir, "a.txt"), "a");
+    await writeFile(join(dir, "b.txt"), "b");
+    await expect(files.move(PROJECT, "a.txt", "b.txt")).rejects.toThrow(ConflictError);
+    expect(await readFile(join(dir, "b.txt"), "utf8")).toBe("b");
+  });
+
+  it("reports a source that was not there", async () => {
+    expect(await files.move(PROJECT, "missing.txt", "x.txt")).toBe(false);
+  });
+
+  it("will not move the project root", async () => {
+    await expect(files.move(PROJECT, ".", "elsewhere")).rejects.toThrow(PathError);
   });
 });
 

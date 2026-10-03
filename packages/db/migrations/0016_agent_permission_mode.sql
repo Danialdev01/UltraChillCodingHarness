@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "agent_permission_mode" text;

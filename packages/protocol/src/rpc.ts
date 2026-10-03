@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Command, type CommandType } from "./commands.js";
-import { DomainEvent, StoredEvent } from "./events.js";
+import { ComposerDraft, DomainEvent, StoredEvent } from "./events.js";
 
 /**
  * The client/server wire contract: one authenticated WebSocket carrying
@@ -26,8 +26,19 @@ const Subscribe = z.object({
   id: z.string(),
   topic: z.discriminatedUnion("name", [
     z.object({ name: z.literal("thread"), threadId: z.string().uuid() }),
-    z.object({ name: z.literal("project"), projectId: z.string().uuid() }),
+    z.object({
+      name: z.literal("project"),
+      projectId: z.string().uuid(),
+      /**
+       * Leaves out the streams -- token deltas and terminal bytes -- for a
+       * view that only wants to hear that something changed, so a page of
+       * notes is not sent every token of a running agent.
+       */
+      quiet: z.boolean().optional(),
+    }),
     z.object({ name: z.literal("terminal"), terminalId: z.string() }),
+    /** The caller's own account: settings and other things without a project. */
+    z.object({ name: z.literal("user") }),
   ]),
   /** Replay durable events from this sequence number before streaming live ones. */
   sinceSeq: z.number().int().nonnegative().optional(),
@@ -38,12 +49,42 @@ const Unsubscribe = z.object({
   id: z.string(),
 });
 
+/**
+ * What this tab has typed in a thread's prompt box. Not a command: a draft
+ * is not a fact for the log, only shared state the server holds while
+ * anyone is looking. `baseRev` is the rev this tab last saw; an update made
+ * against an older one is refused with `conflict`.
+ */
+const ComposerUpdate = z.object({
+  kind: z.literal("composer"),
+  id: z.string(),
+  threadId: z.string().uuid(),
+  baseRev: z.number().int().nonnegative(),
+  draft: ComposerDraft,
+});
+
+/** Where this tab is looking in a project, or null to leave it. */
+const PresenceSet = z.object({
+  kind: z.literal("presence"),
+  id: z.string(),
+  projectId: z.string().uuid(),
+  location: z.string().max(600).nullable(),
+  editing: z.boolean().optional(),
+});
+
 const Ping = z.object({
   kind: z.literal("ping"),
   id: z.string(),
 });
 
-export const ClientFrame = z.discriminatedUnion("kind", [Dispatch, Subscribe, Unsubscribe, Ping]);
+export const ClientFrame = z.discriminatedUnion("kind", [
+  Dispatch,
+  Subscribe,
+  Unsubscribe,
+  ComposerUpdate,
+  PresenceSet,
+  Ping,
+]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 
 // -- Server -> client --------------------------------------------------------
@@ -109,6 +150,7 @@ export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   "thread.create": "write",
   "thread.send": "exec",
   "thread.cancel": "exec",
+  "thread.permission_reply": "exec",
   "thread.revert": "write",
   "thread.fork": "write",
   "terminal.create": "exec",

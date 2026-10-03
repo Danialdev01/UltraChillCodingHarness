@@ -31,9 +31,21 @@ export interface ToolPart {
   result: string | null;
   isError: boolean;
   durationMs: number | null;
+  /** Paused on a permission prompt: the CLI is waiting, not working. */
+  awaitingApproval?: boolean;
 }
 
 export type MessagePart = TextPart | ToolPart;
+
+/** A CLI's question, open until a person or the end of the turn answers it. */
+export interface PermissionPrompt {
+  requestId: string;
+  turnId: string;
+  toolUseId: string | null;
+  toolName: string;
+  input: unknown;
+  description: string | null;
+}
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -97,6 +109,12 @@ export interface ChatState {
   /** Null unless a turn is running. */
   active: TurnActivity | null;
   /**
+   * Prompts the running turn is blocked on, oldest first. Empty once the
+   * turn has ended: a `turn_completed` closes whatever was still open, and a
+   * reload must not resurrect a question nobody can answer any more.
+   */
+  prompts: PermissionPrompt[];
+  /**
    * Roughly what the next request's prompt will weigh, or null before any
    * turn has finished.
    *
@@ -134,6 +152,7 @@ export function toMessages(
   let running = false;
   let activeTurn: string | null = null;
   let contextTokens: number | null = null;
+  const prompts = new Map<string, PermissionPrompt>();
 
   /**
    * The bubble for a turn, created on demand.
@@ -285,6 +304,35 @@ export function toMessages(
         });
         break;
 
+      case "agent.permission_requested":
+        if (event.toolUseId) {
+          const call = turn(event.turnId).parts.find(
+            (part): part is ToolPart => part.kind === "tool" && part.id === event.toolUseId,
+          );
+          if (call) call.awaitingApproval = true;
+        }
+        prompts.set(event.requestId, {
+          requestId: event.requestId,
+          turnId: event.turnId,
+          toolUseId: event.toolUseId,
+          toolName: event.toolName,
+          input: event.input,
+          description: event.description,
+        });
+        break;
+
+      case "agent.permission_resolved": {
+        const toolUseId = prompts.get(event.requestId)?.toolUseId;
+        if (toolUseId) {
+          const call = turn(event.turnId).parts.find(
+            (part): part is ToolPart => part.kind === "tool" && part.id === toolUseId,
+          );
+          if (call) delete call.awaitingApproval;
+        }
+        prompts.delete(event.requestId);
+        break;
+      }
+
       case "agent.tool_result": {
         const message = turn(event.turnId);
         const call = message.parts.find(
@@ -316,6 +364,7 @@ export function toMessages(
         message.completedAt = row.receivedAt ?? null;
         message.stopReason = event.stopReason;
         running = false;
+        prompts.clear();
         contextTokens = event.usage.inputTokens + event.usage.outputTokens;
         break;
       }
@@ -326,6 +375,7 @@ export function toMessages(
         message.completedAt = row.receivedAt ?? null;
         message.error = event.error;
         running = false;
+        prompts.clear();
         break;
       }
 
@@ -346,6 +396,7 @@ export function toMessages(
     messages,
     running,
     active: running && activeTurn ? (activity.get(activeTurn) ?? null) : null,
+    prompts: running ? [...prompts.values()] : [],
     contextTokens,
   };
 }

@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import type { DatabaseConnectionSummary } from "@ucch/protocol";
 
 export interface Session {
   userId: string;
@@ -233,6 +234,45 @@ export async function listProjects(workspaceId: string): Promise<Project[]> {
   }
 }
 
+/** Saved database servers in a workspace. Empty when the workspace is not the caller's. */
+export async function listDatabaseConnections(workspaceId: string): Promise<DatabaseConnectionSummary[]> {
+  if (!workspaceId) return [];
+  const jar = await cookies();
+  const token = jar.get("ucch_session");
+  if (!token) return [];
+
+  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
+  try {
+    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/database-connections`, {
+      headers: { cookie: `ucch_session=${token.value}` },
+      cache: "no-store",
+    });
+    if (!response.ok) return [];
+    return ((await response.json()) as { connections: DatabaseConnectionSummary[] }).connections;
+  } catch {
+    return [];
+  }
+}
+
+/** One saved database server, or null if it is not the caller's. */
+export async function getDatabaseConnection(id: string): Promise<DatabaseConnectionSummary | null> {
+  const jar = await cookies();
+  const token = jar.get("ucch_session");
+  if (!token) return null;
+
+  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
+  try {
+    const response = await fetch(`${origin}/api/database-connections/${encodeURIComponent(id)}`, {
+      headers: { cookie: `ucch_session=${token.value}` },
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    return ((await response.json()) as { connection: DatabaseConnectionSummary }).connection;
+  } catch {
+    return null;
+  }
+}
+
 /** A single project by public hash, or null if it is not the caller's. */
 export async function getProjectByHash(hash: string): Promise<Project | null> {
   const jar = await cookies();
@@ -247,6 +287,34 @@ export async function getProjectByHash(hash: string): Promise<Project | null> {
     });
     if (!response.ok) return null;
     return (await response.json()) as Project;
+  } catch {
+    return null;
+  }
+}
+
+/** What a workspace occupies on disk and in the database. Mirrors the server. */
+export interface WorkspaceStorage {
+  /** The workspace's own project directories. */
+  files: { bytes: number; projects: { id: string; name: string; bytes: number }[] };
+  /** The whole database: rows are not partitioned by workspace. */
+  database: { bytes: number; tables: { name: string; bytes: number }[] };
+}
+
+/** Disk and database sizes behind the Usage tab, or null when they failed. */
+export async function getWorkspaceStorage(workspaceId: string): Promise<WorkspaceStorage | null> {
+  if (!workspaceId) return null;
+  const jar = await cookies();
+  const token = jar.get("ucch_session");
+  if (!token) return null;
+
+  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
+  try {
+    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/storage`, {
+      headers: { cookie: `ucch_session=${token.value}` },
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as WorkspaceStorage;
   } catch {
     return null;
   }
