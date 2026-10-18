@@ -1,9 +1,11 @@
 "use client"
 
 import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { qk } from "@/lib/query-keys"
 import {
   formatPercent,
   formatResetsIn,
@@ -36,7 +38,19 @@ const POLL_MS = 60_000
  * for a bar nobody can see is a request with no reader.
  */
 export function QuotaRail() {
-  const [quotas, setQuotas] = React.useState<SessionQuotas | null>(null)
+  // The last reading, from the client cache, so the bars are filled from
+  // the first frame rather than after the first poll.
+  const queryClient = useQueryClient()
+  const [quotas, setQuotasState] = React.useState<SessionQuotas | null>(
+    () => queryClient.getQueryData<SessionQuotas>(qk.quotas.all) ?? null,
+  )
+  const setQuotas = React.useCallback(
+    (next: SessionQuotas) => {
+      setQuotasState(next)
+      queryClient.setQueryData(qk.quotas.all, next)
+    },
+    [queryClient],
+  )
 
   React.useEffect(() => {
     let cancelled = false

@@ -559,3 +559,40 @@ export function TableRowsSkeleton({ rows = 6 }: { rows?: number }) {
     </>
   )
 }
+
+/**
+ * The whole app shell, for the one moment there is no shell yet: a hard load
+ * of a signed-in page while the server asks who is signed in. The rail and
+ * panel on the left, the header bar, and a page of rows -- the same outline
+ * the real shell then fills, so nothing jumps when it arrives.
+ */
+export function ShellSkeleton() {
+  return (
+    <div className="flex h-svh overflow-hidden" aria-busy="true" aria-label="Loading">
+      <div className="bg-sidebar hidden shrink-0 border-r md:flex" style={{ width: "var(--ucch-sidebar-width)" }}>
+        <div className="flex w-12 shrink-0 flex-col items-center gap-3 border-r py-3">
+          <Skeleton className="size-7 rounded-lg" />
+          {Array.from({ length: 5 }, (_, i) => (
+            <Skeleton key={i} className="size-7" />
+          ))}
+          <Skeleton className="mt-auto size-8 rounded-full" />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-3 p-3">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-4 w-24" />
+          <TreeRowsSkeleton rows={7} />
+        </div>
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:h-16 sm:px-4">
+          <Skeleton className="size-6" />
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="ml-auto h-8 w-48" />
+        </div>
+        <div className="flex flex-1 flex-col gap-4 p-4">
+          <ListRowsSkeleton rows={6} />
+        </div>
+      </div>
+    </div>
+  )
+}

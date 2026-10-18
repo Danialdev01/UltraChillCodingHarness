@@ -34,6 +34,8 @@ import {
 } from "@/lib/realtime"
 import { DEFAULT_DOC_WIDTH, docMaxWidth, readDocWidth, watchDocWidth } from "@/lib/doc-width"
 import { docViewFromParam, noteHref, noteIdFromPath, type DocView } from "@/lib/sections"
+import { useCachedState } from "@/lib/queries/cached-state"
+import { qk } from "@/lib/query-keys"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 import type { Project } from "@/lib/session"
 import { useTransitionRouter } from "@/lib/view-transitions"
@@ -73,9 +75,23 @@ export function NotesWorkspace({
   const paramView = docViewFromParam(useSearchParams().get("view"))
   const noteId = location ? location.noteId : pathNoteId
   const view = location ? location.view : paramView
-  const [notes, setNotes] = React.useState<NoteSummary[]>([])
-  const [rootId, setRootId] = React.useState<string | null>(null)
-  const [treeError, setTreeError] = React.useState<string | null>(null)
+  // The page tree, cached: coming back to the documentation shows it at once.
+  const [tree, setTree, reloadTree, treeState] = useCachedState(
+    qk.notes.tree(project.hash),
+    () => listNotes(project.hash),
+    { persist: true },
+  )
+  const notes = React.useMemo(() => tree?.notes ?? [], [tree])
+  const rootId = tree?.rootId || null
+  const setNotes = React.useCallback(
+    (update: NoteSummary[] | ((current: NoteSummary[]) => NoteSummary[])) =>
+      setTree((current) => ({
+        rootId: current?.rootId ?? "",
+        notes: typeof update === "function" ? update(current?.notes ?? []) : update,
+      })),
+    [setTree],
+  )
+  const treeError = treeState.error ? treeState.error.message || "Could not load the notes." : null
   const [note, setNote] = React.useState<Note | null>(null)
   const [noteError, setNoteError] = React.useState<string | null>(null)
   const [searchOpen, setSearchOpen] = React.useState(false)
@@ -117,20 +133,7 @@ export function NotesWorkspace({
     [location, onLocationChange, router, ws, project.hash, noteId, rootId],
   )
 
-  const refreshTree = React.useCallback(async () => {
-    try {
-      const result = await listNotes(project.hash)
-      setNotes(result.notes)
-      setRootId(result.rootId)
-      setTreeError(null)
-    } catch (error) {
-      setTreeError(error instanceof Error ? error.message : "Could not load the notes.")
-    }
-  }, [project.hash])
-
-  React.useEffect(() => {
-    void refreshTree()
-  }, [refreshTree])
+  const refreshTree = reloadTree
 
   // The open page, fetched whenever the URL (or the root, once known) changes.
   React.useEffect(() => {

@@ -38,6 +38,8 @@ import {
 } from "@/lib/keys-api"
 import { useLiveResource } from "@/lib/realtime"
 import type { Project } from "@/lib/session"
+import { useCachedState } from "@/lib/queries/cached-state"
+import { qk } from "@/lib/query-keys"
 
 /** A shown value hides itself again after this long, in case the tab is left open. */
 const REVEAL_MS = 30_000
@@ -50,23 +52,21 @@ const REVEAL_MS = 30_000
  * value, and a shown value is forgotten again when it is hidden.
  */
 export function KeysWorkspace({ project }: { project: Project }) {
-  const [keys, setKeys] = React.useState<ProjectKey[] | null>(null)
+  // Cached: the keys show at once on a return visit, then revalidate.
+  const [keys, setKeys, reloadKeys, loadState] = useCachedState(
+    qk.keys.list(project.hash),
+    () => listProjectKeys(project.hash),
+    { persist: true },
+  )
   const [error, setError] = React.useState<string | null>(null)
   const [dialog, setDialog] = React.useState<KeyDialogState>(null)
   const [deleting, setDeleting] = React.useState<ProjectKey | null>(null)
   const [busy, setBusy] = React.useState(false)
 
-  const reload = React.useCallback(() => {
-    listProjectKeys(project.hash).then(
-      (loaded) => {
-        setKeys(loaded)
-        setError(null)
-      },
-      (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
-    )
-  }, [project.hash])
-
-  React.useEffect(reload, [reload])
+  const reload = React.useCallback(() => void reloadKeys(), [reloadKeys])
+  React.useEffect(() => {
+    setError(loadState.error ? loadState.error.message : null)
+  }, [loadState.error])
   // Added, changed or removed in another tab.
   useLiveResource("keys", reload, project.id)
 

@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { EyeIcon, EyeOffIcon, TerminalIcon } from "lucide-react";
 
+import { BootScreen } from "@/components/boot-screen";
 import { GithubMark } from "@/components/github-mark";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,10 +16,10 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useTransitionRouter } from "@/lib/view-transitions";
 
 export function LoginForm({ className, ...props }: React.ComponentProps<"div">) {
-  const router = useTransitionRouter();
+  const next = useSearchParams().get("next");
+  const [signedIn, setSignedIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -54,17 +56,16 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
         return;
       }
 
-      // `refresh()` discards the cached RSC payload, so the layout re-runs its
-      // session check instead of rendering the signed-out shell from cache.
-      // Every sign-in starts at the workspace list.
-      router.replace("/");
-      router.refresh();
+      // The boot screen loads what the first page needs, then opens it.
+      setSignedIn(true);
     } catch {
       setError("Could not reach the server. Is it running?");
     } finally {
       setPending(false);
     }
   }
+
+  if (signedIn) return <BootScreen next={next} />;
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>

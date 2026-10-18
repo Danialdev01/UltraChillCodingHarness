@@ -6,6 +6,8 @@ import { TASK_STAGES, type ProjectTask, type TaskSettings, type TaskStage } from
 
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useCachedState } from "@/lib/queries/cached-state"
+import { qk } from "@/lib/query-keys"
 import { useProjectEvents } from "@/lib/realtime"
 import type { Project } from "@/lib/session"
 import {
@@ -50,8 +52,15 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 export function TasksBoard({ project, projects }: { project: Project; projects: Project[] }) {
   const router = useTransitionRouter()
   const ws = useWorkspaceHash()
-  const [tasks, setTasks] = React.useState<ProjectTask[] | null>(null)
-  const [settings, setSettings] = React.useState<TaskSettings | null>(null)
+  // Cached: coming back to the board paints it at once, then revalidates.
+  const [tasks, setTasks, reloadTasks, tasksState] = useCachedState(
+    qk.tasks.list(project.hash),
+    () => listTasks(project.hash),
+    { persist: true },
+  )
+  const [settings, , reloadSettings] = useCachedState<TaskSettings>(qk.tasks.settings(project.hash), () =>
+    fetchTaskSettings(project.hash),
+  )
   const [error, setError] = React.useState<string | null>(null)
   const [dialog, setDialog] = React.useState<TaskDialogState>(null)
   const [openId, setOpenId] = React.useState<string | null>(null)
@@ -59,19 +68,10 @@ export function TasksBoard({ project, projects }: { project: Project; projects: 
   const [dragId, setDragId] = React.useState<string | null>(null)
   const [dropAt, setDropAt] = React.useState<{ stage: TaskStage; index: number } | null>(null)
 
-  const reload = React.useCallback(async () => {
-    try {
-      setTasks(await listTasks(project.hash))
-      setError(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }, [project.hash])
-
+  const reload = reloadTasks
   React.useEffect(() => {
-    void reload()
-    fetchTaskSettings(project.hash).then(setSettings, () => {})
-  }, [reload, project.hash])
+    setError(tasksState.error ? tasksState.error.message : null)
+  }, [tasksState.error])
 
   const versions = React.useRef(new Map<string, string>())
   versions.current = new Map((tasks ?? []).map((t) => [t.id, t.updatedAt]))
@@ -81,7 +81,7 @@ export function TasksBoard({ project, projects }: { project: Project; projects: 
       if (event.change === "updated" && versions.current.get(event.taskId) === event.updatedAt) return
       void reload()
     } else if (event.type === "resource.changed" && event.resource === "project_settings") {
-      fetchTaskSettings(project.hash).then(setSettings, () => {})
+      void reloadSettings()
     }
   })
 

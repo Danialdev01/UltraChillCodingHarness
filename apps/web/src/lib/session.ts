@@ -1,5 +1,7 @@
 import { cache } from "react";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
+import { WORKSPACE_COOKIE_NAME } from "./workspace-cookie";
+import { WORKSPACE_HEADER } from "./workspace-header";
 import type {
   CredentialPolicy,
   DatabaseConnectionSummary,
@@ -21,31 +23,59 @@ export interface Session {
 // want the session, the workspaces, or the project.
 
 /**
- * Resolves the current session on the server.
+ * Everything the shell needs about the signed-in person, from one request
+ * (`GET /api/bootstrap`): who they are, their workspaces, which one is open
+ * and its projects and connections.
+ *
+ * Wrapped in React's `cache`, so the layout and the page inside it -- and
+ * every component that asks for the session, the workspaces or the open
+ * workspace's projects -- share the one round trip. The workspace in the
+ * address (the middleware's header) decides which is open, then the cookie's
+ * last one.
  *
  * The cookie is forwarded to the API directly rather than through the browser
  * rewrite, so this is one server-to-server hop. Presence of the cookie is not
  * treated as proof of anything -- only the API can say whether a session is
  * still valid, and it is the component that can expire or revoke it.
  */
-export const getSession = cache(async function getSession(): Promise<Session | null> {
+export interface Bootstrap {
+  buildId: string;
+  me: Session & { hasPassword: boolean };
+  workspaces: Workspace[];
+  activeWorkspaceId: string | null;
+  projects: Project[];
+  connections: DatabaseConnectionSummary[];
+}
+
+export const getBootstrap = cache(async function getBootstrap(): Promise<Bootstrap | null> {
   const jar = await cookies();
   const token = jar.get("ucch_session");
   if (!token) return null;
 
+  const params = new URLSearchParams();
+  const ws = (await headers()).get(WORKSPACE_HEADER);
+  if (ws) params.set("ws", ws);
+  const hint = jar.get(WORKSPACE_COOKIE_NAME)?.value;
+  if (hint) params.set("hint", hint);
+
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/me`, {
+    const response = await fetch(`${origin}/api/bootstrap?${params}`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
     if (!response.ok) return null;
-    return (await response.json()) as Session;
+    return (await response.json()) as Bootstrap;
   } catch {
     // The API being unreachable is not the same as being signed out, but from
     // the page's point of view there is nothing to render either way.
     return null;
   }
+});
+
+/** The current session, or null when there is none (or the API cannot say). */
+export const getSession = cache(async function getSession(): Promise<Session | null> {
+  return (await getBootstrap())?.me ?? null;
 });
 
 export type WorkspaceKind = "project" | "session";
@@ -99,21 +129,7 @@ export function pickActiveWorkspace(
  * renders as "no workspace" rather than treating as signed out.
  */
 export const listWorkspaces = cache(async function listWorkspaces(): Promise<Workspace[]> {
-  const jar = await cookies();
-  const token = jar.get("ucch_session");
-  if (!token) return [];
-
-  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
-  try {
-    const response = await fetch(`${origin}/api/workspaces`, {
-      headers: { cookie: `ucch_session=${token.value}` },
-      cache: "no-store",
-    });
-    if (!response.ok) return [];
-    return ((await response.json()) as { workspaces: Workspace[] }).workspaces;
-  } catch {
-    return [];
-  }
+  return (await getBootstrap())?.workspaces ?? [];
 });
 
 export interface Project {
@@ -306,6 +322,9 @@ export async function getWorkspaceUsage(workspaceId: string): Promise<WorkspaceU
 /** Projects in a workspace. Empty when the workspace is not the caller's. */
 export const listProjects = cache(async function listProjects(workspaceId: string): Promise<Project[]> {
   if (!workspaceId) return [];
+  // The open workspace's are already in the bootstrap this request fetched.
+  const boot = await getBootstrap();
+  if (boot?.activeWorkspaceId === workspaceId) return boot.projects;
   const jar = await cookies();
   const token = jar.get("ucch_session");
   if (!token) return [];
@@ -326,6 +345,8 @@ export const listProjects = cache(async function listProjects(workspaceId: strin
 /** Saved database servers in a workspace. Empty when the workspace is not the caller's. */
 export const listDatabaseConnections = cache(async function listDatabaseConnections(workspaceId: string): Promise<DatabaseConnectionSummary[]> {
   if (!workspaceId) return [];
+  const boot = await getBootstrap();
+  if (boot?.activeWorkspaceId === workspaceId) return boot.connections;
   const jar = await cookies();
   const token = jar.get("ucch_session");
   if (!token) return [];

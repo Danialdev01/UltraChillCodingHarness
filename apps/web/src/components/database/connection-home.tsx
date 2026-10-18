@@ -18,6 +18,8 @@ import { databaseHref } from "@/lib/sections"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 import { formatBytes } from "@/lib/stats-format"
 import { TransitionLink } from "@/lib/view-transitions"
+import { useCachedState } from "@/lib/queries/cached-state"
+import { qk } from "@/lib/query-keys"
 
 /**
  * A connection's own page: every database on the server, and what can be
@@ -27,23 +29,26 @@ import { TransitionLink } from "@/lib/view-transitions"
  */
 export function ConnectionHome({ connection }: { connection: DatabaseConnectionSummary }) {
   const ws = useWorkspaceHash()
-  const [databases, setDatabases] = React.useState<Listing<DatabaseSummary[]>>({ state: "loading" })
+  // Cached: the server's databases show at once on a return visit.
+  const [listed, , reload, listState] = useCachedState(
+    qk.database.databases(connection.id),
+    () => fetchDatabaseDetails(connection.id),
+    { persist: true },
+  )
+  const databases = React.useMemo<Listing<DatabaseSummary[]>>(
+    () =>
+      listed
+        ? { state: "loaded", data: listed }
+        : listState.error
+          ? { state: "failed", error: errorText(listState.error, "Could not list the databases.") }
+          : { state: "loading" },
+    [listed, listState.error],
+  )
   const [creating, setCreating] = React.useState(false)
   const [importing, setImporting] = React.useState<string | null>(null)
   const [dropping, setDropping] = React.useState<DatabaseSummary | null>(null)
 
-  const load = React.useCallback(async () => {
-    try {
-      setDatabases({ state: "loaded", data: await fetchDatabaseDetails(connection.id) })
-    } catch (error) {
-      setDatabases({ state: "failed", error: errorText(error, "Could not list the databases.") })
-    }
-  }, [connection.id])
-
-  React.useEffect(() => {
-    setDatabases({ state: "loading" })
-    void load()
-  }, [load])
+  const load = reload
 
   /** The sidebar lists the same databases; tell it. */
   async function changed() {

@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   ChevronRightIcon,
   FilePlusIcon,
@@ -48,11 +49,18 @@ import {
   type FileNode,
 } from "@/lib/files-api"
 import { targetOf, type ProjectTarget } from "@/lib/project-target"
+import { qk } from "@/lib/query-keys"
 import { movableInto } from "@/lib/file-drop"
 import { isPreviewable } from "@ucch/protocol"
 import type { Project } from "@/lib/session"
 import { isOwnChange, useProjectEvents, useToast } from "@/lib/realtime"
 import { codeReference, type CodeReference } from "@/lib/code-chat"
+
+
+/** The client-cache key of a project's (or session's) file tree. */
+function treeKey(target: ProjectTarget) {
+  return typeof target === "string" ? qk.files.tree(target) : qk.files.tree(target.hash, target.session ?? null)
+}
 
 export type { FileNode as Node }
 
@@ -333,6 +341,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   // The tree the panel shows: a project session's own worktree when the
   // page is one's, else the project's checkout. Memoised so it is a stable
   // identity for the effects and the "loaded for" check below.
+  const queryClient = useQueryClient()
   const projectHash = project?.hash ?? null
   const sessionHash = project?.sessionHash ?? null
   const target = React.useMemo<ProjectTarget | null>(
@@ -352,7 +361,15 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     if (!target) return
     const ticket = ++treeRequest.current
     setTreeLoading(true)
-    void fetchTree(target)
+    // Through the client cache, which keeps (and persists) the last tree of
+    // every project, so opening one again starts from it -- see below.
+    void queryClient
+      .fetchQuery({
+        queryKey: treeKey(target),
+        queryFn: () => fetchTree(target),
+        staleTime: 0,
+        meta: { persist: true },
+      })
       .then((result) => {
         if (ticket !== treeRequest.current) return
         setTree(result.tree)
@@ -377,10 +394,11 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         setTreeLoading(false)
         setTreeLoadedFor(target)
       })
-  }, [target])
+  }, [target, queryClient])
 
   // The tree belongs to the project, so it is refetched when that changes --
-  // including on first sight of one.
+  // including on first sight of one. A tree seen before is shown at once
+  // while the fresh one loads, rather than a skeleton.
   React.useEffect(() => {
     setTreeError(null)
     treeLoadFailed.current = false
@@ -388,8 +406,14 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       setTree([])
       return
     }
+    const cached = queryClient.getQueryData<Awaited<ReturnType<typeof fetchTree>>>(treeKey(target))
+    if (cached) {
+      setTree(cached.tree)
+      setTreeTruncated(cached.truncated)
+      setTreeLoadedFor(target)
+    }
     refreshTree()
-  }, [target, refreshTree])
+  }, [target, refreshTree, queryClient])
 
   const readFile = React.useCallback(
     (path: string) => {

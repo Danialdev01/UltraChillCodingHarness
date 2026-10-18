@@ -105,17 +105,23 @@ test("navigation timing", async ({ page, context, baseURL }) => {
 
   const loadStart = Date.now();
   await page.goto(steps[0]!.href);
-  await expect(page.locator("main")).toBeVisible();
+  // `.first()`: while the shell streams in, React keeps the resolved markup
+  // in a hidden node until it swaps it in, so two can briefly exist.
+  await expect(page.locator("main:visible").first()).toBeVisible();
   await page.waitForFunction(() => !document.querySelector('main [data-slot="skeleton"]'), null, { timeout: 30_000 });
   const firstLoad = Date.now() - loadStart;
   // Let the route warmup (components/route-warmup.tsx) run, as a person reading the page would.
   await page.waitForTimeout(Number(process.env.E2E_IDLE_MS ?? 6000));
 
+  // Twice: the first pass is each page's first visit, the second a return to
+  // it -- which the client cache (lib/query-client.tsx) should make instant.
   const hops: { name: string; href: string; paint: number; content: number; via: string }[] = [];
-  for (const step of steps.slice(1)) {
-    const timing = await hop(page, step.href);
-    hops.push({ ...step, ...timing });
-    await page.waitForTimeout(400);
+  for (const pass of ["", " (again)"]) {
+    for (const step of steps.slice(1)) {
+      const timing = await hop(page, step.href);
+      hops.push({ ...step, name: `${step.name}${pass}`, ...timing });
+      await page.waitForTimeout(400);
+    }
   }
 
   const sorted = (key: "paint" | "content") => hops.map((h) => h[key]).filter((v) => v >= 0).sort((a, b) => a - b);

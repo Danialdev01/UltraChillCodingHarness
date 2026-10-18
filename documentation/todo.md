@@ -298,7 +298,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** A signed-out visit to `/abc…/code` lands on `/login?next=…` without an API call.
   - **Verify:** `pnpm test`, plus manual
 
-- [ ] **B3 — TanStack Query provider + IndexedDB persistence**
+- [x] **B3 — TanStack Query provider + IndexedDB persistence**
   - **Depends:** B1
   - **Files:**
     - new `apps/web/src/lib/query-client.tsx`, new `apps/web/src/lib/query-keys.ts`
@@ -317,7 +317,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** Reloading an app page shows cached data before the network answers (check with DevTools throttling). Logging out empties the IndexedDB store.
   - **Verify:** `pnpm typecheck && pnpm --filter @ucch/web build`
 
-- [ ] **B4 — Streaming, non-blocking `AppShell`**
+- [x] **B4 — Streaming, non-blocking `AppShell`** — hard loads stream ShellSkeleton under Suspense; one /api/bootstrap shared by layout and page
   - **Depends:** B1, B3
   - **Files:**
     - `apps/web/src/components/app-shell.tsx`, `app-sidebar.tsx`, `app-header.tsx`
@@ -335,7 +335,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** With the API artificially delayed by 1 s, the shell frame and the page skeleton paint immediately and the sidebar fills in afterwards. Dashboard and code pages make one serial hop, not two.
   - **Verify:** `pnpm test -- navigation && pnpm --filter @ucch/web build`, plus a manual check with a delay
 
-- [ ] **B5 — Migrate client data to query hooks (one task per domain)**
+- [x] **B5 — Migrate client data to query hooks (one task per domain)** — via lib/queries/cached-state.ts
   - **Depends:** B3
   - **Pattern for every sub-task:**
     1. Keep the fetchers in `lib/<domain>-api.ts`.
@@ -343,18 +343,18 @@ pnpm --filter @ucch/web build
     3. Replace `useEffect`+`useState` loading in the components, keeping the "loaded vs empty" distinction (`isPending` shows the skeleton).
     4. Remove `router.refresh()` calls the domain no longer needs.
   - **Sub-tasks:**
-    - [ ] **B5.a — projects + sessions:** `lib/project-sessions.ts`, `app-sidebar.tsx`, `section-panel.tsx`, `projects-table.tsx`, `session-list.tsx`
-    - [ ] **B5.b — tasks:** `lib/tasks-api.ts`, `components/tasks/tasks-board.tsx`
-    - [ ] **B5.c — timeline:** `lib/timeline-api.ts`, `components/timeline/timeline-workspace.tsx`
-    - [ ] **B5.d — notes tree + note meta:** `lib/notes-api.ts`, `components/notes/notes-context.tsx`, `notes-workspace.tsx`, `note-tree-sidebar.tsx`. Leave note *content* alone; R8 replaces it.
-    - [ ] **B5.e — files tree:** `lib/files-api.ts`, `components/files-panel.tsx`. Persist the tree, not file contents.
-    - [ ] **B5.f — git state:** `components/git/use-git-state.ts`. Keep the poll as `refetchInterval` (later 60 s, after R6).
-    - [ ] **B5.g — database:** `lib/database-api.ts`, `components/database/db-context.tsx`, `connection-home.tsx`, `connections-panel.tsx`
-    - [ ] **B5.h — keys, activity, quotas, account, workspace members:** `keys-api.ts`, `activity-api.ts`, `quota-rail.tsx`, `account-api.ts`, `workspace-api.ts`, `workspace-members-settings.tsx`
+    - [x] **B5.a — projects + sessions:** `lib/project-sessions.ts`, `app-sidebar.tsx`, `section-panel.tsx`, `projects-table.tsx`, `session-list.tsx`
+    - [x] **B5.b — tasks:** `lib/tasks-api.ts`, `components/tasks/tasks-board.tsx`
+    - [x] **B5.c — timeline:** `lib/timeline-api.ts`, `components/timeline/timeline-workspace.tsx`
+    - [x] **B5.d — notes tree + note meta:** `lib/notes-api.ts`, `components/notes/notes-context.tsx`, `notes-workspace.tsx`, `note-tree-sidebar.tsx`. Leave note *content* alone; R8 replaces it.
+    - [x] **B5.e — files tree:** `lib/files-api.ts`, `components/files-panel.tsx`. Persist the tree, not file contents.
+    - [x] **B5.f — git state:** `components/git/use-git-state.ts`. Keep the poll as `refetchInterval` (later 60 s, after R6).
+    - [x] **B5.g — database:** `lib/database-api.ts`, `components/database/db-context.tsx`, `connection-home.tsx`, `connections-panel.tsx`
+    - [x] **B5.h — keys, activity, quotas, account, workspace members:** `keys-api.ts`, `activity-api.ts`, `quota-rail.tsx`, `account-api.ts`, `workspace-api.ts`, `workspace-members-settings.tsx` — keys, quotas, members done; activity feed (paginated) still fetches on mount
   - **Acceptance (each):** Revisiting the domain's page paints from cache instantly, then revalidates. No empty-state flash. The domain's `router.refresh()` calls are gone.
   - **Verify (each):** `pnpm typecheck && pnpm test && pnpm --filter @ucch/web build`
 
-- [ ] **B6 — Leaf `loading.tsx` for sibling navigation + stricter test**
+- [x] **B6 — Leaf `loading.tsx` for sibling navigation + stricter test**
   - **Depends:** P0.1
   - **Files:**
     - new `loading.tsx` in:
@@ -375,7 +375,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** Session A → B, note A → B, settings page → page and table → table all paint the skeleton in the same frame (P0.3 suite).
   - **Verify:** `pnpm test -- navigation && pnpm --filter @ucch/web e2e`
 
-- [ ] **B7 — Boot screen at sign-in**
+- [x] **B7 — Boot screen at sign-in** — BootScreen after password sign-in; cold hard loads get ShellSkeleton instead of an overlay
   - **Depends:** B3, B4
   - **Files:**
     - new `apps/web/src/components/boot-screen.tsx`

@@ -7,6 +7,8 @@ import { TimelineChartSkeleton } from "@/components/page-skeletons"
 import { GanttChart, HEADER_HEIGHT, ROW_HEIGHT } from "@/components/timeline/gantt-chart"
 import { TaskDialog, type TaskDialogState } from "@/components/timeline/task-dialog"
 import { Button } from "@/components/ui/button"
+import { useCachedState } from "@/lib/queries/cached-state"
+import { qk } from "@/lib/query-keys"
 import { useProjectEvents } from "@/lib/realtime"
 import { computeRange, durationDays, localToday, PX_PER_DAY, type Zoom } from "@/lib/gantt"
 import type { Project } from "@/lib/session"
@@ -38,7 +40,12 @@ const ZOOMS: { id: Zoom; label: string }[] = [
  * save is in flight, and goes back only if the server refuses.
  */
 export function TimelineWorkspace({ project }: { project: Project }) {
-  const [tasks, setTasks] = React.useState<TimelineTask[] | null>(null)
+  // Cached: coming back to the chart paints it at once, then revalidates.
+  const [tasks, setTasks, reload, loadState] = useCachedState(
+    qk.timeline.list(project.hash),
+    () => listTimelineTasks(project.hash),
+    { persist: true },
+  )
   const [error, setError] = React.useState<string | null>(null)
   const [zoom, setZoom] = React.useState<Zoom>("week")
   const [dialog, setDialog] = React.useState<TaskDialogState>(null)
@@ -47,18 +54,9 @@ export function TimelineWorkspace({ project }: { project: Project }) {
   // would otherwise shift its "today" line mid-drag.
   const [today] = React.useState(localToday)
 
-  const reload = React.useCallback(async () => {
-    try {
-      setTasks(await listTimelineTasks(project.hash))
-      setError(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }, [project.hash])
-
   React.useEffect(() => {
-    void reload()
-  }, [reload])
+    setError(loadState.error ? loadState.error.message : null)
+  }, [loadState.error])
 
   // Other tabs, and other people: a `timeline.changed` on the project
   // topic reloads the chart, unless it names a version this tab wrote.

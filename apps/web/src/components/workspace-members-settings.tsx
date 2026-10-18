@@ -23,6 +23,8 @@ import { NativeSelect } from "@/components/ui/native-select"
 import type { Workspace } from "@/lib/session"
 import { addMember, listMembers, removeMember, updateMember, type WorkspaceMember } from "@/lib/workspace-api"
 import { useTransitionRouter } from "@/lib/view-transitions"
+import { useCachedState } from "@/lib/queries/cached-state"
+import { qk } from "@/lib/query-keys"
 
 export const ROLE_LABELS: Record<WorkspaceRole, string> = {
   owner: "Owner",
@@ -52,21 +54,13 @@ export function WorkspaceMembersSettings({
   workspace: Workspace
   currentUserId: string
 }) {
-  const [members, setMembers] = React.useState<WorkspaceMember[] | null>(null)
-  const [loadError, setLoadError] = React.useState<string | null>(null)
-
-  const load = React.useCallback(async () => {
-    try {
-      setMembers(await listMembers(workspace.id))
-      setLoadError(null)
-    } catch (e) {
-      setLoadError(e instanceof Error ? e.message : String(e))
-    }
-  }, [workspace.id])
-
-  React.useEffect(() => {
-    void load()
-  }, [load])
+  // Cached, and refreshed live when anyone changes the membership (R2/R3).
+  const [members, setMembers, load, loadState] = useCachedState<WorkspaceMember[]>(
+    qk.members.list(workspace.id),
+    () => listMembers(workspace.id),
+    { persist: true },
+  )
+  const loadError = loadState.error ? loadState.error.message : null
 
   const actor: Membership = {
     role: workspace.role,

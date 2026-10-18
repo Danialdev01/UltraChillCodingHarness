@@ -69,6 +69,26 @@ describe("loading boundaries", () => {
       })
     expect(missing, "add a loading.tsx that renders the page's skeleton from page-skeletons.tsx").toEqual([])
   })
+
+  // A boundary above is not enough for a page in a dynamic segment: moving
+  // between its siblings -- session A to session B, one settings page to the
+  // next -- changes only that segment, and the router can show a loading
+  // state only from a boundary *in* it. Without one the old page stays on
+  // screen until the server has rendered the new one.
+  it("every page in a dynamic segment has a loading.tsx of its own", () => {
+    const missing = pages
+      .filter((page) => ROOTS.some((root) => page.startsWith(`${root}/`)))
+      .filter((page) => /^\[.+\]$/.test(page.split("/").at(-2) ?? ""))
+      .filter((page) => !existsSync(join(APP, dirname(page), "loading.tsx")))
+    expect(missing, "add a loading.tsx beside the page").toEqual([])
+  })
+
+  // The shell asks who is signed in before it can draw; a hard load must
+  // stream its outline meanwhile rather than wait with nothing on screen.
+  it("the app layout streams the shell under a skeleton", () => {
+    const layout = readFileSync(join(APP, "(app)", "layout.tsx"), "utf8")
+    expect(layout).toMatch(/<Suspense fallback=\{<ShellSkeleton \/>\}>/)
+  })
 })
 
 const sources = walk(join(SRC, "components"), (name) => /\.tsx?$/.test(name) && !name.includes(".test."))

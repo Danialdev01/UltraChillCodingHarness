@@ -27,6 +27,14 @@ const config: NextConfig = {
   // onto different versions of the wire contract.
   transpilePackages: ["@ucch/protocol"],
   poweredByHeader: false,
+  experimental: {
+    // How long the router keeps a page it has rendered (or prefetched) and
+    // shows it again without asking the server: a return to a page within
+    // half a minute is instant, and its data revalidates through the client
+    // cache meanwhile. Live updates arrive over the socket either way.
+    staleTimes: { dynamic: 30, static: 300 },
+    optimizePackageImports: ["lucide-react", "@base-ui/react"],
+  },
   async headers() {
     // The same baseline the API sends (apps/server/src/http-guards.ts). The
     // app is never meant to be framed -- a framed shell with a live session

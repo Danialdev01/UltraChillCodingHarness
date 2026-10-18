@@ -3,6 +3,9 @@
 import * as React from "react"
 import type { GitBranchList, GitCommitDetail, GitDiff, GitLogPage, GitStatus } from "@ucch/protocol"
 
+import { useQueryClient } from "@tanstack/react-query"
+
+import { qk } from "@/lib/query-keys"
 import { isOwnChange, useProjectEvents } from "@/lib/realtime"
 import {
   GitApiError,
@@ -25,6 +28,12 @@ export type GitSelection =
 const POLL_MS = 10_000
 /** Events arrive in bursts (one per file the agent wrote); refetch once per burst. */
 const DEBOUNCE_MS = 300
+
+interface CachedGit {
+  status: GitStatus
+  branches: GitBranchList
+  log: GitLogPage
+}
 
 export interface GitState {
   status: GitStatus | null
@@ -61,10 +70,15 @@ export function useGitState(project: Project): GitState {
   const projectHash = project.hash
   const sessionHash = project.sessionHash ?? null
   const hash = React.useMemo(() => targetOf({ hash: projectHash, sessionHash }), [projectHash, sessionHash])
-  const [status, setStatus] = React.useState<GitStatus | null>(null)
-  const [branches, setBranches] = React.useState<GitBranchList | null>(null)
-  const [log, setLog] = React.useState<GitLogPage | null>(null)
-  const [commits, setCommits] = React.useState<GitLogPage["commits"]>([])
+  // The last read of this repository, from the client cache: opening the
+  // Git view again shows it at once while the fresh one loads.
+  const queryClient = useQueryClient()
+  const cacheKey = qk.git.state(projectHash, sessionHash)
+  const [cached] = React.useState(() => queryClient.getQueryData<CachedGit>(cacheKey) ?? null)
+  const [status, setStatus] = React.useState<GitStatus | null>(cached?.status ?? null)
+  const [branches, setBranches] = React.useState<GitBranchList | null>(cached?.branches ?? null)
+  const [log, setLog] = React.useState<GitLogPage | null>(cached?.log ?? null)
+  const [commits, setCommits] = React.useState<GitLogPage["commits"]>(cached?.log.commits ?? [])
   const [selection, setSelection] = React.useState<GitSelection | null>(null)
   const [diff, setDiff] = React.useState<GitDiff | null>(null)
   const [commit, setCommit] = React.useState<GitCommitDetail | null>(null)
@@ -72,7 +86,7 @@ export function useGitState(project: Project): GitState {
   const [busy, setBusy] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [notRepo, setNotRepo] = React.useState(false)
-  const [loading, setLoading] = React.useState(true)
+  const [loading, setLoading] = React.useState(cached === null)
 
   const selectionRef = React.useRef(selection)
   selectionRef.current = selection
@@ -89,13 +103,18 @@ export function useGitState(project: Project): GitState {
       setLog(nextLog)
       setCommits(nextLog.commits)
       setNotRepo(false)
+      queryClient.setQueryData<CachedGit>(qk.git.state(projectHash, sessionHash), {
+        status: nextStatus,
+        branches: nextBranches,
+        log: nextLog,
+      })
     } catch (caught) {
       if (caught instanceof GitApiError && caught.notRepo) setNotRepo(true)
       else setError(caught instanceof Error ? caught.message : "Could not read the repository.")
     } finally {
       setLoading(false)
     }
-  }, [hash])
+  }, [hash, queryClient, projectHash, sessionHash])
 
   // First read, and a slow poll for anything the events do not carry
   // (a fetch from the terminal, a commit made by hand).

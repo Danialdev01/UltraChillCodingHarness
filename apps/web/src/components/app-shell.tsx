@@ -1,4 +1,4 @@
-import { cookies, headers } from "next/headers"
+import { cookies } from "next/headers"
 import { redirect } from "next/navigation"
 
 import { AppHeader } from "@/components/app-header"
@@ -10,16 +10,11 @@ import { RouteWarmup } from "@/components/route-warmup"
 import { ViewerProvider } from "@/components/viewer"
 import { MAIN_CONTENT_ID, SkipLink } from "@/components/skip-link"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import {
-  getSession,
-  listDatabaseConnections,
-  listProjects,
-  listWorkspaces,
-  pickActiveWorkspace,
-} from "@/lib/session"
+import { LastLocation } from "@/lib/last-location"
+import { BootstrapSeed } from "@/lib/queries/bootstrap"
+import { QueryProvider } from "@/lib/query-client"
+import { getBootstrap } from "@/lib/session"
 import { ActiveWorkspaceProvider } from "@/lib/workspace-context"
-import { WORKSPACE_COOKIE_NAME } from "@/lib/workspace-cookie"
-import { WORKSPACE_HEADER } from "@/lib/workspace-header"
 
 /**
  * The authenticated chrome every page inside the app renders into: the
@@ -39,38 +34,15 @@ import { WORKSPACE_HEADER } from "@/lib/workspace-header"
  */
 export async function AppShell({ children }: { children: React.ReactNode }) {
   const jar = await cookies()
-  const requested = jar.get(WORKSPACE_COOKIE_NAME)?.value
-  // The workspace in the URL, `/{ws}/…`, as the middleware passes it on.
-  // Pages outside any workspace (`/`, `/setting`) fall back to the cookie,
-  // which remembers the last one open.
-  const addressed = (await headers()).get(WORKSPACE_HEADER)
 
-  // All at once, rather than session, then workspaces, then their contents:
-  // the API checks the session on each of these itself, so nothing is
-  // learned by waiting, and the shell was three round trips deep. The
-  // workspace's projects are fetched on the cookie's say-so and refetched
-  // below only in the rare case the cookie turns out to be stale.
-  const [session, workspaces, guessed] = await Promise.all([
-    getSession(),
-    listWorkspaces(),
-    requested
-      ? Promise.all([listProjects(requested), listDatabaseConnections(requested)])
-      : null,
-  ])
-  if (!session) redirect("/login")
-
-  // The cookie may name a workspace that was deleted, or one belonging to a
-  // different account after re-login, so it is a hint rather than a fact.
-  // An address naming no workspace of the caller's is an old project
-  // bookmark; its page redirects, and the shell shows the cookie's meanwhile.
-  const active = pickActiveWorkspace(workspaces, requested, addressed)
-  const [projects, connections] =
-    guessed && active?.id === requested
-      ? guessed
-      : await Promise.all([
-          listProjects(active?.id ?? ""),
-          listDatabaseConnections(active?.id ?? ""),
-        ])
+  // One request for everything below: the session, the workspaces, which is
+  // open (the address's, else the cookie's last) and its projects and
+  // connections. The page inside shares it -- `getBootstrap` is cached for
+  // the request -- so a page that asks for its workspace costs nothing more.
+  const boot = await getBootstrap()
+  if (!boot) redirect("/login")
+  const { me: session, workspaces, projects, connections } = boot
+  const active = workspaces.find((w) => w.id === boot.activeWorkspaceId)
 
   // SidebarProvider writes `sidebar_state` on toggle but does not read it
   // back, so without this a collapsed sidebar silently re-expands on reload.
@@ -96,6 +68,9 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
         workspace={active ? { hash: active.hash, kind: active.kind } : null}
         projectHashes={projects.map((p) => p.hash)}
       />
+      <QueryProvider userId={session.userId} buildId={boot.buildId}>
+      <BootstrapSeed data={boot} />
+      <LastLocation />
       <ActiveWorkspaceProvider workspace={active} workspaces={workspaces}>
         <RealtimeProvider>
           <ViewerProvider name={session.name ?? session.login ?? "User"}>
@@ -146,6 +121,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
           </ViewerProvider>
         </RealtimeProvider>
       </ActiveWorkspaceProvider>
+      </QueryProvider>
     </SidebarProvider>
   )
 }

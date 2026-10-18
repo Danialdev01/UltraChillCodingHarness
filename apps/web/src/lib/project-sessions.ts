@@ -5,6 +5,8 @@ import type { DomainEvent } from "@ucch/protocol"
 
 import type { UcchClient } from "@/lib/client"
 import { readCredentialChoice } from "@/lib/credential-choice"
+import { useCachedState } from "@/lib/queries/cached-state"
+import { qk } from "@/lib/query-keys"
 import { useRealtime } from "@/lib/realtime"
 import type { ProjectSession } from "@/lib/session"
 
@@ -118,28 +120,18 @@ export function useProjectSessions(
   project: { id: string; hash: string } | null,
 ): { sessions: ProjectSession[] | null; refresh: () => void } {
   const { client } = useRealtime()
-  const [sessions, setSessions] = React.useState<ProjectSession[] | null>(null)
   const projectHash = project?.hash ?? null
   const projectId = project?.id ?? null
-
-  const request = React.useRef(0)
+  // Cached and shared: the sidebar's row and the project's own page read one
+  // copy, and a project opened before shows its sessions at once.
+  const [listed, , reload, state] = useCachedState(
+    qk.sessions.list(projectHash ?? ""),
+    () => fetchProjectSessions(projectHash!),
+    { persist: true, enabled: projectHash !== null },
+  )
   const refresh = React.useCallback(() => {
-    if (!projectHash) return
-    const ticket = ++request.current
-    void fetchProjectSessions(projectHash).then(
-      (listed) => {
-        if (ticket === request.current) setSessions(listed)
-      },
-      () => {
-        if (ticket === request.current) setSessions((current) => current ?? [])
-      },
-    )
-  }, [projectHash])
-
-  React.useEffect(() => {
-    setSessions(null)
-    refresh()
-  }, [refresh])
+    if (projectHash) void reload()
+  }, [projectHash, reload])
 
   React.useEffect(() => {
     if (!client || !projectId) return
@@ -157,5 +149,7 @@ export function useProjectSessions(
     }
   }, [client, projectId, refresh])
 
-  return { sessions, refresh }
+  // A failed first load reads as empty rather than as a skeleton forever.
+  const sessions = listed ?? (state.error ? [] : null)
+  return { sessions: projectHash ? sessions : null, refresh }
 }

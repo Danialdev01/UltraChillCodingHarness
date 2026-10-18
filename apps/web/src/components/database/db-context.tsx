@@ -5,6 +5,8 @@ import type { DatabaseConnectionSummary, DatabaseEngine, TableSummary } from "@u
 
 import { fetchTables, type DbRef } from "@/lib/database-api"
 import { useLiveResource } from "@/lib/realtime"
+import { useCachedState } from "@/lib/queries/cached-state"
+import { qk } from "@/lib/query-keys"
 
 export type Listing<T> =
   | { state: "loading" }
@@ -53,20 +55,21 @@ export function DbProvider({
   children: React.ReactNode
 }) {
   const ref = React.useMemo<DbRef>(() => ({ connectionId: connection.id, db }), [connection.id, db])
-  const [tables, setTables] = React.useState<Listing<TableSummary[]>>({ state: "loading" })
-
-  const reloadTables = React.useCallback(async () => {
-    try {
-      setTables({ state: "loaded", data: await fetchTables(ref) })
-    } catch (error) {
-      setTables({ state: "failed", error: error instanceof Error ? error.message : "Could not list the tables." })
-    }
-  }, [ref])
-
-  React.useEffect(() => {
-    setTables({ state: "loading" })
-    void reloadTables()
-  }, [reloadTables])
+  // Cached: reopening a database lists its tables at once, then revalidates.
+  const [listed, , reloadTables, listState] = useCachedState(
+    qk.database.tables(connection.id, db),
+    () => fetchTables(ref),
+    { persist: true },
+  )
+  const tables = React.useMemo<Listing<TableSummary[]>>(
+    () =>
+      listed
+        ? { state: "loaded", data: listed }
+        : listState.error
+          ? { state: "failed", error: listState.error.message || "Could not list the tables." }
+          : { state: "loading" },
+    [listed, listState.error],
+  )
 
   // Another tab wrote here: the list may have changed, and the open table's
   // views refetch from `change`. Last write wins on rows -- an external
