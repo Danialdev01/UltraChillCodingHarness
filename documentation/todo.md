@@ -513,6 +513,7 @@ pnpm --filter @ucch/web build
 ## Phase B (rest): Polish and budgets
 
 - [ ] **B8 — One WebSocket per tab**
+  > PARTIAL: done -- quiet subscriptions upgrade instead of being silently kept quiet, `client.unsubscribe()`, terminal view and login terminal on the shared socket. Open -- project-chat still opens its own socket: it renders from its client's 500-event history, which a shared client would mix with every other topic; needs a per-thread history store first. create-project keeps a one-off socket per creation by design.
   - **Depends:** R3
   - **Files:** `apps/web/src/lib/client.ts` (subscription dedupe, around line 236), `apps/web/src/lib/realtime.tsx`, `components/project-chat.tsx` (around line 381), `components/terminal-view.tsx`, `components/login-terminal-dialog.tsx`, `lib/create-project.ts`
   - **Steps:**

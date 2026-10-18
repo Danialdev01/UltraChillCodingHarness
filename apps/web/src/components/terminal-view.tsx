@@ -3,7 +3,8 @@
 import * as React from "react"
 import { PlusIcon, XIcon } from "lucide-react"
 
-import { UcchClient } from "@/lib/client"
+import type { UcchClient } from "@/lib/client"
+import { useRealtime } from "@/lib/realtime"
 import { useFilesPanel } from "@/components/files-panel"
 import { XtermPane } from "@/components/xterm-pane"
 import { EMPTY_OUTPUT, appendOutput, frameBatcher, type TerminalOutput } from "@/lib/terminal-output"
@@ -62,10 +63,12 @@ export function TerminalView({ project, active }: { project: Project; active: bo
    * every keystroke swallowed. Which is exactly the "can't type" that used
    * to happen after switching views.
    */
+  // The tab's one socket (lib/realtime.tsx), not one of the terminal's own.
+  const { client: shared } = useRealtime()
   React.useEffect(() => {
-    if (!active || clientRef.current) return
+    if (!active || clientRef.current || !shared) return
 
-    const client = new UcchClient()
+    const client = shared
     clientRef.current = client
 
     // Output arrives as transient events on the terminal topics this client
@@ -94,12 +97,12 @@ export function TerminalView({ project, active }: { project: Project; active: bo
       batch.cancel()
     }
 
-    void client.connect().catch(() => setError("Could not reach the server."))
+    setReady(client.state === "ready")
 
     // No cleanup here: this effect re-runs when `active` flips, and a
-    // cleanup would tear the socket down on every switch away. Closing is
-    // the project effect's job below.
-  }, [active, project.id])
+    // cleanup would drop the shells' output on every switch away. Closing
+    // is the project effect's job below.
+  }, [active, project.id, shared])
 
   // The shells belong to a project, so leaving it closes them rather than
   // leaving a bash running for a page nobody has open -- and the socket
@@ -110,9 +113,9 @@ export function TerminalView({ project, active }: { project: Project; active: bo
       if (!client) return
       for (const tab of tabsRef.current) {
         void client.dispatch({ type: "terminal.close", terminalId: tab.id }).catch(() => {})
+        client.unsubscribe({ name: "terminal", terminalId: tab.id })
       }
       unsubscribeRef.current()
-      client.close()
       clientRef.current = null
       setReady(false)
     }
@@ -154,6 +157,7 @@ export function TerminalView({ project, active }: { project: Project; active: bo
   function close(id: string) {
     const client = clientRef.current
     void client?.dispatch({ type: "terminal.close", terminalId: id }).catch(() => {})
+    client?.unsubscribe({ name: "terminal", terminalId: id })
     setTabs((current) => {
       const remaining = current.filter((tab) => tab.id !== id)
       setActiveId((currentActive) =>
@@ -173,6 +177,7 @@ export function TerminalView({ project, active }: { project: Project; active: bo
     const client = clientRef.current
     for (const tab of tabs) {
       void client?.dispatch({ type: "terminal.close", terminalId: tab.id }).catch(() => {})
+      client?.unsubscribe({ name: "terminal", terminalId: tab.id })
     }
     setTabs([])
     setActiveId(null)

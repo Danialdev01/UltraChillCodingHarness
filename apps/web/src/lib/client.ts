@@ -250,12 +250,22 @@ export class UcchClient {
     // Subscribing to the same topic twice would have the server push every
     // event to this socket once per registration.
     const key = topicKey(topic);
-    for (const [, existing] of this.#subscriptions) {
-      if (topicKey(existing.topic) === key) return;
+    let lastSeq = -1;
+    for (const [existingId, existing] of this.#subscriptions) {
+      if (topicKey(existing.topic) !== key) continue;
+      // A quiet project subscription leaves out the token and terminal
+      // streams. A view that wants them -- asked for the same topic loudly --
+      // upgrades it, rather than being silently given the quiet one; one
+      // subscription per topic stays the rule.
+      const quiet = (t: SubscribeTopic) => t.name === "project" && t.quiet === true;
+      if (!quiet(existing.topic) || quiet(topic)) return;
+      lastSeq = existing.lastSeq;
+      this.#subscriptions.delete(existingId);
+      this.#send({ kind: "unsubscribe", id: existingId });
     }
 
     const id = String(this.#nextId++);
-    this.#subscriptions.set(id, { topic, lastSeq: -1 });
+    this.#subscriptions.set(id, { topic, lastSeq });
 
     // `connect()` returns once the socket exists, which is before it opens, so
     // this is the common case rather than the exceptional one. Registering the
@@ -269,6 +279,16 @@ export class UcchClient {
       this.#pending.set(id, { resolve: () => resolve(), reject });
       this.#send({ kind: "subscribe", id, topic });
     });
+  }
+
+  /** Stops listening to a topic -- a terminal tab closed. Idempotent. */
+  unsubscribe(topic: SubscribeTopic): void {
+    const key = topicKey(topic);
+    for (const [id, existing] of this.#subscriptions) {
+      if (topicKey(existing.topic) !== key) continue;
+      this.#subscriptions.delete(id);
+      this.#send({ kind: "unsubscribe", id });
+    }
   }
 
   #onFrame(raw: string): void {

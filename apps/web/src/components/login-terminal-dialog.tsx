@@ -10,7 +10,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { XtermPane } from "@/components/xterm-pane"
-import { UcchClient } from "@/lib/client"
+import type { UcchClient } from "@/lib/client"
+import { useRealtime } from "@/lib/realtime"
 import { EMPTY_OUTPUT, appendOutput, frameBatcher, type TerminalOutput } from "@/lib/terminal-output"
 
 export type LoginProgram = "claude-login" | "codex-login"
@@ -69,10 +70,12 @@ export function LoginTerminalDialog({
   const clientRef = React.useRef<UcchClient | null>(null)
   const terminalRef = React.useRef<string | null>(null)
 
+  // The tab's one socket (lib/realtime.tsx).
+  const { client: shared } = useRealtime()
   React.useEffect(() => {
-    if (!open) return
+    if (!open || !shared) return
 
-    const client = new UcchClient()
+    const client = shared
     clientRef.current = client
     const id = crypto.randomUUID()
     terminalRef.current = id
@@ -103,7 +106,6 @@ export function LoginTerminalDialog({
     }
 
     void (async () => {
-      await client.connect()
       await client.whenReady()
       // Subscribed before the program starts, or its first prompt is lost.
       await client.subscribe({ name: "terminal", terminalId: id })
@@ -127,12 +129,12 @@ export function LoginTerminalDialog({
       // Closing the dialog ends the flow: a half-finished login left running
       // on the server is a prompt nobody will ever answer.
       void client.dispatch({ type: "terminal.close", terminalId: id }).catch(() => {})
-      client.close()
+      client.unsubscribe({ name: "terminal", terminalId: id })
       clientRef.current = null
       terminalRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, program, projectId, credentialWorkspaceId])
+  }, [open, program, projectId, credentialWorkspaceId, shared])
 
   const send = (data: string) => {
     const id = terminalRef.current
