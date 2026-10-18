@@ -160,7 +160,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** Stopping Next makes `/health` return 503 with `web: "error"`.
   - **Verify:** manual curl
 
-- [ ] **D4 — s6-overlay service tree**
+- [x] **D4 — s6-overlay service tree**
   - **Depends:** D1
   - **Files:** new `deploy/s6/s6-rc.d/{init-dirs,init-secrets,postgres,mysql,web,server,user}/…`, new `deploy/s6/scripts/*.sh`; reuse the logic of `deploy/secrets.sh`, `deploy/server-entrypoint.sh`, `deploy/postgres-init.sh`, `deploy/mysql-init.sql`
   - **Steps:**
@@ -187,7 +187,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** In the container (D5), the services start in order and `docker stop` drains the server within 60 s. With `DATABASE_URL` set, no postgres process runs.
   - **Verify:** covered by D9
 
-- [ ] **D5 — Dockerfile `app` stage**
+- [x] **D5 — Dockerfile `app` stage** — image 2.66 GB
   - **Depends:** D1, D4
   - **Files:** `Dockerfile`, `.dockerignore`
   - **Steps:**
@@ -207,7 +207,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** `docker build --target app -t ucch .` succeeds. The image size is recorded in the PR.
   - **Verify:** `docker build --target app -t ucch . && docker image ls ucch`
 
-- [ ] **D6 — Container isolation check**
+- [x] **D6 — Container isolation check** — verified in the smoke test
   - **Depends:** D5
   - **Files:** `deploy/s6/scripts/*`, `apps/server/src/terminals.ts`, the agent bash executor in `packages/agent/src/executors/`
   - **Steps:** Inside a running container, as `node`:
@@ -217,7 +217,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** All checks hold. Add them as assertions in the D9 smoke script.
   - **Verify:** D9
 
-- [ ] **D7 — Single-service `docker-compose.yml` + env docs**
+- [x] **D7 — Single-service `docker-compose.yml` + env docs**
   - **Depends:** D5
   - **Files:** `docker-compose.yml`, `.env.example`, `.env.development.example`
   - **Steps:**
@@ -227,7 +227,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** `docker compose up` brings the app up on :3000.
   - **Verify:** `docker compose up -d && curl -fsS localhost:3000/health`
 
-- [ ] **D8 — Backup / restore scripts**
+- [x] **D8 — Backup / restore scripts**
   - **Depends:** D5
   - **Files:** new `deploy/bin/ucch-backup`, `deploy/bin/ucch-restore` (installed to `/usr/local/bin`)
   - **Steps:**
@@ -236,7 +236,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** A backup restored into a fresh container keeps users, projects and decrypted keys.
   - **Verify:** manual round trip, documented in the PR
 
-- [ ] **D9 — Container smoke test**
+- [x] **D9 — Container smoke test** — all checks pass
   - **Depends:** D2–D8
   - **Files:** new `scripts/smoke-container.sh`
   - **Steps:** The script does the following and exits non-zero on any failure:
@@ -251,7 +251,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** The script passes locally. It's referenced from the README.
   - **Verify:** `bash scripts/smoke-container.sh`
 
-- [ ] **D10 — README: deploying on Dokploy (single container) + migration guide**
+- [x] **D10 — README: deploying on Dokploy (single container) + migration guide**
   - **Depends:** D7, D8
   - **Files:** `README.md` ("Deploying on Dokploy" section, layout table, status table; fix the `/login` versus `/healthz` mismatch)
   - **Steps:**

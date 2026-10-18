@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Restores a backup made by ucch-backup -- or a `pg_dump -Fc` of the old
+# multi-container stack's `ucch` database:
+#
+#   docker exec <container> ucch-restore /data/backups/<stamp>
+#   docker exec <container> ucch-restore /data/import/ucch.dump
+#
+# The server is stopped for the duration, so nothing writes mid-restore, and
+# started again after. A backup's secret_key must match this container's
+# SECRET_KEY, or the restored API keys stay unreadable: it says so rather
+# than overwrite the key.
+set -euo pipefail
+source=${1:?usage: ucch-restore <backup dir or ucch.dump>}
+data=${DATA_DIR:-/data}
+
+if [ -d "$source" ]; then
+  dump=$source/ucch.dump
+  dev=$source/dev.dump
+  key=$source/secret_key
+else
+  dump=$source
+  dev=
+  key=
+fi
+[ -s "$dump" ] || { echo "no dump at $dump" >&2; exit 1; }
+
+if [ -n "$key" ] && [ -s "$key" ] && ! cmp -s "$key" "$data/secrets/secret_key"; then
+  echo "warning: this backup was made with a different SECRET_KEY. Set SECRET_KEY to the" >&2
+  echo "         value in $key (and redeploy), or stored keys cannot be decrypted." >&2
+fi
+
+/command/s6-svc -d /run/service/server
+trap '/command/s6-svc -u /run/service/server' EXIT
+
+restore() {
+  local db=$1 file=$2
+  if [ -n "${DATABASE_URL:-}" ]; then
+    pg_restore --clean --if-exists --no-owner --dbname="$DATABASE_URL" "$file"
+  else
+    /command/s6-setuidgid postgres /usr/lib/postgresql/16/bin/pg_restore --clean --if-exists --no-owner --role=$db \
+      -h /run/postgresql -U postgres -d "$db" < "$file"
+  fi
+}
+
+restore ucch "$dump"
+if [ -n "$dev" ] && [ -s "$dev" ] && [ -z "${DATABASE_URL:-}" ]; then restore dev "$dev"; fi
+echo "restored $source"

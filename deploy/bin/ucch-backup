@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# A consistent copy of the harness's data: `docker exec <container> ucch-backup`.
+#
+# Writes /data/backups/<UTC timestamp>/ with
+#   ucch.dump   pg_dump -Fc of the harness's database
+#   dev.dump    the same of the `dev` database (embedded Postgres only)
+#   secret_key  without it the stored API keys and connections cannot be read
+# and keeps the newest BACKUP_KEEP (7) of them. Project files live in
+# /data/workspaces; back the volume up for those.
+set -euo pipefail
+data=${DATA_DIR:-/data}
+keep=${BACKUP_KEEP:-7}
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+out=$data/backups/$stamp
+umask 077
+mkdir -p "$out"
+
+if [ -n "${DATABASE_URL:-}" ]; then
+  pg_dump -Fc --dbname="$DATABASE_URL" -f "$out/ucch.dump"
+else
+  /command/s6-setuidgid postgres /usr/lib/postgresql/16/bin/pg_dump -Fc -h /run/postgresql -U postgres ucch > "$out/ucch.dump"
+  /command/s6-setuidgid postgres /usr/lib/postgresql/16/bin/pg_dump -Fc -h /run/postgresql -U postgres dev > "$out/dev.dump"
+fi
+cp "$data/secrets/secret_key" "$out/secret_key"
+
+ls -1dt "$data/backups"/*/ 2>/dev/null | tail -n +"$((keep + 1))" | xargs -r rm -rf
+echo "$out"

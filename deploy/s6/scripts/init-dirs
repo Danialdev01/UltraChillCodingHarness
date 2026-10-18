@@ -1,0 +1,39 @@
+#!/command/with-contenv bash
+# Lays out the one volume, /data, and hands each part to whoever owns it.
+#
+#   postgres/    the harness's database (and projects' dev databases)  postgres  0700
+#   mysql/       projects' MySQL dev databases, when ENABLE_MYSQL      mysql     0700
+#   workspaces/  project checkouts and session worktrees               node      0755
+#   creds/       per-account Claude/Codex CLI logins                    node      0700
+#   secrets/     generated passwords and keys                           root      0700
+#   backups/     ucch-backup's dumps                                    root      0700
+#
+# Terminals, agents and dev servers run as `node`: nothing of the databases'
+# or the secrets' may be readable by it.
+set -euo pipefail
+data=${DATA_DIR:-/data}
+
+own() {
+  local dir=$1 owner=$2 mode=$3
+  mkdir -p "$dir"
+  # Checked at the top only, so a large workspace is not re-walked on every
+  # restart; a volume from an older image is handed over once.
+  if [ "$(stat -c %U "$dir")" != "$owner" ]; then
+    echo "[init-dirs] giving $dir to $owner" >&2
+    chown -R "$owner:$owner" "$dir"
+  fi
+  chmod "$mode" "$dir"
+}
+
+mkdir -p "$data"
+chown root:root "$data"
+chmod 755 "$data"
+own "$data/postgres" postgres 700
+own "$data/mysql" mysql 700
+own "$data/workspaces" node 755
+own "$data/creds" node 700
+own "$data/secrets" root 700
+own "$data/backups" root 700
+# Sockets: postgres's for local administration, mariadb's for its own.
+own /run/postgresql postgres 2775
+own /run/mysqld mysql 755

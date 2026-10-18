@@ -1,0 +1,53 @@
+#!/command/with-contenv bash
+# The API, WebSocket, terminals and agent workers -- and the container's one
+# public port, in front of the web app (apps/server/src/web-proxy.ts).
+#
+# Fills in whatever the environment leaves unset from /data/secrets and the
+# embedded databases, then drops to the unprivileged `node` user for the
+# server and everything it spawns: every terminal, agent turn and dev server.
+# This runs as root only so it can read the secrets, which `node` cannot.
+# (The container's version of deploy/server-entrypoint.sh.)
+set -euo pipefail
+data=${DATA_DIR:-/data}
+secrets=$data/secrets
+
+from_secret() {
+  local name=$1 file
+  file="$secrets/$(echo "$1" | tr 'A-Z' 'a-z')"
+  if [ -z "${!name:-}" ] && [ -s "$file" ]; then
+    export "$name=$(cat "$file")"
+  fi
+}
+
+from_secret SECRET_KEY
+from_secret DEFAULT_USER_PASSWORD
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  export DATABASE_URL="postgres://ucch:$(cat "$secrets/postgres_password")@127.0.0.1:5432/ucch"
+  # The embedded server holds projects' databases too, as `dev`.
+  export DEV_POSTGRES_URL="${DEV_POSTGRES_URL:-postgres://dev:$(cat "$secrets/dev_db_password")@127.0.0.1:5432/dev}"
+fi
+if [ "${ENABLE_MYSQL:-false}" = "true" ] && [ -z "${DEV_MYSQL_URL:-}" ]; then
+  export DEV_MYSQL_URL="mysql://dev:$(cat "$secrets/dev_db_password")@127.0.0.1:3306/dev"
+fi
+# Only the server's own variables reach it.
+unset POSTGRES_PASSWORD DEV_DB_PASSWORD
+
+export DEFAULT_USER_EMAIL="${DEFAULT_USER_EMAIL:-admin@${ROOT_DOMAIN:-ucch.localhost}}"
+export NODE_ENV=production
+export PORT="${PORT:-3000}"
+export HOST="${HOST:-0.0.0.0}"
+export WEB_UPSTREAM="${WEB_UPSTREAM:-http://127.0.0.1:${WEB_PORT:-3100}}"
+export WEB_STATIC_DIR="${WEB_STATIC_DIR:-/app/apps/web/.next/static}"
+export WORKSPACE_ROOT="${WORKSPACE_ROOT:-$data/workspaces}"
+export CREDS_ROOT="${CREDS_ROOT:-$data/creds}"
+export MIGRATIONS_DIR="${MIGRATIONS_DIR:-/app/server/migrations}"
+export DOC_KIT_DIR="${DOC_KIT_DIR:-/app/server/doc-kit}"
+export HOME=/home/node
+
+echo "[server] first sign-in: ${DEFAULT_USER_EMAIL} (password: DEFAULT_USER_PASSWORD, or" \
+  "'docker exec <container> cat $secrets/default_user_password' if you left it blank)" >&2
+
+exec setpriv --reuid=node --regid=node --init-groups \
+  --inh-caps=-all --bounding-set=-all --no-new-privs \
+  node --enable-source-maps /app/server/dist/server.mjs

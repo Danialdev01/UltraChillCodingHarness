@@ -1,249 +1,72 @@
-# UCCH on Dokploy: ONE Compose service, one deploy. See README.md,
-# "Deploying on Dokploy".
+# UCCH as ONE container, for running the production image locally or for
+# anyone who prefers Compose to a Dokploy "Dockerfile" application. Both
+# build the same `app` target; see README.md, "Deploying on Dokploy".
 #
-#   secrets   one-shot: generates every password/key on first deploy
-#   postgres  the harness's own data (db `ucch`) + a `dev` role for projects
-#   mysql     development databases for projects
-#   server    API, WebSocket, terminals, agent workers   -- exactly 1 replica
-#   web       Next.js UI, stateless                      -- WEB_REPLICAS (2)
-#   crawl4ai  research crawler, only with COMPOSE_PROFILES=research
+#   docker compose up -d --build        then open http://localhost:3000
+#
+# Inside the container: the API and WebSocket on :3000 in front of the
+# Next.js UI, PostgreSQL 16, and MariaDB when ENABLE_MYSQL=true, all
+# supervised by s6-overlay. Everything stateful is under /data.
 #
 # The only required variable is ROOT_DOMAIN; see .env.example for the rest.
-# Routing is done by the Traefik labels below, so Dokploy's Domains tab
-# stays empty.
 
 services:
-  secrets:
-    image: alpine:3.20
-    restart: "no"
-    entrypoint: ["sh", "/deploy/secrets.sh"]
-    environment:
-      SECRET_KEY: ${SECRET_KEY:-}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}
-      DEV_DB_PASSWORD: ${DEV_DB_PASSWORD:-}
-      DEFAULT_USER_PASSWORD: ${DEFAULT_USER_PASSWORD:-}
-      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
-    volumes:
-      - secrets:/run/ucch-secrets
-      - ./deploy/secrets.sh:/deploy/secrets.sh:ro
-    network_mode: none
-
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    # Stock Postgres assumes a tiny machine: 128 MB of shared buffers and a
-    # 64 MB /dev/shm that parallel queries can exhaust. Raise both together.
-    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "effective_cache_size=768MB", "-c", "work_mem=8MB"]
-    shm_size: 256mb
-    depends_on:
-      secrets:
-        condition: service_completed_successfully
-    environment:
-      POSTGRES_USER: ucch
-      POSTGRES_PASSWORD_FILE: /run/ucch-secrets/postgres_password
-      POSTGRES_DB: ucch
-      # Read by deploy/postgres-init.sh on first boot only.
-      DEV_DB_PASSWORD_FILE: /run/ucch-secrets/dev_db_password
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./deploy/postgres-init.sh:/docker-entrypoint-initdb.d/10-dev-role.sh:ro
-      - secrets:/run/ucch-secrets:ro
-    healthcheck:
-      # The server migrates on boot, so it must not start against a database
-      # that is still initialising.
-      test: ["CMD-SHELL", "pg_isready -U ucch -d ucch"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    networks:
-      - internal
-
-  mysql:
-    image: mysql:8.4
-    restart: unless-stopped
-    depends_on:
-      secrets:
-        condition: service_completed_successfully
-    environment:
-      MYSQL_ROOT_PASSWORD_FILE: /run/ucch-secrets/mysql_root_password
-      MYSQL_DATABASE: dev
-      MYSQL_USER: dev
-      MYSQL_PASSWORD_FILE: /run/ucch-secrets/dev_db_password
-    volumes:
-      - mysql-data:/var/lib/mysql
-      - ./deploy/mysql-init.sql:/docker-entrypoint-initdb.d/10-dev-grants.sql:ro
-      - secrets:/run/ucch-secrets:ro
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$(cat /run/ucch-secrets/mysql_root_password)\" --silent"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 30s
-    networks:
-      - internal
-
-  server:
+  ucch:
     build:
       context: .
-      target: server
+      target: app
+      args:
+        NEXT_PUBLIC_TLDRAW_LICENSE_KEY: ${NEXT_PUBLIC_TLDRAW_LICENSE_KEY:-}
     restart: unless-stopped
-    # Never scale this: terminals, project files and the job workers live in
-    # its one process. Give it more CPU/RAM instead.
+    # Never two at once: they would share one Postgres data directory.
     deploy:
       replicas: 1
     # Long enough for the server to drain its workers on a redeploy.
-    stop_grace_period: 60s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
+    stop_grace_period: 75s
+    ports:
+      - "${UCCH_PORT:-3000}:3000"
+    # Passed through explicitly rather than with env_file: the repo's .env is
+    # the *development* one (DATABASE_URL on the host, DEV_AUTH_BYPASS, ...).
     environment:
-      NODE_ENV: production
-      PORT: 3001
-      HOST: 0.0.0.0
-      ROOT_DOMAIN: ${ROOT_DOMAIN:?set ROOT_DOMAIN in the Environment tab}
-      PUBLIC_SCHEME: ${PUBLIC_SCHEME:-https}
-      # Empty values are filled from the `secrets` volume by
-      # deploy/server-entrypoint.sh.
-      DATABASE_URL: ${DATABASE_URL:-}
-      DEV_POSTGRES_URL: ${DEV_POSTGRES_URL:-}
-      DEV_MYSQL_URL: ${DEV_MYSQL_URL:-}
-      SECRET_KEY: ${SECRET_KEY:-}
-      DEFAULT_USER_EMAIL: ${DEFAULT_USER_EMAIL:-}
-      DEFAULT_USER_PASSWORD: ${DEFAULT_USER_PASSWORD:-}
-      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      # Who may sign in with GitHub (comma-separated logins / org names).
-      # Unset, GitHub sign-in admits only accounts that already exist here.
-      GITHUB_ALLOWED_USERS: ${GITHUB_ALLOWED_USERS:-}
-      GITHUB_ALLOWED_ORGS: ${GITHUB_ALLOWED_ORGS:-}
-      WORKSPACE_ROOT: /srv/ucch/workspaces
-      CREDS_ROOT: /srv/ucch/creds
-      # The terminal, the agents' bash and the live preview's dev servers run
-      # inside this container, as its unprivileged `node` user. Anyone who can
-      # sign in has a shell here: trusted users only (see GITHUB_ALLOWED_*).
+      ROOT_DOMAIN: ${ROOT_DOMAIN:-localhost}
+      PUBLIC_SCHEME: ${PUBLIC_SCHEME:-http}
+      # Where the browser reaches the app, when that is not scheme://ROOT_DOMAIN
+      # (a local port, say).
+      PUBLIC_WEB_ORIGIN: ${PUBLIC_WEB_ORIGIN:-http://localhost:3000}
+      ENABLE_MYSQL: ${ENABLE_MYSQL:-false}
       AGENT_ALLOW_HOST_SHELL: "true"
-      AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-25}
-      DEFAULT_MODEL: ${DEFAULT_MODEL:-}
-      SEARCH_MODEL: ${SEARCH_MODEL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      RESEARCH_SEARCH_MODEL: ${RESEARCH_SEARCH_MODEL:-}
-      CRAWL4AI_URL: ${CRAWL4AI_URL:-}
-      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
-      BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY:-}
-      # Which optional services are on. Also makes a profile change recreate
-      # this container, so the entrypoint picks the change up.
-      UCCH_PROFILES: ${COMPOSE_PROFILES:-}
+      DEFAULT_USER_EMAIL: ${UCCH_DEFAULT_USER_EMAIL:-}
+      DEFAULT_USER_PASSWORD: ${UCCH_DEFAULT_USER_PASSWORD:-}
+      SECRET_KEY: ${UCCH_SECRET_KEY:-}
+      GITHUB_CLIENT_ID: ${UCCH_GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${UCCH_GITHUB_CLIENT_SECRET:-}
+      GITHUB_ALLOWED_USERS: ${UCCH_GITHUB_ALLOWED_USERS:-}
+      GITHUB_ALLOWED_ORGS: ${UCCH_GITHUB_ALLOWED_ORGS:-}
+      ANTHROPIC_API_KEY: ${UCCH_ANTHROPIC_API_KEY:-}
+      CRAWL4AI_URL: ${UCCH_CRAWL4AI_URL:-}
     volumes:
-      - workspaces:/srv/ucch/workspaces
-      - creds:/srv/ucch/creds
-      - secrets:/run/ucch-secrets:ro
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=dokploy-network
-      # The API and the WebSocket share the UI's origin: /api and /ws go
-      # straight to the server, everything else to `web`.
-      - traefik.http.routers.ucch-api.rule=Host(`${ROOT_DOMAIN}`) && (PathPrefix(`/api`) || Path(`/ws`))
-      - traefik.http.routers.ucch-api.priority=100
-      - traefik.http.routers.ucch-api.entrypoints=websecure
-      - traefik.http.routers.ucch-api.tls.certresolver=letsencrypt
-      - traefik.http.routers.ucch-api.service=ucch-server
-      - traefik.http.routers.ucch-api.middlewares=ucch-hsts
-      # Defined here rather than on `web`, which starts after this, so the
-      # API router never references a middleware Traefik has not seen yet.
-      # HSTS for the app's own host only. Not includeSubDomains: preview
-      # subdomains need the wildcard certificate, and without it they would
-      # become unreachable rather than merely warn.
-      - traefik.http.middlewares.ucch-hsts.headers.stsSeconds=31536000
-      - traefik.http.services.ucch-server.loadbalancer.server.port=3001
-      # Live previews: p{port}-{hash}.ROOT_DOMAIN, proxied by the server to
-      # the project's dev server. Needs a wildcard certificate, so the
-      # DNS-01 resolver from README.md ("Live previews"). Without it the
-      # rest of the app works; previews just have no valid certificate.
-      # `$$` is a literal `$` to Compose's interpolation.
-      - traefik.http.routers.ucch-preview.rule=HostRegexp(`^p[0-9]+-[a-z0-9]{12}\.${ROOT_DOMAIN}$$`)
-      - traefik.http.routers.ucch-preview.entrypoints=websecure
-      - traefik.http.routers.ucch-preview.tls.certresolver=letsencrypt-dns
-      - traefik.http.routers.ucch-preview.tls.domains[0].main=${ROOT_DOMAIN}
-      - traefik.http.routers.ucch-preview.tls.domains[0].sans=*.${ROOT_DOMAIN}
-      - traefik.http.routers.ucch-preview.service=ucch-server
-    networks:
-      - internal
-      - dokploy-network
+      - ucch-data:/data
 
-  web:
-    build:
-      context: .
-      target: web
-      args:
-        SERVER_ORIGIN: http://server:3001
-        NEXT_PUBLIC_TLDRAW_LICENSE_KEY: ${NEXT_PUBLIC_TLDRAW_LICENSE_KEY:-}
-    restart: unless-stopped
-    # Stateless; Traefik load-balances across every replica.
-    deploy:
-      replicas: ${WEB_REPLICAS:-2}
-    depends_on:
-      server:
-        condition: service_healthy
-    environment:
-      # Server-rendered pages ask the API who is signed in.
-      SERVER_ORIGIN: http://server:3001
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=dokploy-network
-      - traefik.http.routers.ucch-web.rule=Host(`${ROOT_DOMAIN}`)
-      - traefik.http.routers.ucch-web.priority=10
-      - traefik.http.routers.ucch-web.entrypoints=websecure
-      - traefik.http.routers.ucch-web.tls.certresolver=letsencrypt
-      - traefik.http.routers.ucch-web.service=ucch-web
-      - traefik.http.routers.ucch-web.middlewares=ucch-hsts
-      - traefik.http.services.ucch-web.loadbalancer.server.port=3000
-      - traefik.http.services.ucch-web.loadbalancer.healthcheck.path=/healthz
-      - traefik.http.services.ucch-web.loadbalancer.healthcheck.interval=10s
-      # Plain HTTP -> HTTPS.
-      - traefik.http.routers.ucch-http.rule=Host(`${ROOT_DOMAIN}`)
-      - traefik.http.routers.ucch-http.entrypoints=web
-      - traefik.http.routers.ucch-http.middlewares=ucch-https
-      - traefik.http.routers.ucch-http.service=ucch-web
-      - traefik.http.middlewares.ucch-https.redirectscheme.scheme=https
-    networks:
-      - internal
-      - dokploy-network
-
-  crawl4ai:
-    image: unclecode/crawl4ai:latest
-    profiles: [research]
-    restart: unless-stopped
-    shm_size: 1g
-    depends_on:
-      secrets:
-        condition: service_completed_successfully
-    # It binds beyond its own loopback only when given a token; the server
-    # gets the same one from the `secrets` volume.
-    command:
-      - bash
-      - -c
-      - CRAWL4AI_API_TOKEN="$$(cat /run/ucch-secrets/crawl4ai_api_token)" exec bash entrypoint.sh
-    volumes:
-      - secrets:/run/ucch-secrets:ro
-    networks:
-      - internal
+  # ---------------------------------------------------------------------------
+  # Routing it through Traefik instead (as a Dokploy Compose service would):
+  # remove `ports` above and add
+  #
+  #   labels:
+  #     - traefik.enable=true
+  #     - traefik.http.routers.ucch.rule=Host(`${ROOT_DOMAIN}`)
+  #     - traefik.http.routers.ucch.entrypoints=websecure
+  #     - traefik.http.routers.ucch.tls.certresolver=letsencrypt
+  #     - traefik.http.services.ucch.loadbalancer.server.port=3000
+  #     # Live previews, p{port}-{hash}.ROOT_DOMAIN, need a wildcard
+  #     # certificate (a DNS-01 resolver):
+  #     - traefik.http.routers.ucch-preview.rule=HostRegexp(`^p[0-9]+-[a-z0-9]{12}\.${ROOT_DOMAIN}$$`)
+  #     - traefik.http.routers.ucch-preview.entrypoints=websecure
+  #     - traefik.http.routers.ucch-preview.tls.certresolver=letsencrypt-dns
+  #     - traefik.http.routers.ucch-preview.service=ucch
+  #   networks: [dokploy-network]
 
 volumes:
-  postgres-data:
-  mysql-data:
-  # Project working trees.
-  workspaces:
-  # Per-account Claude/Codex CLI logins. Keep out of off-box backups.
-  creds:
-  # Generated passwords and keys (deploy/secrets.sh). Back it up with
-  # postgres-data: without secret_key, stored API keys are unreadable.
-  secrets:
-
-networks:
-  internal:
-  # Created by Dokploy; Traefik reaches the app through it.
-  dokploy-network:
-    external: true
+  # Everything: the databases, project checkouts, CLI logins, generated
+  # secrets, backups. Back it up whole; without secrets/secret_key the stored
+  # API keys cannot be read.
+  ucch-data:

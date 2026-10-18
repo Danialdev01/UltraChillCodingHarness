@@ -216,36 +216,37 @@ Two different things share the word "preview":
 
 ## Deploying on Dokploy
 
-UCCH deploys as **one Docker Compose service**. A single deploy builds the images and starts everything in [`docker-compose.yml`](docker-compose.yml):
+UCCH deploys as **one container**: a Dokploy **Application** built from the [`Dockerfile`](Dockerfile), with one port, one volume and one click to deploy. Inside it, [s6-overlay](https://github.com/just-containers/s6-overlay) starts and supervises:
 
-| Container | What it is | Replicas |
+| Service | What it is | Where |
 | --- | --- | --- |
-| `secrets` | one-shot: generates every password and key on the first deploy, keeps them in the `secrets` volume | runs, then exits |
-| `postgres` | the harness's own data (database `ucch`) + a `dev` user for your projects | 1 |
-| `mysql` | development databases for your projects | 1 |
-| `server` | API, WebSocket, terminals, agent workers ([`Dockerfile`](Dockerfile) target `server`) | **1** |
-| `web` | Next.js UI ([`Dockerfile`](Dockerfile) target `web`) | `WEB_REPLICAS` (default 2) |
-| `crawl4ai` | research crawler, only with `COMPOSE_PROFILES=research` | 1 |
+| `server` | API, WebSocket, terminals, agent workers, **and the public port**: it serves `/api` and `/ws` itself and streams everything else to the UI ([`web-proxy.ts`](apps/server/src/web-proxy.ts)) | `0.0.0.0:3000` |
+| `web` | Next.js UI (standalone build) | `127.0.0.1:3100` |
+| `postgres` | PostgreSQL 16: the harness's own data (database `ucch`) and a `dev` user for your projects. Skipped when `DATABASE_URL` is set | `127.0.0.1:5432` |
+| `mysql` | MariaDB for projects' MySQL dev databases, **only with `ENABLE_MYSQL=true`** | `127.0.0.1:3306` |
 
-You don't generate passwords, copy service names between tabs or write Traefik config. Routing comes from labels in the compose file.
+Everything stateful lives under **`/data`**: `postgres/`, `mysql/`, `workspaces/` (project files), `creds/` (CLI logins), `secrets/` (generated passwords and keys) and `backups/`. You don't generate passwords, wire services together or write Traefik config.
 
 ### 1. Before you start
 
-- A VPS with Dokploy installed (`curl -sSL https://dokploy.com/install.sh | sh`), ports 80 and 443 open. 2 vCPU / 4 GB RAM is comfortable (the first build compiles Next.js); add ~1 GB for the research crawler.
+- A VPS with Dokploy installed (`curl -sSL https://dokploy.com/install.sh | sh`), ports 80 and 443 open. 2 vCPU / 4 GB RAM is comfortable (the first build compiles Next.js).
 - A domain for UCCH, e.g. `ucch.example.com`, with a DNS **A record** pointing at the VPS. For live previews also add `*.ucch.example.com` (see [Live previews](#live-previews-optional-one-time)). On Cloudflare, set both to **DNS only** (grey cloud).
 - This repository on GitHub (or any Git URL Dokploy can reach).
 
 ### 2. Deploy
 
 1. **Projects → Create Project** → `ucch`.
-2. Inside it: **Create Service → Compose**. **Provider**: this repository, branch `main`. **Compose Type**: Docker Compose. **Compose Path**: `./docker-compose.yml`.
-3. **Environment** tab: paste [`.env.example`](.env.example) and set **`ROOT_DOMAIN`**. That is the only required value. Setting `DEFAULT_USER_EMAIL` / `DEFAULT_USER_PASSWORD` for your first login is recommended.
-4. **Deploy**. The first build takes ~5 minutes; later ones reuse the cache. Leave the **Domains** tab empty. The compose labels already route `ROOT_DOMAIN` and request its Let's Encrypt certificate.
+2. Inside it: **Create Service → Application**. **Provider**: this repository, branch `main`. **Build Type**: **Dockerfile**, path `Dockerfile`. The last stage, `app`, is the default; set **Docker Build Stage** to `app` if your Dokploy version asks.
+3. **Environment**: paste [`.env.example`](.env.example) and set **`ROOT_DOMAIN`**. That is the only required value. Setting `DEFAULT_USER_EMAIL` / `DEFAULT_USER_PASSWORD` for your first login is recommended.
+4. **Domains**: add `ROOT_DOMAIN` → container port **3000**, HTTPS on, certificate Let's Encrypt.
+5. **Advanced → Volumes**: a volume mounted at **`/data`**.
+6. **Advanced → Swarm Settings → Update Config**: set **`Order` to `stop-first`**. **This matters**: the default start-first rollout would run two containers, so two PostgreSQL servers, on one data directory, and corrupt it.
+7. **Deploy**. The first build takes ~10 minutes; later ones reuse the cache.
 
 Check it:
 
 ```bash
-curl -o /dev/null -w '%{http_code}\n' https://ucch.example.com/login    # 200 (web)
+curl -s https://ucch.example.com/health                                 # {"status":"ok",...,"db":"ok","web":"ok"}
 curl -o /dev/null -w '%{http_code}\n' https://ucch.example.com/api/me   # 401 (server reached, no session)
 ```
 
@@ -253,10 +254,10 @@ Database migrations run automatically every time the server starts.
 
 ### 3. First sign-in
 
-Open `https://<ROOT_DOMAIN>` and sign in with `DEFAULT_USER_EMAIL` (default `admin@<ROOT_DOMAIN>`) and `DEFAULT_USER_PASSWORD`. If you left the password blank, one was generated. Read it from the server container's terminal in Dokploy (or `docker exec <server container> …`):
+Open `https://<ROOT_DOMAIN>` and sign in with `DEFAULT_USER_EMAIL` (default `admin@<ROOT_DOMAIN>`) and `DEFAULT_USER_PASSWORD`. If you left the password blank, one was generated. Read it from the container's terminal in Dokploy (or `docker exec <container> …`):
 
 ```bash
-cat /run/ucch-secrets/default_user_password
+cat /data/secrets/default_user_password
 ```
 
 The account is created on the first boot only, so changing these variables later does not reset it. Then add your OpenRouter key under **Settings → Providers**.
@@ -265,41 +266,34 @@ Optional GitHub sign-in: create an OAuth App with callback `https://<ROOT_DOMAIN
 
 ### Generated secrets
 
-[`deploy/secrets.sh`](deploy/secrets.sh) writes `secret_key`, `postgres_password`, `mysql_root_password`, `dev_db_password`, `default_user_password` and `crawl4ai_api_token` into the `secrets` volume. It only writes a file that is missing, so redeploys keep the values the databases were initialised with. A variable of the same name in the Environment tab takes precedence. Use that only to carry over an existing install's passwords. **Back up the `secrets` volume together with `postgres-data`**: without `secret_key`, stored API keys can't be decrypted.
+On every start, [`init-secrets`](deploy/s6/scripts/init-secrets) makes sure `secret_key`, `postgres_password`, `dev_db_password` and `default_user_password` exist in `/data/secrets`. It only writes a file that is missing, so restarts keep the values the database was initialised with. A variable of the same name in the Environment tab takes precedence; use that only to carry over an existing install. **Without `secret_key`, stored API keys can't be decrypted**, so it is in every backup.
 
 ### Who can sign in
 
-**Only give accounts to people you trust with the server itself.** In this compose file the terminal, the agent's `bash` and the preview dev servers all run in the `server` container, as the same `node` user as the API. Anyone who can open a terminal can therefore:
-
-- read the server process's environment, including `SECRET_KEY` and `DATABASE_URL`;
-- read every other user's workspace and CLI credentials under `/srv/ucch`.
-
-Removing variables from the terminal's environment doesn't change this. Keep `GITHUB_ALLOWED_USERS` / `GITHUB_ALLOWED_ORGS` tight. Isolating users from each other needs a separate UID or container per project, which isn't built yet.
+**Only give accounts to people you trust with the server itself.** The terminal, the agent's `bash` and the preview dev servers run in the container as its unprivileged `node` user. They cannot read the databases' files or `/data/secrets` (the server reads its secrets as root, then drops to `node`), but anyone who can open a terminal can read every other user's workspace and CLI credentials under `/data`. Keep `GITHUB_ALLOWED_USERS` / `GITHUB_ALLOWED_ORGS` tight. Isolating users from each other needs a separate UID or container per project, which isn't built yet.
 
 ### Development databases
 
-Your projects (their terminals, dev servers and agents run inside `server`) reach the databases by container name. Use the `dev` user, never the harness's own `ucch` database. The `dev` user can't even connect to it.
+Your projects (their terminals, dev servers and agents run inside the container) reach the databases on loopback. Use the `dev` user, never the harness's own `ucch` database. The `dev` user can't even connect to it.
 
 | Engine | Host | Port | User | Password | Default DB |
 | --- | --- | --- | --- | --- | --- |
-| PostgreSQL | `postgres` | 5432 | `dev` | `cat /run/ucch-secrets/dev_db_password` | `dev` |
-| MySQL | `mysql` | 3306 | `dev` | same | `dev` |
+| PostgreSQL | `127.0.0.1` | 5432 | `dev` | in each project's `.env` | `dev` |
+| MySQL (with `ENABLE_MYSQL=true`) | `127.0.0.1` | 3306 | `dev` | same | `dev` |
 
-The `dev` user may create as many databases as you like on both servers; add them in the UI under **Database → New connection**. Neither database is published on a host port; `psql` and `mysql` clients are installed in the server's terminal.
+The `dev` user may create as many databases as you like on both servers; add them in the UI under **Database → New connection**. Nothing is published outside the container; `psql` and `mysql` clients are installed for the terminal. To use database servers of your own instead, set `DEV_POSTGRES_URL` / `DEV_MYSQL_URL` (and `DATABASE_URL` for the harness itself); the embedded engines then stay off.
 
 ### Scaling
 
-- **Web UI**: stateless. Set `WEB_REPLICAS` (e.g. `4`) and redeploy. Traefik load-balances across every replica and health-checks each one on `/login`.
-- **Server**: always **one replica**. Live terminals, project working trees on its volume, the event bus to WebSocket clients and the background workers all live in that one process, so a second copy would split them. Scale it vertically: give the VPS (or the container, under **Advanced → Resources**) more CPU and RAM. Agent turns are mostly waiting on model APIs, so one server handles many concurrent sessions.
-- **Databases**: PostgreSQL holds only the harness's event log and read models and stays small. For heavy dev-database use, give `mysql`/`postgres` more memory, or point `DATABASE_URL` at a managed PostgreSQL.
+**One container, one replica.** Live terminals, project files, the event bus behind every WebSocket, the background workers and the database all live in it. Scale it vertically: give the VPS (or the application, under **Advanced → Resources**) more CPU and RAM. Agent turns are mostly waiting on model APIs, so one container handles many concurrent sessions. Tune the embedded PostgreSQL with `PG_SHARED_BUFFERS`, `PG_EFFECTIVE_CACHE_SIZE` and `PG_WORK_MEM`, or move it out with `DATABASE_URL`.
 
 ### Research crawler (optional)
 
-Set `COMPOSE_PROFILES=research` in the Environment tab and redeploy. The `crawl4ai` container starts and the server connects to it automatically with a generated token. `BROWSER_USE_API_KEY` adds the escalation agent. To use a Crawl4AI server running elsewhere, set `CRAWL4AI_URL` (and `CRAWL4AI_API_TOKEN`) instead.
+Run [Crawl4AI](https://github.com/unclecode/crawl4ai) as its own Dokploy service (image `unclecode/crawl4ai`) and set `CRAWL4AI_URL` (and `CRAWL4AI_API_TOKEN`). `BROWSER_USE_API_KEY` adds the escalation agent.
 
 ### Live previews (optional, one-time)
 
-A project's running dev server is shown at `https://p{port}-{hash}.<ROOT_DOMAIN>`. That needs the `*.<ROOT_DOMAIN>` DNS record and a **wildcard certificate**, which Let's Encrypt only issues through a DNS challenge. Everything else works without this step.
+A project's running dev server is shown at `https://p{port}-{hash}.<ROOT_DOMAIN>`, served by the same container. That needs the `*.<ROOT_DOMAIN>` DNS record and a **wildcard certificate**, which Let's Encrypt only issues through a DNS challenge. Everything else works without this step.
 
 With Cloudflare:
 
@@ -317,28 +311,58 @@ With Cloudflare:
            provider: cloudflare
    ```
 
-4. **Restart Traefik**. After a minute: `curl -vI https://anything.ucch.example.com 2>&1 | grep -i issuer` shows Let's Encrypt.
+4. Route the preview hosts to the application. If your Dokploy version accepts a wildcard domain, add `*.<ROOT_DOMAIN>` → port 3000 with the `letsencrypt-dns` resolver. Otherwise add a file under **File System → `dynamic/`**, e.g. `ucch-previews.yml`, with the application's service name from its **General** tab:
+
+   ```yaml
+   http:
+     routers:
+       ucch-previews:
+         rule: HostRegexp(`^p[0-9]+-[a-z0-9]{12}\.ucch\.example\.com$`)
+         entryPoints: [websecure]
+         service: ucch-previews
+         tls:
+           certResolver: letsencrypt-dns
+           domains:
+             - main: ucch.example.com
+               sans: ["*.ucch.example.com"]
+     services:
+       ucch-previews:
+         loadBalancer:
+           servers:
+             - url: http://<application service name>:3000
+   ```
+
+5. **Restart Traefik**. After a minute: `curl -vI https://anything.ucch.example.com 2>&1 | grep -i issuer` shows Let's Encrypt.
 
 Other DNS providers work the same way with their own [Traefik provider name](https://doc.traefik.io/traefik/https/acme/#providers) and token variable.
 
 ### Day-to-day
 
-- **Update**: push to `main`, press **Deploy** (or enable Dokploy's auto-deploy webhook). The server gets `SIGTERM` and up to 60 s to finish and record in-flight work; `restart: unless-stopped` brings every container back after a crash or reboot.
-- **Logs**: the service's **Logs** tab, per container.
-- **Backups** (Docker volumes): `postgres-data` + `secrets` (the harness) and `workspaces` (your project files) matter; `mysql-data` holds dev data. `creds` holds per-user Claude/Codex CLI logins. Don't copy it off the box.
-- **Security**: anyone who can sign in gets a shell inside `server` (`AGENT_ALLOW_HOST_SHELL=true`). Only give accounts to people you trust. The Docker socket is deliberately not mounted.
+- **Update**: push to `main`, press **Deploy** (or enable Dokploy's auto-deploy webhook). The container gets `SIGTERM`; s6 stops the server first, with up to 60 s to finish and record in-flight work, then the UI and the databases.
+- **Logs**: the application's **Logs** tab; every line is prefixed by its service.
+- **Backups**: `docker exec <container> ucch-backup` writes a consistent `pg_dump` of the harness's database (and `dev`) plus `secret_key` to `/data/backups/<timestamp>/`, keeping the newest `BACKUP_KEEP` (7). Schedule it in Dokploy (**Schedules**) and copy `/data/backups` and `/data/workspaces` off the box. `/data/creds` holds per-user Claude/Codex CLI logins; don't copy it off the box. Restore with `ucch-restore /data/backups/<timestamp>`.
+- **Security**: anyone who can sign in gets a shell inside the container (`AGENT_ALLOW_HOST_SHELL=true`). Only give accounts to people you trust. The Docker socket is deliberately not mounted.
 
-### Try the production stack locally
+### Migrating from the multi-container stack
+
+The old multi-container Compose stack (separate `secrets`, `postgres`, `mysql`, `server` and `web` containers) moves over like this:
+
+1. **Dump the old database**: `docker exec <old postgres> pg_dump -U ucch -Fc ucch > ucch.dump`.
+2. **Carry `SECRET_KEY` over**: `docker exec <old server> cat /run/ucch-secrets/secret_key` and set it as `SECRET_KEY` in the new application's environment. **Without it, every stored API key and database connection is unreadable.**
+3. Deploy the new application (above), then copy the dump in and restore it: `docker cp ucch.dump <container>:/data/ucch.dump && docker exec <container> ucch-restore /data/ucch.dump`.
+4. Copy the old `workspaces` and `creds` volumes into `/data/workspaces` and `/data/creds` (`docker cp`, or a one-off container mounting both volumes); `init-dirs` gives them to `node` on the next start.
+5. In your projects' `.env` files, the dev database host changes from `postgres` / `mysql` to `127.0.0.1`. Set `ENABLE_MYSQL=true` if any project uses MySQL, and dump and restore those databases the same way.
+6. **Rollback**: nothing above touches the old volumes. Redeploy the old Compose service to go back.
+
+### Try the production image locally
 
 ```bash
-docker network create dokploy-network            # once; Dokploy creates it on the VPS
-echo ROOT_DOMAIN=ucch.localhost > .env.deploy
-docker compose --env-file .env.deploy up -d --build
-docker compose ps                                # secrets exited 0; the rest healthy
-docker compose exec server cat /run/ucch-secrets/default_user_password
+docker compose up -d --build                     # http://localhost:3000
+docker compose exec ucch cat /data/secrets/default_user_password
+bash scripts/smoke-container.sh                  # the end-to-end checks a deploy should pass
 ```
 
-Nothing is published on a host port; Traefik on the `dokploy-network` is the way in. Stop with `docker compose down` (add `-v` to wipe all data).
+Stop with `docker compose down` (add `-v` to wipe all data).
 
 ---
 
@@ -362,12 +386,12 @@ Nothing is published on a host port; Traefik on the `dokploy-network` is the way
 ```
 apps/server      Fastify + WebSocket + event log + orchestration
 apps/web         Next.js UI (Tailwind v4 + shadcn/ui)
-apps/gateway     Subdomain proxy                          (Phase 3)
 packages/protocol  Zod schemas: events, commands, RPC, hostname grammar
 packages/db        Drizzle schema + migrations
-packages/runtime   Docker driver, port discovery          (Phase 2)
+packages/runtime   Docker driver, port discovery          (planned; empty)
 packages/agent     Agent loop, tool registry              (Phase 5)
-packages/vcs       git + checkpoint refs                  (Phase 4/6)
+packages/vcs       git + checkpoint refs                  (planned; empty)
+deploy/s6          the single container's services (s6-overlay)
 images/base        The universal project runtime image    (Phase 2)
 documentation/     Architecture and implementation plan
 ```
@@ -376,4 +400,4 @@ documentation/     Architecture and implementation plan
 
 ## Further reading
 
-[`documentation/plan.md`](documentation/plan.md) — the full architecture reference: design influences ([T3 Code](https://github.com/pingdotgg/t3code) for the runtime shape, [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for the agent shape), subsystem specifications, per-phase deliverables with acceptance checks, the end-to-end acceptance test, and risks.
+[`documentation/plan.md`](documentation/plan.md) — the single-container, performance and realtime plan; [`documentation/todo.md`](documentation/todo.md) — its task list, ticked off as it lands.

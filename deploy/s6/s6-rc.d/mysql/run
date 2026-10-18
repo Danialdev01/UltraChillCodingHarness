@@ -1,0 +1,52 @@
+#!/command/with-contenv bash
+# A MySQL-compatible server (MariaDB) for projects' development databases,
+# on loopback only. Off unless ENABLE_MYSQL=true, and off when DEV_MYSQL_URL
+# points somewhere else: it then reports ready and idles, so the server's
+# dependency on it still holds.
+#
+# First boot creates the `dev` account the old stack's deploy/mysql-init.sql
+# granted: everything a project's schema needs, none of the server
+# administration (FILE, SUPER, SHUTDOWN, PROCESS, CREATE USER, GRANT OPTION).
+# root has no password and is reachable only through the socket, as root.
+set -euo pipefail
+
+if [ "${ENABLE_MYSQL:-false}" != "true" ] || [ -n "${DEV_MYSQL_URL:-}" ]; then
+  echo >&3
+  exec sleep infinity
+fi
+
+data=${DATA_DIR:-/data}/mysql
+secrets=${DATA_DIR:-/data}/secrets
+socket=/run/mysqld/mysqld.sock
+
+if [ ! -d "$data/mysql" ]; then
+  echo "[mysql] initialising $data" >&2
+  mariadb-install-db --user=mysql --datadir="$data" --auth-root-authentication-method=socket \
+    --skip-test-db >/dev/null
+  s6-setuidgid mysql mariadbd --datadir="$data" --skip-networking --socket="$socket" &
+  boot=$!
+  until mariadb-admin --socket="$socket" ping --silent 2>/dev/null; do sleep 0.3; done
+  password=$(cat "$secrets/dev_db_password")
+  password=${password//\'/\'\'}
+  mariadb --socket="$socket" <<SQL
+CREATE USER 'dev'@'%' IDENTIFIED BY '$password';
+CREATE DATABASE IF NOT EXISTS dev;
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES,
+      CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, CREATE VIEW, SHOW VIEW,
+      CREATE ROUTINE, ALTER ROUTINE, EVENT, TRIGGER, SHOW DATABASES
+  ON *.* TO 'dev'@'%';
+FLUSH PRIVILEGES;
+SQL
+  mariadb-admin --socket="$socket" shutdown
+  wait "$boot" || true
+  echo "[mysql] initialised" >&2
+fi
+
+(
+  until mariadb-admin --socket="$socket" ping --silent 2>/dev/null; do sleep 0.3; done
+  echo >&3
+) &
+
+exec 3>&- s6-setuidgid mysql mariadbd --datadir="$data" --socket="$socket" \
+  --bind-address=127.0.0.1 --port=3306 \
+  --innodb-buffer-pool-size="${MYSQL_BUFFER_POOL:-128M}"

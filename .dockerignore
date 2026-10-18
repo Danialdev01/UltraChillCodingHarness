@@ -13,3 +13,7 @@ coverage
 documentation
 images
 **/__pycache__
+**/.next-*
+**/e2e/results
+**/test-results
+**/playwright-report

@@ -1,0 +1,14 @@
+#!/command/with-contenv bash
+# The Next.js UI (standalone build), on loopback. Nothing reaches it except
+# through the server, which owns the public port (apps/server/src/web-proxy.ts).
+#
+# Server-side rendering asks the API who is signed in; the API is the server
+# on this same container's loopback.
+set -euo pipefail
+cd /app/apps/web
+exec s6-setuidgid node env \
+  NODE_ENV=production \
+  HOSTNAME=127.0.0.1 \
+  PORT="${WEB_PORT:-3100}" \
+  SERVER_ORIGIN="http://127.0.0.1:${PORT:-3000}" \
+  node server.js
