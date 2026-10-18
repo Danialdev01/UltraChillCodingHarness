@@ -60,13 +60,18 @@ export class EventBus {
   }
 
   publish(publication: Publication): void {
+    // A terminal's bytes go to its own topic and nowhere else. They are one
+    // person's shell -- including the device codes a sign-in terminal prints
+    // -- and every member of a project watches the project topic.
+    if (publication.event.type === "terminal.output") {
+      this.#deliver([`terminal:${publication.event.terminalId}`], publication);
+      return;
+    }
+
     // A thread event also reaches project subscribers, so a client watching a
     // project sees activity in all of its threads without subscribing to each.
     const keys: string[] = [`project:${publication.projectId}`];
     if (publication.threadId) keys.push(`thread:${publication.threadId}`);
-    if (publication.event.type === "terminal.output") {
-      keys.push(`terminal:${publication.event.terminalId}`);
-    }
 
     this.#deliver(keys, publication);
   }

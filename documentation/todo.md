@@ -67,7 +67,7 @@ pnpm --filter @ucch/web build
 
 ## Phase S: Realtime security (before any new broadcast)
 
-- [ ] **S1 — Terminal output only on the terminal topic**
+- [x] **S1 — Terminal output only on the terminal topic**
   - **Depends:** P0.1
   - **Files:** `apps/server/src/bus.ts` (`publish`), `apps/server/src/index.ts` (terminal output publisher, around line 340), `apps/server/src/terminals.ts`, `apps/web/src/components/terminal-view.tsx`, `apps/web/src/components/login-terminal-dialog.tsx`
   - **Steps:**
@@ -77,7 +77,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** A second member viewing the project receives no terminal bytes. Terminals still work for their owner.
   - **Verify:** `pnpm test -- bus ws terminals`
 
-- [ ] **S2 — ACL on `subscribe(terminal)`**
+- [x] **S2 — ACL on `subscribe(terminal)`**
   - **Depends:** S1
   - **Files:** `apps/server/src/ws.ts` (subscribe handler, around line 220), `apps/server/src/terminals.ts` (owner lookup, `#mine`)
   - **Steps:**

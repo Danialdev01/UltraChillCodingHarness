@@ -363,6 +363,7 @@ const gateway = new WebSocketGateway(auth, engine, store, bus, {
   access,
   composer,
   presence,
+  mayWatchTerminal: (userId, terminalId) => terminals.mayWatch(terminalId, userId),
   onDispatched: (principal, clientId, command, result) => {
     if (!result.ok) return;
     void auditCommand(principal.userId, clientId, command, result.events).catch((error) =>

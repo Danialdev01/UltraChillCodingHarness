@@ -84,8 +84,17 @@ export interface TerminalOptions {
   spawn?: typeof pty.spawn;
 }
 
+/** How long a watched-but-not-yet-opened terminal id stays reserved. */
+const CLAIM_TTL_MS = 5 * 60_000;
+
 export class TerminalReactor {
   readonly #sessions = new Map<string, Session>();
+  /**
+   * Terminal ids someone subscribed to before opening -- which every client
+   * does, so the shell's first prompt is not lost. The first to watch an id
+   * owns it: nobody else may watch it, or open a shell under it.
+   */
+  readonly #claims = new Map<string, { userId: string; at: number }>();
 
   constructor(
     private readonly options: TerminalOptions,
@@ -154,6 +163,21 @@ export class TerminalReactor {
     }
   }
 
+  /**
+   * Whether `userId` may watch terminal `terminalId`'s output: its owner
+   * once it runs, and before that whoever watched it first.
+   */
+  mayWatch(terminalId: string, userId: string): boolean {
+    const session = this.#sessions.get(terminalId);
+    if (session) return session.userId === userId;
+    const now = Date.now();
+    for (const [id, claim] of this.#claims) if (now - claim.at > CLAIM_TTL_MS) this.#claims.delete(id);
+    const claim = this.#claims.get(terminalId);
+    if (claim) return claim.userId === userId;
+    this.#claims.set(terminalId, { userId, at: now });
+    return true;
+  }
+
   /** Kills a session. Idempotent: a tab closed twice is not an error. */
   close(terminalId: string, userId?: string): void {
     const session =
@@ -193,6 +217,10 @@ export class TerminalReactor {
     sessionHash?: string,
   ): void {
     if (this.#sessions.has(terminalId)) return;
+    // An id somebody else is already watching would hand them this shell.
+    const claim = this.#claims.get(terminalId);
+    if (claim && claim.userId !== userId) return;
+    this.#claims.delete(terminalId);
 
     if (!this.options.allowHostShell) {
       this.#say(projectId, terminalId, "The terminal is disabled on this server.\r\n");

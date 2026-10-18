@@ -384,3 +384,23 @@ describe("a login terminal", () => {
     expect(sink.join("")).toMatch(/not available/);
   });
 });
+
+describe("who may watch a terminal", () => {
+  it("reserves an unopened id for whoever watches it first", () => {
+    expect(reactor.mayWatch(TERMINAL, USER)).toBe(true);
+    expect(reactor.mayWatch(TERMINAL, OTHER)).toBe(false);
+    expect(reactor.mayWatch(TERMINAL, USER)).toBe(true);
+  });
+
+  it("lets only the owner watch a running shell", () => {
+    create();
+    expect(reactor.mayWatch(TERMINAL, USER)).toBe(true);
+    expect(reactor.mayWatch(TERMINAL, OTHER)).toBe(false);
+  });
+
+  it("will not open a shell under an id someone else is watching", () => {
+    expect(reactor.mayWatch(TERMINAL, OTHER)).toBe(true);
+    create();
+    expect(reactor.openTerminals).toBe(0);
+  });
+});

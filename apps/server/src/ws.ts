@@ -54,6 +54,8 @@ export interface GatewayOptions {
   access: Pick<ProjectAccess, "canAccessProject" | "threadProject" | "projectOfThread">;
   composer: ComposerStore;
   presence: PresenceStore;
+  /** Whether a user may watch a terminal's output; see `TerminalReactor.mayWatch`. */
+  mayWatchTerminal?: (userId: string, terminalId: string) => boolean;
   /** After a command from a socket was handled, for the activity log. */
   onDispatched?: (principal: Principal, clientId: string, command: Command, result: EngineResult) => void;
 }
@@ -219,7 +221,12 @@ export class WebSocketGateway {
           topic = { name: "user", userId: conn.principal.userId };
         } else {
           // A terminal id is minted by the tab that opens it and never
-          // listed anywhere; the session itself refuses input from others.
+          // listed anywhere -- but a shell is not the place to rely on that:
+          // only its owner may read what it prints.
+          if (this.options.mayWatchTerminal && !this.options.mayWatchTerminal(conn.principal.userId, frame.topic.terminalId)) {
+            send(conn.socket, { kind: "error", id: frame.id, code: "forbidden", message: "not your terminal" });
+            return;
+          }
           topic = frame.topic;
         }
         const quiet = frame.topic.name === "project" && frame.topic.quiet === true;
