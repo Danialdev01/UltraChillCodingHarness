@@ -266,7 +266,7 @@ pnpm --filter @ucch/web build
 
 ## Phase B (core): Instant navigation
 
-- [ ] **B1 — `GET /api/bootstrap` + hash-addressed reads**
+- [x] **B1 — `GET /api/bootstrap` + hash-addressed reads** — by-hash read already existed; verified by curl (shape, 304, ~15 ms). No unit test: index.ts routes have no harness
   - **Depends:** P0.1
   - **Files:**
     - `apps/server/src/index.ts`, or new `apps/server/src/bootstrap-routes.ts` registered from it

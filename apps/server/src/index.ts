@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { mkdir, rm } from "node:fs/promises";
@@ -656,6 +656,63 @@ app.get("/health", async (_request, reply) => {
     db: database,
     ...(webApp ? { web: webApp } : {}),
   });
+});
+
+/**
+ * Everything the app shell needs, in one round trip: who is signed in, their
+ * workspaces, which one is open, and that workspace's projects and database
+ * connections. It replaces the four requests the shell used to wait on.
+ *
+ * `?ws=` is the workspace hash in the address bar, `?hint=` the id the
+ * workspace cookie remembers; the open workspace is chosen as the web app's
+ * `pickActiveWorkspace` does. Answers 304 to a matching If-None-Match, so a
+ * client revalidating its cached copy pays for headers only.
+ */
+const BUILD_ID = process.env.BUILD_ID ?? "dev";
+app.get<{ Querystring: { ws?: string; hint?: string } }>("/api/bootstrap", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  await workspaceService.ensureDefault(principal.userId);
+  const [profile, hasPassword, workspaces] = await Promise.all([
+    auth.getProfile(principal.userId),
+    auth.hasPassword(principal.userId),
+    workspaceService.list(principal.userId),
+  ]);
+  const live = workspaces.filter((w) => !w.archived);
+  const active =
+    (request.query.ws ? workspaces.find((w) => w.hash === request.query.ws) : undefined) ??
+    live.find((w) => w.id === request.query.hint) ??
+    live[0] ??
+    workspaces[0];
+  const [projects, connections] = active
+    ? await Promise.all([
+        workspaceService.listProjects(active.id, principal.userId),
+        active.permissions.includes("workspace.view") ? databaseConnections.list(active.id) : [],
+      ])
+    : [[], []];
+
+  const body = {
+    buildId: BUILD_ID,
+    me: {
+      userId: principal.userId,
+      scopes: principal.scopes,
+      login: profile?.login ?? null,
+      name: profile?.name ?? null,
+      email: profile?.email ?? null,
+      avatarUrl: profile?.avatarUrl ?? null,
+      hasPassword,
+    },
+    workspaces,
+    activeWorkspaceId: active?.id ?? null,
+    projects: (projects ?? []).map(withPreviewUrls),
+    connections,
+  };
+  const json = JSON.stringify(body);
+  const etag = `"${createHash("sha1").update(json).digest("base64url")}"`;
+  reply.header("etag", etag).header("cache-control", "private, no-cache");
+  if (request.headers["if-none-match"] === etag) return reply.code(304).send();
+  return reply.type("application/json").send(json);
 });
 
 app.get("/api/me", async (request, reply) => {
