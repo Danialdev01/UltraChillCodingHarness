@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useCachedState } from "@/lib/queries/cached-state"
 import { qk } from "@/lib/query-keys"
-import { useProjectEvents } from "@/lib/realtime"
+import { useProjectEvents, usePresenceLocation } from "@/lib/realtime"
 import type { Project } from "@/lib/session"
 import {
   answerTask,
@@ -61,6 +61,7 @@ export function TasksBoard({ project, projects }: { project: Project; projects: 
   const [settings, , reloadSettings] = useCachedState<TaskSettings>(qk.tasks.settings(project.hash), () =>
     fetchTaskSettings(project.hash),
   )
+  usePresenceLocation(project.id, "tasks")
   const [error, setError] = React.useState<string | null>(null)
   const [dialog, setDialog] = React.useState<TaskDialogState>(null)
   const [openId, setOpenId] = React.useState<string | null>(null)

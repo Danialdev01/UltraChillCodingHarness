@@ -387,6 +387,10 @@ const gateway = new WebSocketGateway(auth, engine, store, bus, {
   composer,
   presence,
   mayWatchTerminal: (userId, terminalId) => terminals.mayWatch(terminalId, userId),
+  profileOf: async (userId) => {
+    const profile = await auth.getProfile(userId);
+    return profile ? { name: profile.name ?? profile.login ?? "Someone", avatarUrl: profile.avatarUrl ?? null } : null;
+  },
   onDispatched: (principal, clientId, command, result) => {
     if (!result.ok) return;
     // A new project lands on its own topic, which nobody watches yet: tell

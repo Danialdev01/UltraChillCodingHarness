@@ -61,6 +61,8 @@ export interface GatewayOptions {
     Partial<Pick<ProjectAccess, "canAccessWorkspace">>;
   composer: ComposerStore;
   presence: PresenceStore;
+  /** A person's display name and picture, for presence. */
+  profileOf?: (userId: string) => Promise<{ name: string; avatarUrl: string | null } | null>;
   /** A project subscription opened (+1) or closed (-1): drives the file watcher. */
   onProjectWatch?: (projectId: string, delta: 1 | -1) => void;
   /** Whether a user may watch a terminal's output; see `TerminalReactor.mayWatch`. */
@@ -373,6 +375,7 @@ export class WebSocketGateway {
           send(conn.socket, { kind: "error", id: frame.id, code: "forbidden", message: "not your project" });
           return;
         }
+        const profile = frame.location === null ? null : await this.#profile(conn.principal.userId);
         const viewers = this.options.presence.set(
           frame.projectId,
           conn.id,
@@ -380,6 +383,7 @@ export class WebSocketGateway {
             ? null
             : {
                 userId: conn.principal.userId,
+                ...(profile ? { name: profile.name, avatarUrl: profile.avatarUrl } : {}),
                 clientId: conn.clientId,
                 location: frame.location,
                 editing: frame.editing ?? false,
@@ -418,6 +422,17 @@ export class WebSocketGateway {
       }
       this.#publishToThread(project, threadId, event);
     })();
+  }
+
+  /** Profiles change rarely and presence is sent on every move: kept a minute. */
+  #profiles = new Map<string, { at: number; value: { name: string; avatarUrl: string | null } | null }>();
+  async #profile(userId: string): Promise<{ name: string; avatarUrl: string | null } | null> {
+    if (!this.options.profileOf) return null;
+    const cached = this.#profiles.get(userId);
+    if (cached && Date.now() - cached.at < 60_000) return cached.value;
+    const value = await this.options.profileOf(userId).catch(() => null);
+    this.#profiles.set(userId, { at: Date.now(), value });
+    return value;
   }
 
   async #mayOpenProject(conn: Connection, projectId: string): Promise<boolean> {

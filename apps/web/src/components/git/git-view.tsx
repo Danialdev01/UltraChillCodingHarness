@@ -35,6 +35,7 @@ import { relativeTime } from "@/lib/stats-format"
 import { targetOf } from "@/lib/project-target"
 import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
+import { usePresenceLocation } from "@/lib/realtime"
 
 import { ChangesList, StatusBadge } from "./changes-list"
 import { CommitForm } from "./commit-form"
@@ -54,6 +55,7 @@ import { useGitState } from "./use-git-state"
  * things that cannot be undone.
  */
 export function GitView({ project }: { project: Project }) {
+  usePresenceLocation(project.id, "git")
   const git = useGitState(project)
   const { openFile, setMode } = useFilesPanel()
   const [tab, setTab] = React.useState<"changes" | "history">("changes")

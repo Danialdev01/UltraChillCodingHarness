@@ -16,6 +16,7 @@ import { targetOf } from "@/lib/project-target"
 import type { LeaderCommand } from "@/lib/leader-keymap"
 import { matchLines } from "@/lib/line-search"
 import { cn } from "@/lib/utils"
+import { usePresenceLocation } from "@/lib/realtime"
 import { isPreviewable, previewKindFor } from "@ucch/protocol"
 
 /**
@@ -64,6 +65,9 @@ export function CodeEditor() {
     tree,
   } = useFilesPanel()
   const { buffers, setBuffer } = useFileBuffers()
+  // Where this person is, for everyone else's presence stack.
+  const dirty = activeTab !== null && buffers[activeTab] !== undefined && buffers[activeTab] !== saved[activeTab]
+  usePresenceLocation(project?.id, activeTab ? `file:${activeTab}` : "code", dirty)
   const strip = React.useRef<HTMLDivElement>(null)
 
   /**

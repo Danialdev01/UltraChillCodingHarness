@@ -9,7 +9,7 @@ import { TaskDialog, type TaskDialogState } from "@/components/timeline/task-dia
 import { Button } from "@/components/ui/button"
 import { useCachedState } from "@/lib/queries/cached-state"
 import { qk } from "@/lib/query-keys"
-import { useProjectEvents } from "@/lib/realtime"
+import { useProjectEvents, usePresenceLocation } from "@/lib/realtime"
 import { computeRange, durationDays, localToday, PX_PER_DAY, type Zoom } from "@/lib/gantt"
 import type { Project } from "@/lib/session"
 import {
@@ -47,6 +47,7 @@ export function TimelineWorkspace({ project }: { project: Project }) {
     { persist: true },
   )
   const [error, setError] = React.useState<string | null>(null)
+  usePresenceLocation(project.id, "timeline")
   const [zoom, setZoom] = React.useState<Zoom>("week")
   const [dialog, setDialog] = React.useState<TaskDialogState>(null)
   const [busy, setBusy] = React.useState(false)

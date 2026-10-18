@@ -492,7 +492,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** `echo x > foo.txt` in a terminal shows `foo.txt` in another user's tree within 1 s.
   - **Verify:** `pnpm test -- file-watcher`
 
-- [ ] **R7 — Presence with real people**
+- [x] **R7 — Presence with real people** — badge shown in notes and diagrams; code/tasks/timeline/git report locations; DB manager is workspace-level, not project presence
   - **Depends:** R1
   - **Files:**
     - `apps/server/src/presence.ts`, `apps/server/src/ws.ts` (presence handling, around lines 335–357)

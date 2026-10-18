@@ -578,6 +578,9 @@ const ComposerChanged = z.object({
 /** Where a tab is looking: `note:<id>`, `thread:<id>`, `file:<path>`, or a page name. */
 export const PresenceViewer = z.object({
   userId: z.string().uuid(),
+  /** Who it is, as the server knows them -- never what the client claimed. */
+  name: z.string().optional(),
+  avatarUrl: z.string().nullable().optional(),
   clientId: z.string(),
   location: z.string().max(600),
   /** Changing something there right now. */
