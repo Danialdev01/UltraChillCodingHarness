@@ -437,7 +437,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** Two browsers as two members: everything listed above appears in the other browser without a refresh (after R3 wires the cache).
   - **Verify:** `pnpm test -- route-audit workspace-members`
 
-- [ ] **R3 — Realtime → cache bridge**
+- [x] **R3 — Realtime → cache bridge** — sidebar/header read the live bootstrap
   - **Depends:** B3, R1
   - **Files:** new `apps/web/src/lib/realtime-cache.ts` and `realtime-cache.test.ts`, `apps/web/src/lib/realtime.tsx` (replace `AccountRefresher`), `apps/web/src/lib/query-keys.ts`
   - **Steps:**
@@ -448,7 +448,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** `router.refresh()` is not called on realtime events. Shell lists update live.
   - **Verify:** `pnpm test -- realtime-cache navigation`
 
-- [ ] **R4 — Resync after reconnect**
+- [x] **R4 — Resync after reconnect** — kill-the-server check pending manual verification
   - **Depends:** R3
   - **Files:** `apps/web/src/lib/client.ts` (`ready` handling, reconnect around lines 369–383), `apps/web/src/lib/realtime.tsx`
   - **Steps:**

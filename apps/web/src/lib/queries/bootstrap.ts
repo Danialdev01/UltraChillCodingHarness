@@ -43,3 +43,26 @@ export function useBootstrap(ws?: string | null) {
     meta: { persist: true },
   })
 }
+
+/**
+ * The shell's lists -- workspaces, the open workspace's projects and
+ * connections -- live: the server's copy until the cache has one, then the
+ * cache's, which realtime events keep current (`realtime-cache.ts`). This is
+ * what lets another member's new project appear in the sidebar without the
+ * layout being rendered again.
+ */
+export function useShellLists<W extends { id: string; hash: string }, P, C>(initial: {
+  workspaces: W[]
+  activeWorkspaceId: string
+  projects: P[]
+  connections: C[]
+}): { workspaces: W[]; projects: P[]; connections: C[] } {
+  const hash = initial.workspaces.find((w) => w.id === initial.activeWorkspaceId)?.hash ?? null
+  const { data } = useBootstrap(hash)
+  if (!data || data.activeWorkspaceId !== initial.activeWorkspaceId) return initial
+  return {
+    workspaces: data.workspaces as unknown as W[],
+    projects: data.projects as unknown as P[],
+    connections: data.connections as unknown as C[],
+  }
+}

@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { usePathname } from "next/navigation"
 
 import { AppLogo } from "@/components/app-logo"
@@ -25,6 +26,7 @@ import { SECTIONS, WORKSPACE_SETTINGS, projectHashFromPath, sectionForPath, type
 import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { useTransitionRouter } from "@/lib/view-transitions"
+import { useShellLists } from "@/lib/queries/bootstrap"
 
 /**
  * Two columns: a fixed icon rail topped by the app logo, and a panel
@@ -43,10 +45,10 @@ import { useTransitionRouter } from "@/lib/view-transitions"
  */
 export function AppSidebar({
   user,
-  workspaces,
+  workspaces: serverWorkspaces,
   activeWorkspaceId,
-  projects,
-  connections,
+  projects: serverProjects,
+  connections: serverConnections,
   ...props
 }: React.ComponentProps<typeof Sidebar> & {
   user: { name: string; email: string; avatar?: string }
@@ -55,6 +57,14 @@ export function AppSidebar({
   projects: Project[]
   connections: DatabaseConnectionSummary[]
 }) {
+  // Kept current by realtime events rather than by re-rendering the layout.
+  const { workspaces, projects, connections } = useShellLists({
+    workspaces: serverWorkspaces,
+    activeWorkspaceId,
+    projects: serverProjects,
+    connections: serverConnections,
+  })
+  const queryClient = useQueryClient()
   const { setOpen, setOpenMobile, state } = useSidebar()
   const collapsed = state === "collapsed"
   const pathname = usePathname()
@@ -64,18 +74,16 @@ export function AppSidebar({
   const sessionWorkspace = activeWorkspace?.kind === "session"
 
   // A project opened straight after creating it can arrive before the list
-  // knows it: the creator's refresh races the view transition's push, and
-  // the layout keeps whichever answer landed first. Asking again once, per
-  // project, is what puts its row (and a session's card) in the sidebar.
-  const router = useTransitionRouter()
+  // knows it. Asking again once, per project, is what puts its row (and a
+  // session's card) in the sidebar.
   const refreshedFor = React.useRef<string | null>(null)
   const missing =
     activeProjectHash !== undefined && !projects.some((p) => p.hash === activeProjectHash)
   React.useEffect(() => {
     if (!missing || refreshedFor.current === activeProjectHash) return
     refreshedFor.current = activeProjectHash ?? null
-    router.refresh()
-  }, [missing, activeProjectHash, router])
+    void queryClient.invalidateQueries({ queryKey: ["bootstrap"] })
+  }, [missing, activeProjectHash, queryClient])
 
   function railItem(section: Section) {
     return (

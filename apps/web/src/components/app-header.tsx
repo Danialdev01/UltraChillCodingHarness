@@ -31,6 +31,8 @@ import {
 import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { cn } from "@/lib/utils"
+import { useShellLists } from "@/lib/queries/bootstrap"
+import { useActiveWorkspace } from "@/lib/workspace-context"
 
 /**
  * The bar across the top of every page: the sidebar toggle, where you are,
@@ -47,8 +49,8 @@ import { cn } from "@/lib/utils"
  * names it, a hand's width to the left.
  */
 export function AppHeader({
-  projects,
-  connections,
+  projects: serverProjects,
+  connections: serverConnections,
   sessionWorkspace = false,
 }: {
   projects: readonly Project[]
@@ -56,6 +58,13 @@ export function AppHeader({
   /** The active workspace holds sessions, whose view has no Git tab. */
   sessionWorkspace?: boolean
 }) {
+  const active = useActiveWorkspace()
+  const { projects, connections } = useShellLists({
+    workspaces: active ? [active] : [],
+    activeWorkspaceId: active?.id ?? "",
+    projects: serverProjects as Project[],
+    connections: serverConnections as DatabaseConnectionSummary[],
+  })
   const pathname = usePathname()
   const projectHash = projectHashFromPath(pathname)
   const project = projectHash ? projects.find((p) => p.hash === projectHash) : undefined

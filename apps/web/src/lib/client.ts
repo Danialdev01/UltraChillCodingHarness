@@ -89,6 +89,10 @@ export class UcchClient {
   #seen = new Set<string>();
   #attempt = 0;
   #closed = false;
+  /** Set once the first `ready` arrives: every later one is a reconnect. */
+  #everReady = false;
+  #reconnectListeners = new Set<() => void>();
+  #retry: ReturnType<typeof setTimeout> | null = null;
   #nextId = 0;
 
   get state(): ConnectionState {
@@ -107,6 +111,16 @@ export class UcchClient {
   subscribeToChanges(listener: Listener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  /**
+   * After the socket came back from a drop. Whatever happened meanwhile was
+   * not pushed to this tab -- only thread history is replayed -- so a view
+   * that shows server data should treat this as "refetch everything".
+   */
+  onReconnect(listener: () => void): () => void {
+    this.#reconnectListeners.add(listener);
+    return () => this.#reconnectListeners.delete(listener);
   }
 
   /** Every event as it arrives, including the live ones `events` does not keep. */
@@ -213,6 +227,8 @@ export class UcchClient {
 
   close(): void {
     this.#closed = true;
+    if (this.#retry) clearTimeout(this.#retry);
+    this.#retry = null;
     this.#socket?.close();
     this.#setState("idle");
   }
@@ -264,11 +280,13 @@ export class UcchClient {
     }
 
     switch (frame.kind) {
-      case "ready":
+      case "ready": {
         this.#attempt = 0;
         this.#userId = frame.userId;
         this.#scopes = frame.scopes;
         this.#setState("ready");
+        const reconnected = this.#everReady;
+        this.#everReady = true;
         // Re-establish subscriptions from where each one left off, so the
         // gap created by the disconnect is replayed rather than lost. Each
         // is re-keyed by its new frame id, which the server's pushes carry.
@@ -286,7 +304,17 @@ export class UcchClient {
         for (const [projectId, place] of this.#presence) {
           this.#send({ kind: "presence", id: String(this.#nextId++), projectId, ...place });
         }
+        if (reconnected) {
+          for (const listener of this.#reconnectListeners) {
+            try {
+              listener();
+            } catch {
+              // One view's resync failing must not stop the others'.
+            }
+          }
+        }
         break;
+      }
 
       case "ack": {
         this.#pending.get(frame.id)?.resolve(frame.events);
@@ -380,16 +408,38 @@ export class UcchClient {
 
   #scheduleReconnect(): void {
     this.#attempt++;
-    if (this.#attempt > 10) {
-      this.#setState("failed");
-      return;
-    }
-    this.#setState("reconnecting");
+    // Past ten tries the state says so (the banner reads it), but trying
+    // never stops: a server back after a long deploy should find every open
+    // tab again without anyone reloading.
+    this.#setState(this.#attempt > 10 ? "failed" : "reconnecting");
     // Exponential backoff with jitter: without the jitter, every client that
     // dropped together would reconnect together.
     const base = Math.min(1000 * 2 ** (this.#attempt - 1), 30_000);
     const delay = base * (0.5 + Math.random() * 0.5);
-    setTimeout(() => void this.connect(), delay);
+    if (this.#retry) clearTimeout(this.#retry);
+    this.#retry = setTimeout(() => {
+      this.#retry = null;
+      // A hidden tab waits to be looked at rather than knocking every 30 s.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        document.addEventListener("visibilitychange", () => void this.#reconnectNow(), { once: true });
+        return;
+      }
+      void this.connect();
+    }, delay);
+  }
+
+  /** Coming back to the tab, or the network returning: try at once rather than wait out the backoff. */
+  #reconnectNow(): Promise<void> {
+    if (this.#closed || this.#state === "ready" || this.#state === "connecting") return Promise.resolve();
+    if (this.#retry) clearTimeout(this.#retry);
+    this.#retry = null;
+    this.#attempt = Math.max(this.#attempt - 1, 0);
+    return this.connect();
+  }
+
+  /** For `online` and visibility events from the page. */
+  retryNow(): void {
+    void this.#reconnectNow();
   }
 
   #setState(state: ConnectionState): void {

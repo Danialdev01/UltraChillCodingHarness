@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
+import { useQueryClient, type QueryKey } from "@tanstack/react-query"
 import type { DomainEvent, LiveResource, PresenceViewer } from "@ucch/protocol"
 
 import {
@@ -12,6 +13,7 @@ import {
   type AgentStatus,
 } from "@/lib/agent-activity"
 import { UcchClient, type ClientEvent } from "@/lib/client"
+import { cacheEffect, prefixOf } from "@/lib/realtime-cache"
 import { TAB_ID, installTabHeader } from "@/lib/tab-id"
 import { useActiveWorkspace } from "@/lib/workspace-context"
 
@@ -83,7 +85,8 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   return (
     <RealtimeContext.Provider value={value}>
       {children}
-      <AccountRefresher client={client} />
+      <CacheBridge client={client} />
+      <ConnectionBanner client={client} />
       <div
         aria-live="polite"
         className="pointer-events-none fixed right-4 bottom-4 z-[100] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2"
@@ -260,28 +263,81 @@ export function useLiveResource(
 }
 
 /**
- * The shell's own lists -- projects, connections, the account -- are
- * rendered on the server, so a change made in another window refreshes the
- * route rather than patching state that lives nowhere on this side.
+ * Every event, through `realtime-cache.ts`, into the client cache: whatever
+ * it changed is marked stale, so the open views refetch it and the rest do
+ * when next shown. Only a settings change the server alone reads renders the
+ * page again -- and never for this tab's own echo.
  */
-function AccountRefresher({ client }: { client: UcchClient | null }) {
+function CacheBridge({ client }: { client: UcchClient | null }) {
   const router = useRouter()
+  const queryClient = useQueryClient()
   React.useEffect(() => {
     if (!client) return
+    // Several changes in a burst -- a turn ending, a form saving three
+    // fields -- are one refetch of each key.
+    const keys = new Map<string, QueryKey>()
+    let refresh = false
     let timer: number | undefined
+    const flush = () => {
+      for (const key of keys.values()) void queryClient.invalidateQueries({ queryKey: key })
+      keys.clear()
+      if (refresh) router.refresh()
+      refresh = false
+    }
+    // Back from a drop: nothing that happened meanwhile was pushed here, so
+    // everything on screen refetches (only what is open; the rest is marked
+    // stale for when it is next shown).
+    const offReconnect = client.onReconnect(() => void queryClient.invalidateQueries())
     const off = client.onEvent(({ event }) => {
-      if (event.type !== "resource.changed" || isOwnChange(event.origin)) return
-      if (!["projects", "database_connections", "account_settings", "project_settings"].includes(event.resource)) {
-        return
-      }
-      // Several changes in a burst -- a form saving three fields -- are one refresh.
+      const effect = cacheEffect(event)
+      if (effect.invalidate.length === 0 && !effect.refreshPage) return
+      for (const key of effect.invalidate.map(prefixOf)) keys.set(JSON.stringify(key), key)
+      const own = event.type === "resource.changed" && isOwnChange(event.origin)
+      if (effect.refreshPage && !own) refresh = true
       window.clearTimeout(timer)
-      timer = window.setTimeout(() => router.refresh(), 300)
+      timer = window.setTimeout(flush, 200)
     })
     return () => {
       off()
+      offReconnect()
       window.clearTimeout(timer)
     }
-  }, [client, router])
+  }, [client, router, queryClient])
   return null
+}
+
+/**
+ * Says so when the live connection is down for more than a moment -- what
+ * is on screen may be out of date until it is back -- and retries the moment
+ * the network returns. A banner, not a spinner: nothing is blocked.
+ */
+function ConnectionBanner({ client }: { client: UcchClient | null }) {
+  const [down, setDown] = React.useState(false)
+  React.useEffect(() => {
+    if (!client) return
+    let timer: number | undefined
+    const update = () => {
+      const lost = client.state === "reconnecting" || client.state === "failed"
+      window.clearTimeout(timer)
+      if (!lost) setDown(false)
+      else timer = window.setTimeout(() => setDown(true), 2000)
+    }
+    const offState = client.subscribeToChanges(update)
+    const online = () => client.retryNow()
+    window.addEventListener("online", online)
+    return () => {
+      offState()
+      window.removeEventListener("online", online)
+      window.clearTimeout(timer)
+    }
+  }, [client])
+  if (!down) return null
+  return (
+    <div
+      role="status"
+      className="bg-background text-muted-foreground fixed bottom-4 left-1/2 z-[100] -translate-x-1/2 rounded-md border px-3 py-1.5 text-xs shadow-lg"
+    >
+      Offline — reconnecting. Changes from others will appear when the connection is back.
+    </div>
+  )
 }
