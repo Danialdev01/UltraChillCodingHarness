@@ -16,10 +16,12 @@ import { fileURLToPath } from "node:url";
  * good way to deadlock against your own queries.
  */
 export async function runMigrations(url: string): Promise<void> {
-  const here = dirname(fileURLToPath(import.meta.url));
+  // Beside the sources by default; a bundled server, which has no sources
+  // beside it, names the folder it shipped instead.
+  const folder = process.env.MIGRATIONS_DIR || join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
   const sql = postgres(url, { max: 1 });
   try {
-    await migrate(drizzle(sql), { migrationsFolder: join(here, "..", "migrations") });
+    await migrate(drizzle(sql), { migrationsFolder: folder });
   } finally {
     await sql.end();
   }

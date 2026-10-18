@@ -114,7 +114,7 @@ pnpm --filter @ucch/web build
 
 ## Phase D: Single container
 
-- [ ] **D1 — Precompile the server**
+- [x] **D1 — Precompile the server**
   - **Depends:** P0.1
   - **Files:** new `apps/server/build.mjs`, `apps/server/package.json` (`build` script, `esbuild` devDependency), `packages/db/src/bootstrap.ts` (migrations path)
   - **Steps:**
