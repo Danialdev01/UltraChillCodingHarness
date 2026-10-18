@@ -46,7 +46,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** `pnpm typecheck` has no error about `tree`. Generating a diagram writes the file.
   - **Verify:** `pnpm typecheck && pnpm test`
 
-- [ ] **P0.3 — Playwright harness + perf baseline**
+- [x] **P0.3 — Playwright harness + perf baseline** — baseline in apps/web/e2e/results/{baseline,bundle-baseline}.json
   - **Depends:** P0.1
   - **Files:**
     - new `apps/web/e2e/` and `apps/web/playwright.config.ts`
@@ -708,12 +708,12 @@ All boxes above are checked, and these hold on the production container (`script
 
 | Metric | Baseline (P0.3) | Target |
 |---|---|---|
-| Click → skeleton or new page (p95) | _fill in_ | ≤ 100 ms |
-| Click → content, cached data | _fill in_ | ≤ 150 ms |
-| Click → content, cold data | _fill in_ | ≤ 600 ms |
-| Login submit → interactive shell | _fill in_ | ≤ 2.0 s |
-| Hard reload → sidebar painted | _fill in_ | ≤ 300 ms |
-| Shell-route first-load JS | _fill in_ | ≤ baseline × 0.75 |
-| `/ws` connections per tab | _fill in_ | 1 (+1 per co-edited doc) |
+| Click → skeleton or new page (p95) | 46 ms | ≤ 100 ms |
+| Click → content, cached data | 52–85 ms (warm sections) | ≤ 150 ms |
+| Click → content, cold data | 400 ms p95 (documentation, dashboard) | ≤ 600 ms |
+| Login submit → interactive shell | not measured yet (B7 adds the login step) | ≤ 2.0 s |
+| Hard reload → sidebar painted | 582 ms (whole first page, no skeleton) | ≤ 300 ms |
+| Shell-route first-load JS | 315 kB gz (`/(app)/…` minimum); session page 415 kB | ≤ baseline × 0.75 |
+| `/ws` connections per tab | 2+ on a chat page (shared + per-mount) | 1 (+1 per co-edited doc) |
 | Changes visible to another member | partial | every row in plan.md §C.2 and §C.5, without a refresh |
 | Deploy | 6 compose services | 1 Dokploy Dockerfile application, 1 port, 1 volume |

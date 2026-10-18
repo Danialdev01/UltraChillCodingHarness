@@ -8,3 +8,9 @@ dist/
 coverage/
 .env.deploy
 __pycache__/
+.next-*/
+apps/web/e2e/results/*
+!apps/web/e2e/results/baseline.json
+test-results/
+playwright-report/
+!apps/web/e2e/results/bundle-baseline.json

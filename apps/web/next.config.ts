@@ -13,6 +13,9 @@ const SERVER_ORIGIN = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
 const WS_ORIGIN = process.env.NEXT_PUBLIC_WS_ORIGIN ?? SERVER_ORIGIN;
 
 const config: NextConfig = {
+  // A second build directory, so a production build (the e2e suite's) can
+  // run beside a `next dev` that owns `.next`. Unset everywhere else.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   // Production images ship only the traced server (`server.js` plus the files
   // it reaches), not the whole monorepo's node_modules. The trace starts at
   // the repo root so workspace packages are included. No effect on `next dev`.

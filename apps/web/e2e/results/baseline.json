@@ -1,0 +1,81 @@
+{
+  "at": "2026-10-18T12:27:49.772Z",
+  "baseURL": "http://127.0.0.1:3200",
+  "firstLoad": 582,
+  "p95": {
+    "paint": 45.799999999813735,
+    "content": 400.09999999962747
+  },
+  "hops": [
+    {
+      "name": "session A",
+      "href": "/71e12addc0ec/p/rdhm15c4hl8o/q9gwuzi9dew6",
+      "paint": 42.200000000186265,
+      "content": 154.89999999990687,
+      "via": "router"
+    },
+    {
+      "name": "tasks",
+      "href": "/71e12addc0ec/p/rdhm15c4hl8o/tasks",
+      "paint": 44.39999999990687,
+      "content": 51.8000000002794,
+      "via": "link"
+    },
+    {
+      "name": "documentation",
+      "href": "/71e12addc0ec/p/rdhm15c4hl8o/documentation",
+      "paint": 12.299999999813735,
+      "content": 400.09999999962747,
+      "via": "router"
+    },
+    {
+      "name": "note A",
+      "href": "/71e12addc0ec/p/rdhm15c4hl8o/documentation/5920bf9a-5977-4828-ab6c-0a919594befc",
+      "paint": 40.3000000002794,
+      "content": 79,
+      "via": "router"
+    },
+    {
+      "name": "timeline",
+      "href": "/71e12addc0ec/p/rdhm15c4hl8o/timeline",
+      "paint": 41.1999999997206,
+      "content": 59.6999999997206,
+      "via": "link"
+    },
+    {
+      "name": "settings account",
+      "href": "/setting/account",
+      "paint": 20.5,
+      "content": 54,
+      "via": "router"
+    },
+    {
+      "name": "settings theme",
+      "href": "/setting/theme",
+      "paint": 45.799999999813735,
+      "content": 64.1999999997206,
+      "via": "link"
+    },
+    {
+      "name": "workspace settings",
+      "href": "/71e12addc0ec/workspace-settings/general",
+      "paint": 40.8000000002794,
+      "content": 84.5,
+      "via": "link"
+    },
+    {
+      "name": "workspace members",
+      "href": "/71e12addc0ec/workspace-settings/members",
+      "paint": 34.89999999990687,
+      "content": 52.39999999990687,
+      "via": "link"
+    },
+    {
+      "name": "dashboard again",
+      "href": "/71e12addc0ec",
+      "paint": 43.60000000009313,
+      "content": 359.10000000009313,
+      "via": "link"
+    }
+  ]
+}
