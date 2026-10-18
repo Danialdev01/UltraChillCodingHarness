@@ -34,6 +34,8 @@ interface Connection {
   subscriptionProjects: Map<string, string>;
   /** The workspace each workspace subscription is for, likewise. */
   subscriptionWorkspaces: Map<string, string>;
+  /** Project-topic subscriptions only, for `onProjectWatch`. */
+  watching: Map<string, string>;
   alive: boolean;
   /**
    * What this socket has already been allowed to open, so the prompt box,
@@ -59,6 +61,8 @@ export interface GatewayOptions {
     Partial<Pick<ProjectAccess, "canAccessWorkspace">>;
   composer: ComposerStore;
   presence: PresenceStore;
+  /** A project subscription opened (+1) or closed (-1): drives the file watcher. */
+  onProjectWatch?: (projectId: string, delta: 1 | -1) => void;
   /** Whether a user may watch a terminal's output; see `TerminalReactor.mayWatch`. */
   mayWatchTerminal?: (userId: string, terminalId: string) => boolean;
   /** After a command from a socket was handled, for the activity log. */
@@ -130,6 +134,7 @@ export class WebSocketGateway {
       subscriptions: new Map(),
       subscriptionProjects: new Map(),
       subscriptionWorkspaces: new Map(),
+      watching: new Map(),
       alive: true,
       threads: new Map(),
       projects: new Set(),
@@ -152,8 +157,7 @@ export class WebSocketGateway {
     });
 
     socket.on("close", () => {
-      for (const unsubscribe of conn.subscriptions.values()) unsubscribe();
-      conn.subscriptions.clear();
+      for (const id of [...conn.subscriptions.keys()]) this.#end(conn, id);
       this.#connections.delete(conn);
       for (const { projectId, viewers } of this.options.presence.drop(conn.id)) {
         this.#publish(projectId, { type: "presence.changed", projectId, viewers });
@@ -275,6 +279,10 @@ export class WebSocketGateway {
         const watched = frame.topic.name === "project" ? frame.topic.projectId : threadProject;
         if (watched) conn.subscriptionProjects.set(subscriptionId, watched);
         if (frame.topic.name === "workspace") conn.subscriptionWorkspaces.set(subscriptionId, frame.topic.workspaceId);
+        if (frame.topic.name === "project") {
+          conn.watching.set(subscriptionId, frame.topic.projectId);
+          this.options.onProjectWatch?.(frame.topic.projectId, 1);
+        }
 
         if (frame.topic.name === "thread") {
           // Bounded: the browser keeps the newest 500 events of a thread, so
@@ -385,13 +393,7 @@ export class WebSocketGateway {
       }
 
       case "unsubscribe": {
-        const unsubscribe = conn.subscriptions.get(frame.id);
-        if (unsubscribe) {
-          unsubscribe();
-          conn.subscriptions.delete(frame.id);
-          conn.subscriptionProjects.delete(frame.id);
-          conn.subscriptionWorkspaces.delete(frame.id);
-        }
+        this.#end(conn, frame.id);
         send(conn.socket, { kind: "ack", id: frame.id, events: [] });
         return;
       }
@@ -446,6 +448,19 @@ export class WebSocketGateway {
     this.bus.publish({ seq: null, projectId, threadId, event });
   }
 
+  /** Ends one subscription of a socket, and everything kept about it. */
+  #end(conn: Connection, subscriptionId: string): void {
+    conn.subscriptions.get(subscriptionId)?.();
+    conn.subscriptions.delete(subscriptionId);
+    conn.subscriptionProjects.delete(subscriptionId);
+    conn.subscriptionWorkspaces.delete(subscriptionId);
+    const watched = conn.watching.get(subscriptionId);
+    if (watched) {
+      conn.watching.delete(subscriptionId);
+      this.options.onProjectWatch?.(watched, -1);
+    }
+  }
+
   /**
    * Re-checks what open sockets may watch, after access changed: a member
    * removed or demoted (`userId`), a project deleted (`projectId`). What is
@@ -471,17 +486,13 @@ export class WebSocketGateway {
           verdicts.set(projectId, verdict);
         }
         if (await verdict) continue;
-        conn.subscriptions.get(subscriptionId)?.();
-        conn.subscriptions.delete(subscriptionId);
-        conn.subscriptionProjects.delete(subscriptionId);
+        this.#end(conn, subscriptionId);
         send(conn.socket, { kind: "revoked", subscriptionId });
       }
       if (match.projectId || !this.options.access.canAccessWorkspace) continue;
       for (const [subscriptionId, workspaceId] of conn.subscriptionWorkspaces) {
         if (await this.options.access.canAccessWorkspace(conn.principal.userId, workspaceId)) continue;
-        conn.subscriptions.get(subscriptionId)?.();
-        conn.subscriptions.delete(subscriptionId);
-        conn.subscriptionWorkspaces.delete(subscriptionId);
+        this.#end(conn, subscriptionId);
         send(conn.socket, { kind: "revoked", subscriptionId });
       }
     }

@@ -24,8 +24,8 @@ export type GitSelection =
   | { kind: "change"; path: string; scope: "worktree" | "index" | "untracked" }
   | { kind: "commit"; sha: string; path: string | null }
 
-/** How often the view asks again when nothing has told it to. */
-const POLL_MS = 10_000
+/** How often the view asks again when nothing has told it to: a safety net, since the file watcher reports changes on disk. */
+const POLL_MS = 60_000
 /** Events arrive in bursts (one per file the agent wrote); refetch once per burst. */
 const DEBOUNCE_MS = 300
 

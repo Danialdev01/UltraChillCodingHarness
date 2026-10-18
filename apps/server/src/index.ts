@@ -80,6 +80,7 @@ import { registerDatabaseRoutes } from "./database-routes.js";
 import { WorkspaceMemberService } from "./workspace-members.js";
 import { registerWorkspaceMemberRoutes } from "./workspace-members-routes.js";
 import { WebProxy } from "./web-proxy.js";
+import { FileWatcher } from "./file-watcher.js";
 import { registerDbManagerRoutes } from "./db-manager-routes.js";
 import { adapterFor } from "./db-manager/index.js";
 import { DatabaseConnectionService } from "./database-connections.js";
@@ -360,7 +361,28 @@ const reactors: Reactors = {
 const engine = new OrchestrationEngine(db, store, reactors, (error, command) => {
   app.log.error({ err: error, command: command.type }, "command failed");
 });
+/**
+ * Changes on disk nobody announced -- a terminal, a dev server, git -- for
+ * every project someone has open (see file-watcher.ts). What the server and
+ * the agent write is announced already and not reported twice.
+ */
+const watcherEvents = new WeakSet<object>();
+const fileWatcher = new FileWatcher({
+  rootOf: (projectId) => join(config.WORKSPACE_ROOT, projectId),
+  publish: (projectId, path, change) => {
+    const event: DomainEvent = { type: "file.changed", projectId, path, change };
+    watcherEvents.add(event);
+    bus.publish({ seq: null, projectId, threadId: null, event });
+  },
+  onError: (error) => app.log.debug({ err: error }, "file watcher"),
+});
+bus.tap(({ projectId, event }) => {
+  if (event.type === "file.changed" && !watcherEvents.has(event)) fileWatcher.noteOwnWrite(projectId, event.path);
+});
+
 const gateway = new WebSocketGateway(auth, engine, store, bus, {
+  onProjectWatch: (projectId, delta) =>
+    delta === 1 ? fileWatcher.retain(projectId) : fileWatcher.release(projectId),
   access,
   composer,
   presence,
@@ -3302,6 +3324,7 @@ const shutdown = async (signal: string) => {
   // turns: SIGTERM here, so the CLI records nothing and resumes the
   // unfinished turn next time, rather than the SIGINT the stop button sends.
   terminals.closeAll();
+  await fileWatcher.closeAll();
   await agentTurns.killAll();
   await app.close();
   web?.close();

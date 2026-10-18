@@ -44,6 +44,13 @@ export function topicKey(topic: Topic): string {
  */
 export class EventBus {
   #subscribers = new Map<string, Set<(p: Publication) => void>>();
+  #taps = new Set<(p: Publication) => void>();
+
+  /** Sees every project publication, whatever its topic: for the server's own bookkeeping, never for sockets. */
+  tap(listener: (p: Publication) => void): () => void {
+    this.#taps.add(listener);
+    return () => this.#taps.delete(listener);
+  }
 
   subscribe(topic: Topic, listener: (p: Publication) => void): () => void {
     const key = topicKey(topic);
@@ -63,6 +70,13 @@ export class EventBus {
   }
 
   publish(publication: Publication): void {
+    for (const tap of this.#taps) {
+      try {
+        tap(publication);
+      } catch {
+        // Bookkeeping must never stop delivery.
+      }
+    }
     // A terminal's bytes go to its own topic and nowhere else. They are one
     // person's shell -- including the device codes a sign-in terminal prints
     // -- and every member of a project watches the project topic.

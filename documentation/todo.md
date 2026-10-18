@@ -478,7 +478,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** Every row of plan.md §C.5 is visible live in a second browser.
   - **Verify:** `pnpm test`, plus a manual two-browser check
 
-- [ ] **R6 — File watcher**
+- [x] **R6 — File watcher** — verified live: a file written by hand reached a project subscriber; project checkout only, session worktrees not yet watched
   - **Depends:** R5
   - **Files:** new `apps/server/src/file-watcher.ts` and `.test.ts`, `apps/server/src/ws.ts` (subscriber counts per project), `apps/server/src/files.ts` (versions the server wrote), `apps/server/package.json` (`@parcel/watcher`)
   - **Steps:**
