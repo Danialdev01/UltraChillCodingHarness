@@ -617,11 +617,46 @@ app.addContentTypeParser(
   (_request, body, done) => done(null, body),
 );
 
-app.get("/health", async () => ({
-  status: "ok",
-  version: "0.1.0",
-  connections: gateway.connectionCount,
-}));
+/** Resolves to the check's outcome within `ms`, so a hung dependency reads as down rather than hanging the probe. */
+async function within(ms: number, check: () => Promise<unknown>): Promise<"ok" | "error"> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      check(),
+      new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("timeout")), ms))),
+    ]);
+    return "ok";
+  } catch {
+    return "error";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The container's health: this process, its database, and -- in the single
+ * container -- the web app behind it. Any of them down is a 503, which is
+ * what Docker's HEALTHCHECK and the platform in front of it act on.
+ */
+app.get("/health", async (_request, reply) => {
+  const [database, webApp] = await Promise.all([
+    within(1000, () => db.execute(sql`select 1`)),
+    config.WEB_UPSTREAM
+      ? within(1000, async () => {
+          const response = await fetch(new URL("/healthz", config.WEB_UPSTREAM), { method: "HEAD" });
+          if (!response.ok) throw new Error(String(response.status));
+        })
+      : Promise.resolve(undefined),
+  ]);
+  const healthy = database === "ok" && webApp !== "error";
+  return reply.code(healthy ? 200 : 503).send({
+    status: healthy ? "ok" : "degraded",
+    version: "0.1.0",
+    connections: gateway.connectionCount,
+    db: database,
+    ...(webApp ? { web: webApp } : {}),
+  });
+});
 
 app.get("/api/me", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);

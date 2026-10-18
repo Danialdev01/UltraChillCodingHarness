@@ -153,7 +153,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** With `next start -p 3100` and the server on 3000, the whole app works through `http://localhost:3000`: login, navigation, chat streaming, terminals, previews. Suspense fallbacks still stream.
   - **Verify:** `pnpm test -- web-proxy`, plus a manual run as above
 
-- [ ] **D3 — Extend `/health`**
+- [x] **D3 — Extend `/health`**
   - **Depends:** D2
   - **Files:** `apps/server/src/index.ts` (`/health`, around line 607)
   - **Steps:** Add `db` (`select 1`, 1 s timeout) and `web` (`HEAD ${WEB_UPSTREAM}/healthz`, 1 s timeout, only when the upstream is set). Return HTTP `503` when either fails. Keep the existing fields.
