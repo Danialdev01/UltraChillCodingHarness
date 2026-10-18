@@ -1,7 +1,17 @@
-import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 import type { Command, DomainEvent } from "@ucch/protocol";
+import type { DbAdapter, DbTarget } from "./db-manager/index.js";
+import {
+  databaseUrl,
+  ensureDevDatabase,
+  ensureGitignored,
+  ensureProjectInfo,
+  renderContext,
+  writeDatabaseUrl,
+  type DevDatabaseServers,
+} from "./dev-database.js";
 import { CREDENTIAL_HELPER, runGit, safeRepoUrl } from "./git-exec.js";
 import { redactToken, tokenAppliesTo } from "./github.js";
 
@@ -40,6 +50,15 @@ export interface CloneOptions {
    * database behind it.
    */
   credentials?: (event: ProjectCreated) => Promise<CloneCredentials>;
+  /** The shared servers a project's development database is made on. */
+  devDatabases?: DevDatabaseServers;
+  /**
+   * Saves the new database as a connection in the project's workspace, so the
+   * Database view shows it. Optional for the same reason `credentials` is.
+   */
+  registerConnection?: (event: ProjectCreated, server: DbTarget, name: string) => Promise<void>;
+  /** Overrides how a dev server is opened. For tests. */
+  adapterFor?: (target: DbTarget, db: string | null) => DbAdapter;
 }
 
 /** Who an initial commit is attributed to when the account says nothing. */
@@ -116,6 +135,17 @@ export class CloneReactor {
     // a non-empty target, so the check has to happen before it runs.
     const alreadyCloned = await exists(join(dest, ".git"));
 
+    // The project's settings, and its database if it asked for one. A failure
+    // here is reported on the event and the project opens regardless.
+    const server = event.database ? this.options.devDatabases?.[event.database.engine] : undefined;
+    let databaseError: string | undefined;
+    let settled = false;
+    const settle = async (stack: string) => {
+      databaseError = event.database ? await this.#database(event, dest, server) : undefined;
+      await ensureProjectInfo(dest, renderContext({ event, stack, ...(server ? { server } : {}) }));
+      settled = true;
+    };
+
     if (!alreadyCloned) {
       // Looked up only when there is work to do, so a redelivered event
       // decrypts nothing. A resolver that fails is not the clone's problem
@@ -125,7 +155,10 @@ export class CloneReactor {
         : {};
 
       if (event.repoUrl === null) {
-        await this.#init(event, dest, credentials, timeoutMs);
+        // Settled before the first commit, so a started project opens on a
+        // clean tree: the settings and the ignore rule are in the commit, and
+        // `.env` is ignored by the time it is made.
+        await this.#init(event, dest, credentials, timeoutMs, async () => settle(await detectStack(dest)));
       } else {
         await this.#fetch(event, event.repoUrl, dest, credentials, timeoutMs);
       }
@@ -133,8 +166,50 @@ export class CloneReactor {
 
     const headSha = (await runGit(["rev-parse", "HEAD"], dest, timeoutMs)).trim();
     const stack = await detectStack(dest);
+    // A cloned repository's are left uncommitted, for its people to review.
+    if (!settled) await settle(stack);
 
-    await this.append({ type: "project.cloned", projectId: event.projectId, headSha, stack });
+    await this.append({
+      type: "project.cloned",
+      projectId: event.projectId,
+      headSha,
+      stack,
+      ...(databaseError ? { databaseError } : {}),
+    });
+  }
+
+  /**
+   * Creates the project's development database and points the project at it.
+   *
+   * Returns what went wrong, or nothing. Each step is idempotent, so a
+   * redelivered event repeats the whole thing harmlessly.
+   */
+  async #database(event: ProjectCreated, dest: string, server: DbTarget | undefined): Promise<string | undefined> {
+    const database = event.database!;
+    const label = database.engine === "mysql" ? "MySQL" : "PostgreSQL";
+    if (!server) return `The ${label} development server is not configured, so no database was created.`;
+
+    try {
+      await ensureDevDatabase(server, database.name, this.options.adapterFor);
+    } catch (error) {
+      return `Could not create the ${label} database "${database.name}": ${describe(error)}`;
+    }
+
+    try {
+      await writeDatabaseUrl(dest, databaseUrl(server, database.name));
+      await ensureGitignored(dest, ".env");
+    } catch (error) {
+      return `The database was created, but DATABASE_URL could not be written to .env: ${describe(error)}`;
+    }
+
+    if (this.options.registerConnection) {
+      try {
+        await this.options.registerConnection(event, server, database.name);
+      } catch (error) {
+        return `The database was created, but it could not be added to the Database view: ${describe(error)}`;
+      }
+    }
+    return undefined;
   }
 
   /** Clones a remote into an empty directory. */
@@ -207,6 +282,8 @@ export class CloneReactor {
     dest: string,
     credentials: CloneCredentials,
     timeoutMs: number,
+    /** Runs on the new repository just before its first commit. */
+    beforeCommit: () => Promise<void>,
   ): Promise<void> {
     await mkdir(dest, { recursive: true });
     await runGit(["init", "-b", event.defaultBranch], dest, timeoutMs);
@@ -216,6 +293,7 @@ export class CloneReactor {
     // stands rather than having a README written over the top of it.
     const readme = join(dest, "README.md");
     if (!(await exists(readme))) await writeFile(readme, readmeFor(event.name), "utf8");
+    await beforeCommit();
 
     const author = credentials.author ?? FALLBACK_AUTHOR;
     await runGit(["add", "-A"], dest, timeoutMs);
@@ -323,7 +401,12 @@ export function parseRemoteRefs(stdout: string): {
  *
  * Order is significance, not alphabet: a Next.js project has a
  * `package.json` too, so the framework markers are tested before the
- * language ones and `node` is what is left when none of them matches.
+ * language ones and `node` is what is left when none of them matches. A
+ * `package.json` with no framework config of its own is read for the one
+ * library that names it, React or Vue, before settling for `vite` or `node`.
+ *
+ * Run at clone and again every few turns (see `AgentService`), so the
+ * sidebar's icon follows a project that grew into a framework.
  */
 export async function detectStack(dir: string): Promise<string> {
   let entries: string[];
@@ -337,10 +420,47 @@ export async function detectStack(dir: string): Promise<string> {
 
   if (names.has("artisan")) return "laravel";
   if (has(/^next\.config\./)) return "nextjs";
+  if (has(/^nuxt\.config\./)) return "nuxt";
+  if (has(/^astro\.config\./)) return "astro";
+  if (has(/^svelte\.config\./)) return "svelte";
+  if (names.has("angular.json")) return "angular";
+  if (names.has("package.json")) {
+    const deps = await packageDependencies(join(dir, "package.json"));
+    if (deps.has("react")) return "react";
+    if (deps.has("vue")) return "vue";
+  }
   if (has(/^vite\.config\./)) return "vite";
+  if (names.has("deno.json") || names.has("deno.jsonc")) return "deno";
+  if (names.has("bun.lockb") || names.has("bun.lock")) return "bun";
   if (names.has("package.json")) return "node";
+  if (names.has("manage.py")) return "django";
+  if (names.has("pyproject.toml") || names.has("requirements.txt") || names.has("setup.py")) return "python";
+  if (names.has("Cargo.toml")) return "rust";
+  if (names.has("go.mod")) return "go";
+  if (names.has("Gemfile")) return (await exists(join(dir, "config", "application.rb"))) ? "rails" : "ruby";
+  if (names.has("build.gradle.kts") && (await exists(join(dir, "src", "main", "kotlin")))) return "kotlin";
+  if (names.has("pom.xml") || has(/^build\.gradle(\.kts)?$/)) return "java";
+  if (names.has("pubspec.yaml")) return "dart";
+  if (names.has("mix.exs")) return "elixir";
+  if (names.has("Package.swift")) return "swift";
+  if (has(/\.(csproj|sln)$/)) return "dotnet";
   if (names.has("index.php")) return "php";
   return "static";
+}
+
+/** Every dependency `package.json` names; none for one that is missing or not JSON. */
+async function packageDependencies(path: string): Promise<Set<string>> {
+  try {
+    const pkg = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    const names = new Set<string>();
+    for (const field of ["dependencies", "devDependencies", "peerDependencies"]) {
+      const deps = pkg[field];
+      if (deps && typeof deps === "object") for (const name of Object.keys(deps)) names.add(name);
+    }
+    return names;
+  } catch {
+    return new Set();
+  }
 }
 
 /**

@@ -21,7 +21,7 @@ export function SearchForm({ ...props }: React.ComponentProps<"form">) {
             placeholder="Search the docs..."
             className="pl-8"
           />
-          <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 opacity-50 select-none" />
+          <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-muted-foreground select-none" />
         </SidebarGroupContent>
       </SidebarGroup>
     </form>

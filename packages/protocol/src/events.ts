@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { PreviewHash, ProjectHash } from "./ids.js";
+import { ProjectDatabase } from "./database.js";
+import { BranchName, PreviewHash, ProjectHash, ThreadHash } from "./ids.js";
 
 /**
  * The append-only session log.
@@ -21,6 +22,19 @@ import { PreviewHash, ProjectHash } from "./ids.js";
 
 // -- Project and container lifecycle ----------------------------------------
 
+/**
+ * What a project is for. Stored and shown; nothing behaves differently by it
+ * yet, except that only a development project may ask for a database.
+ */
+export const ProjectMode = z.enum(["research", "development", "creative_design"]);
+export type ProjectMode = z.infer<typeof ProjectMode>;
+
+export const PROJECT_MODE_LABELS: Record<ProjectMode, string> = {
+  research: "Research",
+  development: "Development",
+  creative_design: "Creative design",
+};
+
 export const ContainerState = z.enum(["absent", "creating", "running", "stopped", "error"]);
 export type ContainerState = z.infer<typeof ContainerState>;
 
@@ -40,12 +54,32 @@ const ProjectCreated = z.object({
    */
   repoUrl: z.string().url().nullable(),
   defaultBranch: z.string(),
+  /** Absent on events written before modes existed, which read as development. */
+  mode: ProjectMode.optional(),
+  /** The development database the clone reactor creates for it, if any. */
+  database: ProjectDatabase.nullable().optional(),
 });
 
 const ProjectCloned = z.object({
   type: z.literal("project.cloned"),
   projectId: z.string().uuid(),
   headSha: z.string(),
+  stack: z.string(),
+  /**
+   * Set when the project asked for a database and creating it failed. The
+   * project itself is fine; the database is what is missing.
+   */
+  databaseError: z.string().optional(),
+});
+
+/**
+ * The stack looked at again after the clone, and found to have changed: a
+ * project that grew a framework, or moved to another language. Checked every
+ * few turns by the agent service; only a change is recorded.
+ */
+const ProjectStackDetected = z.object({
+  type: z.literal("project.stack_detected"),
+  projectId: z.string().uuid(),
   stack: z.string(),
 });
 
@@ -63,6 +97,44 @@ const ThreadCreated = z.object({
   threadId: z.string().uuid(),
   projectId: z.string().uuid(),
   title: z.string(),
+  /** Absent on threads created before workspaces had members. */
+  createdByUserId: z.string().uuid().optional(),
+  credentialSource: z.enum(["member", "workspace"]).optional(),
+  /** The session's web address. Absent on threads created before it had one. */
+  hash: ThreadHash.optional(),
+  /**
+   * Set together for a project session that works in its own worktree:
+   * `branch` is created from `baseBranch` by `WorktreeReactor`.
+   */
+  baseBranch: BranchName.optional(),
+  branch: z.string().optional(),
+});
+
+/** The session's worktree exists and is checked out on its branch. */
+const ThreadWorktreeReady = z.object({
+  type: z.literal("thread.worktree_ready"),
+  threadId: z.string().uuid(),
+});
+
+/** `git worktree add` refused; the session cannot run until it is recreated. */
+const ThreadWorktreeFailed = z.object({
+  type: z.literal("thread.worktree_failed"),
+  threadId: z.string().uuid(),
+  error: z.string(),
+});
+
+/**
+ * A project session is gone: settled, or removed for having nothing in it.
+ * Its thread, worktree and local branch are deleted; `pushedBranch` names
+ * the branch its work was pushed to first, when it had any. Project-scoped,
+ * since the thread it names no longer exists to carry it.
+ */
+const ThreadRemoved = z.object({
+  type: z.literal("thread.removed"),
+  projectId: z.string().uuid(),
+  threadId: z.string().uuid(),
+  hash: ThreadHash.optional(),
+  pushedBranch: z.string().nullable(),
 });
 
 /**
@@ -83,10 +155,11 @@ export type MessageImage = z.infer<typeof MessageImage>;
 /**
  * The one way a message can ask for something other than a coding turn.
  *
- * An enum with a single member rather than a boolean, so a second mode is a
- * new member rather than a second flag that has to agree with the first.
+ * An enum rather than a boolean per mode, so the modes cannot both be on:
+ * `research` runs the research pipeline, `documentation` the document
+ * pipeline -- read, edit, render and check PDF, DOCX and DOC files.
  */
-export const MessageMode = z.enum(["research"]);
+export const MessageMode = z.enum(["research", "documentation"]);
 export type MessageMode = z.infer<typeof MessageMode>;
 
 const UserMessage = z.object({
@@ -137,6 +210,8 @@ const ContextInjected = z.object({
    * `research` is the brief a research phase produced for a CLI provider's
    * turn: gathered on OpenRouter, then appended to the prompt the CLI was
    * given. Recorded so the log says exactly what the CLI was handed.
+   * `documentation` is the document pipeline's rules, prepended to a CLI
+   * provider's prompt for the same reason.
    */
   source: z.enum([
     "system_prompt",
@@ -145,6 +220,7 @@ const ContextInjected = z.object({
     "file_tree",
     "compaction",
     "research",
+    "documentation",
   ]),
   content: z.string(),
   tokens: z.number().int().nonnegative().optional(),
@@ -324,6 +400,20 @@ const AgentTurnCompleted = z.object({
   costUsd: z.number().nonnegative(),
 });
 
+/**
+ * Stop reasons that mean a completed turn ran out of room rather than
+ * finished: the native loop's iteration cap, a model's output cap under
+ * either vendor's name. The Claude CLI reports its own, `error_max_turns`
+ * and the like, as `error_*` -- see `stoppedShort`.
+ */
+export const LIMIT_STOP_REASONS: ReadonlySet<string> = new Set(["max_iterations", "max_tokens", "length"]);
+
+/** Whether a turn that completed with this stop reason was cut off by a limit or an error. */
+export function stoppedShort(stopReason: string | null | undefined): boolean {
+  if (!stopReason) return false;
+  return LIMIT_STOP_REASONS.has(stopReason) || stopReason.startsWith("error");
+}
+
 const AgentTurnFailed = z.object({
   type: z.literal("agent.turn_failed"),
   threadId: z.string().uuid(),
@@ -418,6 +508,19 @@ const TimelineChanged = z.object({
   origin: ChangeOrigin.optional(),
 });
 
+/**
+ * A card on the project's Tasks board was written -- by a person, or by the
+ * pipeline moving it along. A nudge to refetch, like `timeline.changed`.
+ */
+const TaskChanged = z.object({
+  type: z.literal("task.changed"),
+  projectId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  change: z.enum(["created", "updated", "deleted"]),
+  updatedAt: z.string().datetime(),
+  origin: ChangeOrigin.optional(),
+});
+
 // -- Live collaboration ------------------------------------------------------
 
 /**
@@ -447,8 +550,10 @@ export const ComposerDraft = z.object({
     .object({ path: z.string(), from: z.number().int(), to: z.number().int() })
     .nullable(),
   model: z.string().max(200).optional(),
-  effort: z.enum(["off", "low", "medium", "high"]).optional(),
+  effort: z.enum(["off", "low", "medium", "high", "xhigh", "max"]).optional(),
+  /** Legacy: drafts saved before `mode` existed. Read as `mode: "research"`. */
   research: z.boolean().optional(),
+  mode: MessageMode.optional(),
   provider: z.string().max(40).optional(),
 });
 export type ComposerDraft = z.infer<typeof ComposerDraft>;
@@ -497,6 +602,8 @@ export const LiveResource = z.enum([
   "git",
   /** Rows or structure of a table in a database manager connection; `id` is `conn/db/table`. */
   "database_data",
+  /** A workspace's members, invite links or harness subscription; `id` is the workspace. */
+  "workspace_members",
 ]);
 export type LiveResource = z.infer<typeof LiveResource>;
 
@@ -599,8 +706,12 @@ const PreviewPublished = z.object({
 export const DomainEvent = z.discriminatedUnion("type", [
   ProjectCreated,
   ProjectCloned,
+  ProjectStackDetected,
   ContainerStateChanged,
   ThreadCreated,
+  ThreadWorktreeReady,
+  ThreadWorktreeFailed,
+  ThreadRemoved,
   UserMessage,
   ThreadCancelRequested,
   ContextInjected,
@@ -621,6 +732,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   FileChanged,
   NoteChanged,
   TimelineChanged,
+  TaskChanged,
   ComposerChanged,
   PresenceChanged,
   ResourceChanged,
@@ -660,6 +772,7 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "agent.retry",
   "note.changed",
   "timeline.changed",
+  "task.changed",
   "composer.changed",
   "presence.changed",
   "resource.changed",

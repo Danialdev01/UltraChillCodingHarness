@@ -49,7 +49,7 @@ describe("configuration guards", () => {
         DATABASE_URL: "postgres://localhost/test",
         DEV_AUTH_BYPASS: "true",
       } as NodeJS.ProcessEnv),
-    ).toThrow(/must not be enabled in production/);
+    ).toThrow(/DEV_AUTH_BYPASS is only allowed/);
   });
 
   it("requires GitHub credentials unless the bypass is on", () => {
@@ -60,6 +60,7 @@ describe("configuration guards", () => {
     expect(() =>
       loadConfig({
         DATABASE_URL: "postgres://localhost/test",
+        NODE_ENV: "test",
         DEV_AUTH_BYPASS: "true",
       } as NodeJS.ProcessEnv),
     ).not.toThrow();
@@ -73,6 +74,7 @@ describe("configuration guards", () => {
 describe("bypass mode", () => {
   const bypass = loadConfig({
     DATABASE_URL: "postgres://localhost/test",
+    NODE_ENV: "test",
     DEV_AUTH_BYPASS: "true",
   } as NodeJS.ProcessEnv);
   const open = new AuthService(null as never, bypass);
@@ -86,6 +88,7 @@ describe("bypass mode", () => {
 describe("the profile the settings page reads back", () => {
   const bypass = loadConfig({
     DATABASE_URL: "postgres://localhost/test",
+    NODE_ENV: "test",
     DEV_AUTH_BYPASS: "true",
   } as NodeJS.ProcessEnv);
 
@@ -129,5 +132,54 @@ describe("the profile the settings page reads back", () => {
     const auth = new AuthService(dbReturning([]), strict);
 
     expect(await auth.getProfile(DEV_USER_ID)).toBeNull();
+  });
+});
+
+describe("the session cache", () => {
+  const row = {
+    id: "",
+    userId: "00000000-0000-4000-8000-000000000001",
+    scopes: ["read"],
+    expiresAt: new Date(Date.now() + 60_000),
+  };
+
+  /** Counts selects, and answers them with `row` until it has been deleted. */
+  function countingDb() {
+    let selects = 0;
+    let present = true;
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => {
+              selects++;
+              return present ? [row] : [];
+            },
+          }),
+        }),
+      }),
+      delete: () => ({
+        where: async () => {
+          present = false;
+        },
+      }),
+    };
+    return { db: db as never, selects: () => selects };
+  }
+
+  it("resolves a session from Postgres once, then from memory", async () => {
+    const { db, selects } = countingDb();
+    const cached = new AuthService(db, config);
+    expect(await cached.resolveSession("token")).toMatchObject({ userId: row.userId });
+    expect(await cached.resolveSession("token")).toMatchObject({ userId: row.userId });
+    expect(selects()).toBe(1);
+  });
+
+  it("forgets a revoked session immediately", async () => {
+    const { db } = countingDb();
+    const cached = new AuthService(db, config);
+    await cached.resolveSession("token");
+    await cached.revokeSession("token");
+    expect(await cached.resolveSession("token")).toBeNull();
   });
 });

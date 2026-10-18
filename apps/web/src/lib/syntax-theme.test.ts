@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   DEFAULT_SYNTAX_DARK,
   DEFAULT_SYNTAX_LIGHT,
+  coercePreset,
   isPreset,
   isSyntaxTheme,
   normalizeSyntaxTheme,
@@ -10,6 +11,7 @@ import {
   syntaxVars,
   upsertPreset,
 } from "./syntax-theme.js"
+import type { ThemeSettings } from "./theme.js"
 
 describe("syntax theme shape", () => {
   it("ships a valid colour for every role, light and dark", () => {
@@ -39,7 +41,8 @@ describe("syntax theme shape", () => {
 })
 
 describe("presets", () => {
-  const theme = { dominant: "#111111", secondary: "#222222", accent: "#3b5bdb" }
+  const theme: ThemeSettings = { mode: "dark", source: { kind: "seed", seed: 7 }, highContrast: false, locked: false }
+  const legacy = { dominant: "#111111", secondary: "#222222", accent: "#3b5bdb" }
 
   it("trims and bounds a name, and refuses an empty one", () => {
     expect(presetName("  Night   fall  ")).toBe("Night fall")
@@ -62,6 +65,8 @@ describe("presets", () => {
     expect(isPreset({ id: "a", name: "n", theme: null, syntax: null })).toBe(true)
     expect(isPreset({ id: "a", name: "n", theme, syntax: DEFAULT_SYNTAX_LIGHT })).toBe(true)
     expect(isPreset({ id: "a", name: "n", theme: { dominant: "x" }, syntax: null })).toBe(false)
+    // Saved before modes existed: carried over as custom colours.
+    expect(coercePreset({ id: "a", name: "n", theme: legacy, syntax: null })?.theme?.source).toEqual({ kind: "custom", ...legacy })
     expect(isPreset({ name: "n", theme: null, syntax: null })).toBe(false)
   })
 })

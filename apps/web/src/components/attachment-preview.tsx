@@ -1,11 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { AlertCircleIcon, DownloadIcon, FileIcon, Loader2Icon } from "lucide-react";
+import { AlertCircleIcon, DownloadIcon, FileIcon } from "lucide-react";
 import { extensionOf } from "@ucch/protocol";
 
 import { ImageViewer } from "@/components/image-viewer";
+import { PdfViewer } from "@/components/pdf-viewer";
+import { CodeLinesSkeleton } from "@/components/page-skeletons";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -41,9 +44,9 @@ export interface PreviewableAttachment {
  * none. Three mechanisms, each the safe one for its kind:
  *
  * An image goes in an `<img>`, which never runs script, so an SVG is a picture
- * and nothing else. A PDF goes in an empty-`sandbox` `<iframe>`, so the
- * browser's viewer works and an embedded script does not. Text is fetched as a
- * string and put in a `<pre>` -- never served as a document, which is why a
+ * and nothing else. A PDF goes to `PdfViewer`, the browser's own viewer on a
+ * `blob:` typed as a PDF, so the bytes cannot be read as anything else. Text
+ * is fetched as a string and put in a `<pre>` -- never served as a document, which is why a
  * `.html` attachment is as safe to read as a `.txt`.
  *
  * Everything else has no preview, and says so next to the download, which is
@@ -149,12 +152,7 @@ function PreviewBody({
 
   return (
     <Frame>
-      {state === "loading" && (
-        <div className="text-muted-foreground absolute inset-0 flex items-center justify-center gap-2 text-xs">
-          <Loader2Icon className="size-3.5 animate-spin" />
-          Loading…
-        </div>
-      )}
+      {state === "loading" && <Skeleton className="absolute inset-0 rounded-none" />}
 
       {state === "failed" ? (
         <Gone kind={kind} />
@@ -169,15 +167,11 @@ function PreviewBody({
           onError={() => setState("failed")}
         />
       ) : (
-        <iframe
+        <PdfViewer
           src={source}
           title={attachment.name}
           onLoad={() => setState("ready")}
           onError={() => setState("failed")}
-          // Empty `sandbox`: no scripts, no forms, no navigation, and an opaque
-          // origin. The built-in PDF viewer works inside it; a PDF carrying
-          // JavaScript does not.
-          sandbox=""
           className="h-full w-full border-0 bg-white"
         />
       )}
@@ -216,10 +210,7 @@ function TextPreview({ hash, uploadId }: { hash: string; uploadId: string }) {
   if (!content) {
     return (
       <Frame>
-        <div className="text-muted-foreground flex items-center justify-center gap-2 p-8 text-xs">
-          <Loader2Icon className="size-3.5 animate-spin" />
-          Reading…
-        </div>
+        <CodeLinesSkeleton rows={6} />
       </Frame>
     );
   }

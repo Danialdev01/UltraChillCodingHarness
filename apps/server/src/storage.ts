@@ -42,28 +42,62 @@ export interface WorkspaceStorage {
  * whole report.
  */
 export async function directoryBytes(dir: string): Promise<number> {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-
+  // A queue of directories drained by a fixed number of workers, rather than
+  // one awaited stat at a time: a project with `node_modules` is a hundred
+  // thousand entries, and walking them in series took seconds per project.
+  const queue = [dir];
   let total = 0;
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory() && !entry.isSymbolicLink()) {
-      total += await directoryBytes(path);
-      continue;
-    }
-    try {
-      total += (await lstat(path)).size;
-    } catch {
-      // Gone between readdir and stat; nothing to count.
-    }
-  }
+  let active = 0;
+
+  await new Promise<void>((done) => {
+    const pump = () => {
+      while (active < WALK_CONCURRENCY && queue.length > 0) {
+        const next = queue.pop()!;
+        active++;
+        void visit(next).finally(() => {
+          active--;
+          if (queue.length === 0 && active === 0) done();
+          else pump();
+        });
+      }
+      if (queue.length === 0 && active === 0) done();
+    };
+
+    const visit = async (path: string) => {
+      let entries;
+      try {
+        entries = await readdir(path, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      const files: string[] = [];
+      for (const entry of entries) {
+        const child = join(path, entry.name);
+        if (entry.isDirectory() && !entry.isSymbolicLink()) queue.push(child);
+        else files.push(child);
+      }
+      const sizes = await Promise.all(
+        // Gone between readdir and stat: nothing to count.
+        files.map((file) => lstat(file).then((info) => info.size, () => 0)),
+      );
+      for (const size of sizes) total += size;
+    };
+
+    pump();
+  });
   return total;
 }
+
+/** Directories read at once by `directoryBytes`. */
+const WALK_CONCURRENCY = 16;
+
+/**
+ * How long a project's measured size is reused.
+ *
+ * The Usage tab is opened, reloaded and opened again; the answer moves by
+ * the size of an edit in that time, and measuring it is a walk of every file.
+ */
+const SIZE_TTL_MS = 5 * 60_000;
 
 export class StorageService {
   constructor(
@@ -81,7 +115,7 @@ export class StorageService {
    * one. Largest first, which is the order the card reads them in.
    */
   async forWorkspace(workspaceId: string, userId: string): Promise<WorkspaceStorage | null> {
-    if (!(await this.workspaces.ownedBy(workspaceId, userId))) return null;
+    if (!(await this.workspaces.canView(workspaceId, userId))) return null;
 
     const rows = await this.db
       .select({ id: projects.id, name: projects.name })
@@ -89,12 +123,7 @@ export class StorageService {
       .where(eq(projects.workspaceId, workspaceId));
 
     const [projectSizes, tables] = await Promise.all([
-      Promise.all(
-        rows.map(async (row) => ({
-          ...row,
-          bytes: await directoryBytes(join(this.workspaceRoot, row.id)),
-        })),
-      ),
+      Promise.all(rows.map(async (row) => ({ ...row, bytes: await this.projectBytes(row.id) }))),
       this.tableSizes(),
     ]);
     projectSizes.sort((a, b) => b.bytes - a.bytes);
@@ -110,6 +139,23 @@ export class StorageService {
       },
     };
   }
+
+  /**
+   * One project's directory, for its manage page. Ownership is the caller's
+   * check. Reused for `SIZE_TTL_MS`, and concurrent asks share one walk.
+   */
+  projectBytes(projectId: string, now = Date.now()): Promise<number> {
+    const cached = this.#sizes.get(projectId);
+    if (cached && now - cached.at < SIZE_TTL_MS) return cached.bytes;
+
+    const bytes = directoryBytes(join(this.workspaceRoot, projectId));
+    this.#sizes.set(projectId, { at: now, bytes });
+    // A failed walk is not remembered.
+    bytes.catch(() => this.#sizes.delete(projectId));
+    return bytes;
+  }
+
+  #sizes = new Map<string, { at: number; bytes: Promise<number> }>();
 
   /** The database as Postgres measures it: every relation, index and TOAST. */
   private async databaseBytes(): Promise<number> {

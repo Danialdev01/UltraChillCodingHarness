@@ -32,6 +32,10 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Stock Postgres assumes a tiny machine: 128 MB of shared buffers and a
+    # 64 MB /dev/shm that parallel queries can exhaust. Raise both together.
+    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "effective_cache_size=768MB", "-c", "work_mem=8MB"]
+    shm_size: 256mb
     depends_on:
       secrets:
         condition: service_completed_successfully
@@ -104,16 +108,22 @@ services:
       # Empty values are filled from the `secrets` volume by
       # deploy/server-entrypoint.sh.
       DATABASE_URL: ${DATABASE_URL:-}
+      DEV_POSTGRES_URL: ${DEV_POSTGRES_URL:-}
+      DEV_MYSQL_URL: ${DEV_MYSQL_URL:-}
       SECRET_KEY: ${SECRET_KEY:-}
       DEFAULT_USER_EMAIL: ${DEFAULT_USER_EMAIL:-}
       DEFAULT_USER_PASSWORD: ${DEFAULT_USER_PASSWORD:-}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      # Who may sign in with GitHub (comma-separated logins / org names).
+      # Unset, GitHub sign-in admits only accounts that already exist here.
+      GITHUB_ALLOWED_USERS: ${GITHUB_ALLOWED_USERS:-}
+      GITHUB_ALLOWED_ORGS: ${GITHUB_ALLOWED_ORGS:-}
       WORKSPACE_ROOT: /srv/ucch/workspaces
       CREDS_ROOT: /srv/ucch/creds
       # The terminal, the agents' bash and the live preview's dev servers run
-      # inside this container. Anyone who can sign in has a shell here:
-      # single-tenant only.
+      # inside this container, as its unprivileged `node` user. Anyone who can
+      # sign in has a shell here: trusted users only (see GITHUB_ALLOWED_*).
       AGENT_ALLOW_HOST_SHELL: "true"
       AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-25}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-}
@@ -140,6 +150,13 @@ services:
       - traefik.http.routers.ucch-api.entrypoints=websecure
       - traefik.http.routers.ucch-api.tls.certresolver=letsencrypt
       - traefik.http.routers.ucch-api.service=ucch-server
+      - traefik.http.routers.ucch-api.middlewares=ucch-hsts
+      # Defined here rather than on `web`, which starts after this, so the
+      # API router never references a middleware Traefik has not seen yet.
+      # HSTS for the app's own host only. Not includeSubDomains: preview
+      # subdomains need the wildcard certificate, and without it they would
+      # become unreachable rather than merely warn.
+      - traefik.http.middlewares.ucch-hsts.headers.stsSeconds=31536000
       - traefik.http.services.ucch-server.loadbalancer.server.port=3001
       # Live previews: p{port}-{hash}.ROOT_DOMAIN, proxied by the server to
       # the project's dev server. Needs a wildcard certificate, so the
@@ -181,8 +198,9 @@ services:
       - traefik.http.routers.ucch-web.entrypoints=websecure
       - traefik.http.routers.ucch-web.tls.certresolver=letsencrypt
       - traefik.http.routers.ucch-web.service=ucch-web
+      - traefik.http.routers.ucch-web.middlewares=ucch-hsts
       - traefik.http.services.ucch-web.loadbalancer.server.port=3000
-      - traefik.http.services.ucch-web.loadbalancer.healthcheck.path=/login
+      - traefik.http.services.ucch-web.loadbalancer.healthcheck.path=/healthz
       - traefik.http.services.ucch-web.loadbalancer.healthcheck.interval=10s
       # Plain HTTP -> HTTPS.
       - traefik.http.routers.ucch-http.rule=Host(`${ROOT_DOMAIN}`)

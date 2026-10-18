@@ -4,7 +4,6 @@ import { Fragment, Suspense, useEffect, useState } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
 import { GlobeIcon, SettingsIcon } from "lucide-react"
 
-import { DocViewToggle } from "@/components/notes/doc-view-toggle"
 import { ConnectionSettingsDialog } from "@/components/database/connection-settings-dialog"
 import { PreviewDialog } from "@/components/preview-dialog"
 import { ViewModeToggle } from "@/components/view-mode-toggle"
@@ -26,6 +25,8 @@ import {
   sectionForPath,
   settingsPageById,
   settingsPageFromPath,
+  workspaceSettingsPageById,
+  workspaceSettingsPageFromPath,
 } from "@/lib/sections"
 import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
@@ -48,9 +49,12 @@ import { cn } from "@/lib/utils"
 export function AppHeader({
   projects,
   connections,
+  sessionWorkspace = false,
 }: {
   projects: readonly Project[]
   connections: readonly DatabaseConnectionSummary[]
+  /** The active workspace holds sessions, whose view has no Git tab. */
+  sessionWorkspace?: boolean
 }) {
   const pathname = usePathname()
   const projectHash = projectHashFromPath(pathname)
@@ -59,6 +63,7 @@ export function AppHeader({
   const projectPage = projectPageFromPath(pathname)
   // Account, Usage, Theme: a page of Settings rather than Settings.
   const settingsPage = settingsPageFromPath(pathname)
+  const workspaceSettingsPage = workspaceSettingsPageFromPath(pathname)
   // A connection, its database, and perhaps a table: the database pages.
   const databasePath = databasePathFromPath(pathname)
   // The connection itself: its page lists the databases on the server.
@@ -84,6 +89,7 @@ export function AppHeader({
       : [
           sectionForPath(pathname).title,
           ...(settingsPage ? [settingsPageById(settingsPage).title] : []),
+          ...(workspaceSettingsPage ? [workspaceSettingsPageById(workspaceSettingsPage).title] : []),
         ]
 
   return (
@@ -110,12 +116,6 @@ export function AppHeader({
       </Breadcrumb>
       {/* On a connection, or any database of it: how the server is reached. */}
       {currentConnection && <ConnectionSettingsButton connection={currentConnection} />}
-      {/* The documentation's own views, and its settings. */}
-      {projectHash && projectPage === "documentation" && (
-        <Suspense>
-          <DocViewToggle projectHash={projectHash} />
-        </Suspense>
-      )}
       {/* Only a project has views to switch between, or files to put beside
           them -- and only the project itself, not its notes or keys. */}
       {projectHash && !projectPage && (
@@ -128,7 +128,7 @@ export function AppHeader({
             </Suspense>
           )}
           {/* The tree toggle lives inside this, at its right end. */}
-          <ViewModeToggle />
+          <ViewModeToggle session={sessionWorkspace && project !== undefined} />
         </div>
       )}
     </header>

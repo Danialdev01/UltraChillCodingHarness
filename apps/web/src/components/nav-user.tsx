@@ -20,8 +20,9 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { ChevronsUpDownIcon, BadgeCheckIcon, LogOutIcon } from "lucide-react"
+import { ChevronsUpDownIcon, LogOutIcon, UserRoundCogIcon } from "lucide-react"
 
+import { SETTINGS } from "@/lib/sections"
 import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
 
@@ -74,7 +75,7 @@ export function NavUser({
             </Avatar>
             {!compact && (
               <>
-                <div className="grid flex-1 text-left text-sm leading-tight">
+                <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-medium">{user.name}</span>
                   <span className="truncate text-xs">{user.email}</span>
                 </div>
@@ -105,7 +106,7 @@ export function NavUser({
                     <AvatarImage src={user.avatar} alt={user.name} />
                     <AvatarFallback>{initials(user.name)}</AvatarFallback>
                   </Avatar>
-                  <div className="grid flex-1 text-left text-sm leading-tight">
+                  <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
                     <span className="truncate font-medium">{user.name}</span>
                     <span className="truncate text-xs">{user.email}</span>
                   </div>
@@ -114,12 +115,12 @@ export function NavUser({
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              {/* A link rather than a click handler: the account tab has an
-                  address, so it should be openable in a new tab and readable
+              {/* A link rather than a click handler: account settings have an
+                  address, so they should be openable in a new tab and readable
                   in the status bar like any other. */}
-              <DropdownMenuItem render={<TransitionLink href="/setting/account" />}>
-                <BadgeCheckIcon />
-                Account
+              <DropdownMenuItem render={<TransitionLink href={SETTINGS.entry} />}>
+                <UserRoundCogIcon />
+                Account Setting
               </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />

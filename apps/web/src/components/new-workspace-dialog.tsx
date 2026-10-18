@@ -1,26 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import * as React from "react";
+import { FolderKanbanIcon, LayoutGridIcon, MessagesSquareIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Field, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
+  FIELD,
+  FormDialog,
+  FormDialogFooter,
+  FormField,
+  HELPER,
+  OptionPanel,
+  OptionTabs,
+} from "@/components/form-dialog";
+import type { WorkspaceKind } from "@/lib/session";
+
+const KINDS = [
+  { value: "project", title: "Project based", hint: "Projects with their own pages" },
+  { value: "session", title: "Session based", hint: "Quick chats with files & terminal" },
+] as const;
 
 /**
  * Creating a workspace, as a controlled dialog.
  *
  * Extracted from the switcher because the quick menu opens it too, and two
  * copies of this form would be two places to keep the validation and the
- * post-create switch in sync.
+ * post-create switch in sync. Drawn in the same shell as New Project, so the
+ * two read as one family of dialogs.
  */
 export function NewWorkspaceDialog({
   open,
@@ -29,15 +34,25 @@ export function NewWorkspaceDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Receives the new workspace id, so the caller can switch to it. */
-  onCreated: (workspaceId: string) => void;
+  /** Receives the new workspace, so the caller can go to it. */
+  onCreated: (workspace: { id: string; hash: string }) => void;
 }) {
-  const [name, setName] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [name, setName] = React.useState("");
+  const [kind, setKind] = React.useState<WorkspaceKind>("project");
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  // A fresh dialog every time, as New Project does.
+  React.useEffect(() => {
+    if (open) return;
+    setName("");
+    setKind("project");
+    setError(null);
+  }, [open]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (pending || name.trim().length === 0) return;
     setPending(true);
     setError(null);
     try {
@@ -45,17 +60,22 @@ export function NewWorkspaceDialog({
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, kind }),
       });
       if (!response.ok) {
         const body = (await response.json().catch(() => ({}))) as { error?: string };
-        setError(body.error ?? "Could not create the workspace.");
+        // A 5xx with no JSON body is the Next proxy reporting the API is down.
+        setError(
+          body.error ??
+            (response.status >= 500
+              ? "Could not reach the server. Is it running?"
+              : "Could not create the workspace."),
+        );
         return;
       }
-      const created = (await response.json()) as { id: string };
-      setName("");
+      const created = (await response.json()) as { id: string; hash: string };
       onOpenChange(false);
-      onCreated(created.id);
+      onCreated(created);
     } catch {
       setError("Could not reach the server.");
     } finally {
@@ -64,53 +84,60 @@ export function NewWorkspaceDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <form onSubmit={submit}>
-          <DialogHeader>
-            <DialogTitle>New workspace</DialogTitle>
-            <DialogDescription>
-              A workspace groups related projects, like a company or a team.
-            </DialogDescription>
-          </DialogHeader>
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      busy={pending}
+      icon={LayoutGridIcon}
+      title="Create a new workspace"
+      description="A workspace groups related work, like a company or a team."
+      onSubmit={submit}
+      footer={
+        <FormDialogFooter
+          hint={kind === "session" ? "Sessions open straight into chat" : "Projects get their own pages"}
+          hintIcon={kind === "session" ? MessagesSquareIcon : FolderKanbanIcon}
+          busy={pending}
+          disabled={name.trim().length === 0}
+        >
+          {pending ? "Creating…" : "Create workspace"}
+        </FormDialogFooter>
+      }
+    >
+      <FormField label="Name" htmlFor="workspace-name" error={error}>
+        <input
+          id="workspace-name"
+          className={FIELD}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Acme Inc"
+          maxLength={60}
+          autoFocus
+          required
+          disabled={pending}
+        />
+      </FormField>
 
-          <div className="py-4">
-            <Field>
-              <FieldLabel htmlFor="workspace-name">Name</FieldLabel>
-              <Input
-                id="workspace-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Acme Inc"
-                maxLength={60}
-                autoFocus
-                required
-                disabled={pending}
-              />
-            </Field>
-            {error && (
-              <p role="alert" className="text-destructive mt-2 text-sm">
-                {error}
-              </p>
-            )}
-          </div>
-
-          <DialogFooter>
-            <DialogClose render={<Button type="button" variant="outline" />}>Cancel</DialogClose>
-            <Button type="submit" disabled={pending || name.trim().length === 0}>
-              {pending ? "Creating…" : "Create workspace"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+      <OptionTabs
+        label="Workspace type"
+        value={kind}
+        onChange={setKind}
+        options={KINDS}
+        disabled={pending}
+      >
+        <OptionPanel value="project">
+          <p className={HELPER}>
+            Each project is a codebase with its own chat, files, terminal, notes, tasks and
+            settings. Start one by importing a repository or from an empty folder.
+          </p>
+        </OptionPanel>
+        <OptionPanel value="session">
+          <p className={HELPER}>
+            Click New session and start talking. Each session is a single item in the sidebar
+            with its own chat, files and terminal, titled from your first message.
+          </p>
+        </OptionPanel>
+      </OptionTabs>
+    </FormDialog>
   );
 }
 
-/**
- * Persists the active workspace where the server can read it too, then
- * refreshes so the dashboard and the sidebar agree on which one is showing.
- */
-export function selectWorkspace(workspaceId: string): void {
-  document.cookie = `ucch_workspace=${workspaceId}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-}

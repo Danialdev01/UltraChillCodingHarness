@@ -15,7 +15,6 @@ import {
   drawioLoadMessage,
   parseDrawioMessage,
 } from "@/lib/drawio-protocol"
-import { deriveTheme } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 
 declare module "@tiptap/core" {
@@ -146,8 +145,7 @@ function DrawioDialog({
   onSave(next: { xml: string; svg: string }): void
 }) {
   const frame = React.useRef<HTMLIFrameElement>(null)
-  const { theme } = useTheme()
-  const dark = deriveTheme(theme).dark
+  const dark = useTheme().resolvedMode === "dark"
   const latestXml = React.useRef(xml)
   const closeAfterExport = React.useRef(false)
   const [ready, setReady] = React.useState(false)

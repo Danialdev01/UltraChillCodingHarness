@@ -3,6 +3,7 @@
 import * as React from "react"
 import { GanttChartIcon, PlusIcon } from "lucide-react"
 
+import { TimelineChartSkeleton } from "@/components/page-skeletons"
 import { GanttChart, HEADER_HEIGHT, ROW_HEIGHT } from "@/components/timeline/gantt-chart"
 import { TaskDialog, type TaskDialogState } from "@/components/timeline/task-dialog"
 import { Button } from "@/components/ui/button"
@@ -165,9 +166,9 @@ export function TimelineWorkspace({ project }: { project: Project }) {
         </p>
       )}
 
-      {tasks === null ? null : tasks.length === 0 ? (
+      {tasks === null ? <TimelineChartSkeleton /> : tasks.length === 0 ? (
         <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-3 p-8 text-sm">
-          <GanttChartIcon className="size-8 opacity-50" />
+          <GanttChartIcon className="text-muted-foreground size-8" />
           <p>Nothing on the timeline yet.</p>
           <Button variant="outline" size="sm" onClick={() => setDialog({ mode: "create" })}>
             <PlusIcon data-icon="inline-start" />

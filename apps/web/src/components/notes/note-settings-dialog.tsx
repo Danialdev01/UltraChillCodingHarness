@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
+import { Skeleton } from "@/components/ui/skeleton"
 import { fetchPublicSite, setPublicSite, type PublicSiteState } from "@/lib/public-api"
 import { cn } from "@/lib/utils"
 
@@ -74,26 +75,31 @@ export function NoteSettingsDialog({
           <div className="space-y-4 py-4">
             <Field>
               <FieldLabel htmlFor="notes-visibility">Visibility</FieldLabel>
-              <div className="relative max-w-72">
-                <span className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2">
-                  {visibility === "public" ? <GlobeIcon className="size-4" /> : <LockIcon className="size-4" />}
-                </span>
-                <select
-                  id="notes-visibility"
-                  value={visibility}
-                  disabled={!state || pending}
-                  onChange={(e) => void change(e.target.value === "public")}
-                  className={cn(
-                    "border-input bg-background h-8 w-full appearance-none rounded-lg border pr-8 pl-8 text-sm outline-none",
-                    "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50",
-                    "dark:bg-input/30",
-                  )}
-                >
-                  <option value="private">Private — only you</option>
-                  <option value="public">Public — anyone with the link</option>
-                </select>
-                <span className="text-muted-foreground pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-xs">▾</span>
-              </div>
+              {state ? (
+                <div className="relative max-w-72">
+                  <span className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2">
+                    {visibility === "public" ? <GlobeIcon className="size-4" /> : <LockIcon className="size-4" />}
+                  </span>
+                  <select
+                    id="notes-visibility"
+                    value={visibility}
+                    disabled={pending}
+                    onChange={(e) => void change(e.target.value === "public")}
+                    className={cn(
+                      "border-input bg-background h-8 w-full appearance-none rounded-lg border pr-8 pl-8 text-sm outline-none",
+                      "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring disabled:opacity-50",
+                      "dark:bg-input/30",
+                    )}
+                  >
+                    <option value="private">Private — only you</option>
+                    <option value="public">Public — anyone with the link</option>
+                  </select>
+                  <span className="text-muted-foreground pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-xs">▾</span>
+                </div>
+              ) : error ? null : (
+                // Not known yet: a bar, rather than "Private" showing before the real answer.
+                <Skeleton className="h-8 max-w-72 rounded-lg" />
+              )}
               <FieldDescription>
                 A public site is read-only: visitors can read every page of the notes, see the
                 project's commit history and browse its files, and change nothing.
@@ -111,7 +117,7 @@ export function NoteSettingsDialog({
                 <div className="flex items-center gap-2 text-sm">
                   <span
                     aria-hidden
-                    className={cn("size-2 rounded-full", state.enabled ? "bg-emerald-500" : "bg-muted-foreground/40")}
+                    className={cn("size-2 rounded-full", state.enabled ? "bg-success" : "bg-muted-foreground/40")}
                   />
                   <span className="text-muted-foreground">
                     {state.enabled ? "Live: anyone with this link can read" : "Off: the link shows nothing until turned back on"}

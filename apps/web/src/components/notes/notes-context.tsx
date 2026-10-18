@@ -23,6 +23,11 @@ export interface NotesContextValue {
   createPage(parentId: string, title?: string): Promise<NoteSummary>
   /** Opens a page. */
   open(noteId: string): void
+  /**
+   * A page's URL, for a real link; null when the workspace is embedded in a
+   * session view and pages are opened in place rather than navigated to.
+   */
+  href(noteId: string): string | null
 }
 
 const NotesContext = React.createContext<NotesContextValue | null>(null)

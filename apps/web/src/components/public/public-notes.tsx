@@ -1,17 +1,16 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
 import { ChevronRightIcon, FileTextIcon } from "lucide-react"
 
 import { NotesProvider, type NotesContextValue } from "@/components/notes/notes-context"
 import { NoteReader } from "@/components/public/note-reader"
-import { Skeleton } from "@/components/ui/skeleton"
+import { ListRowsSkeleton, NotePageSkeleton } from "@/components/page-skeletons"
 import { childrenOf, findRoot, titleOrUntitled } from "@/lib/note-tree"
 import type { Note, NoteSummary } from "@/lib/notes-api"
 import { fetchPublicNote, fetchPublicNotes, publicHref } from "@/lib/public-api"
 import { cn } from "@/lib/utils"
-import { TransitionLink } from "@/lib/view-transitions"
+import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
 
 /**
  * The notes of a public site: the tree on the left, the open page beside it.
@@ -22,7 +21,7 @@ import { TransitionLink } from "@/lib/view-transitions"
  * never as a new page, which the context refuses to make.
  */
 export function PublicNotes({ slug, noteId }: { slug: string; noteId: string | null }) {
-  const router = useRouter()
+  const router = useTransitionRouter()
   const [notes, setNotes] = React.useState<NoteSummary[] | null>(null)
   const [note, setNote] = React.useState<Note | null>(null)
   const [error, setError] = React.useState<string | null>(null)
@@ -54,6 +53,7 @@ export function PublicNotes({ slug, noteId }: { slug: string; noteId: string | n
       activeId,
       createPage: () => Promise.reject(new Error("this site is read-only")),
       open: (id) => router.push(id === rootId ? publicHref(slug, "notes") : publicHref(slug, "notes", id)),
+      href: (id) => (id === rootId ? publicHref(slug, "notes") : publicHref(slug, "notes", id)),
     }),
     [slug, notes, rootId, activeId, router],
   )
@@ -64,11 +64,7 @@ export function PublicNotes({ slug, noteId }: { slug: string; noteId: string | n
         {notes && rootId ? (
           <PageTree notes={notes} parentId={rootId} rootId={rootId} slug={slug} activeId={activeId} depth={0} />
         ) : (
-          <div className="flex flex-col gap-2 px-3 py-2">
-            {Array.from({ length: 5 }, (_, i) => (
-              <Skeleton key={i} className="h-3.5" style={{ width: `${50 + ((i * 23) % 40)}%` }} />
-            ))}
-          </div>
+          <ListRowsSkeleton rows={5} className="flex flex-col gap-2 px-3 py-2" />
         )}
       </aside>
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
@@ -77,11 +73,7 @@ export function PublicNotes({ slug, noteId }: { slug: string; noteId: string | n
         ) : note && note.id === activeId ? (
           <NoteReader key={note.id} note={note} />
         ) : (
-          <div className="mx-auto w-full max-w-3xl px-8 py-12">
-            <Skeleton className="mb-6 h-9 w-2/5" />
-            <Skeleton className="mb-3 h-4 w-full" />
-            <Skeleton className="h-4 w-3/5" />
-          </div>
+          <NotePageSkeleton />
         )}
       </div>
     </NotesProvider>
@@ -117,7 +109,7 @@ function PageTree({
               aria-current={active ? "page" : undefined}
               className={cn(
                 "flex items-center gap-1.5 py-1 pr-3 text-xs",
-                active ? "bg-ucch-active-bg text-ucch-active" : "text-foreground/80 hover:bg-muted/60",
+                active ? "bg-ucch-active-bg text-ucch-active" : "text-muted-foreground hover:bg-muted/60",
               )}
               style={{ paddingLeft: 12 + depth * 14 }}
             >

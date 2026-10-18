@@ -15,14 +15,13 @@ import {
 } from "@/components/ui/breadcrumb"
 import { ancestorsOf, titleOrUntitled } from "@/lib/note-tree"
 import type { NoteSummary } from "@/lib/notes-api"
-import { noteHref } from "@/lib/sections"
 import { TransitionLink } from "@/lib/view-transitions"
 
 /**
  * The notes' own top bar: where the open page sits in the tree, root first,
  * and at the right the controls for the page tree -- search, and the button
- * that shows or hides the column. The settings live in the app header,
- * beside the view switcher, since they cover all of the documentation.
+ * that shows or hides the column. The settings live in the documentation's
+ * own bar above, beside the view switcher, since they cover all of it.
  *
  * The app header's crumb stops at "Documentation"; this one continues from there,
  * inside the page, because the tree is the notes' own business.
@@ -38,13 +37,13 @@ export function NoteBreadcrumb({
   onToggleTree(): void
   onSearch(): void
 }) {
-  const { hash, notes, rootId } = useNotes()
+  const { notes } = useNotes()
   const path = React.useMemo(() => (noteId ? ancestorsOf(notes, noteId) : []), [notes, noteId])
 
   return (
     <div className="flex h-10 items-center gap-2 border-b pr-2 pl-4">
       <div className="min-w-0 flex-1">
-        {path.length > 0 && <Crumbs path={path} hash={hash} rootId={rootId} />}
+        {path.length > 0 && <Crumbs path={path} />}
       </div>
       <Button variant="ghost" size="icon-xs" title="Search pages (⌘P)" onClick={onSearch}>
         <SearchIcon />
@@ -62,15 +61,8 @@ export function NoteBreadcrumb({
   )
 }
 
-function Crumbs({
-  path,
-  hash,
-  rootId,
-}: {
-  path: NoteSummary[]
-  hash: string
-  rootId: string | null
-}) {
+function Crumbs({ path }: { path: NoteSummary[] }) {
+  const { href, open } = useNotes()
   return (
     <div className="flex items-center">
       <Breadcrumb>
@@ -91,7 +83,15 @@ function Crumbs({
                     <BreadcrumbPage>{label}</BreadcrumbPage>
                   ) : (
                     <BreadcrumbLink
-                      render={<TransitionLink href={noteHref(hash, page.id, rootId ?? undefined)} />}
+                      render={
+                        // Embedded in a session there is no page URL to
+                        // link to; the page opens in place.
+                        href(page.id) === null ? (
+                          <button type="button" onClick={() => open(page.id)} />
+                        ) : (
+                          <TransitionLink href={href(page.id)!} />
+                        )
+                      }
                     >
                       {label}
                     </BreadcrumbLink>

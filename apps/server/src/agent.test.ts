@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveModel, resolveProvider } from "./agent.js";
+import { resolveModel, resolveProvider, shouldRecheckStack } from "./agent.js";
 
 describe("resolveModel", () => {
   const SERVER = "anthropic/claude-sonnet-5";
@@ -49,5 +49,15 @@ describe("resolveProvider", () => {
   it("ignores a value it does not know", () => {
     // A column written by a future version, or a hand-edited row.
     expect(resolveProvider(undefined, "gemini", null)).toBe("native");
+  });
+});
+
+describe("shouldRecheckStack", () => {
+  it("looks again after every fifth turn of the project", () => {
+    expect([1, 2, 3, 4, 5, 6, 9, 10, 15].filter(shouldRecheckStack)).toEqual([5, 10, 15]);
+  });
+
+  it("never on a project with no turns", () => {
+    expect(shouldRecheckStack(0)).toBe(false);
   });
 });

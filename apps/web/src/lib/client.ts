@@ -22,6 +22,9 @@ const EPHEMERAL: ReadonlySet<DomainEvent["type"]> = new Set([
   "presence.changed",
   "audit.recorded",
   "resource.changed",
+  // A terminal's bytes: read straight off `onEvent` by the terminal views. In
+  // the history they evicted the conversation and copied the array per chunk.
+  "terminal.output",
 ]);
 
 /** A refusal from the server, with its code -- `conflict` is the one callers branch on. */
@@ -45,6 +48,12 @@ export interface ClientEvent {
    * to the reload that fetched it.
    */
   receivedAt: number;
+  /**
+   * The project the event belongs to, when the server said. A thread's own
+   * events name only the thread, so this is how a listener watching several
+   * projects at once tells them apart.
+   */
+  projectId?: string;
 }
 
 type Listener = () => void;
@@ -280,7 +289,7 @@ export class UcchClient {
         this.#pending.get(frame.id)?.resolve(frame.events);
         this.#pending.delete(frame.id);
         for (const stored of frame.events)
-          this.#record(stored.seq, stored.event, Date.parse(stored.createdAt));
+          this.#record(stored.seq, stored.event, Date.parse(stored.createdAt), stored.projectId);
         break;
       }
 
@@ -297,7 +306,12 @@ export class UcchClient {
       case "push": {
         const sub = this.#subscriptions.get(frame.subscriptionId);
         if (sub && frame.seq !== null && frame.seq > sub.lastSeq) sub.lastSeq = frame.seq;
-        this.#record(frame.seq, frame.event, frame.at ? Date.parse(frame.at) : Date.now());
+        this.#record(
+          frame.seq,
+          frame.event,
+          frame.at ? Date.parse(frame.at) : Date.now(),
+          frame.projectId,
+        );
         break;
       }
 
@@ -311,7 +325,12 @@ export class UcchClient {
    * replayed event is long before now. Falls back to now for a frame without
    * one, so an older server still dates live events well enough.
    */
-  #record(seq: number | null, event: DomainEvent, at: number = Date.now()): void {
+  #record(
+    seq: number | null,
+    event: DomainEvent,
+    at: number = Date.now(),
+    projectId?: string,
+  ): void {
     // (scope, seq) is what the server's unique index enforces, so it is what
     // identifies an event here too. Transient events carry no sequence and
     // arrive only once, by push.
@@ -327,7 +346,12 @@ export class UcchClient {
       this.#seen.add(key);
     }
 
-    const row = { seq, event, receivedAt: Number.isFinite(at) ? at : Date.now() };
+    const row: ClientEvent = {
+      seq,
+      event,
+      receivedAt: Number.isFinite(at) ? at : Date.now(),
+      ...(projectId ? { projectId } : {}),
+    };
     for (const listener of this.#eventListeners) {
       try {
         listener(row);

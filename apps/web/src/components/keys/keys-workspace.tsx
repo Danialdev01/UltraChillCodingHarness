@@ -16,6 +16,7 @@ import {
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { KeyDialog, type KeyDialogState } from "@/components/keys/key-dialog"
+import { KeysRowsSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import {
   Table,
@@ -113,7 +114,7 @@ export function KeysWorkspace({ project }: { project: Project }) {
         </p>
       )}
 
-      {keys === null ? null : keys.length === 0 ? (
+      {keys === null ? <KeysRowsSkeleton /> : keys.length === 0 ? (
         <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-sm">
           <KeyRoundIcon className="size-8 opacity-50" />
           <p className="max-w-sm">
@@ -320,7 +321,7 @@ function SecretCell({
         aria-label="Copy password"
         title={copied ? "Copied" : "Copy"}
       >
-        {copied ? <CheckIcon className="text-emerald-500" /> : <CopyIcon />}
+        {copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
       </Button>
       {error && (
         <span role="alert" className="text-destructive truncate text-xs">

@@ -1,12 +1,16 @@
 /**
  * Walking back through what you already asked.
  *
- * Alt+Up puts the previous user message in the composer, Alt+Up again the
- * one before it, Alt+Down comes forward, and stepping past the newest
- * restores whatever was being typed when the walk began -- the same
- * contract as a shell's history, which is what the keys are borrowed from.
- * Alt rather than the bare arrow so a multi-line draft still moves its
- * caret with the arrow keys alone.
+ * Up puts the previous user message in the composer, Up again the one
+ * before it, Down comes forward, and stepping past the newest restores
+ * whatever was being typed when the walk began -- the same contract as a
+ * shell's history, which is what the keys are borrowed from.
+ *
+ * The bare arrows only while the caret sits at the end of the draft (an
+ * empty draft always does), so a caret moved into a multi-line draft still
+ * travels it with the arrow keys alone; a recalled entry puts the caret at
+ * its end, so the walk continues key after key. Alt+Up / Alt+Down recall
+ * wherever the caret is.
  *
  * Pure: the composer holds a `HistoryCursor` and feeds it keystrokes.
  */
@@ -54,14 +58,20 @@ export function step(
   return { cursor: { ...cursor, index: at }, text: entries[at]! };
 }
 
-/** Whether a keydown is one of the two history keys. */
+/**
+ * Whether a keydown is one of the two history keys. `caretAtEnd` is true when
+ * nothing is selected and the caret is after the draft's last character.
+ */
 export function historyDirection(event: {
   key: string;
   altKey: boolean;
   ctrlKey: boolean;
   metaKey: boolean;
+  shiftKey: boolean;
+  caretAtEnd: boolean;
 }): "back" | "forward" | null {
-  if (!event.altKey || event.ctrlKey || event.metaKey) return null;
+  if (event.ctrlKey || event.metaKey || event.shiftKey) return null;
+  if (!event.altKey && !event.caretAtEnd) return null;
   if (event.key === "ArrowUp") return "back";
   if (event.key === "ArrowDown") return "forward";
   return null;

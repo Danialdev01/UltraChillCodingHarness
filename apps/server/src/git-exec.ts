@@ -81,8 +81,15 @@ export async function runGit(
   return new Promise<string>((settle, fail) => {
     execFile(
       "git",
-      // Before the subcommand, which is where `-c` has to be.
-      token ? ["-c", `credential.helper=${CREDENTIAL_HELPER}`, ...argv] : argv,
+      // Before the subcommand, which is where `-c` has to be. `core.fsmonitor`
+      // is a command git runs on every `status`, read from the repository's
+      // own config -- never one the server should run on a repo's say-so.
+      [
+        "-c",
+        "core.fsmonitor=false",
+        ...(token ? ["-c", `credential.helper=${CREDENTIAL_HELPER}`] : []),
+        ...argv,
+      ],
       {
         cwd,
         timeout: timeoutMs,
@@ -129,6 +136,15 @@ export async function runGit(
  */
 const ALLOWED_PROTOCOLS: ReadonlySet<string> = new Set(["https:", "http:", "ssh:", "git:", "file:"]);
 
+/**
+ * Whether `file:` may be used. Off unless asked for: every project's checkout
+ * sits under one workspace root on the same disk, so a `file:` clone of a
+ * neighbour's path would be a copy of somebody else's repository.
+ */
+function fileReposAllowed(): boolean {
+  return process.env.NODE_ENV === "test" || process.env.ALLOW_FILE_REPOS === "true";
+}
+
 /** The caller handed over something that is not a repository URL git may be given. */
 export class RepoUrlError extends Error {
   constructor(message: string) {
@@ -156,6 +172,9 @@ export function safeRepoUrl(repoUrl: string): string {
   }
   if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
     throw new RepoUrlError(`unsupported repository transport: ${parsed.protocol}`);
+  }
+  if (parsed.protocol === "file:" && !fileReposAllowed()) {
+    throw new RepoUrlError("local repository paths are not allowed; set ALLOW_FILE_REPOS=true to enable them");
   }
   if (repoUrl.startsWith("-")) throw new RepoUrlError(`repository URL must not start with a dash`);
   return repoUrl;

@@ -1,24 +1,70 @@
 "use client";
 
 import { useState } from "react";
-import { DatabaseIcon, FolderGitIcon, ListTodoIcon, StickyNoteIcon } from "lucide-react";
+import {
+  DatabaseIcon,
+  FolderGitIcon,
+  ListTodoIcon,
+  MessageSquarePlusIcon,
+  StickyNoteIcon,
+} from "lucide-react";
 
 import { NewDatabaseDialog } from "@/components/new-database-dialog";
 import { NewProjectDialog } from "@/components/new-project-dialog";
+import { TaskDialog, type TaskDialogState } from "@/components/tasks/task-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { Project, Workspace } from "@/lib/session";
+import { createTask, type TaskInput } from "@/lib/tasks-api";
+import { useNewSession } from "@/lib/use-new-session";
 import { cn } from "@/lib/utils";
+import { projectPageHref } from "@/lib/sections";
+import { useTransitionRouter } from "@/lib/view-transitions";
+import { useWorkspaceHash } from "@/lib/workspace-context";
 
 /**
  * One-tap creation for the things you add most often.
  *
- * Only "project" and "database" have somewhere to store anything today. The
- * other two are rendered disabled with a tooltip saying so, rather than
- * omitted or wired to a no-op -- a button that looks live and silently does
- * nothing is the worst of the three options.
+ * "New todo" opens the same dialog as a Tasks board, with no project picked:
+ * the dialog asks which one, and saving lands on that project's board.
+ * Unavailable actions are rendered disabled with a tooltip saying so, rather
+ * than omitted or wired to a no-op -- a button that looks live and silently
+ * does nothing is the worst of the three options.
  */
-export function QuickActions({ workspaceId }: { workspaceId: string }) {
+export function QuickActions({
+  workspaceId,
+  projects,
+  sessionWorkspace = false,
+  permissions,
+}: {
+  workspaceId: string;
+  projects: readonly Project[];
+  /** A session workspace starts sessions where others start projects. */
+  sessionWorkspace?: boolean;
+  /** What the caller's role in the workspace allows. */
+  permissions: Workspace["permissions"];
+}) {
+  // A session is a project with a thread in it, so starting one needs both.
+  const canCreateProject = permissions.includes("project.create");
+  const canStartSession = canCreateProject && permissions.includes("session.create");
+  const canWrite = permissions.includes("project.write");
+  const session = useNewSession(workspaceId);
   const [creating, setCreating] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [todo, setTodo] = useState<TaskDialogState>(null);
+  const [saving, setSaving] = useState(false);
+  const router = useTransitionRouter();
+  const ws = useWorkspaceHash();
+
+  async function saveTodo(input: TaskInput, projectHash: string) {
+    setSaving(true);
+    try {
+      await createTask(projectHash, input);
+      setTodo(null);
+      router.push(projectPageHref(ws, projectHash, "tasks"));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <>
@@ -26,13 +72,37 @@ export function QuickActions({ workspaceId }: { workspaceId: string }) {
         <Action
           icon={ListTodoIcon}
           label="New todo"
-          unavailable="Todos arrive with the agent core"
+          onClick={() => setTodo({ mode: "create" })}
+          unavailable={
+            !canWrite
+              ? "Your role in this workspace is read-only"
+              : projects.length > 0
+                ? undefined
+                : sessionWorkspace
+                  ? "Start a session to add a todo"
+                  : "Create a project to add a todo"
+          }
         />
-        <Action icon={FolderGitIcon} label="New project" onClick={() => setCreating(true)} />
+        {sessionWorkspace ? (
+          <Action
+            icon={MessageSquarePlusIcon}
+            label={session.pending ? "Starting a session…" : "New session"}
+            onClick={session.start}
+            unavailable={canStartSession ? undefined : "Your role cannot start sessions here"}
+          />
+        ) : (
+          <Action
+            icon={FolderGitIcon}
+            label="New project"
+            onClick={() => setCreating(true)}
+            unavailable={canCreateProject ? undefined : "Your role cannot create projects here"}
+          />
+        )}
         <Action
           icon={DatabaseIcon}
           label="New database connection"
           onClick={() => setConnecting(true)}
+          unavailable={permissions.includes("workspace.manage") ? undefined : "Only an admin can add connections"}
         />
         <Action
           icon={StickyNoteIcon}
@@ -45,6 +115,13 @@ export function QuickActions({ workspaceId }: { workspaceId: string }) {
           fifth child in a four-column grid is a trap for the next change. */}
       <NewProjectDialog workspaceId={workspaceId} open={creating} onOpenChange={setCreating} />
       <NewDatabaseDialog workspaceId={workspaceId} open={connecting} onOpenChange={setConnecting} />
+      <TaskDialog
+        state={todo}
+        projects={projects}
+        busy={saving}
+        onClose={() => setTodo(null)}
+        onSave={saveTodo}
+      />
     </>
   );
 }

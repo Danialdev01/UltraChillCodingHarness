@@ -4,28 +4,17 @@ import * as React from "react"
 import { usePathname } from "next/navigation"
 import {
   ChevronRightIcon,
-  FolderGitIcon,
-  FolderTreeIcon,
-  MoreHorizontalIcon,
-  Settings2Icon,
-  Trash2Icon,
+  LayersIcon,
+  PlusIcon,
 } from "lucide-react"
 
 import { ConnectionsPanel } from "@/components/database/connections-panel"
-import { DeleteProjectDialog } from "@/components/delete-project-dialog"
-import { useFilesPanel } from "@/components/files-panel"
+import { SessionList } from "@/components/session-list"
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -37,30 +26,38 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
-  useSidebar,
 } from "@/components/ui/sidebar"
 import {
-  PROJECT_PAGES,
+  HOME,
+  SIDEBAR_PROJECT_PAGES,
   SETTINGS,
   SETTINGS_PAGES,
+  WORKSPACE_SETTINGS,
+  WORKSPACE_SETTINGS_PAGES,
+  workspaceSettingsPageFromPath,
+  workspaceSettingsPageHref,
   projectPageFromPath,
   projectPageHref,
   settingsPageFromPath,
   settingsPageHref,
   type Section,
 } from "@/lib/sections"
-import type { Project } from "@/lib/session"
+import { useAgentActivity } from "@/lib/realtime"
+import type { Project, Workspace } from "@/lib/session"
+import { countLabel } from "@/lib/workspace-api"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
+import { useProjectHref, useWorkspaceHash } from "@/lib/workspace-context"
+import { NewSessionDialog, ProjectSessionRows } from "@/components/project-sessions-nav"
+import { ProjectStackIcon } from "@/components/project-stack-icon"
 
 /**
  * The contents of the sidebar's second column, for the section the current
  * page belongs to.
  *
- * Code and Dashboard both list the workspace's projects: the panel is how you
- * get to one, and that is as true from an overview as it is from the project
- * section -- a sidebar column that holds a sentence you have already read is
- * a column doing nothing. Settings lists its pages, each a route of its own,
+ * Dashboard (the Home icon) lists the workspace's projects: the panel is how
+ * you get to one, and a sidebar column that holds a sentence you have already
+ * read is a column doing nothing. Settings lists its pages, each a route of its own,
  * with the lit row read off the URL. The remaining sections show their own one-line
  * description rather than fake rows, so the shell never implies a feature
  * that does not exist yet.
@@ -72,13 +69,15 @@ import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
  * panel, not about the sections themselves -- `sections.ts` is also read by
  * the rail and the pages, neither of which cares.
  */
-const LISTS_PROJECTS: ReadonlySet<string> = new Set(["code", "dashboard"])
+const LISTS_PROJECTS: ReadonlySet<string> = new Set(["dashboard"])
 
 export function SectionPanel({
   section,
   projects,
   connections = [],
+  workspaces = [],
   workspaceId = "",
+  sessionWorkspace = false,
   activeProjectHash,
   compact = false,
   onNavigate,
@@ -87,7 +86,11 @@ export function SectionPanel({
   projects: Project[]
   /** The workspace's saved database servers, for the Database section. */
   connections?: DatabaseConnectionSummary[]
+  /** Every workspace the caller belongs to, for the root page's list. */
+  workspaces?: Workspace[]
   workspaceId?: string
+  /** The workspace holds sessions: flat cards, no pages to unfold. */
+  sessionWorkspace?: boolean
   activeProjectHash?: string
   /**
    * Drops the per-row action menu and the delete dialog.
@@ -101,12 +104,18 @@ export function SectionPanel({
   /** Called when a row is followed, so a flyout can close itself. */
   onNavigate?: () => void
 }) {
-  const { isMobile } = useSidebar()
-  const { project: openProject, openFiles, closeFiles } = useFilesPanel()
   const router = useTransitionRouter()
+  // A stack detected afresh is a new icon for the row, and the list the
+  // server rendered still has the old one.
+  const agentStatusOf = useAgentActivity(LISTS_PROJECTS.has(section.id) ? projects : [], () =>
+    router.refresh(),
+  )
   const pathname = usePathname()
+  const ws = useWorkspaceHash()
+  const hrefOf = useProjectHref()
   const activePage = projectPageFromPath(pathname)
   const activeSettingsPage = settingsPageFromPath(pathname)
+  const activeWorkspaceSettingsPage = workspaceSettingsPageFromPath(pathname)
 
   /**
    * The one project whose pages are unfolded beneath it, if any.
@@ -126,20 +135,17 @@ export function SectionPanel({
     setUnfolded((current) => (open ? hash : current === hash ? null : current))
   }
 
-  // The project whose deletion is being confirmed. One dialog for the whole
-  // list rather than one per row: only ever one is open, and a dialog per
-  // project would mount a form for every row in the sidebar.
-  const [deleting, setDeleting] = React.useState<Project | null>(null)
+  // The project a session is being started in. One dialog for the whole
+  // list rather than one per row: only ever one is open.
+  const [newSessionFor, setNewSessionFor] = React.useState<Project | null>(null)
 
-  function afterDelete(deleted: Project) {
-    // The tree is pinned to one project at a time, and it cannot be the one
-    // that no longer exists.
-    if (openProject?.id === deleted.id) closeFiles()
-
-    // Leaving the page of a deleted project would render its 404. Everywhere
-    // else, only the sidebar's list is stale.
-    if (deleted.hash === activeProjectHash) router.push("/code")
-    router.refresh()
+  if (LISTS_PROJECTS.has(section.id) && sessionWorkspace && !compact) {
+    return (
+      <SessionList
+        sessions={projects}
+        activeProjectHash={activeProjectHash}
+      />
+    )
   }
 
   if (LISTS_PROJECTS.has(section.id)) {
@@ -161,6 +167,7 @@ export function SectionPanel({
                 // The flyout is a list of places to go, not a tree: its rows
                 // stay flat.
                 const open = !compact && unfolded === project.hash
+                const agent = agentStatusOf(project)
                 return (
                   <Collapsible
                     key={project.id}
@@ -174,17 +181,32 @@ export function SectionPanel({
                         setFolded(project.hash, true)
                         onNavigate?.()
                       }}
-                      render={<TransitionLink href={`/${project.hash}`} />}
+                      render={<TransitionLink href={hrefOf(project.hash)} />}
                     >
-                      <FolderGitIcon />
+                      <ProjectStackIcon stack={project.stack} />
                       <span className="truncate">{project.name}</span>
+                      {/* Every session in the project at once: blue while
+                          one works, red when the last to end failed or hit a
+                          limit, green for a moment after one finishes. */}
+                      {agent !== "idle" && (
+                        <>
+                          <span className="ucch-status-dot" data-status={agent} aria-hidden />
+                          <span className="sr-only">
+                            {agent === "working"
+                              ? "(agent working)"
+                              : agent === "error"
+                                ? "(agent error)"
+                                : "(agent done)"}
+                          </span>
+                        </>
+                      )}
                     </SidebarMenuButton>
                     {!compact && (
                       <>
                         {/* Two actions at the row's right edge: the chevron in
                             the usual slot, always shown so the row reads as
-                            openable, and the menu one slot in from it, on
-                            hover as before. */}
+                            openable, and New session one slot in from it,
+                            on hover. */}
                         <CollapsibleTrigger
                           render={
                             <SidebarMenuAction className="aria-expanded:rotate-90" />
@@ -193,55 +215,27 @@ export function SectionPanel({
                           <ChevronRightIcon />
                           <span className="sr-only">Toggle {project.name}&apos;s pages</span>
                         </CollapsibleTrigger>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger
-                            render={
-                              <SidebarMenuAction
-                                showOnHover
-                                className="right-6 aria-expanded:bg-muted"
-                              />
-                            }
-                          >
-                            <MoreHorizontalIcon />
-                            <span className="sr-only">
-                              More options for {project.name}
-                            </span>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent
-                            className="w-48"
-                            side={isMobile ? "bottom" : "right"}
-                            align={isMobile ? "end" : "start"}
-                          >
-                            <DropdownMenuItem onClick={() => openFiles(project)}>
-                              <FolderTreeIcon className="text-muted-foreground" />
-                              <span>Open Files</span>
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              render={
-                                <TransitionLink href={projectPageHref(project.hash, "manage")} />
-                              }
-                            >
-                              <Settings2Icon className="text-muted-foreground" />
-                              <span>Manage</span>
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              variant="destructive"
-                              onClick={() => setDeleting(project)}
-                            >
-                              <Trash2Icon />
-                              <span>Delete</span>
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        <SidebarMenuAction
+                          showOnHover
+                          className="right-6"
+                          onClick={() => setNewSessionFor(project)}
+                        >
+                          <PlusIcon />
+                          <span className="sr-only">New session in {project.name}</span>
+                        </SidebarMenuAction>
                         <CollapsibleContent>
+                          {/* Its sessions -- each its own conversation on its
+                              own branch -- then the project's own pages. */}
                           <SidebarMenuSub>
-                            {PROJECT_PAGES.map((page) => (
+                            <ProjectSessionRows project={project} onNavigate={onNavigate} />
+                          </SidebarMenuSub>
+                          <SidebarMenuSub>
+                            {SIDEBAR_PROJECT_PAGES.map((page) => (
                               <SidebarMenuSubItem key={page.id}>
                                 <SidebarMenuSubButton
                                   isActive={isActive && activePage === page.id}
                                   render={
-                                    <TransitionLink href={projectPageHref(project.hash, page.id)} />
+                                    <TransitionLink href={projectPageHref(ws, project.hash, page.id)} />
                                   }
                                 >
                                   <page.icon />
@@ -260,14 +254,56 @@ export function SectionPanel({
           )}
         </SidebarGroupContent>
 
-        {!compact && (
-          <DeleteProjectDialog
-            project={deleting}
-            open={deleting !== null}
-            onOpenChange={(open) => !open && setDeleting(null)}
-            onDeleted={afterDelete}
+        {!compact && newSessionFor && (
+          <NewSessionDialog
+            project={newSessionFor}
+            open
+            onOpenChange={(open) => !open && setNewSessionFor(null)}
           />
         )}
+      </SidebarGroup>
+    )
+  }
+
+  if (section.id === HOME.id) {
+    const live = workspaces.filter((w) => !w.archived)
+    return (
+      <SidebarGroup className="px-0">
+        {!compact && <SidebarGroupLabel className="px-4">{section.title}</SidebarGroupLabel>}
+        <SidebarGroupContent>
+          {live.length === 0 ? (
+            <p className="text-muted-foreground px-4 py-2 text-sm">{section.blurb}</p>
+          ) : (
+            <SidebarMenu className="gap-[5px] px-2">
+              {live.map((workspace) => (
+                <SidebarMenuItem key={workspace.id}>
+                  <SidebarMenuButton
+                    size="lg"
+                    isActive={workspace.id === workspaceId}
+                    onClick={() => {
+                      // The shell follows the address to the workspace.
+                      router.push(`/${workspace.hash}`)
+                      onNavigate?.()
+                    }}
+                  >
+                    {workspace.logo ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- a data: URL
+                      <img src={workspace.logo} alt="" className="size-6 shrink-0 rounded object-cover" />
+                    ) : (
+                      <LayersIcon />
+                    )}
+                    <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
+                      <span className="truncate font-medium">{workspace.name}</span>
+                      <span className="text-muted-foreground truncate text-xs">
+                        {countLabel(workspace)}
+                      </span>
+                    </div>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          )}
+        </SidebarGroupContent>
       </SidebarGroup>
     )
   }
@@ -280,6 +316,30 @@ export function SectionPanel({
         compact={compact}
         onNavigate={onNavigate}
       />
+    )
+  }
+
+  if (section.id === WORKSPACE_SETTINGS.id) {
+    return (
+      <SidebarGroup className="px-0">
+        {!compact && <SidebarGroupLabel className="px-4">{section.title}</SidebarGroupLabel>}
+        <SidebarGroupContent>
+          <SidebarMenu className="gap-[5px] px-2">
+            {WORKSPACE_SETTINGS_PAGES.map((page) => (
+              <SidebarMenuItem key={page.id}>
+                <SidebarMenuButton
+                  isActive={activeWorkspaceSettingsPage === page.id}
+                  onClick={onNavigate}
+                  render={<TransitionLink href={workspaceSettingsPageHref(ws, page.id)} />}
+                >
+                  <page.icon />
+                  <span className="truncate">{page.title}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
     )
   }
 

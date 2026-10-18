@@ -2,16 +2,28 @@
 
 import * as React from "react";
 import {
-  CheckIcon,
   ChevronsUpDownIcon,
+  DatabaseIcon,
   FolderPlusIcon,
-  LinkIcon,
+  GitBranchIcon,
   LockIcon,
   Loader2Icon,
+  PlusIcon,
+  SearchIcon,
 } from "lucide-react";
+import {
+  DATABASE_ENGINE_LABELS,
+  DevDatabaseName,
+  PROJECT_MODE_LABELS,
+  ProjectMode,
+  suggestDevDatabaseName,
+  type DatabaseEngine,
+  type ProjectDatabase,
+} from "@ucch/protocol";
 
 import { GithubMark } from "@/components/github-mark";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Command,
   CommandEmpty,
@@ -21,19 +33,20 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Field, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
+  Callout,
+  Code,
+  FIELD,
+  FormDialog,
+  FormDialogFooter,
+  HELPER,
+  LABEL,
+  OptionPanel,
+  OptionTabs,
+  PopoverSelect,
+  Segmented,
+} from "@/components/form-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Tabs, TabsIndicator, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
-import { UcchClient } from "@/lib/client";
+import { createProject } from "@/lib/create-project";
 import {
   NoGithubToken,
   fetchBranches,
@@ -43,20 +56,43 @@ import {
   type GithubAccount,
   type GithubRepo,
 } from "@/lib/github-api";
+import { useToast } from "@/lib/realtime";
 import { deriveProjectName, looksLikeRepoUrl } from "@/lib/repo-url";
+import { cn } from "@/lib/utils";
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions";
+import { useProjectHref } from "@/lib/workspace-context";
 
 /** Where the code for a new project comes from. */
 type Source = "github" | "custom" | "new";
 
-const TABS = [
-  { value: "github", label: "GitHub", icon: GithubMark },
-  { value: "custom", label: "Custom repository", icon: LinkIcon },
-  { value: "new", label: "New repository", icon: FolderPlusIcon },
+const SOURCES = [
+  { value: "github", title: "GitHub", hint: "Import a repo" },
+  { value: "custom", title: "Git URL", hint: "Any remote" },
+  { value: "new", title: "Empty", hint: "Start fresh" },
 ] as const;
+
+/** Short enough for three segments side by side; the full label is the accessible name. */
+const MODE_SHORT_LABELS: Record<ProjectMode, string> = {
+  research: "Research",
+  development: "Development",
+  creative_design: "Design",
+};
+
+/** No database, then each engine the shared server runs. */
+const DATABASE_OPTIONS: { value: DatabaseEngine | ""; label: string }[] = [
+  { value: "", label: "No database" },
+  ...(Object.keys(DATABASE_ENGINE_LABELS) as DatabaseEngine[]).map((engine) => ({
+    value: engine,
+    label: DATABASE_ENGINE_LABELS[engine],
+  })),
+];
 
 /**
  * Starting a project, from one of three places.
+ *
+ * What the project is comes first -- its name, its mode and, for a development
+ * project, the database it gets on the shared dev server -- and where its code
+ * comes from below that.
  *
  * The three tabs are three different things the person already has: an account
  * full of repositories, a URL, or nothing at all. They converge on one command
@@ -79,14 +115,24 @@ export function NewProjectDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const router = useTransitionRouter();
+  const hrefOf = useProjectHref();
+  const toast = useToast();
   const [source, setSource] = React.useState<Source>("github");
   const [stage, setStage] = React.useState<"idle" | "creating" | "cloning">("idle");
   const [error, setError] = React.useState<string | null>(null);
 
-  /** The name the project takes. Shared by the two tabs that clone something. */
+  /** The name the project takes, whichever tab its code comes from. */
   const [name, setName] = React.useState("");
   /** True once the name has been edited, so a repository stops overwriting it. */
   const [nameTouched, setNameTouched] = React.useState(false);
+
+  // -- What the project is ----------------------------------------------------
+  const [mode, setMode] = React.useState<ProjectMode>("development");
+  /** Empty for no database. */
+  const [engine, setEngine] = React.useState<DatabaseEngine | "">("");
+  const [dbName, setDbName] = React.useState("");
+  /** True once the database name has been edited, so the project name stops overwriting it. */
+  const [dbNameTouched, setDbNameTouched] = React.useState(false);
 
   // -- The GitHub tab --------------------------------------------------------
   const [account, setAccount] = React.useState<GithubAccount | null>(null);
@@ -106,9 +152,6 @@ export function NewProjectDialog({
   const [checking, setChecking] = React.useState(false);
   const [refsError, setRefsError] = React.useState<string | null>(null);
 
-  // -- The new-repository tab -----------------------------------------------
-  const [repoName, setRepoName] = React.useState("");
-
   // A fresh dialog every time: a half-filled form from last week is not a
   // head start. The repository list is dropped with it, so a repository
   // created since the last visit is offered on the next one.
@@ -119,6 +162,10 @@ export function NewProjectDialog({
     setError(null);
     setName("");
     setNameTouched(false);
+    setMode("development");
+    setEngine("");
+    setDbName("");
+    setDbNameTouched(false);
     setAccount(null);
     setRepos(null);
     setReposError(null);
@@ -130,7 +177,6 @@ export function NewProjectDialog({
     setBranch("");
     setBranches([]);
     setRefsError(null);
-    setRepoName("");
   }, [open]);
 
   /**
@@ -259,279 +305,344 @@ export function NewProjectDialog({
     if (source === "custom") setName(deriveProjectName(repoUrl));
   }, [source, picked, repoUrl, nameTouched]);
 
+  // The database is named after the project until somebody names it.
+  React.useEffect(() => {
+    if (!dbNameTouched) setDbName(suggestDevDatabaseName(name));
+  }, [name, dbNameTouched]);
+
+  /** The database to ask for, or null for none -- also null outside development. */
+  const database = mode === "development" && engine ? { engine, name: dbName } : null;
+  const dbNameValid = !database || DevDatabaseName.safeParse(dbName).success;
+
   const busy = stage !== "idle";
 
   /** What this tab would send, or null when it is not ready to send anything. */
-  const command = React.useMemo((): { repoUrl?: string; name: string; branch?: string } | null => {
+  const command = React.useMemo(():
+    | {
+        repoUrl?: string;
+        name: string;
+        branch?: string;
+        mode: ProjectMode;
+        database?: ProjectDatabase;
+      }
+    | null => {
+    if (!dbNameValid) return null;
+    const what = { mode, ...(database ? { database } : {}) };
     if (source === "github") {
       if (!picked || !name.trim()) return null;
-      return { repoUrl: picked.cloneUrl, name: name.trim(), branch: ghBranch || picked.defaultBranch };
+      return { repoUrl: picked.cloneUrl, name: name.trim(), branch: ghBranch || picked.defaultBranch, ...what };
     }
     if (source === "custom") {
       const url = repoUrl.trim();
       if (!looksLikeRepoUrl(url) || !name.trim()) return null;
-      return { repoUrl: url, name: name.trim(), ...(branch ? { branch } : {}) };
+      return { repoUrl: url, name: name.trim(), ...(branch ? { branch } : {}), ...what };
     }
     // No `repoUrl` at all: the server reads its absence as "start one".
-    if (!isValidRepoName(repoName)) return null;
-    return { name: repoName.trim() };
-  }, [source, picked, name, ghBranch, repoUrl, branch, repoName]);
+    if (!isValidRepoName(name)) return null;
+    return { name: name.trim(), ...what };
+    // `database` is rebuilt each render; its parts are the real dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, picked, name, ghBranch, repoUrl, branch, mode, engine, dbName, dbNameValid]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || !workspaceId || !command) return;
 
     setError(null);
-    setStage("creating");
 
-    // One socket for one command, opened here and closed in `finally`:
-    // commands go over the WebSocket, and the sidebar has no reason to hold
-    // one open the rest of the time.
-    const client = new UcchClient();
     try {
-      await client.connect();
-      await client.whenReady();
+      const created = await createProject({ workspaceId, ...command }, setStage);
 
-      const created = await client.dispatch({
-        type: "project.create",
-        workspaceId,
-        ...command,
-      });
-
-      const event = created[0]?.event;
-      if (event?.type !== "project.created") throw new Error("the project was not created");
-
-      // Watching the project's own stream, so the wait ends when the clone
-      // reactor says it has finished rather than after a guessed delay.
-      setStage("cloning");
-      await client.subscribe({ name: "project", projectId: event.projectId });
-      await waitForClone(client, event.projectId);
+      // The project is fine without its database, so it opens either way and
+      // the reason travels with it.
+      if (created.databaseError) {
+        toast({ title: "No development database", description: created.databaseError, tone: "error" });
+      }
 
       onOpenChange(false);
-      router.push(`/${event.hash}`);
+      router.push(hrefOf(created.hash));
       // The sidebar's project list is rendered on the server.
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStage("idle");
-    } finally {
-      client.close();
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
-      {/* Wider than the default: the tab labels and the two comboboxes
-          need the room, and at 24rem the tab strip scrolled sideways. */}
-      <DialogContent className="sm:max-w-xl">
-        <form onSubmit={submit}>
-          <DialogHeader>
-            <DialogTitle>New project</DialogTitle>
-            <DialogDescription>
-              The repository lives in its own workspace, which is the only place the agent can read
-              or write.
-            </DialogDescription>
-          </DialogHeader>
-
-          <Tabs
-            value={source}
-            onValueChange={(value) => {
-              if (busy) return;
-              setSource(String(value) as Source);
-              // The name belongs to whichever tab produced it, so an untouched
-              // one is re-derived by the effect above rather than carried over.
-              setError(null);
-            }}
-            className="py-4"
-          >
-            <TabsList>
-              {TABS.map((tab) => (
-                <TabsTab key={tab.value} value={tab.value} disabled={busy}>
-                  <tab.icon className="size-3.5" />
-                  {tab.label}
-                </TabsTab>
-              ))}
-              <TabsIndicator />
-            </TabsList>
-
-            <TabsPanel value="github">
-              {needsToken ? (
-                <NoToken />
-              ) : (
-                <>
-                  <Field>
-                    <FieldLabel>Repository</FieldLabel>
-                    <RepoPicker
-                      repos={repos}
-                      value={picked}
-                      onChange={(repo) => setPicked(repo)}
-                      disabled={busy}
-                      error={reposError}
-                    />
-                    {account && (
-                      <p className="text-muted-foreground text-xs">
-                        {repos?.length ?? 0} repositories visible to{" "}
-                        <span className="font-medium">{account.login}</span>.
-                      </p>
-                    )}
-                    {reposError && (
-                      <p role="alert" className="text-destructive text-xs">
-                        {reposError}
-                      </p>
-                    )}
-                  </Field>
-
-                  <Field>
-                    <FieldLabel>Branch</FieldLabel>
-                    <BranchPicker
-                      branches={ghBranches}
-                      value={ghBranch}
-                      onChange={setGhBranch}
-                      disabled={busy || !picked}
-                      loading={ghBranchesLoading}
-                      placeholder="Choose a repository first"
-                    />
-                  </Field>
-
-                  <NameField
-                    id="new-project-github-name"
-                    value={name}
-                    onChange={(next) => {
-                      setNameTouched(true);
-                      setName(next);
-                    }}
-                    disabled={busy}
-                  />
-                </>
-              )}
-            </TabsPanel>
-
-            <TabsPanel value="custom">
-              <Field>
-                <FieldLabel htmlFor="new-project-url">Repository URL</FieldLabel>
-                <Input
-                  id="new-project-url"
-                  value={repoUrl}
-                  onChange={(e) => setRepoUrl(e.target.value)}
-                  placeholder="https://github.com/owner/repo.git"
-                  spellCheck={false}
-                  autoComplete="off"
-                  disabled={busy}
-                />
-                {checking && (
-                  <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                    <Loader2Icon className="size-3 animate-spin" />
-                    Reading the repository&apos;s branches…
-                  </p>
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      busy={busy}
+      icon={FolderPlusIcon}
+      title="Create a new project"
+      description="Each project runs in an isolated workspace — the only place the agent can read or write."
+      onSubmit={submit}
+      footer={
+        <FormDialogFooter hint="Isolated workspace" hintIcon={LockIcon} busy={busy} disabled={!command}>
+          {stage === "cloning"
+            ? source === "new"
+              ? "Initialising…"
+              : "Cloning…"
+            : stage === "creating"
+              ? "Creating…"
+              : "Create project"}
+        </FormDialogFooter>
+      }
+    >
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="new-project-name" className={LABEL}>
+                Project name
+              </label>
+              <div className="flex h-[34px] overflow-hidden rounded-[8px] border border-(--fd-border-field) bg-(--fd-field) transition-[border-color,box-shadow] focus-within:border-(--fd-accent) focus-within:ring-[3px] focus-within:ring-(--fd-ring)">
+                {account && (
+                  <span className="fd-mono flex shrink-0 items-center border-r border-(--fd-prefix-border) bg-(--fd-prefix) px-2.5 text-[11.5px] text-(--fd-icon-dim) select-none">
+                    {account.login} /
+                  </span>
                 )}
-                {refsError && (
-                  <p role="alert" className="text-destructive text-xs">
-                    {refsError}
-                  </p>
-                )}
-              </Field>
-
-              <Field>
-                <FieldLabel>Branch</FieldLabel>
-                <BranchPicker
-                  branches={branches}
-                  value={branch}
-                  onChange={setBranch}
-                  disabled={busy}
-                  loading={checking}
-                  placeholder="Paste a repository URL first"
-                />
-              </Field>
-
-              <NameField
-                id="new-project-custom-name"
-                value={name}
-                onChange={(next) => {
-                  setNameTouched(true);
-                  setName(next);
-                }}
-                disabled={busy}
-              />
-            </TabsPanel>
-
-            <TabsPanel value="new">
-              <Field>
-                <FieldLabel htmlFor="new-project-repo-name">Repository name</FieldLabel>
-                <Input
-                  id="new-project-repo-name"
-                  value={repoName}
-                  // Corrected as it is typed rather than refused on submit: a
-                  // space is what someone means by a dash, and the rest of
-                  // what a repository name may not contain is simply dropped.
-                  onChange={(e) => setRepoName(suggestRepoName(e.target.value))}
-                  placeholder="my-new-app"
+                <input
+                  id="new-project-name"
+                  value={name}
+                  onChange={(e) => {
+                    setNameTouched(true);
+                    // A started repository's name is its directory's name, so it
+                    // is corrected as it is typed, as GitHub does.
+                    setName(source === "new" ? suggestRepoName(e.target.value) : e.target.value);
+                  }}
+                  placeholder="my-project"
                   spellCheck={false}
                   autoComplete="off"
                   maxLength={100}
                   disabled={busy}
+                  className="fd-mono min-w-0 grow bg-transparent px-2.5 text-[12.5px] text-(--fd-text) outline-none placeholder:text-(--fd-text-disabled) focus-visible:outline-none"
                 />
-                <p className="text-muted-foreground text-xs">
-                  Starts an empty project and initialises it as a git repository on{" "}
-                  <span className="font-mono">main</span>, with one commit. Nothing is created on
-                  GitHub — add a remote and push it when you are ready.
+              </div>
+              <p className={HELPER}>
+                {source === "new"
+                  ? "Letters, numbers, dots, dashes and underscores. It also names the new repository."
+                  : "How the project is listed. Follows the repository's name until you edit it."}
+              </p>
+            </div>
+
+            {/* Mode is the wider column: it has three options to the database's one trigger. */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+              <div className="flex flex-col gap-1.5">
+                <span id="new-project-mode-label" className={LABEL}>
+                  Mode
+                </span>
+                <Segmented
+                  options={ProjectMode.options.map((value) => ({
+                    value,
+                    label: MODE_SHORT_LABELS[value],
+                    ariaLabel: PROJECT_MODE_LABELS[value],
+                  }))}
+                  value={mode}
+                  onChange={setMode}
+                  disabled={busy}
+                  labelledBy="new-project-mode-label"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <span id="new-project-db-engine-label" className={LABEL}>
+                  Database
+                </span>
+                <PopoverSelect
+                  value={mode === "development" ? engine : ""}
+                  options={DATABASE_OPTIONS}
+                  onChange={setEngine}
+                  heading="Development database"
+                  icon={DatabaseIcon}
+                  disabled={busy || mode !== "development"}
+                  labelledBy="new-project-db-engine-label"
+                />
+              </div>
+            </div>
+
+            <Callout className="-mt-2">
+              {mode === "development" ? (
+                <>
+                  Created on the shared development server and written to the project&apos;s{" "}
+                  <Code>.env</Code> as <Code>DATABASE_URL</Code>.
+                </>
+              ) : (
+                <>
+                  A database on the shared server comes with development projects only; this
+                  project starts without <Code>DATABASE_URL</Code>.
+                </>
+              )}
+            </Callout>
+
+            {database && (
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="new-project-db-name" className={LABEL}>
+                  Database name
+                </label>
+                <input
+                  id="new-project-db-name"
+                  value={dbName}
+                  onChange={(e) => {
+                    setDbNameTouched(true);
+                    setDbName(
+                      e.target.value
+                        .toLowerCase()
+                        .replace(/[\s-]+/g, "_")
+                        .replace(/[^a-z0-9_]/g, "")
+                        .slice(0, 63),
+                    );
+                  }}
+                  placeholder="my_project"
+                  spellCheck={false}
+                  autoComplete="off"
+                  maxLength={63}
+                  disabled={busy}
+                  aria-invalid={!dbNameValid}
+                  className={cn(FIELD, "fd-mono placeholder:text-(--fd-text-disabled)")}
+                />
+                <p className={cn(HELPER, !dbNameValid && dbName && "text-destructive")}>
+                  Lower-case letters, digits and underscores, starting with a letter.
                 </p>
-              </Field>
-            </TabsPanel>
-          </Tabs>
+              </div>
+            )}
 
-          {error && (
-            <p role="alert" className="text-destructive pb-2 text-sm">
-              {error}
-            </p>
-          )}
+            <div role="separator" className="h-px bg-(--fd-border-subtle)" />
 
-          <DialogFooter>
-            <DialogClose render={<Button type="button" variant="outline" disabled={busy} />}>
-              Cancel
-            </DialogClose>
-            <Button type="submit" disabled={!command || busy}>
-              {busy && <Loader2Icon className="animate-spin" />}
-              {stage === "cloning"
-                ? source === "new"
-                  ? "Initialising…"
-                  : "Cloning…"
-                : stage === "creating"
-                  ? "Creating…"
-                  : source === "new"
-                    ? "Create repository"
-                    : "Create project"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
+            <OptionTabs
+              value={source}
+              onChange={(value) => {
+                setSource(value);
+                // The name belongs to whichever source produced it, so an
+                // untouched one is re-derived by the effect above rather than
+                // carried over. A typed one is kept, made fit to name a
+                // repository if needed.
+                if (value === "new") setName((current) => suggestRepoName(current));
+                setError(null);
+              }}
+              label="Source code"
+              aside="Where should the workspace start from?"
+              options={SOURCES}
+              disabled={busy}
+            >
 
-/** The project's name, which both cloning tabs ask for the same way. */
-function NameField({
-  id,
-  value,
-  onChange,
-  disabled,
-}: {
-  id: string;
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <Field>
-      <FieldLabel htmlFor={id}>Project name</FieldLabel>
-      <Input
-        id={id}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="my-project"
-        maxLength={100}
-        disabled={disabled}
-      />
-    </Field>
+              <OptionPanel value="github">
+                {needsToken ? (
+                  <NoToken />
+                ) : (
+                  <>
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between gap-2.5">
+                        <span id="new-project-repo-label" className={LABEL}>
+                          Repository
+                        </span>
+                        {account && (
+                          <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-(--fd-text-muted)">
+                            <GithubMark className="size-3 shrink-0" />
+                            <span className="truncate">
+                              {account.login} · {repos?.length ?? 0} repos
+                            </span>
+                          </span>
+                        )}
+                      </div>
+                      <RepoPicker
+                        repos={repos}
+                        value={picked}
+                        onChange={(repo) => setPicked(repo)}
+                        disabled={busy}
+                        error={reposError}
+                        labelledBy="new-project-repo-label"
+                      />
+                      {reposError && (
+                        <p role="alert" className="text-destructive text-[11.5px]">
+                          {reposError}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <span
+                        id="new-project-gh-branch-label"
+                        className={cn(LABEL, !picked && "text-(--fd-text-faint)")}
+                      >
+                        Branch
+                      </span>
+                      <BranchPicker
+                        branches={ghBranches}
+                        value={ghBranch}
+                        onChange={setGhBranch}
+                        disabled={busy || !picked}
+                        loading={ghBranchesLoading}
+                        placeholder="Select a repository first"
+                        labelledBy="new-project-gh-branch-label"
+                      />
+                    </div>
+                  </>
+                )}
+              </OptionPanel>
+
+              <OptionPanel value="custom">
+                <div className="flex flex-col gap-1.5">
+                  <label htmlFor="new-project-url" className={LABEL}>
+                    Git URL
+                  </label>
+                  <input
+                    id="new-project-url"
+                    value={repoUrl}
+                    onChange={(e) => setRepoUrl(e.target.value)}
+                    placeholder="https://gitlab.example.com/team/repo.git"
+                    spellCheck={false}
+                    autoComplete="off"
+                    disabled={busy}
+                    className={cn(FIELD, "fd-mono text-[11.5px] placeholder:text-(--fd-text-disabled)")}
+                  />
+                  {checking ? (
+                    <p className={cn(HELPER, "flex items-center gap-1.5")}>
+                      <Loader2Icon className="size-3 animate-spin" />
+                      Reading the repository&apos;s branches…
+                    </p>
+                  ) : refsError ? (
+                    <p role="alert" className="text-destructive text-[11.5px]">
+                      {refsError}
+                    </p>
+                  ) : (
+                    <p className={HELPER}>HTTPS or SSH, from any host the server can reach.</p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <span
+                    id="new-project-branch-label"
+                    className={cn(LABEL, branches.length === 0 && "text-(--fd-text-faint)")}
+                  >
+                    Branch
+                  </span>
+                  <BranchPicker
+                    branches={branches}
+                    value={branch}
+                    onChange={setBranch}
+                    disabled={busy}
+                    loading={checking}
+                    placeholder="Paste a Git URL first"
+                    labelledBy="new-project-branch-label"
+                  />
+                </div>
+              </OptionPanel>
+
+              <OptionPanel value="new">
+                <Callout icon={PlusIcon} accent className="p-3">
+                  An empty repository named after the project is started in the workspace, on{" "}
+                  <Code>main</Code> with one commit. Nothing is created on{" "}
+                  <span className="text-(--fd-text-label)">{account?.login ?? "GitHub"}</span> until
+                  you add a remote and push.
+                </Callout>
+              </OptionPanel>
+            </OptionTabs>
+
+            {error && (
+              <p role="alert" className="text-destructive text-[11.5px]">
+                {error}
+              </p>
+            )}
+    </FormDialog>
   );
 }
 
@@ -544,7 +655,7 @@ function NameField({
 function NoToken() {
   return (
     <div className="rounded-lg border border-dashed p-6 text-center">
-      <GithubMark className="text-muted-foreground mx-auto size-5" />
+      <GithubMark className="text-muted-foreground mx-auto size-4" />
       <p className="mt-3 text-sm font-medium">No GitHub token</p>
       <p className="text-muted-foreground mx-auto mt-1 max-w-sm text-sm">
         Add one in Settings to list the repositories you can see and clone the private ones. Until
@@ -578,6 +689,7 @@ function RepoPicker({
   onChange,
   disabled,
   error,
+  labelledBy,
 }: {
   /** Null until the list arrives. */
   repos: GithubRepo[] | null;
@@ -585,6 +697,7 @@ function RepoPicker({
   onChange: (repo: GithubRepo) => void;
   disabled?: boolean;
   error: string | null;
+  labelledBy: string;
 }) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -612,29 +725,31 @@ function RepoPicker({
     >
       <PopoverTrigger
         render={
-          <Button
-            variant="outline"
+          <button
+            type="button"
             role="combobox"
             aria-expanded={open}
+            aria-labelledby={labelledBy}
             disabled={disabled || loading || !repos?.length}
-            className="h-8 w-full justify-between px-2 font-normal"
+            className={cn(FIELD, "disabled:opacity-70")}
           />
         }
       >
-        <span className={value ? "truncate" : "text-muted-foreground truncate"}>
+        <SearchIcon className="size-3.5 shrink-0 text-(--fd-text-muted)" />
+        <span className={cn("min-w-0 grow truncate", !value && "text-(--fd-text-faint)")}>
           {value?.fullName ??
             (loading
-              ? "Reading your repositories…"
+              ? <Skeleton className="h-3 w-40" />
               : error
                 ? "Could not read your repositories"
                 : repos?.length
-                  ? "Choose a repository"
+                  ? "Search repositories…"
                   : "No repositories to choose from")}
         </span>
         {loading ? (
-          <Loader2Icon className="size-3.5 shrink-0 animate-spin opacity-50" />
+          <Loader2Icon className="size-3.5 shrink-0 animate-spin text-(--fd-icon-dim)" />
         ) : (
-          <ChevronsUpDownIcon className="size-3.5 shrink-0 opacity-50" />
+          <ChevronsUpDownIcon className="size-3.5 shrink-0 text-(--fd-icon-dim)" />
         )}
       </PopoverTrigger>
 
@@ -652,20 +767,14 @@ function RepoPicker({
                 <CommandItem
                   key={repo.fullName}
                   value={repo.fullName}
+                  data-checked={repo.fullName === value?.fullName}
                   onSelect={() => {
                     onChange(repo);
                     setOpen(false);
                   }}
                 >
-                  <CheckIcon
-                    className={
-                      repo.fullName === value?.fullName ? "size-4 opacity-100" : "size-4 opacity-0"
-                    }
-                  />
-                  <span className="truncate">{repo.fullName}</span>
-                  {repo.private && (
-                    <LockIcon className="text-muted-foreground ml-auto size-3 shrink-0" />
-                  )}
+                  <span className="min-w-0 flex-1 truncate">{repo.fullName}</span>
+                  {repo.private && <LockIcon className="text-muted-foreground size-3 shrink-0" />}
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -684,13 +793,14 @@ function RepoPicker({
  * there is nothing to choose from, and the field says which of the two reasons
  * it is empty for.
  */
-function BranchPicker({
+export function BranchPicker({
   branches,
   value,
   onChange,
   disabled,
   loading,
   placeholder,
+  labelledBy,
 }: {
   branches: string[];
   value: string;
@@ -699,6 +809,7 @@ function BranchPicker({
   loading?: boolean;
   /** What to say when there is nothing to choose from yet. */
   placeholder: string;
+  labelledBy: string;
 }) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -721,22 +832,32 @@ function BranchPicker({
     >
       <PopoverTrigger
         render={
-          <Button
-            variant="outline"
+          <button
+            type="button"
             role="combobox"
             aria-expanded={open}
+            aria-labelledby={labelledBy}
             disabled={disabled || empty}
-            className="h-8 w-full justify-between px-2 font-normal"
+            className={cn(
+              FIELD,
+              "group disabled:border-dashed disabled:border-(--fd-border-disabled) disabled:bg-(--fd-field-muted)",
+            )}
           />
         }
       >
-        <span className={value ? "truncate" : "text-muted-foreground truncate"}>
-          {value || (loading ? "Reading branches…" : empty ? placeholder : "Choose a branch")}
+        <GitBranchIcon className="size-3.5 shrink-0 text-(--fd-text-muted) group-disabled:text-(--fd-icon-disabled)" />
+        <span
+          className={cn(
+            "min-w-0 grow truncate group-disabled:text-(--fd-text-disabled)",
+            !value && "text-(--fd-text-faint)",
+          )}
+        >
+          {value || (loading ? <Skeleton className="h-3 w-28" /> : empty ? placeholder : "Choose a branch")}
         </span>
         {loading ? (
-          <Loader2Icon className="size-3.5 shrink-0 animate-spin opacity-50" />
+          <Loader2Icon className="size-3.5 shrink-0 animate-spin text-(--fd-icon-dim)" />
         ) : (
-          <ChevronsUpDownIcon className="size-3.5 shrink-0 opacity-50" />
+          <ChevronsUpDownIcon className="size-3.5 shrink-0 text-(--fd-icon-dim) group-disabled:text-(--fd-icon-disabled)" />
         )}
       </PopoverTrigger>
 
@@ -750,15 +871,13 @@ function BranchPicker({
                 <CommandItem
                   key={name}
                   value={name}
+                  data-checked={name === value}
                   onSelect={() => {
                     onChange(name);
                     setOpen(false);
                   }}
                 >
-                  <CheckIcon
-                    className={name === value ? "size-4 opacity-100" : "size-4 opacity-0"}
-                  />
-                  <span className="truncate">{name}</span>
+                  <span className="min-w-0 flex-1 truncate">{name}</span>
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -767,33 +886,4 @@ function BranchPicker({
       </PopoverContent>
     </Popover>
   );
-}
-
-/**
- * Resolves when the clone reactor has finished with this project.
- *
- * A cap rather than an indefinite wait: a very large repository should not
- * hold the dialog open for ever, and the project exists either way -- so the
- * timeout opens it anyway rather than reporting a failure that did not
- * happen.
- */
-function waitForClone(client: UcchClient, projectId: string, timeoutMs = 180_000): Promise<void> {
-  const cloned = () =>
-    client.events.some(
-      ({ event }) => event.type === "project.cloned" && event.projectId === projectId,
-    );
-  if (cloned()) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      unsubscribe();
-      resolve();
-    }, timeoutMs);
-    const unsubscribe = client.subscribeToChanges(() => {
-      if (!cloned()) return;
-      clearTimeout(timer);
-      unsubscribe();
-      resolve();
-    });
-  });
 }

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useTheme } from "@/components/theme-provider"
 import { defaultSyntaxTheme, type ThemePreset } from "@/lib/syntax-theme"
-import { DEFAULT_THEME, deriveTheme } from "@/lib/theme"
+import { DEFAULT_SETTINGS, resolveTokens, type Mode } from "@/lib/theme"
 
 /**
  * Saved looks: the palette and the code colours together, under a name.
@@ -19,10 +19,10 @@ import { DEFAULT_THEME, deriveTheme } from "@/lib/theme"
  * that matches what is on screen is marked so you can tell where you are.
  */
 export function ThemePresets() {
-  const { theme, customised, syntax, presets, savePreset, applyPreset, deletePreset } = useTheme()
+  const { settings, customised, resolvedMode, syntax, presets, savePreset, applyPreset, deletePreset } = useTheme()
   const [name, setName] = React.useState("")
 
-  const current = presets.find((p) => matches(p, customised ? theme : null, syntax))
+  const current = presets.find((p) => matches(p, customised ? settings : null, syntax))
 
   function save() {
     if (savePreset(name)) setName("")
@@ -70,10 +70,10 @@ export function ThemePresets() {
               className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-2"
               aria-current={preset.id === current?.id ? "true" : undefined}
             >
-              <Swatches preset={preset} />
+              <Swatches preset={preset} mode={resolvedMode} />
               <span className="min-w-0 flex-1 truncate text-sm font-medium">{preset.name}</span>
               {preset.id === current?.id && (
-                <span className="text-ucch-active flex items-center gap-1 text-xs">
+                <span className="text-success flex items-center gap-1 text-xs">
                   <CheckIcon className="size-3.5" />
                   in use
                 </span>
@@ -108,11 +108,11 @@ function matches(preset: ThemePreset, theme: ThemePreset["theme"], syntax: Theme
   return JSON.stringify(preset.theme) === JSON.stringify(theme) && JSON.stringify(preset.syntax) === JSON.stringify(syntax)
 }
 
-/** The preset at a glance: its three palette colours, then a few code colours. */
-function Swatches({ preset }: { preset: ThemePreset }) {
-  const palette = preset.theme ?? DEFAULT_THEME
-  const code = preset.syntax ?? defaultSyntaxTheme(deriveTheme(palette).dark)
-  const colors = [palette.dominant, palette.secondary, palette.accent, code.keyword, code.string, code.function]
+/** The preset at a glance, in the mode on screen: page, panel, accent, then a few code colours. */
+function Swatches({ preset, mode }: { preset: ThemePreset; mode: Mode }) {
+  const tokens = resolveTokens(preset.theme ?? DEFAULT_SETTINGS, mode).tokens
+  const code = preset.syntax ?? defaultSyntaxTheme(mode === "dark")
+  const colors = [tokens.background!, tokens.sidebar!, tokens.primary!, code.keyword, code.string, code.function]
   return (
     <span className="border-border flex h-6 shrink-0 overflow-hidden rounded border" aria-hidden>
       {colors.map((color, i) => (

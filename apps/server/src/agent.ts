@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
-import { projects, threads, users, type Database } from "@ucch/db";
+import { count, eq } from "drizzle-orm";
+import { projects, threads, turns, users, workspaces, type Database } from "@ucch/db";
 import {
   HostExecutor,
   invalidateTree,
@@ -10,12 +10,14 @@ import {
   type ApprovalDecision,
   type ApprovalRequest,
   type RegistryOptions,
+  type DocumentsBackends,
   type ResearchBackends,
   type UploadStaging,
 } from "@ucch/agent";
 import {
   AgentPermissionMode,
   DEFAULT_AGENT_PERMISSION_MODE,
+  effectiveCredentialSource,
   isTransient,
   needsApproval,
   type Command,
@@ -26,11 +28,16 @@ import {
   type TokenUsage,
 } from "@ucch/protocol";
 import type { AgentRun } from "@ucch/providers";
+import { detectStack } from "./clone.js";
 import { decryptSecret } from "./crypto.js";
-import type { ProviderService } from "./providers.js";
+import { ensureProjectInfo, readProjectKnowledge } from "./dev-database.js";
+import { workspaceSubject, type ProviderService } from "./providers.js";
+import { toPolicy } from "./workspaces.js";
 import { applyProjection } from "./engine.js";
+import { treeFor } from "./trees.js";
 import type { EventStore } from "./eventstore.js";
 import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter.js";
+import { documentationPrompt } from "./documents.js";
 import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 
 export interface AgentOptions {
@@ -54,6 +61,11 @@ export interface AgentOptions {
    */
   research: ResearchBackends;
   /**
+   * The document pipeline -- the doc kit's path, its interpreter, and the
+   * vision model -- for a turn sent in documentation mode.
+   */
+  documents: DocumentsBackends;
+  /**
    * The CLI providers. Optional so a harness can run with the native loop
    * alone; a turn that asks for one then fails with a message saying so.
    */
@@ -62,6 +74,14 @@ export interface AgentOptions {
   cliEnabled?: boolean;
   /** CLI turns one account may have in flight. */
   maxConcurrentPerUser?: number;
+}
+
+/** How many turns pass between looks at a project's stack. */
+export const STACK_RECHECK_TURNS = 5;
+
+/** Whether the project's `turns`th turn is one after which its stack is looked at again. */
+export function shouldRecheckStack(turns: number): boolean {
+  return turns > 0 && turns % STACK_RECHECK_TURNS === 0;
 }
 
 /**
@@ -194,6 +214,15 @@ export class AgentTurnReactor {
     }
   }
 
+  /**
+   * Lets every tool call on a thread run without asking, as "allow for this
+   * session" does. For threads nobody is watching to answer -- the Tasks
+   * board's -- where a question would leave the turn waiting for ever.
+   */
+  allowAllFor(threadId: string): void {
+    this.#allowAll.add(threadId);
+  }
+
   /** Delivers one answer to whichever runtime is waiting on it. */
   #answer(threadId: string, requestId: string, reply: ApprovalDecision): void {
     const native = this.#nativePrompts.get(threadId)?.get(requestId);
@@ -318,16 +347,19 @@ export class AgentTurnReactor {
       .limit(1);
     if (!project) return;
 
-    // The owning account, not whoever sent the message: the turn is paid for
-    // and configured by the account that owns the work. Read once, before the
-    // turn opens, because the model it may name is recorded in `turn.started`.
-    const owner = await this.#owner(thread.projectId);
+    // Whose subscription pays, by the workspace's policy and what the
+    // thread was started on -- not whoever sent this message. Read once,
+    // before the turn opens, because the model it may name is recorded in
+    // `turn.started`.
+    const owner = await this.#owner(thread.projectId, thread);
     if (!owner) return;
 
     const turnId = randomUUID();
     const target = { projectId: thread.projectId, threadId };
 
-    const workspace = join(this.options.workspaceRoot, thread.projectId);
+    // A project session works in its own worktree; every other thread in
+    // the project's checkout.
+    const workspace = treeFor(this.options.workspaceRoot, thread.projectId, thread);
 
     const append = (events: readonly DomainEvent[]) => {
       if (events.length === 0) return Promise.resolve([]);
@@ -408,6 +440,21 @@ export class AgentTurnReactor {
           }
         }
 
+        // A documentation turn on a CLI has no phase of its own: the CLI
+        // has a shell, so it is handed the same scripts the native loop's
+        // typed tools run, by path, with the rules that go with them.
+        if (mode === "documentation") {
+          prompt = documentationPrompt(text, this.options.documents);
+          await append([
+            {
+              type: "context.injected",
+              threadId,
+              source: "documentation",
+              content: prompt.slice(text.trim().length).trim(),
+            },
+          ]);
+        }
+
         await this.#runCli(provider, {
           ownerId: owner.id,
           owner,
@@ -418,6 +465,7 @@ export class AgentTurnReactor {
           text: prompt,
           resumeToken: thread.providerSessionId,
           model,
+          effort,
           signal: controller.signal,
           append,
           ...(researched ? { researched } : {}),
@@ -437,9 +485,9 @@ export class AgentTurnReactor {
       // can start while that clone is still running, or after one that
       // failed. An empty directory makes the file tools behave sanely
       // rather than failing with an error about the harness's own layout.
-      await mkdir(workspace, { recursive: true });
+      await this.#prepareWorkspace(workspace);
 
-      const history = await this.store.readThread(threadId);
+      const history = await this.store.threadHistory(threadId);
 
       // Looked up per turn rather than held: the model can change between
       // turns, and the catalogue behind this is cached anyway.
@@ -454,13 +502,16 @@ export class AgentTurnReactor {
         turnId,
         apiKey,
         model: resolvedModel,
-        ...(effort ? { effort } : {}),
+        // OpenRouter's scale stops at high; Claude Code's levels above it are
+        // clamped here rather than sent on to be refused.
+        ...(effort ? { effort: effort === "xhigh" || effort === "max" ? "high" : effort } : {}),
         history: history.map((row) => row.event),
         stack: project.stack,
-        // The preset and the mode travel together: the research prompt
-        // describes the research tools, and only that preset offers them.
-        preset: mode === "research" ? "research" : "standard",
+        // The preset and the mode travel together: each mode's prompt
+        // describes its own tools, and only its preset offers them.
+        preset: mode ?? "standard",
         ...(mode === "research" ? { mode, research: this.options.research } : {}),
+        ...(mode === "documentation" ? { mode, documents: this.options.documents } : {}),
         registry: this.options.registry,
         contextLength,
         supportsImages: canSeeImages,
@@ -499,7 +550,63 @@ export class AgentTurnReactor {
       // Only if it is still ours: a turn that overran its own cancellation
       // must not clear a controller the next turn has already registered.
       if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
+      // After the turn, not during it: a slow disk must not hold the
+      // conversation up, and a failure here is never the turn's.
+      void this.#recheckStack(thread.projectId, workspace).catch(this.onError);
     }
+  }
+
+  /**
+   * Looks at the project's stack again every `STACK_RECHECK_TURNS` turns,
+   * so the sidebar's icon follows a project that has grown a framework or
+   * changed language since it was cloned.
+   *
+   * The count is the project's turns in the database rather than one held
+   * here, so a restart neither resets it nor checks twice. Read from the
+   * turn's own tree -- a session's worktree is where its work is -- and
+   * recorded only when the answer changed.
+   */
+  async #recheckStack(projectId: string, workspace: string): Promise<void> {
+    const [row] = await this.db
+      .select({ turns: count() })
+      .from(turns)
+      .innerJoin(threads, eq(turns.threadId, threads.id))
+      .where(eq(threads.projectId, projectId));
+    if (!shouldRecheckStack(Number(row?.turns ?? 0))) return;
+
+    const stack = await detectStack(workspace);
+    if (stack === "unknown") return;
+    const [project] = await this.db
+      .select({ stack: projects.stack })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    if (!project || project.stack === stack) return;
+
+    const event: DomainEvent = { type: "project.stack_detected", projectId, stack };
+    await this.store.append({ projectId, threadId: null }, [event], (tx) =>
+      applyProjection(tx, [event], null),
+    );
+  }
+
+  /**
+   * The workspace as every turn expects to find it: there, and with its
+   * `.ucch/INFO.md`. Run before every turn of every harness, which is what
+   * gives a project made before `.ucch` existed its folder.
+   *
+   * Only once the checkout exists: `git clone` refuses a directory that is
+   * not empty, so a `.ucch` written while the clone is still queued would
+   * fail it -- and the clone writes the folder itself when it lands. A
+   * `.ucch` the harness cannot write -- a symlink, a file of that name -- is
+   * the operator's to hear about, not a reason to fail the person's turn.
+   */
+  async #prepareWorkspace(workspace: string): Promise<void> {
+    await mkdir(workspace, { recursive: true });
+    const cloned = await stat(join(workspace, ".git")).then(
+      () => true,
+      () => false,
+    );
+    if (cloned) await ensureProjectInfo(workspace).catch(this.onError);
   }
 
   /**
@@ -523,6 +630,7 @@ export class AgentTurnReactor {
       text: string;
       resumeToken: string | null;
       model: string | undefined;
+      effort: ReasoningEffort | undefined;
       signal: AbortSignal;
       append: (events: readonly DomainEvent[]) => Promise<unknown>;
       /**
@@ -553,7 +661,18 @@ export class AgentTurnReactor {
 
     let run: AgentRun | undefined;
     try {
-      await mkdir(input.workspace, { recursive: true });
+      await this.#prepareWorkspace(input.workspace);
+      const knowledge = await readProjectKnowledge(input.workspace).catch((error: unknown) => {
+        this.onError(error);
+        return null;
+      });
+      // Logged as the native loop logs its prompt parts, so the thread says
+      // exactly what the CLI was handed on top of the message.
+      if (knowledge) {
+        await input.append([
+          { type: "context.injected", threadId: input.threadId, source: "project_context", content: knowledge },
+        ]);
+      }
       const resolved = await this.options.providers.resolve(input.ownerId, provider);
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
@@ -563,7 +682,9 @@ export class AgentTurnReactor {
         turnId: input.turnId,
         ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
         ...(input.model ? { model: input.model } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
         permissionMode: this.#modeFor(input.threadId, input.owner),
+        ...(knowledge ? { instructions: knowledge } : {}),
       });
       this.#cliRuns.add(run);
       this.#cliByThread.set(input.threadId, run);
@@ -649,11 +770,11 @@ export class AgentTurnReactor {
   }): Promise<{ prompt: string; usage: TokenUsage; costUsd: number }> {
     const apiKey = this.#decryptKey(input.owner.openrouterKeyEncrypted);
     const model = resolveModel(undefined, input.owner.defaultModel, this.options.defaultModel);
-    await mkdir(input.workspace, { recursive: true });
+    await this.#prepareWorkspace(input.workspace);
 
     // The thread's earlier asks, for a follow-up to follow on from. Only
     // what the person typed: the CLI's own events are not replayable here.
-    const history = await this.store.readThread(input.threadId);
+    const history = await this.store.threadHistory(input.threadId);
     const asks = history
       .map((row) => row.event)
       .filter((event) => event.type === "user.message")
@@ -736,7 +857,7 @@ export class AgentTurnReactor {
     const apiKey = this.#decryptKey(owner.openrouterKeyEncrypted);
     const model = resolveModel(undefined, owner.defaultModel, this.options.defaultModel);
     const workspace = join(this.options.workspaceRoot, input.projectId);
-    await mkdir(workspace, { recursive: true });
+    await this.#prepareWorkspace(workspace);
 
     const threadId = randomUUID();
     const [contextLength, canSeeImages] = await Promise.all([
@@ -771,21 +892,42 @@ export class AgentTurnReactor {
   }
 
   /**
-   * What the project's owning account brings to a turn: the key it is billed
-   * to, and the model it prefers when the turn names none.
+   * What a turn is billed to and configured by.
    *
-   * One read for both, resolved through the project rather than through the
-   * sender. Null only when the project has no row to join, which means it was
+   * `id` is the credential subject the CLI logins live under: a user id for
+   * a member's own subscription, `ws-<id>` for the workspace's dedicated
+   * one. The preferences -- model, provider, permission mode -- are always
+   * a person's: the thread's starter, or for an older thread (and for work
+   * with no thread) the project's creator.
+   *
+   * Null only when the project has no row to join, which means it was
    * deleted between the message and this.
    */
-  async #owner(projectId: string): Promise<{
+  async #owner(
+    projectId: string,
+    thread?: { createdByUserId: string | null; credentialSource: string | null },
+  ): Promise<{
     id: string;
     openrouterKeyEncrypted: string | null;
     defaultModel: string | null;
     defaultProvider: string | null;
     agentPermissionMode: string | null;
   } | null> {
-    const [owner] = await this.db
+    const [project] = await this.db
+      .select({
+        creator: projects.userId,
+        workspaceId: workspaces.id,
+        policy: workspaces.credentialPolicy,
+        workspaceKey: workspaces.openrouterKeyEncrypted,
+      })
+      .from(projects)
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    if (!project) return null;
+
+    const personId = thread?.createdByUserId ?? project.creator;
+    const [person] = await this.db
       .select({
         id: users.id,
         openrouterKeyEncrypted: users.openrouterKeyEncrypted,
@@ -793,11 +935,22 @@ export class AgentTurnReactor {
         defaultProvider: users.defaultProvider,
         agentPermissionMode: users.agentPermissionMode,
       })
-      .from(projects)
-      .innerJoin(users, eq(users.id, projects.userId))
-      .where(eq(projects.id, projectId))
+      .from(users)
+      .where(eq(users.id, personId))
       .limit(1);
-    return owner ?? null;
+    if (!person) return null;
+
+    const bound = thread?.credentialSource === "workspace" || thread?.credentialSource === "member"
+      ? thread.credentialSource
+      : null;
+    if (effectiveCredentialSource(toPolicy(project.policy), bound) === "workspace") {
+      return {
+        ...person,
+        id: workspaceSubject(project.workspaceId),
+        openrouterKeyEncrypted: project.workspaceKey,
+      };
+    }
+    return person;
   }
 
   /** The stored key in the clear, for exactly this turn. */
@@ -806,7 +959,7 @@ export class AgentTurnReactor {
       throw new Error("SECRET_KEY is not configured, so no stored key can be decrypted");
     }
     if (!encrypted) {
-      throw new Error("No OpenRouter API key is set. Add one in Settings to talk to the agent.");
+      throw new Error("No OpenRouter API key is set. Add one in Settings -- or, when this workspace uses its own subscription, in Workspace settings -> Harness -- to talk to the agent.");
     }
     return decryptSecret(encrypted, this.options.secretKey);
   }

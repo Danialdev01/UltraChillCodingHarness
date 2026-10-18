@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { announceDatabasesChanged, dropDatabase, exportUrl, fetchDatabaseDetails } from "@/lib/database-api"
 import { databaseHref } from "@/lib/sections"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 import { formatBytes } from "@/lib/stats-format"
 import { TransitionLink } from "@/lib/view-transitions"
 
@@ -25,6 +26,7 @@ import { TransitionLink } from "@/lib/view-transitions"
  * server rather than a database.
  */
 export function ConnectionHome({ connection }: { connection: DatabaseConnectionSummary }) {
+  const ws = useWorkspaceHash()
   const [databases, setDatabases] = React.useState<Listing<DatabaseSummary[]>>({ state: "loading" })
   const [creating, setCreating] = React.useState(false)
   const [importing, setImporting] = React.useState<string | null>(null)
@@ -120,7 +122,7 @@ export function ConnectionHome({ connection }: { connection: DatabaseConnectionS
             </TableHeader>
             <TableBody>
               {databases.data.map((db) => {
-                const href = databaseHref(connection.id, db.name)
+                const href = databaseHref(ws, connection.id, db.name)
                 return (
                   <TableRow key={db.name}>
                     <TableCell className="font-medium">
@@ -239,7 +241,7 @@ function ImportDialog({
           <select
             value={db}
             onChange={(e) => setDb(e.target.value)}
-            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 rounded-lg border px-2 font-mono text-xs outline-none focus-visible:ring-3 dark:bg-input/30"
+            className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring h-8 rounded-lg border px-2 font-mono text-xs outline-none focus-visible:ring-3 dark:bg-input/30"
           >
             {databases.map((name) => (
               <option key={name} value={name}>

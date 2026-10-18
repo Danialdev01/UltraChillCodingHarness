@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -70,6 +70,26 @@ describe("files", () => {
 
   it("clamps a read to the requested byte count", async () => {
     expect(await executor.readFile("readme.md", { maxBytes: 5 })).toBe("hello");
+  });
+
+  it("refuses the repository's .git directory", async () => {
+    await expect(executor.writeFile(".git/config", "x")).rejects.toThrow(/\.git/);
+    await expect(executor.readFile("sub/.git/hooks/pre-commit")).rejects.toThrow(/\.git/);
+  });
+
+  it("refuses to follow a symlink out of the workspace", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "ucch-outside-"));
+    try {
+      await writeFile(join(outside, "secret.txt"), "secret");
+      await symlink(outside, join(root, "linked"));
+      await symlink(join(outside, "secret.txt"), join(root, "secret-link.txt"));
+
+      await expect(executor.readFile("secret-link.txt")).rejects.toThrow(/symlink/);
+      await expect(executor.writeFile("linked/new.txt", "x")).rejects.toThrow(/symlink/);
+      await expect(readFile(join(outside, "new.txt"), "utf8")).rejects.toThrow();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("refuses a read or a write outside the root", async () => {

@@ -6,6 +6,7 @@ import { PlusIcon, XIcon } from "lucide-react"
 import { UcchClient } from "@/lib/client"
 import { useFilesPanel } from "@/components/files-panel"
 import { XtermPane } from "@/components/xterm-pane"
+import { EMPTY_OUTPUT, appendOutput, frameBatcher, type TerminalOutput } from "@/lib/terminal-output"
 import { cn } from "@/lib/utils"
 import type { Project } from "@/lib/session"
 
@@ -22,9 +23,6 @@ interface Tab {
   title: string
 }
 
-/** A stable empty array, so a tab with no output yet does not rewrite on every render. */
-const EMPTY: readonly string[] = []
-
 /**
  * Terminals in the project's workspace, one per tab.
  *
@@ -40,13 +38,12 @@ const EMPTY: readonly string[] = []
 export function TerminalView({ project, active }: { project: Project; active: boolean }) {
   const [tabs, setTabs] = React.useState<Tab[]>([])
   const [activeId, setActiveId] = React.useState<string | null>(null)
-  const [output, setOutput] = React.useState<Record<string, readonly string[]>>({})
+  const [output, setOutput] = React.useState<Record<string, TerminalOutput>>({})
   const [ready, setReady] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   const clientRef = React.useRef<UcchClient | null>(null)
   const unsubscribeRef = React.useRef<() => void>(() => {})
-  const seen = React.useRef(0)
   // The tabs as they are now, for the teardown below: an effect keyed on the
   // project would otherwise close the tabs it knew at mount -- none.
   const tabsRef = React.useRef(tabs)
@@ -71,31 +68,31 @@ export function TerminalView({ project, active }: { project: Project; active: bo
     const client = new UcchClient()
     clientRef.current = client
 
-    unsubscribeRef.current = client.subscribeToChanges(() => {
-      setReady(client.state === "ready")
-      // Output arrives as transient events on the terminal topics this client
-      // is subscribed to. Only what has not been folded in yet.
-      const events = client.events
-      if (seen.current >= events.length) return
+    // Output arrives as transient events on the terminal topics this client
+    // is subscribed to, straight from the socket rather than through
+    // `client.events`, and is folded in about once a frame.
+    const batch = frameBatcher<{ terminalId: string; data: string }>((items) => {
       const next: Record<string, string[]> = {}
-      for (let i = seen.current; i < events.length; i++) {
-        const event = events[i]!.event
-        if (event.type !== "terminal.output") continue
-        // Kept as separate chunks, in order: the pane writes the ones it has
-        // not seen, and joining them here would make that impossible to tell.
-        ;(next[event.terminalId] ??= []).push(event.data)
-      }
-      seen.current = events.length
-      if (Object.keys(next).length === 0) return
-
+      // Kept as separate chunks, in order, so the pane can tell which it
+      // has not written yet.
+      for (const item of items) (next[item.terminalId] ??= []).push(item.data)
       setOutput((current) => {
         const merged = { ...current }
         for (const [id, chunks] of Object.entries(next)) {
-          merged[id] = [...(merged[id] ?? []), ...chunks].slice(-MAX_CHUNKS)
+          merged[id] = appendOutput(merged[id] ?? EMPTY_OUTPUT, chunks, MAX_CHUNKS)
         }
         return merged
       })
     })
+    const offState = client.subscribeToChanges(() => setReady(client.state === "ready"))
+    const offEvents = client.onEvent(({ event }) => {
+      if (event.type === "terminal.output") batch.push({ terminalId: event.terminalId, data: event.data })
+    })
+    unsubscribeRef.current = () => {
+      offState()
+      offEvents()
+      batch.cancel()
+    }
 
     void client.connect().catch(() => setError("Could not reach the server."))
 
@@ -117,7 +114,6 @@ export function TerminalView({ project, active }: { project: Project; active: bo
       unsubscribeRef.current()
       client.close()
       clientRef.current = null
-      seen.current = 0
       setReady(false)
     }
   }, [project.id])
@@ -138,10 +134,12 @@ export function TerminalView({ project, active }: { project: Project; active: bo
         terminalId: id,
         cols: 120,
         rows: 30,
+        // A project session's shell opens in its own worktree.
+        ...(project.sessionHash ? { sessionHash: project.sessionHash } : {}),
       })
       setTabs((current) => [...current, { id, title: `Terminal ${current.length + 1}` }])
       setActiveId(id)
-      setOutput((current) => ({ ...current, [id]: [] }))
+      setOutput((current) => ({ ...current, [id]: EMPTY_OUTPUT }))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -285,7 +283,7 @@ export function TerminalView({ project, active }: { project: Project; active: bo
             // its own tab would not refit or refocus when the user switches
             // from the file browser back to the terminal.
             hidden={!active || tab.id !== activeId}
-            data={output[tab.id] ?? EMPTY}
+            data={output[tab.id] ?? EMPTY_OUTPUT}
             onInput={(data) => send(tab.id, data)}
             onResize={(cols, rows) => resize(tab.id, cols, rows)}
           />

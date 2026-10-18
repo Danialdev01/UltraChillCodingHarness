@@ -66,6 +66,18 @@ export function codexArgv(input: {
   return argv;
 }
 
+/**
+ * The message a Codex run is given.
+ *
+ * `codex exec` has no flag for adding to its instructions that every version
+ * has, so the project's knowledge goes ahead of a new session's first
+ * message. A resumed session already has it in its history.
+ */
+export function codexPrompt(prompt: string, instructions?: string, resumeToken?: string): string {
+  if (!instructions || resumeToken) return prompt;
+  return `<project-knowledge>\n${instructions}\n</project-knowledge>\n\n${prompt}`;
+}
+
 export async function probeCodex(
   ctx: RunContext,
   bin: string,
@@ -406,7 +418,7 @@ export class CodexProvider implements AgentProvider {
           isRepo: this.isRepo(input.ctx.cwd),
           caps,
         }),
-        stdin: input.prompt,
+        stdin: codexPrompt(input.prompt, input.instructions, input.resumeToken),
       },
       normaliser,
     });

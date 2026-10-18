@@ -1,5 +1,5 @@
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, lt, ne, sql } from "drizzle-orm";
 import { sessions, users, type Database } from "@ucch/db";
 import { isAvatarDataUrl, type Scope } from "@ucch/protocol";
 import type { Config } from "./config.js";
@@ -7,6 +7,8 @@ import { hashPassword, verifyPassword } from "./password.js";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const TICKET_TTL_MS = 5 * 60 * 1000; //             5 minutes
+const SESSION_CACHE_MS = 15 * 1000; //             15 seconds
+const SESSION_CACHE_MAX = 10_000;
 
 export interface Principal {
   userId: string;
@@ -27,11 +29,24 @@ export interface Principal {
 export class AuthService {
   #tickets = new Map<string, { principal: Principal; expiresAt: number }>();
 
+  /**
+   * Recently resolved sessions, by hashed id.
+   *
+   * Every API request resolves its cookie, and a page load is a dozen
+   * requests; without this each one was a round trip to Postgres for the
+   * same row. Every way a session ends goes through this class and drops
+   * its entry, so the window in which a revoked session still works is
+   * zero on this process -- the TTL only bounds how stale an entry can get
+   * if a row is deleted from outside it.
+   */
+  #sessionCache = new Map<string, { principal: Principal; expiresAt: number; cachedUntil: number }>();
+
   constructor(
     private readonly db: Database,
     private readonly config: Config,
   ) {
-    // Expired tickets are also rejected on use; this sweep only bounds memory.
+    // Expired tickets and cached sessions are also rejected on use; this
+    // sweep only bounds memory.
     setInterval(() => this.#sweep(), 60_000).unref();
   }
 
@@ -50,22 +65,42 @@ export class AuthService {
     if (this.config.DEV_AUTH_BYPASS) return this.#devPrincipal();
     if (!token) return null;
 
+    const id = hashToken(token);
+    const now = Date.now();
+    const cached = this.#sessionCache.get(id);
+    if (cached && cached.cachedUntil > now && cached.expiresAt > now) return cached.principal;
+    this.#sessionCache.delete(id);
+
     const [row] = await this.db
       .select()
       .from(sessions)
-      .where(eq(sessions.id, hashToken(token)))
+      .where(eq(sessions.id, id))
       .limit(1);
 
     if (!row) return null;
-    if (row.expiresAt.getTime() < Date.now()) {
+    if (row.expiresAt.getTime() < now) {
       await this.db.delete(sessions).where(eq(sessions.id, row.id));
       return null;
     }
-    return { userId: row.userId, sessionId: row.id, scopes: row.scopes as Scope[] };
+    const principal = { userId: row.userId, sessionId: row.id, scopes: row.scopes as Scope[] };
+    if (this.#sessionCache.size >= SESSION_CACHE_MAX) this.#sessionCache.clear();
+    this.#sessionCache.set(id, { principal, expiresAt: row.expiresAt.getTime(), cachedUntil: now + SESSION_CACHE_MS });
+    return principal;
+  }
+
+  /** Deletes every expired session; returns how many went. */
+  async sweepExpiredSessions(now = new Date()): Promise<number> {
+    const removed = await this.db
+      .delete(sessions)
+      .where(lt(sessions.expiresAt, now))
+      .returning({ id: sessions.id });
+    return removed.length;
   }
 
   async revokeSession(token: string): Promise<void> {
-    await this.db.delete(sessions).where(eq(sessions.id, hashToken(token)));
+    const id = hashToken(token);
+    this.#sessionCache.delete(id);
+    await this.db.delete(sessions).where(eq(sessions.id, id));
   }
 
   issueTicket(principal: Principal): { ticket: string; expiresInMs: number } {
@@ -224,6 +259,9 @@ export class AuthService {
     await this.db
       .delete(sessions)
       .where(and(eq(sessions.userId, userId), ne(sessions.id, keepSessionId)));
+    for (const [id, entry] of this.#sessionCache) {
+      if (entry.principal.userId === userId && id !== keepSessionId) this.#sessionCache.delete(id);
+    }
 
     return { ok: true, hadPassword: row.passwordHash !== null };
   }
@@ -299,6 +337,16 @@ export class AuthService {
     return { id: row!.id, created: true };
   }
 
+  /** Whether a GitHub identity already has an account here. */
+  async hasGithubUser(githubId: string): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.githubId, githubId))
+      .limit(1);
+    return Boolean(row);
+  }
+
   async upsertGithubUser(profile: {
     githubId: string;
     login: string;
@@ -338,6 +386,9 @@ export class AuthService {
     const now = Date.now();
     for (const [ticket, entry] of this.#tickets) {
       if (entry.expiresAt < now) this.#tickets.delete(ticket);
+    }
+    for (const [id, entry] of this.#sessionCache) {
+      if (entry.cachedUntil < now) this.#sessionCache.delete(id);
     }
   }
 }

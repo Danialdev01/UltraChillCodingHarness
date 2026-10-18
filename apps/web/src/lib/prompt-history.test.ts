@@ -46,19 +46,37 @@ describe("stepping back through prompts", () => {
 });
 
 describe("historyDirection", () => {
-  const key = (key: string, mods: Partial<{ altKey: boolean; ctrlKey: boolean; metaKey: boolean }> = {}) => ({
+  type Mods = Partial<{ altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; caretAtEnd: boolean }>;
+  const key = (key: string, mods: Mods = {}) => ({
     key,
     altKey: false,
     ctrlKey: false,
     metaKey: false,
+    shiftKey: false,
+    caretAtEnd: true,
     ...mods,
   });
 
-  it("is alt with an arrow, and nothing else", () => {
-    expect(historyDirection(key("ArrowUp", { altKey: true }))).toBe("back");
-    expect(historyDirection(key("ArrowDown", { altKey: true }))).toBe("forward");
-    expect(historyDirection(key("ArrowUp"))).toBeNull();
-    expect(historyDirection(key("ArrowUp", { altKey: true, ctrlKey: true }))).toBeNull();
+  it("is a bare arrow with the caret at the end of the draft", () => {
+    expect(historyDirection(key("ArrowUp"))).toBe("back");
+    expect(historyDirection(key("ArrowDown"))).toBe("forward");
+  });
+
+  it("leaves the arrows to the caret when it is inside the draft", () => {
+    expect(historyDirection(key("ArrowUp", { caretAtEnd: false }))).toBeNull();
+    expect(historyDirection(key("ArrowDown", { caretAtEnd: false }))).toBeNull();
+  });
+
+  it("is alt with an arrow wherever the caret is", () => {
+    expect(historyDirection(key("ArrowUp", { altKey: true, caretAtEnd: false }))).toBe("back");
+    expect(historyDirection(key("ArrowDown", { altKey: true, caretAtEnd: false }))).toBe("forward");
+  });
+
+  it("ignores other modifiers and other keys", () => {
+    expect(historyDirection(key("ArrowUp", { shiftKey: true }))).toBeNull();
+    expect(historyDirection(key("ArrowUp", { ctrlKey: true }))).toBeNull();
+    expect(historyDirection(key("ArrowUp", { altKey: true, metaKey: true }))).toBeNull();
+    expect(historyDirection(key("a"))).toBeNull();
     expect(historyDirection(key("a", { altKey: true }))).toBeNull();
   });
 });

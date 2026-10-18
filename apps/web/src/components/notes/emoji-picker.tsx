@@ -54,7 +54,7 @@ export function EmojiPicker({
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search emoji…"
             aria-label="Search emoji"
-            className="bg-background h-7 min-w-0 flex-1 rounded border px-2 text-xs outline-none"
+            className="bg-background h-7 min-w-0 flex-1 border-input rounded border px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
             onKeyDown={(event) => {
               if (event.key === "Enter" && results[0]) {
                 event.preventDefault()

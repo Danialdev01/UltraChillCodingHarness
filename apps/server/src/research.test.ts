@@ -5,6 +5,7 @@ import { briefedPrompt, EMPTY_BRIEF, researchAsk, researchBackends } from "./res
 
 const base = {
   DATABASE_URL: "postgres://u:p@localhost:5432/db",
+  NODE_ENV: "test",
   DEV_AUTH_BYPASS: "true",
 };
 

@@ -1,7 +1,9 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import {
+  AlertTriangleIcon,
   BotIcon,
   CheckIcon,
   KeyRoundIcon,
@@ -13,9 +15,10 @@ import {
   TrashIcon,
 } from "lucide-react"
 
-import { LoginTerminalDialog, type LoginProgram } from "@/components/login-terminal-dialog"
+import type { LoginProgram } from "@/components/login-terminal-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   fetchProviders,
   saveClaudeToken,
@@ -26,6 +29,12 @@ import {
   type ProvidersResponse,
 } from "@/lib/providers-api"
 import { cn } from "@/lib/utils"
+
+// xterm comes with the sign-in terminal, which most visits to settings never open.
+const LoginTerminalDialog = dynamic(
+  () => import("@/components/login-terminal-dialog").then((m) => m.LoginTerminalDialog),
+  { ssr: false },
+)
 
 /** Where the Codex warning acknowledgement is remembered. */
 const CODEX_ACK_KEY = "ucch:codex-warning-ack"
@@ -44,7 +53,21 @@ const CODEX_ACK_KEY = "ucch:codex-warning-ack"
  * What the cards show comes from probing the CLIs themselves. A masked
  * account label is the most any of it reveals.
  */
-export function ProviderSettings({ projects }: { projects: { id: string; name: string }[] }) {
+export function ProviderSettings({
+  projects,
+  workspaceId,
+  readOnly = false,
+}: {
+  projects: { id: string; name: string }[]
+  /**
+   * Set on the workspace's Harness page: the cards are that workspace's
+   * dedicated subscription rather than your own, and the account-only
+   * parts -- the default provider, the OpenRouter key -- are left out.
+   */
+  workspaceId?: string
+  /** Shown, but nothing can be changed: a member looking at the workspace's subscription. */
+  readOnly?: boolean
+}) {
   const [data, setData] = React.useState<ProvidersResponse | null>(null)
   const [loadError, setLoadError] = React.useState<string | null>(null)
   const [refreshing, setRefreshing] = React.useState(false)
@@ -54,14 +77,14 @@ export function ProviderSettings({ projects }: { projects: { id: string; name: s
   const load = React.useCallback(async (fresh: boolean) => {
     setRefreshing(true)
     try {
-      setData(await fetchProviders(fresh))
+      setData(await fetchProviders(fresh, workspaceId))
       setLoadError(null)
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Could not load providers.")
     } finally {
       setRefreshing(false)
     }
-  }, [])
+  }, [workspaceId])
 
   React.useEffect(() => {
     void load(false)
@@ -80,35 +103,46 @@ export function ProviderSettings({ projects }: { projects: { id: string; name: s
   return (
     <div className="flex flex-col gap-4">
       {data && !data.cliEnabled && (
-        <p className="border-amber-500/40 text-amber-600 dark:text-amber-500 rounded-lg border px-4 py-3 text-sm">
-          The Claude Code and Codex providers are disabled on this server. Until the container
-          runtime lands they run the CLI on the host, so production needs{" "}
-          <code className="font-mono">AGENT_ALLOW_HOST_SHELL=true</code>, the same flag the
-          terminal needs.
+        <p className="border-warning/40 bg-warning-soft text-warning flex gap-2 rounded-lg border px-4 py-3 text-sm">
+          <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            The Claude Code and Codex providers are disabled on this server. Until the container
+            runtime lands they run the CLI on the host, so production needs{" "}
+            <code className="font-mono">AGENT_ALLOW_HOST_SHELL=true</code>, the same flag the
+            terminal needs.
+          </span>
         </p>
       )}
 
-      <DefaultProviderCard
-        value={data?.defaultProvider ?? "native"}
-        cards={cards ?? null}
-        onChange={(provider) =>
-          setData((current) => (current ? { ...current, defaultProvider: provider } : current))
-        }
-      />
+      {!workspaceId && (
+        <>
+          <DefaultProviderCard
+            value={data?.defaultProvider ?? "native"}
+            cards={cards ?? null}
+            onChange={(provider) =>
+              setData((current) => (current ? { ...current, defaultProvider: provider } : current))
+            }
+          />
 
-      <NativeCard card={cards?.native ?? null} />
+          <NativeCard card={cards?.native ?? null} />
+        </>
+      )}
 
       <ClaudeCard
         card={cards?.claude ?? null}
         encryptionAvailable={data?.encryptionAvailable ?? true}
-        canLogin={projects.length > 0}
+        canLogin={projects.length > 0 && !readOnly}
+        readOnly={readOnly}
+        workspaceId={workspaceId}
         onLogin={() => setLogin("claude-login")}
         onChanged={() => void load(true)}
       />
 
       <CodexCard
         card={cards?.codex ?? null}
-        canLogin={projects.length > 0}
+        canLogin={projects.length > 0 && !readOnly}
+        readOnly={readOnly}
+        workspaceId={workspaceId}
         onLogin={() => setLogin("codex-login")}
         onChanged={() => void load(true)}
       />
@@ -147,6 +181,7 @@ export function ProviderSettings({ projects }: { projects: { id: string; name: s
         <LoginTerminalDialog
           program={login}
           projectId={projectId}
+          credentialWorkspaceId={workspaceId}
           open
           onOpenChange={(open) => {
             if (!open) {
@@ -162,7 +197,7 @@ export function ProviderSettings({ projects }: { projects: { id: string; name: s
 }
 
 function StatusPill({ card }: { card: ProviderCard | null }) {
-  if (!card) return <span className="text-muted-foreground text-xs">Checking…</span>
+  if (!card) return <Skeleton className="h-5 w-24 rounded-full" />
   const [label, tone] = !card.enabled
     ? ["Disabled", "muted"]
     : !card.installed
@@ -182,7 +217,7 @@ function StatusPill({ card }: { card: ProviderCard | null }) {
       className={cn(
         "rounded-full border px-2 py-0.5 text-xs",
         tone === "ok" && "border-ucch-active/40 text-ucch-active",
-        tone === "warn" && "border-amber-500/40 text-amber-600 dark:text-amber-500",
+        tone === "warn" && "border-warning/40 bg-warning-soft text-warning",
         tone === "muted" && "text-muted-foreground",
       )}
     >
@@ -258,17 +293,22 @@ function DefaultProviderCard({
         provider its first message ran under; switching means a new thread.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
-        {(["native", "claude", "codex"] as const).map((id) => (
-          <Button
-            key={id}
-            variant={value === id ? "default" : "outline"}
-            size="sm"
-            disabled={busy}
-            onClick={() => void choose(id)}
-          >
-            {cards?.[id]?.label ?? id}
-          </Button>
-        ))}
+        {(["native", "claude", "codex"] as const).map((id) =>
+          // Before the cards arrive the pick is a guess; bars, not a wrong highlight.
+          !cards ? (
+            <Skeleton key={id} className="h-8 w-20" />
+          ) : (
+            <Button
+              key={id}
+              variant={value === id ? "default" : "outline"}
+              size="sm"
+              disabled={busy}
+              onClick={() => void choose(id)}
+            >
+              {cards[id]?.label ?? id}
+            </Button>
+          ),
+        )}
       </div>
       {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
     </section>
@@ -293,12 +333,16 @@ function ClaudeCard({
   card,
   encryptionAvailable,
   canLogin,
+  readOnly,
+  workspaceId,
   onLogin,
   onChanged,
 }: {
   card: ProviderCard | null
   encryptionAvailable: boolean
   canLogin: boolean
+  readOnly: boolean
+  workspaceId: string | undefined
   onLogin: () => void
   onChanged: () => void
 }) {
@@ -335,7 +379,7 @@ function ClaudeCard({
       </p>
 
       {card?.warnings?.map((warning) => (
-        <p key={warning} className="text-amber-600 dark:text-amber-500 mt-2 text-sm">
+        <p key={warning} className="text-warning mt-2 text-sm">
           {warning}
         </p>
       ))}
@@ -348,10 +392,10 @@ function ClaudeCard({
           <LogInIcon />
           Sign in (terminal)
         </Button>
-        {card?.authenticated && (
+        {card?.authenticated && !readOnly && (
           <Button
             variant="outline"
-            onClick={() => void act("signout", () => signOutProvider("claude"))}
+            onClick={() => void act("signout", () => signOutProvider("claude", workspaceId))}
             disabled={busy !== null}
           >
             {busy === "signout" ? <Loader2Icon className="animate-spin" /> : <LogOutIcon />}
@@ -360,7 +404,7 @@ function ClaudeCard({
         )}
       </div>
 
-      <div className="mt-4 flex max-w-xl flex-wrap items-center gap-2">
+      {!readOnly && <div className="mt-4 flex max-w-xl flex-wrap items-center gap-2">
         <Input
           type="password"
           value={draft}
@@ -374,7 +418,7 @@ function ClaudeCard({
         />
         <Button
           variant="outline"
-          onClick={() => void act("token", () => saveClaudeToken(draft.trim()))}
+          onClick={() => void act("token", () => saveClaudeToken(draft.trim(), workspaceId))}
           disabled={busy !== null || !draft.trim() || !encryptionAvailable}
         >
           {busy === "token" && <Loader2Icon className="animate-spin" />}
@@ -383,14 +427,14 @@ function ClaudeCard({
         {card?.token?.configured && (
           <Button
             variant="outline"
-            onClick={() => void act("clear", () => saveClaudeToken(null))}
+            onClick={() => void act("clear", () => saveClaudeToken(null, workspaceId))}
             disabled={busy !== null}
           >
             <TrashIcon />
             Remove token
           </Button>
         )}
-      </div>
+      </div>}
 
       <div className="mt-3 text-sm">
         {error ? (
@@ -400,8 +444,10 @@ function ClaudeCard({
             <CheckIcon className="size-4" />
             Saved.
           </p>
-        ) : card?.token?.configured ? (
-          <p className={cn("text-muted-foreground", card.token.expiresSoon && "text-amber-600 dark:text-amber-500")}>
+        ) : !card ? (
+          <Skeleton className="my-0.5 h-3.5 w-3/4 max-w-prose" />
+        ) : card.token?.configured ? (
+          <p className={cn("text-muted-foreground", card.token.expiresSoon && "text-warning")}>
             A token stored on {card.token.issuedAt ? new Date(card.token.issuedAt).toLocaleDateString() : "an unknown date"}{" "}
             is in use.{card.token.expiresSoon && " Tokens last a year: it is time to mint a new one."}
           </p>
@@ -424,11 +470,15 @@ function ClaudeCard({
 function CodexCard({
   card,
   canLogin,
+  readOnly,
+  workspaceId,
   onLogin,
   onChanged,
 }: {
   card: ProviderCard | null
   canLogin: boolean
+  readOnly: boolean
+  workspaceId: string | undefined
   onLogin: () => void
   onChanged: () => void
 }) {
@@ -458,7 +508,7 @@ function CodexCard({
     setBusy(true)
     setError(null)
     try {
-      await signOutProvider("codex")
+      await signOutProvider("codex", workspaceId)
       onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -479,8 +529,11 @@ function CodexCard({
       </p>
 
       {advisory && (
-        <div className="border-amber-500/40 mt-3 max-w-prose rounded-md border px-3 py-2 text-sm">
-          <p className="text-amber-700 dark:text-amber-400">{advisory}</p>
+        <div className="border-warning/40 bg-warning-soft mt-3 max-w-prose rounded-md border px-3 py-2 text-sm">
+          <p className="text-warning flex gap-2">
+            <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
+            {advisory}
+          </p>
           <label className="mt-2 flex items-center gap-2 text-xs">
             <input
               type="checkbox"
@@ -492,7 +545,7 @@ function CodexCard({
         </div>
       )}
       {findings.map((warning) => (
-        <p key={warning} className="text-amber-600 dark:text-amber-500 mt-2 text-sm">
+        <p key={warning} className="text-warning mt-2 text-sm">
           {warning}
         </p>
       ))}
@@ -505,7 +558,7 @@ function CodexCard({
           <LogInIcon />
           Sign in (device code)
         </Button>
-        {card?.authenticated && (
+        {card?.authenticated && !readOnly && (
           <Button variant="outline" onClick={() => void signOut()} disabled={busy}>
             {busy ? <Loader2Icon className="animate-spin" /> : <LogOutIcon />}
             Sign out

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog"
 import { XtermPane } from "@/components/xterm-pane"
 import { UcchClient } from "@/lib/client"
+import { EMPTY_OUTPUT, appendOutput, frameBatcher, type TerminalOutput } from "@/lib/terminal-output"
 
 export type LoginProgram = "claude-login" | "codex-login"
 
@@ -46,18 +47,21 @@ const TITLES: Record<LoginProgram, { title: string; description: string }> = {
 export function LoginTerminalDialog({
   program,
   projectId,
+  credentialWorkspaceId,
   open,
   onOpenChange,
   onExited,
 }: {
   program: LoginProgram
   projectId: string
+  /** Sign in this workspace's dedicated subscription instead of your own. */
+  credentialWorkspaceId?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The CLI has exited: time to look at the provider card again. */
   onExited?: () => void
 }) {
-  const [output, setOutput] = React.useState<readonly string[]>([])
+  const [output, setOutput] = React.useState<TerminalOutput>(EMPTY_OUTPUT)
   const [status, setStatus] = React.useState<"connecting" | "running" | "exited" | "error">(
     "connecting",
   )
@@ -72,31 +76,31 @@ export function LoginTerminalDialog({
     clientRef.current = client
     const id = crypto.randomUUID()
     terminalRef.current = id
-    let seen = 0
     let exited = false
-    setOutput([])
+    setOutput(EMPTY_OUTPUT)
     setStatus("connecting")
     setError(null)
 
-    const unsubscribe = client.subscribeToChanges(() => {
-      const events = client.events
-      if (seen >= events.length) return
-      const chunks: string[] = []
-      for (let i = seen; i < events.length; i++) {
-        const event = events[i]!.event
-        if (event.type !== "terminal.output" || event.terminalId !== id) continue
-        chunks.push(event.data)
-        // The reactor prints this line itself when the process ends; there
-        // is no other signal on the wire that a terminal has closed.
-        if (!exited && /\[exited with /.test(event.data)) {
-          exited = true
-          setStatus("exited")
-          onExited?.()
-        }
+    const batch = frameBatcher<string>((chunks) =>
+      setOutput((current) => appendOutput(current, chunks, MAX_CHUNKS)),
+    )
+    // Straight from the socket: `client.events` is a capped history, and a
+    // cursor into it stops moving once it is full.
+    const offEvents = client.onEvent(({ event }) => {
+      if (event.type !== "terminal.output" || event.terminalId !== id) return
+      batch.push(event.data)
+      // The reactor prints this line itself when the process ends; there
+      // is no other signal on the wire that a terminal has closed.
+      if (!exited && /\[exited with /.test(event.data)) {
+        exited = true
+        setStatus("exited")
+        onExited?.()
       }
-      seen = events.length
-      if (chunks.length) setOutput((current) => [...current, ...chunks].slice(-MAX_CHUNKS))
     })
+    const unsubscribe = () => {
+      offEvents()
+      batch.cancel()
+    }
 
     void (async () => {
       await client.connect()
@@ -110,6 +114,7 @@ export function LoginTerminalDialog({
         cols: 100,
         rows: 28,
         program,
+        ...(credentialWorkspaceId ? { credentialWorkspaceId } : {}),
       })
       setStatus("running")
     })().catch((e) => {
@@ -127,7 +132,7 @@ export function LoginTerminalDialog({
       terminalRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, program, projectId])
+  }, [open, program, projectId, credentialWorkspaceId])
 
   const send = (data: string) => {
     const id = terminalRef.current

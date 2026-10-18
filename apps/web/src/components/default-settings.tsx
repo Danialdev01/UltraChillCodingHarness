@@ -5,6 +5,7 @@ import { CheckIcon, Loader2Icon, RotateCcwIcon, SparklesIcon } from "lucide-reac
 
 import { ModelSelect, useModels } from "@/components/model-picker"
 import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
 
 interface DefaultSettings {
   /** The model in force: the choice below, or the server's when there is none. */
@@ -133,7 +134,7 @@ export function DefaultSettings() {
             {named?.reasoning && " — a reasoning model, so the effort select applies to it"}.
           </p>
         ) : (
-          <p className="text-muted-foreground">Loading…</p>
+          <Skeleton className="my-0.5 h-3.5 w-2/3" />
         )}
       </div>
     </section>

@@ -3,6 +3,7 @@ import {
   normalizeWorkspacePath,
   type AgentPermissionMode,
   type DomainEvent,
+  type ReasoningEffort,
   type TokenUsage,
 } from "@ucch/protocol";
 import type { ExitStatus } from "./process.js";
@@ -35,10 +36,13 @@ import { forbiddenEnvPresent } from "./types.js";
  */
 
 /** Models the composer offers. Aliases: the CLI resolves them to a version. */
+/** What `--effort` accepts. Every model on the list takes every level. */
+const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
 export const CLAUDE_MODELS = [
-  { id: "sonnet", name: "Claude Sonnet" },
-  { id: "opus", name: "Claude Opus" },
-  { id: "haiku", name: "Claude Haiku" },
+  { id: "sonnet", name: "Claude Sonnet", efforts: CLAUDE_EFFORTS },
+  { id: "opus", name: "Claude Opus", efforts: CLAUDE_EFFORTS },
+  { id: "haiku", name: "Claude Haiku", efforts: CLAUDE_EFFORTS },
 ] as const;
 
 /** Flags that exist only from certain CLI versions on. Detected, not assumed. */
@@ -50,6 +54,8 @@ export interface ClaudeCapabilities {
 export function claudeArgv(input: {
   bin: string;
   model?: string;
+  /** `off` is no flag at all: the CLI picks the model's default. */
+  effort?: ReasoningEffort;
   resumeToken?: string;
   caps: ClaudeCapabilities;
   /**
@@ -58,6 +64,11 @@ export function claudeArgv(input: {
    * answers the prompts its mode does not need a person for.
    */
   permissionMode?: AgentPermissionMode;
+  /**
+   * Added to the CLI's system prompt. Sent on resumed turns too: `-p` keeps
+   * the conversation across `--resume`, not the flags it was started with.
+   */
+  appendSystemPrompt?: string;
 }): string[] {
   const argv = [
     input.bin,
@@ -89,7 +100,9 @@ export function claudeArgv(input: {
   // whoever wrote the repository, and this is a harness that clones anything.
   if (input.caps.settingSources) argv.push("--setting-sources", "user");
   if (input.model) argv.push("--model", input.model);
+  if (input.effort && input.effort !== "off") argv.push("--effort", input.effort);
   if (input.resumeToken) argv.push("--resume", input.resumeToken);
+  if (input.appendSystemPrompt) argv.push("--append-system-prompt", input.appendSystemPrompt);
   return argv;
 }
 
@@ -449,7 +462,7 @@ export class ClaudeNormaliser implements Normaliser {
           events.push({
             type: "agent.turn_failed",
             ...ids,
-            error: line.result?.trim() || line.subtype || "claude reported an error",
+            error: explainClaudeError(line.result?.trim() || line.subtype || "claude reported an error"),
           });
         } else {
           events.push({
@@ -488,7 +501,7 @@ export class ClaudeNormaliser implements Normaliser {
       return events;
     }
     const why = exit.stderrTail || (exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`);
-    events.push({ type: "agent.turn_failed", ...ids, error: `claude exited with ${why}` });
+    events.push({ type: "agent.turn_failed", ...ids, error: explainClaudeError(`claude exited with ${why}`) });
     return events;
   }
 
@@ -565,6 +578,28 @@ function flattenContent(content: unknown): string {
   return content == null ? "" : JSON.stringify(content);
 }
 
+/**
+ * The CLI's ways of saying its login is gone: the access token expired and
+ * the refresh token was refused (it has been revoked, or rotated by another
+ * process sharing the same login), or there was never a login at all.
+ */
+const AUTH_FAILURE =
+  /OAuth session expired|could not be refreshed|OAuth token (has )?expired|invalid_grant|authentication_error|Failed to authenticate|Invalid API key|Please run \/login/i;
+
+/**
+ * A failed turn's error, with what to do about it when the cause is the
+ * login. The CLI's own message is kept at the end for whoever debugs it.
+ * Nothing in the harness can renew a refused login: a person has to sign in.
+ */
+export function explainClaudeError(message: string): string {
+  if (!AUTH_FAILURE.test(message)) return message;
+  return (
+    "Claude Code's sign-in has expired and could not be renewed. Sign in again under " +
+    "Settings → Agent Providers → Claude Code, or store a setup token there: it lasts a " +
+    `year and never needs renewing. (${message})`
+  );
+}
+
 function describeError(error: unknown): string {
   if (typeof error === "string") return error;
   if (typeof error === "object" && error !== null) {
@@ -619,8 +654,10 @@ export class ClaudeProvider implements AgentProvider {
         argv: claudeArgv({
           bin: this.bin,
           ...(input.model ? { model: input.model } : {}),
+          ...(input.effort ? { effort: input.effort } : {}),
           ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
           ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+          ...(input.instructions ? { appendSystemPrompt: input.instructions } : {}),
           caps,
         }),
         stdin: `${JSON.stringify(userLine(input.prompt))}\n`,

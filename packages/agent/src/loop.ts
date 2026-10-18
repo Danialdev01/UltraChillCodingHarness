@@ -13,6 +13,7 @@ import {
 } from "./context.js";
 import { buildPrompt } from "./prompt.js";
 import { schemasFor, toolByName, type RegistryOptions, type ToolPreset } from "./registry.js";
+import { bindDocuments, type DocumentsBackends } from "./documents.js";
 import { bindResearch, type ResearchBackends } from "./research.js";
 import { rebuild } from "./session-log.js";
 import { openrouterPluginProvider } from "./web.js";
@@ -91,9 +92,14 @@ export interface TurnInput {
    * caller sets both, since the preset is a separate field; a research mode
    * with the standard preset would be a prompt describing tools it lacks.
    */
-  mode?: "research";
+  mode?: "research" | "documentation";
   /** The pipeline's backends. Required for a research turn, unused otherwise. */
   research?: ResearchBackends;
+  /**
+   * The document toolchain. Required for a documentation turn -- which runs
+   * on the `documentation` preset -- and unused otherwise.
+   */
+  documents?: DocumentsBackends;
   /**
    * False leaves the turn open: no `agent.turn_completed` is appended, and
    * the outcome is returned for the caller to fold into whatever closes the
@@ -720,6 +726,14 @@ export async function runTool(call: ToolCall, input: TurnInput): Promise<ToolOut
     ...(input.mode === "research" && input.research
       ? {
           research: bindResearch(input.research, {
+            apiKey: input.apiKey,
+            complete: input.complete,
+          }),
+        }
+      : {}),
+    ...(input.mode === "documentation" && input.documents
+      ? {
+          documents: bindDocuments(input.documents, {
             apiKey: input.apiKey,
             complete: input.complete,
           }),

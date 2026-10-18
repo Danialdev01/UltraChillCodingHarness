@@ -1,5 +1,5 @@
-import { and, asc, eq } from "drizzle-orm";
-import { databaseConnections, workspaces, type Database, type DatabaseConnection } from "@ucch/db";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import { databaseConnections, workspaceMembers, type Database, type DatabaseConnection } from "@ucch/db";
 import type { DatabaseConnectionCreate, DatabaseConnectionSummary, DatabaseConnectionUpdate, DatabaseEngine } from "@ucch/protocol";
 import { encryptSecret } from "./crypto.js";
 
@@ -64,15 +64,22 @@ export class DatabaseConnectionService {
 
   /**
    * The full row -- password included -- when the connection belongs to a
-   * workspace this user owns. Existence and ownership are one predicate, as
-   * with `WorkspaceService.ownedBy`.
+   * workspace this user may work in (any role but viewer: a live query can
+   * write). Existence and membership are one predicate, as with
+   * `WorkspaceService.membership`.
    */
   async findForUser(id: string, userId: string): Promise<DatabaseConnection | null> {
     const [row] = await this.db
       .select({ connection: databaseConnections })
       .from(databaseConnections)
-      .innerJoin(workspaces, eq(workspaces.id, databaseConnections.workspaceId))
-      .where(and(eq(databaseConnections.id, id), eq(workspaces.ownerUserId, userId)))
+      .innerJoin(
+        workspaceMembers,
+        and(
+          eq(workspaceMembers.workspaceId, databaseConnections.workspaceId),
+          eq(workspaceMembers.userId, userId),
+        ),
+      )
+      .where(and(eq(databaseConnections.id, id), inArray(workspaceMembers.role, ["owner", "admin", "member"])))
       .limit(1);
     return row?.connection ?? null;
   }

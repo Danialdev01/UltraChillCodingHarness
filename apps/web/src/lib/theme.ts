@@ -1,149 +1,103 @@
 /**
- * The whole harness's colour, derived from three choices.
+ * The harness's theme: which palette, in which mode, and how it is kept.
  *
- * The palette is a 60-30-10 split rather than a list of tokens: a `dominant`
- * that carries the page (the 60), a `secondary` for the surfaces that sit on
- * it -- panels, hovers, borders (the 30), and an `accent` for the one thing
- * per screen that should pull the eye (the 10). Every shadcn variable in
- * `globals.css` is computed from those three, so a theme is three hex strings
- * and nothing else has to be kept in sync.
+ * The colours themselves come from `color-engine.ts`; this module holds the
+ * user's choice and turns it into CSS. A choice is small on purpose -- the
+ * rules (`docs/color-and-theme.md`) say to store the seed, not the hex values:
  *
- * Foregrounds are never chosen, only measured: `readableOn` picks near-white
- * or near-black by WCAG contrast against whatever surface the text or icon
- * actually sits on. That is what makes a light theme and a dark theme the
- * same code path -- pick a dark `dominant` and the text and icons flip to
- * white on their own, and the `dark` class follows so Tailwind's `dark:`
- * variants agree with what the eye sees.
+ * - `mode`: Light, Dark or System. System is the default and follows the OS.
+ * - `source`: the shipped palette, a seed (plus an optional hue picked on the
+ *   slider), or three custom hex colours for people who insist. Custom colours
+ *   go through the same contrast repair and validation as everything else.
+ * - `highContrast`: raises every text target from 4.5:1 to 7:1.
  *
- * This module is deliberately free of DOM and React so the arithmetic can be
- * tested directly; `applyTheme` at the bottom is the only part that touches a
- * document.
+ * Both modes are always generated from the same choice, and every variable is
+ * written as `light-dark(<light>, <dark>)`. The browser picks the side from
+ * `color-scheme`, which the root's `data-theme-mode` sets in the stylesheet --
+ * so System follows the OS before first paint and on every change after, with
+ * no script at all.
+ *
+ * DOM-free apart from the storage and paint helpers at the end, so the
+ * arithmetic can be tested directly.
  */
 
+import {
+  buildTokens,
+  CHROMA_RANGE,
+  clampHue,
+  contrast,
+  DEFAULT_ACCENT,
+  defaultTokens,
+  hexToOklch,
+  luminance,
+  parseHex,
+  seedToAccent,
+  toHex,
+  type BuiltTokens,
+  type Mode,
+  type Tokens,
+} from "./color-engine.js"
+
+export { contrast, luminance, parseHex, toHex, type Mode, type Tokens }
+
+/** Three custom colours: the page, the tint for panels, and the accent. */
 export interface Theme {
-  /** 60% -- the page, and every large surface on it. */
+  /** The page, and every large surface on it. */
   dominant: string
-  /** 30% -- panels, rails, hovers, borders: the supporting surfaces. */
+  /** Tints panels, hovers and borders; their lightness is set for readability. */
   secondary: string
-  /** 10% -- selection, focus rings, primary buttons. Used sparingly. */
+  /** Selection, focus rings, the primary button. */
   accent: string
 }
 
-/** The palette the app ships with: neutral surfaces, one blue accent. */
+export type ThemeMode = "light" | "dark" | "system"
+
+export type ThemeSource =
+  | { kind: "default" }
+  /** `hue` is set when picked on the slider; otherwise the seed decides it. */
+  | { kind: "seed"; seed: number; hue?: number }
+  | ({ kind: "custom" } & Theme)
+
+export interface ThemeSettings {
+  mode: ThemeMode
+  source: ThemeSource
+  highContrast: boolean
+  /** Shuffle is disabled while locked, so a palette you like stays put. */
+  locked: boolean
+}
+
+export const DEFAULT_SETTINGS: ThemeSettings = {
+  mode: "system",
+  source: { kind: "default" },
+  highContrast: false,
+  locked: false,
+}
+
+/** The custom colours a fresh "Advanced" panel starts from. */
 export const DEFAULT_THEME: Theme = {
   dominant: "#ffffff",
   secondary: "#f1f1f3",
   accent: "#3b5bdb",
 }
 
-/** Where a chosen theme lives between visits. */
-export const THEME_STORAGE_KEY = "ucch:theme"
-
 /**
- * Where the chosen theme is *also* kept, so the server can paint it.
- *
- * A cookie as well as `localStorage` because only one of the two is readable
- * while the HTML is being generated. The root layout reads this and renders the
- * palette straight onto <html>, which is what makes the first paint already
- * themed -- with no blocking script, and nothing that depends on JavaScript
- * having run. `localStorage` stays the client's own copy, and the provider
- * mirrors one into the other.
- *
- * Three hex strings of JSON: small enough that putting it on every request is
- * not worth a second thought.
+ * Whether the palette differs from the stylesheet's own -- i.e. whether there
+ * are variables to paint at all. Mode alone needs only the attribute.
  */
-export const THEME_COOKIE = "ucch_theme"
-
-/** A year: a palette is not a session, and forgetting it would be a bug. */
-const THEME_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
-
-/** The cookie value for a theme. */
-export function serialiseThemeCookie(theme: Theme): string {
-  return encodeURIComponent(JSON.stringify(theme))
+export function needsInlineVars(settings: ThemeSettings): boolean {
+  return settings.source.kind !== "default" || settings.highContrast
 }
 
-/**
- * A theme out of a cookie value, or null when there is nothing usable in it.
- *
- * Null for every kind of wrong -- absent, truncated, not JSON, not hex -- and
- * the caller renders the shipped palette instead. A cookie is user-controlled
- * input, so `isTheme` is what stands between it and `deriveTheme`.
- */
-export function parseThemeCookie(raw: string | undefined): Theme | null {
-  if (!raw) return null
-  try {
-    const parsed: unknown = JSON.parse(decodeURIComponent(raw))
-    return isTheme(parsed) ? parsed : null
-  } catch {
-    return null
-  }
+/** Whether the settings are the shipped ones -- nothing to paint over the stylesheet. */
+export function isDefaultSettings(settings: ThemeSettings): boolean {
+  return (
+    settings.source.kind === "default" &&
+    settings.mode === "system" &&
+    !settings.highContrast
+  )
 }
 
-/**
- * Writes the cookie, or clears it when the theme is forgotten.
- *
- * Client-side: the palette is chosen in the browser, and this is how the next
- * server render gets to hear about it. `SameSite=Lax` because it is a
- * preference rather than a credential, and it has to survive arriving from an
- * external link.
- */
-export function storeThemeCookie(theme: Theme | null): void {
-  const document = globalThis.document
-  if (!document) return
-  document.cookie = theme
-    ? `${THEME_COOKIE}=${serialiseThemeCookie(theme)}; path=/; max-age=${THEME_COOKIE_MAX_AGE}; samesite=lax`
-    : `${THEME_COOKIE}=; path=/; max-age=0; samesite=lax`
-}
-
-/** The variables as a React `style` object, for rendering onto <html>. */
-export function themeToStyle(theme: Theme): Record<string, string> {
-  const style: Record<string, string> = {}
-  for (const [name, value] of Object.entries(deriveTheme(theme).vars)) {
-    style[`--${name}`] = value
-  }
-  return style
-}
-
-/**
- * The two inks. Not pure black and white: full-contrast text on a coloured
- * ground reads as a glare rather than as type, and every UI that looks
- * considered pulls both ends in a little.
- */
-const INK_DARK = "#0b0b0c"
-const INK_LIGHT = "#fafafa"
-
-interface Rgb {
-  r: number
-  g: number
-  b: number
-}
-
-/**
- * Reads `#rgb`, `#rrggbb`, or either without the hash. Returns null for
- * anything else -- callers treat that as "the user is still typing".
- */
-export function parseHex(input: string): Rgb | null {
-  const hex = input.trim().replace(/^#/, "")
-  if (!/^[0-9a-fA-F]+$/.test(hex)) return null
-  if (hex.length === 3) {
-    const [r, g, b] = [...hex].map((c) => parseInt(c + c, 16))
-    return { r: r!, g: g!, b: b! }
-  }
-  if (hex.length === 6) {
-    return {
-      r: parseInt(hex.slice(0, 2), 16),
-      g: parseInt(hex.slice(2, 4), 16),
-      b: parseInt(hex.slice(4, 6), 16),
-    }
-  }
-  return null
-}
-
-const clampByte = (n: number) => Math.max(0, Math.min(255, Math.round(n)))
-
-export function toHex({ r, g, b }: Rgb): string {
-  return "#" + [r, g, b].map((c) => clampByte(c).toString(16).padStart(2, "0")).join("")
-}
+// -- Hex helpers -------------------------------------------------------------
 
 /** True when the string names a colour this module can work with. */
 export function isValidHex(input: string): boolean {
@@ -156,252 +110,170 @@ export function normalizeHex(input: string, fallback: string): string {
   return rgb ? toHex(rgb) : fallback
 }
 
-const srgbToLinear = (channel: number) => {
-  const v = channel / 255
-  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
-}
-
-/** WCAG relative luminance, 0 (black) to 1 (white). */
-export function luminance(hex: string): number {
-  const rgb = parseHex(hex)
-  if (!rgb) return 0
-  return (
-    0.2126 * srgbToLinear(rgb.r) + 0.7152 * srgbToLinear(rgb.g) + 0.0722 * srgbToLinear(rgb.b)
-  )
-}
-
-/** WCAG contrast ratio between two colours, 1 (identical) to 21 (black/white). */
-export function contrast(a: string, b: string): number {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
-  return (hi! + 0.05) / (lo! + 0.05)
-}
-
-/** Blends `from` toward `to`; `amount` 0 keeps `from`, 1 becomes `to`. */
-export function mix(from: string, to: string, amount: number): string {
-  const a = parseHex(from)
-  const b = parseHex(to)
-  if (!a || !b) return from
-  const t = Math.max(0, Math.min(1, amount))
-  return toHex({
-    r: a.r + (b.r - a.r) * t,
-    g: a.g + (b.g - a.g) * t,
-    b: a.b + (b.b - a.b) * t,
-  })
-}
-
-/**
- * The ink -- text, icons, glyphs -- that reads best on a given surface.
- *
- * Measured rather than declared, so a component never has to know which
- * "mode" it is in: it asks what sits on this colour and gets white or near
- * black back.
- */
+/** Near-white or near-black, whichever reads better on a swatch. For previews only. */
 export function readableOn(surface: string): string {
-  return contrast(surface, INK_LIGHT) >= contrast(surface, INK_DARK) ? INK_LIGHT : INK_DARK
+  return contrast(surface, "#fafafa") >= contrast(surface, "#0b0b0c") ? "#fafafa" : "#0b0b0c"
 }
 
-/** Whether a surface wants light ink -- i.e. whether this reads as dark. */
+/** Whether a colour reads as a dark surface. */
 export function isDarkSurface(surface: string): boolean {
-  return readableOn(surface) === INK_LIGHT
+  return readableOn(surface) === "#fafafa"
 }
 
-/**
- * Moves a surface one step "up" from the page: lighter over a dark ground,
- * darker over a light one. What separates a card or a sidebar from the page
- * behind it without introducing a fourth colour.
- */
-function layer(surface: string, amount: number): string {
-  return mix(surface, isDarkSurface(surface) ? INK_LIGHT : INK_DARK, amount)
+// -- From a choice to tokens -------------------------------------------------
+
+/** The mode actually on screen, given whether the OS prefers dark. */
+export function resolveMode(mode: ThemeMode, prefersDark: boolean): Mode {
+  return mode === "system" ? (prefersDark ? "dark" : "light") : mode
 }
 
-/** `rgb(r g b / p%)` -- a translucent wash of a colour, for selected rows. */
-function alpha(hex: string, percent: number): string {
-  const rgb = parseHex(hex)
-  if (!rgb) return hex
-  return `rgb(${rgb.r} ${rgb.g} ${rgb.b} / ${percent}%)`
-}
-
-/**
- * Pulls a colour until it is legible on a surface, walking it toward that
- * surface's ink in small steps. Used for the accent, which the user may pick
- * as a near-match for their background; a selection colour that cannot be
- * seen against the sidebar is the one failure this system must not allow.
- */
-function ensureContrast(color: string, surface: string, ratio: number): string {
-  const ink = readableOn(surface)
-  let candidate = color
-  for (let step = 0; step < 20 && contrast(candidate, surface) < ratio; step++) {
-    candidate = mix(candidate, ink, 0.06)
+/** The accent a seed or slider choice resolves to. */
+export function accentOf(source: ThemeSource): { hue: number; chroma: number } {
+  if (source.kind === "seed") {
+    const fromSeed = seedToAccent(source.seed)
+    return source.hue === undefined ? fromSeed : { hue: clampHue(source.hue), chroma: fromSeed.chroma }
   }
-  return candidate
+  if (source.kind === "custom") {
+    const { h, c } = hexToOklch(normalizeHex(source.accent, DEFAULT_THEME.accent))
+    return { hue: h, chroma: c }
+  }
+  return DEFAULT_ACCENT
 }
 
-export interface DerivedTheme {
-  /** Whether the palette reads as dark -- drives the `dark` class. */
-  dark: boolean
-  /** Every CSS custom property `globals.css` consumes, name without `--`. */
-  vars: Record<string, string>
+const tokenCache = new Map<string, BuiltTokens>()
+
+/**
+ * The validated tokens for one mode. Falls back to the shipped palette for a
+ * choice that fails any contrast check -- see `buildTokens`.
+ *
+ * Custom colours paint their own mode exactly as picked (after repair); the
+ * other mode is generated from the accent's hue, so switching modes keeps
+ * the same brand colour rather than inverting.
+ */
+export function resolveTokens(settings: ThemeSettings, mode: Mode): BuiltTokens {
+  const key = JSON.stringify([settings.source, settings.highContrast, mode])
+  const cached = tokenCache.get(key)
+  if (cached) return cached
+
+  const { source, highContrast } = settings
+  let built: BuiltTokens
+  if (source.kind === "default") {
+    built = { tokens: defaultTokens(mode, highContrast), fellBack: false, failures: [] }
+  } else if (source.kind === "seed") {
+    const { hue, chroma } = accentOf(source)
+    built = buildTokens({ mode, accentHue: hue, accentChroma: chroma, highContrast }, `seed ${source.seed}`)
+  } else {
+    const dominant = normalizeHex(source.dominant, DEFAULT_THEME.dominant)
+    const accent = hexToOklch(normalizeHex(source.accent, DEFAULT_THEME.accent))
+    const secondary = hexToOklch(normalizeHex(source.secondary, DEFAULT_THEME.secondary))
+    const ownMode: Mode = isDarkSurface(dominant) ? "dark" : "light"
+    built =
+      mode === ownMode
+        ? buildTokens(
+            {
+              mode,
+              highContrast,
+              accentHue: accent.h,
+              accentChroma: accent.c,
+              accentL: accent.l,
+              neutralHue: secondary.h,
+              // Panels are a tint, never a colour: past this they compete with the accent.
+              neutralChroma: Math.min(secondary.c, 0.04),
+              bgExact: dominant,
+            },
+            "custom colours",
+          )
+        : buildTokens(
+            {
+              mode,
+              highContrast,
+              accentHue: clampHue(accent.h),
+              accentChroma: Math.max(CHROMA_RANGE[0], Math.min(CHROMA_RANGE[1], accent.c)),
+            },
+            "custom colours (other mode)",
+          )
+  }
+  tokenCache.set(key, built)
+  if (tokenCache.size > 64) tokenCache.delete(tokenCache.keys().next().value!)
+  return built
+}
+
+/** Every variable as `light-dark(<light>, <dark>)`, name without `--`. */
+export function themeVars(settings: ThemeSettings): Record<string, string> {
+  const light = resolveTokens(settings, "light").tokens
+  const dark = resolveTokens(settings, "dark").tokens
+  const vars: Record<string, string> = {}
+  for (const name of Object.keys(light)) {
+    vars[name] = light[name] === dark[name] ? light[name]! : `light-dark(${light[name]}, ${dark[name]})`
+  }
+  return vars
+}
+
+/** The variables as a React `style` object, for rendering onto <html>. */
+export function themeToStyle(settings: ThemeSettings): Record<string, string> {
+  const style: Record<string, string> = {}
+  for (const [name, value] of Object.entries(themeVars(settings))) style[`--${name}`] = value
+  return style
+}
+
+export interface ContrastRow {
+  label: string
+  /** The ratio of the colour as picked. */
+  picked: number
+  /** The ratio after repair -- what is on screen. */
+  shown: number
+  min: number
 }
 
 /**
- * Expands three colours into the full variable set.
- *
- * The mapping is the 60-30-10 split made literal: `dominant` becomes the
- * page and the cards, `secondary` the muted and hover surfaces and the
- * borders derived from them, `accent` the primary, the ring and the
- * selection. Foregrounds are computed per surface rather than once, because
- * a sidebar tinted toward `secondary` can land on the other side of the
- * contrast line from the page it sits beside.
+ * How custom colours measure, as picked and as shown, for the live readout
+ * beside the pickers. The rules forbid arbitrary colours without validation;
+ * this is the validation made visible.
  */
-export function deriveTheme(theme: Theme): DerivedTheme {
+export function customReport(theme: Theme, highContrast = false): { rows: ContrastRow[]; fellBack: boolean } {
   const dominant = normalizeHex(theme.dominant, DEFAULT_THEME.dominant)
-  const secondary = normalizeHex(theme.secondary, DEFAULT_THEME.secondary)
   const accent = normalizeHex(theme.accent, DEFAULT_THEME.accent)
-
-  const dark = isDarkSurface(dominant)
-  const ink = readableOn(dominant)
-
-  const card = layer(dominant, 0.04)
-  const sidebar = mix(layer(dominant, 0.02), secondary, 0.35)
-  const muted = mix(dominant, secondary, 0.75)
-  const hover = mix(dominant, secondary, 0.9)
-  const border = mix(dominant, secondary, 0.95)
-
-  // The accent has to clear two different grounds: the page and the sidebar,
-  // which is tinted away from it. 4.5:1 is the readable-text threshold, and
-  // the accent is used as text (active nav items, links) as well as fill.
-  const active = ensureContrast(ensureContrast(accent, sidebar, 4.5), dominant, 4.5)
-  const solid = ensureContrast(accent, dominant, 3)
-
-  const vars: Record<string, string> = {
-    background: dominant,
-    foreground: ink,
-
-    card,
-    "card-foreground": readableOn(card),
-    popover: card,
-    "popover-foreground": readableOn(card),
-
-    // The 10%: filled buttons and anything else that claims to be the one
-    // action on the screen.
-    primary: solid,
-    "primary-foreground": readableOn(solid),
-
-    // The 30%: everything that supports without competing.
-    secondary,
-    "secondary-foreground": readableOn(secondary),
-    muted,
-    // Dimmed by pulling the ink back toward its own ground rather than by
-    // opacity, so it stays correct over an opaque parent.
-    "muted-foreground": mix(readableOn(muted), muted, 0.42),
-    accent: hover,
-    "accent-foreground": readableOn(hover),
-
-    // Red stays red -- a destructive action is not a matter of taste -- but
-    // shifts brightness so it is legible on either kind of ground.
-    destructive: dark ? "#f2555a" : "#d13438",
-
-    border,
-    input: mix(border, ink, 0.08),
-    ring: active,
-
-    // A ramp from the accent to the supporting colour: distinguishable in
-    // series, and still recognisably this theme.
-    "chart-1": active,
-    "chart-2": mix(active, secondary, 0.25),
-    "chart-3": mix(active, secondary, 0.5),
-    "chart-4": mix(active, secondary, 0.7),
-    "chart-5": mix(active, ink, 0.35),
-
-    sidebar,
-    "sidebar-foreground": readableOn(sidebar),
-    "sidebar-primary": active,
-    "sidebar-primary-foreground": readableOn(active),
-    "sidebar-accent": mix(sidebar, secondary, 0.55),
-    "sidebar-accent-foreground": readableOn(mix(sidebar, secondary, 0.55)),
-    "sidebar-border": mix(sidebar, secondary, 0.95),
-    "sidebar-ring": active,
-
-    "ucch-active": active,
-    "ucch-active-bg": alpha(active, dark ? 18 : 12),
+  const mode: Mode = isDarkSurface(dominant) ? "dark" : "light"
+  const built = resolveTokens(
+    { ...DEFAULT_SETTINGS, highContrast, source: { kind: "custom", ...theme } },
+    mode,
+  )
+  const t = built.tokens
+  const text = highContrast ? 7 : 4.5
+  return {
+    fellBack: built.fellBack,
+    rows: [
+      {
+        label: "Text on hover rows",
+        picked: contrast(t.foreground!, t.accent!),
+        shown: contrast(t.foreground!, t.accent!),
+        min: text,
+      },
+      {
+        label: "Accent button on page",
+        picked: contrast(accent, dominant),
+        shown: contrast(t.primary!, t.background!),
+        min: 3,
+      },
+      {
+        label: "Button label on accent",
+        picked: Math.max(contrast(accent, "#ffffff"), contrast(accent, "#0b0d13")),
+        shown: contrast(t["primary-foreground"]!, t.primary!),
+        min: text,
+      },
+      {
+        label: "Accent as link text",
+        picked: contrast(accent, t.accent!),
+        shown: contrast(t["ucch-active"]!, t.accent!),
+        min: text,
+      },
+    ],
   }
-
-  return { dark, vars }
 }
 
-/** The variable block as inline-style text, for the pre-paint script. */
-export function themeToCss(vars: Record<string, string>): string {
-  return Object.entries(vars)
-    .map(([name, value]) => `--${name}:${value}`)
-    .join(";")
-}
+// -- Reading a stored choice -------------------------------------------------
 
-const HUE = 360
-
-/**
- * A colour from hue (0-360), saturation and lightness (both 0-100).
- *
- * Randomising in HSL rather than in RGB is the whole trick: hue picks the
- * family, and holding lightness inside a band is what keeps a random palette
- * from producing an unreadable one.
- */
-export function hslToHex(h: number, s: number, l: number): string {
-  const hue = ((h % HUE) + HUE) % HUE
-  const sat = Math.max(0, Math.min(100, s)) / 100
-  const light = Math.max(0, Math.min(100, l)) / 100
-  const c = (1 - Math.abs(2 * light - 1)) * sat
-  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1))
-  const m = light - c / 2
-  const [r, g, b] = (
-    [
-      [c, x, 0],
-      [x, c, 0],
-      [0, c, x],
-      [0, x, c],
-      [x, 0, c],
-      [c, 0, x],
-    ] as const
-  )[Math.floor(hue / 60) % 6]!
-  return toHex({ r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 })
-}
-
-/**
- * A random 60-30-10 palette that is actually usable.
- *
- * Not three independent random colours: one hue is drawn, the 60 and the 30
- * are near-neutral tints of it inside a lightness band, and the 10 is thrown
- * across the wheel at full saturation. That is the rule the split describes
- * -- a quiet ground and one loud note -- and constraining lightness per mode
- * means every roll comes back legible instead of most of them.
- *
- * `rng` is injectable so the shape of the output can be tested; `mode` forces
- * a light or dark result, and is left out to let the roll decide.
- */
-export function randomTheme(
-  rng: () => number = Math.random,
-  mode?: "light" | "dark",
-): Theme {
-  const between = (min: number, max: number) => min + rng() * (max - min)
-  const dark = mode ? mode === "dark" : rng() < 0.5
-  const hue = between(0, HUE)
-  // Far enough around the wheel to read as a different colour, short of the
-  // exact complement, which tends to vibrate against the ground.
-  const accentHue = hue + between(140, 220)
-
-  return dark
-    ? {
-        dominant: hslToHex(hue, between(6, 18), between(8, 14)),
-        secondary: hslToHex(hue, between(10, 24), between(22, 30)),
-        accent: hslToHex(accentHue, between(60, 90), between(58, 70)),
-      }
-    : {
-        dominant: hslToHex(hue, between(8, 22), between(96, 99)),
-        secondary: hslToHex(hue, between(10, 26), between(88, 93)),
-        accent: hslToHex(accentHue, between(55, 85), between(40, 52)),
-      }
-}
-
-/** Whether a value off `localStorage` or an API is a usable theme. */
+/** Whether a value is three usable custom colours. */
 export function isTheme(value: unknown): value is Theme {
   if (typeof value !== "object" || value === null) return false
   const t = value as Record<string, unknown>
@@ -415,72 +287,161 @@ export function isTheme(value: unknown): value is Theme {
   )
 }
 
-/** What is written to storage: the choice, plus what the pre-paint script needs. */
-interface StoredTheme {
-  theme: Theme
-  css: string
-  dark: boolean
+const MODES: readonly ThemeMode[] = ["light", "dark", "system"]
+
+function coerceSource(value: unknown): ThemeSource | null {
+  if (typeof value !== "object" || value === null) return null
+  const s = value as Record<string, unknown>
+  if (s.kind === "default") return { kind: "default" }
+  if (s.kind === "seed" && typeof s.seed === "number" && Number.isFinite(s.seed)) {
+    const seed = Math.floor(Math.abs(s.seed)) >>> 0
+    if (typeof s.hue === "number" && Number.isFinite(s.hue)) return { kind: "seed", seed, hue: clampHue(s.hue) }
+    return { kind: "seed", seed }
+  }
+  if (s.kind === "custom" && isTheme(s)) {
+    return {
+      kind: "custom",
+      dominant: normalizeHex(s.dominant, DEFAULT_THEME.dominant),
+      secondary: normalizeHex(s.secondary, DEFAULT_THEME.secondary),
+      accent: normalizeHex(s.accent, DEFAULT_THEME.accent),
+    }
+  }
+  return null
 }
 
 /**
- * The saved theme, or null if there is none.
+ * Settings out of anything stored, or null if nothing usable is in it.
  *
- * Guarded like every other preference here: `localStorage` throws outright in
- * a private window with site data blocked, and the app has a perfectly good
- * default to fall back to.
+ * Accepts the old shape too -- three bare hex colours, from before modes
+ * existed -- and carries it over as custom colours in a fixed mode, so
+ * nobody's palette changes under them on upgrade.
  */
-export function readStoredTheme(): Theme | null {
+export function coerceSettings(value: unknown): ThemeSettings | null {
+  if (isTheme(value)) {
+    const source = coerceSource({ kind: "custom", ...value })!
+    return {
+      ...DEFAULT_SETTINGS,
+      mode: isDarkSurface(value.dominant) ? "dark" : "light",
+      source,
+    }
+  }
+  if (typeof value !== "object" || value === null) return null
+  const v = value as Record<string, unknown>
+  const source = coerceSource(v.source)
+  if (!source || !MODES.includes(v.mode as ThemeMode)) return null
+  return {
+    mode: v.mode as ThemeMode,
+    source,
+    highContrast: v.highContrast === true,
+    locked: v.locked === true,
+  }
+}
+
+// -- The cookie --------------------------------------------------------------
+
+/**
+ * Where the choice is kept so the server can paint it.
+ *
+ * A cookie because only it is readable while the HTML is being generated. The
+ * root layout reads it and renders the variables straight onto <html>, which
+ * is what makes the first paint already themed -- with no blocking script, and
+ * nothing that depends on JavaScript having run. `localStorage` holds a copy
+ * so other tabs hear about a change.
+ */
+export const THEME_COOKIE = "ucch_theme"
+
+/** A year: a palette is not a session, and forgetting it would be a bug. */
+const THEME_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+
+export function serialiseThemeCookie(settings: ThemeSettings): string {
+  return encodeURIComponent(JSON.stringify(settings))
+}
+
+/**
+ * Settings out of a cookie value, or null for every kind of wrong -- absent,
+ * truncated, not JSON, not a theme. A cookie is user-controlled input, and
+ * `coerceSettings` is what stands between it and the engine.
+ */
+export function parseThemeCookie(raw: string | undefined): ThemeSettings | null {
+  if (!raw) return null
   try {
-    const raw = globalThis.localStorage?.getItem(THEME_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<StoredTheme>
-    return isTheme(parsed?.theme) ? parsed.theme : null
+    return coerceSettings(JSON.parse(decodeURIComponent(raw)))
   } catch {
     return null
   }
 }
 
-/** Saves a theme, or forgets it (and returns to the default) when given null. */
-export function storeTheme(theme: Theme | null): void {
+/** Writes the cookie, or clears it when the choice is back to the default. */
+export function storeThemeCookie(settings: ThemeSettings | null): void {
+  const document = globalThis.document
+  if (!document) return
+  document.cookie =
+    settings && !isDefaultSettings(settings)
+      ? `${THEME_COOKIE}=${serialiseThemeCookie(settings)}; path=/; max-age=${THEME_COOKIE_MAX_AGE}; samesite=lax`
+      : `${THEME_COOKIE}=; path=/; max-age=0; samesite=lax`
+}
+
+// -- Storage -----------------------------------------------------------------
+
+/** Where the choice lives between visits, alongside the cookie. */
+export const THEME_STORAGE_KEY = "ucch:theme"
+
+/**
+ * The saved choice, or null if there is none. Guarded like every other
+ * preference here: `localStorage` throws in a private window with site data
+ * blocked. The old `{ theme, css, dark }` payload is read too.
+ */
+export function readStoredTheme(): ThemeSettings | null {
   try {
-    if (!theme) {
+    const raw = globalThis.localStorage?.getItem(THEME_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null
+    return coerceSettings(parsed && "theme" in parsed ? parsed.theme : parsed)
+  } catch {
+    return null
+  }
+}
+
+/** Saves a choice, or forgets it when given null or the default. */
+export function storeTheme(settings: ThemeSettings | null): void {
+  try {
+    if (!settings || isDefaultSettings(settings)) {
       globalThis.localStorage?.removeItem(THEME_STORAGE_KEY)
       return
     }
-    const { dark, vars } = deriveTheme(theme)
-    // The derived CSS is stored beside the choice so the blocking script in
-    // <head> can paint the theme without shipping this module's arithmetic
-    // twice -- once here and once as a string in the document.
-    const payload: StoredTheme = { theme, css: themeToCss(vars), dark }
-    globalThis.localStorage?.setItem(THEME_STORAGE_KEY, JSON.stringify(payload))
+    globalThis.localStorage?.setItem(THEME_STORAGE_KEY, JSON.stringify(settings))
   } catch {
     /* nothing to do: the theme simply is not remembered */
   }
 }
 
+// -- Painting ----------------------------------------------------------------
+
+/** Every variable name the engine writes, for stripping them again. */
+const ALL_VARS = Object.keys(defaultTokens("light"))
+
 /**
- * Paints a theme onto a live document, or strips it back to the stylesheet's
- * own values when given null.
+ * Paints a choice onto a live document, or strips it back to the stylesheet's
+ * own values when given null or the default.
  *
- * The `dark` class goes on the same element as the variables so Tailwind's
- * `dark:` variants -- which a handful of components still use directly --
- * agree with the ink the variables resolved to.
+ * `data-theme-mode` drives `color-scheme` in the stylesheet, which is what
+ * makes each `light-dark()` pick its side. The `dark` class is set only for
+ * a forced Dark; on System the `dark:` variant follows the OS through a media
+ * query instead (see `@custom-variant dark` in globals.css).
  */
-export function applyTheme(theme: Theme | null, root?: HTMLElement): void {
+export function applyTheme(settings: ThemeSettings | null, root?: HTMLElement): void {
   const element = root ?? globalThis.document?.documentElement
   if (!element) return
+  const s = settings ?? DEFAULT_SETTINGS
 
-  if (!theme) {
-    for (const name of Object.keys(deriveTheme(DEFAULT_THEME).vars)) {
-      element.style.removeProperty(`--${name}`)
-    }
-    element.classList.remove("dark")
+  element.setAttribute?.("data-theme-mode", s.mode)
+  element.classList.toggle("dark", s.mode === "dark")
+
+  if (!needsInlineVars(s)) {
+    for (const name of ALL_VARS) element.style.removeProperty(`--${name}`)
     return
   }
-
-  const { dark, vars } = deriveTheme(theme)
-  for (const [name, value] of Object.entries(vars)) {
+  for (const [name, value] of Object.entries(themeVars(s))) {
     element.style.setProperty(`--${name}`, value)
   }
-  element.classList.toggle("dark", dark)
 }

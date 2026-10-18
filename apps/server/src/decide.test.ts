@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Command } from "@ucch/protocol";
+import type { Command, Membership } from "@ucch/protocol";
 import {
   decide,
   type DecisionContext,
@@ -11,7 +11,6 @@ import {
 } from "./decide.js";
 
 const USER = "11111111-1111-1111-1111-111111111111";
-const OTHER_USER = "22222222-2222-2222-2222-222222222222";
 const PROJECT = "33333333-3333-3333-3333-333333333333";
 const THREAD = "44444444-4444-4444-4444-444444444444";
 const TURN = "55555555-5555-5555-5555-555555555555";
@@ -25,9 +24,18 @@ const ctx: DecisionContext = {
   newHash: () => "abcdef123456",
 };
 
+const OWNER: Membership = { role: "owner", canCreateProject: null, canCreateSession: null };
+const member = (over: Partial<Membership> = {}): Membership => ({
+  role: "member",
+  canCreateProject: null,
+  canCreateSession: null,
+  ...over,
+});
+
 const workspace = (over: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot => ({
   id: WORKSPACE,
-  ownerUserId: USER,
+  credentialPolicy: "member",
+  membership: OWNER,
   ...over,
 });
 
@@ -35,7 +43,6 @@ const project = (over: Partial<ProjectSnapshot> = {}): ProjectSnapshot => ({
   id: PROJECT,
   hash: "abcdef123456",
   workspaceId: WORKSPACE,
-  userId: USER,
   containerState: "running",
   defaultBranch: "main",
   ...over,
@@ -46,6 +53,7 @@ const thread = (over: Partial<ThreadSnapshot> = {}): ThreadSnapshot => ({
   projectId: PROJECT,
   status: "idle",
   provider: null,
+  credentialSource: null,
   ...over,
 });
 
@@ -58,8 +66,10 @@ const turn = (over: Partial<TurnSnapshot> = {}): TurnSnapshot => ({
   ...over,
 });
 
+/** A state naming a project comes with the caller's owner membership unless it says otherwise. */
 function run(state: DecisionState, command: Command) {
-  return decide(state, command, ctx);
+  const withWorkspace = state.project && !("workspace" in state) ? { ...state, workspace: workspace() } : state;
+  return decide(withWorkspace, command, ctx);
 }
 
 describe("project.create", () => {
@@ -122,10 +132,37 @@ describe("project.create", () => {
     expect(d).toMatchObject({ ok: true, events: [{ repoUrl: null, defaultBranch: "develop" }] });
   });
 
+  it("reads a project with no mode as development", () => {
+    const d = run({ workspace: workspace() }, { type: "project.create", workspaceId: WORKSPACE, name: "app" });
+    expect(d).toMatchObject({ ok: true, events: [{ mode: "development", database: null }] });
+  });
+
+  it("records the database a development project asks for", () => {
+    const d = run({ workspace: workspace() }, {
+      type: "project.create",
+      workspaceId: WORKSPACE,
+      name: "app",
+      mode: "development",
+      database: { engine: "mysql", name: "app_dev" },
+    });
+    expect(d).toMatchObject({ ok: true, events: [{ database: { engine: "mysql", name: "app_dev" } }] });
+  });
+
+  it.each(["research", "creative_design"] as const)("refuses a database on a %s project", (mode) => {
+    const d = run({ workspace: workspace() }, {
+      type: "project.create",
+      workspaceId: WORKSPACE,
+      name: "app",
+      mode,
+      database: { engine: "postgresql", name: "app_dev" },
+    });
+    expect(d).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
+
   // The workspace boundary has to be enforced, not advisory: without these
   // two checks a caller could drop a project into somebody else's workspace.
-  it("refuses a workspace owned by someone else", () => {
-    const d = run({ workspace: workspace({ ownerUserId: OTHER_USER }) }, {
+  it("refuses a workspace the caller is not a member of", () => {
+    const d = run({ workspace: workspace({ membership: null }) }, {
       type: "project.create",
       workspaceId: WORKSPACE,
       repoUrl: "https://github.com/a/b",
@@ -176,7 +213,7 @@ describe("project lifecycle", () => {
 
 describe("authorization", () => {
   it("hides another user's project behind not_found", () => {
-    const d = run({ project: project({ userId: OTHER_USER }) }, {
+    const d = run({ project: project(), workspace: workspace({ membership: null }) }, {
       type: "project.start",
       projectId: PROJECT,
     });
@@ -356,6 +393,33 @@ describe("thread.revert", () => {
   });
 });
 
+describe("thread ownership", () => {
+  const cases: Command[] = [
+    { type: "thread.cancel", threadId: THREAD },
+    { type: "thread.permission_reply", threadId: THREAD, requestId: "r1", behavior: "allow" },
+    { type: "thread.revert", threadId: THREAD, turnId: TURN },
+    { type: "thread.fork", threadId: THREAD, turnId: TURN },
+  ];
+
+  it.each(cases)("refuses $type on another user's thread", (command) => {
+    const d = run(
+      {
+        project: project(),
+        workspace: workspace({ membership: null }),
+        thread: thread({ status: "running" }),
+        turn: turn(),
+      },
+      command,
+    );
+    expect(d).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  it.each(cases)("refuses $type when the project is unknown", (command) => {
+    const d = run({ thread: thread({ status: "running" }), turn: turn() }, command);
+    expect(d).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+});
+
 describe("container-dependent commands", () => {
   const cases: Command[] = [
     { type: "file.write", projectId: PROJECT, path: "a.txt", content: "x" },
@@ -387,5 +451,76 @@ describe("workspace paths", () => {
       content: "x",
     });
     expect(d).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
+});
+
+describe("workspace roles", () => {
+  it.each([
+    ["viewer", member({ role: "viewer" })],
+    ["member with project creation turned off", member({ canCreateProject: false })],
+  ])("refuses project.create for a %s", (_label, membership) => {
+    const d = run({ workspace: workspace({ membership }) }, {
+      type: "project.create",
+      workspaceId: WORKSPACE,
+      name: "app",
+    });
+    expect(d).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("lets a viewer with the override create a project", () => {
+    const d = run({ workspace: workspace({ membership: member({ role: "viewer", canCreateProject: true }) }) }, {
+      type: "project.create",
+      workspaceId: WORKSPACE,
+      name: "app",
+    });
+    expect(d).toMatchObject({ ok: true });
+  });
+
+  it("refuses thread.create when session creation is turned off", () => {
+    const d = run(
+      { project: project(), workspace: workspace({ membership: member({ canCreateSession: false }) }) },
+      { type: "thread.create", projectId: PROJECT },
+    );
+    expect(d).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("refuses thread.send for a viewer", () => {
+    const d = run(
+      { project: project(), thread: thread(), workspace: workspace({ membership: member({ role: "viewer" }) }) },
+      { type: "thread.send", threadId: THREAD, text: "hi" },
+    );
+    expect(d).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("refuses project.delete for a member", () => {
+    const d = run(
+      { project: project(), workspace: workspace({ membership: member() }) },
+      { type: "project.delete", projectId: PROJECT },
+    );
+    expect(d).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("records who started a thread", () => {
+    const d = run(
+      { project: project(), workspace: workspace({ membership: member() }) },
+      { type: "thread.create", projectId: PROJECT },
+    );
+    expect(d).toMatchObject({
+      ok: true,
+      events: [{ type: "thread.created", createdByUserId: USER, credentialSource: "member" }],
+    });
+  });
+
+  it.each([
+    ["member", undefined, "member"],
+    ["workspace", "member", "workspace"],
+    ["either", undefined, "member"],
+    ["either", "workspace", "workspace"],
+  ] as const)("binds credentials under policy %s (asked %s) to %s", (policy, requested, expected) => {
+    const d = run(
+      { project: project(), workspace: workspace({ credentialPolicy: policy }) },
+      { type: "thread.create", projectId: PROJECT, ...(requested ? { credentialSource: requested } : {}) },
+    );
+    expect(d).toMatchObject({ ok: true, events: [{ type: "thread.created", credentialSource: expected }] });
   });
 });

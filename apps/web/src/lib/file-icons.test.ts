@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { iconNameFor, type IconManifest } from "./file-icons.js";
 
 const manifest: IconManifest = {
-  iconDefinitions: {},
+  iconDefinitions: { next: { iconPath: "./../icons/next.svg" } },
   fileNames: { "package.json": "nodejs", dockerfile: "docker" },
   fileExtensions: { ts: "typescript", "test.ts": "test-ts", gitignore: "git", json: "json" },
   folderNames: { src: "folder-src" },
@@ -47,5 +47,16 @@ describe("choosing a folder icon", () => {
   it("falls back to the plain folder", () => {
     expect(iconNameFor(manifest, "folder", "misc")).toBe("folder");
     expect(iconNameFor(manifest, "folder-open", "misc")).toBe("folder-open");
+  });
+});
+
+describe("asking for an icon by id", () => {
+  it("answers with the id when the theme has it", () => {
+    expect(iconNameFor(manifest, "icon", "next")).toBe("next");
+  });
+
+  it("falls back to the default file icon, prototype names included", () => {
+    expect(iconNameFor(manifest, "icon", "cobol")).toBe("file");
+    expect(iconNameFor(manifest, "icon", "constructor")).toBe("file");
   });
 });

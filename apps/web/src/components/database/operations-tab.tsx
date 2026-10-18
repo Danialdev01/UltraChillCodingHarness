@@ -9,12 +9,14 @@ import { RenameTableDialog } from "@/components/database/rename-table-dialog"
 import { Button } from "@/components/ui/button"
 import { dropTable, truncateTable } from "@/lib/database-api"
 import { databaseHref } from "@/lib/sections"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 import { useTransitionRouter } from "@/lib/view-transitions"
 
 /** What can be done to the table as a whole: renamed, emptied, dropped. */
 export function OperationsTab({ detail }: { detail: TableDetail }) {
   const { ref, connection, db, reloadTables } = useDb()
   const router = useTransitionRouter()
+  const ws = useWorkspaceHash()
   const [renaming, setRenaming] = React.useState(false)
   const [emptying, setEmptying] = React.useState(false)
   const [dropping, setDropping] = React.useState(false)
@@ -60,7 +62,7 @@ export function OperationsTab({ detail }: { detail: TableDetail }) {
         onConfirm={async () => {
           await dropTable(ref, detail.name)
           await reloadTables()
-          router.replace(databaseHref(connection.id, db))
+          router.replace(databaseHref(ws, connection.id, db))
         }}
       />
     </div>

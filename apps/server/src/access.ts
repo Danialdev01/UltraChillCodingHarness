@@ -1,14 +1,13 @@
 import { and, eq } from "drizzle-orm";
-import { projects, threads, workspaces, type Database } from "@ucch/db";
+import { projects, threads, workspaceMembers, type Database } from "@ucch/db";
 
 /**
  * Who may see and change a project.
  *
- * Today that is the owner of the project's workspace and nobody else. Every
- * live path asks here -- the socket's subscriptions, the shared prompt box,
- * presence -- so that when projects are shared, this is the one place that
- * learns about members, alongside `WorkspaceService.findByHash` for the
- * REST routes.
+ * Any member of the project's workspace, whatever their role -- what each
+ * role may then do is decided per command in `decide`. Every live path asks
+ * here -- the socket's subscriptions, the shared prompt box, presence -- and
+ * `WorkspaceService.findByHash` asks the same question for the REST routes.
  */
 export class ProjectAccess {
   constructor(private readonly db: Database) {}
@@ -17,8 +16,11 @@ export class ProjectAccess {
     const [row] = await this.db
       .select({ id: projects.id })
       .from(projects)
-      .innerJoin(workspaces, eq(projects.workspaceId, workspaces.id))
-      .where(and(eq(projects.id, projectId), eq(workspaces.ownerUserId, userId)))
+      .innerJoin(
+        workspaceMembers,
+        and(eq(workspaceMembers.workspaceId, projects.workspaceId), eq(workspaceMembers.userId, userId)),
+      )
+      .where(eq(projects.id, projectId))
       .limit(1);
     return Boolean(row);
   }

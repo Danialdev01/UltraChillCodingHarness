@@ -1,10 +1,6 @@
 import { AccountSettings } from "@/components/account-settings"
 import { ActivityFeed } from "@/components/activity/activity-feed"
-import { AgentPermissionSettings } from "@/components/agent-permission-settings"
 import { ApiKeySettings } from "@/components/api-key-settings"
-import { DefaultSettings } from "@/components/default-settings"
-import { FontSizeSettings, TreeFontSizeSettings } from "@/components/font-size-settings"
-import { KeybindingSettings } from "@/components/keybinding-settings"
 import { ProviderSettings } from "@/components/provider-settings"
 import { SyntaxSettings } from "@/components/syntax-settings"
 import { ThemePresets } from "@/components/theme-presets"
@@ -40,16 +36,6 @@ export function SettingsPage({
       return <ApiKeySettings />
     case "providers":
       return <ProviderSettings projects={projects} />
-    case "default":
-      return (
-        <div className="flex flex-col gap-4">
-          <DefaultSettings />
-          <AgentPermissionSettings />
-          <KeybindingSettings />
-          <FontSizeSettings />
-          <TreeFontSizeSettings />
-        </div>
-      )
     case "usage":
       return <UsageSettings usage={usage} storage={storage} />
     case "activity":

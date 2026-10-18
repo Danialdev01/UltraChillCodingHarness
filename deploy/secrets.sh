@@ -33,6 +33,15 @@ ensure DEFAULT_USER_PASSWORD "${DEFAULT_USER_PASSWORD:-}" 12
 # The research crawler only listens beyond its own loopback with a token.
 ensure CRAWL4AI_API_TOKEN "${CRAWL4AI_API_TOKEN:-}" 24
 
-# postgres and mysql read their files as their own (non-root) users.
+# Each file readable by whoever needs it and nobody else. The server
+# container gives every signed-in user a shell as its unprivileged user, so
+# anything that user can read, they can read: the server's entrypoint loads
+# its secrets as root before dropping privileges.
+#   postgres:16-alpine runs as uid 70, mysql:8.4 as uid 999.
+#   dev_db_password is in every project's .env anyway; crawl4ai reads its
+#   token as its own user.
 chmod 755 "$dir"
-chmod 644 "$dir"/*
+chown 0:0 "$dir"/* && chmod 400 "$dir"/*
+chown 70 "$dir/postgres_password"
+chown 999 "$dir/mysql_root_password"
+chmod 444 "$dir/dev_db_password" "$dir/crawl4ai_api_token"

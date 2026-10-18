@@ -1,13 +1,13 @@
 "use client"
 
 import * as React from "react"
-import { ALargeSmallIcon, FolderTreeIcon, MinusIcon, PlusIcon, RotateCcwIcon } from "lucide-react"
+import { ALargeSmallIcon, ChevronDownIcon, FolderTreeIcon, MinusIcon, PlusIcon, RotateCcwIcon } from "lucide-react"
 
 import { FileTypeIcon } from "@/components/file-type-icon"
 import { Button } from "@/components/ui/button"
 import { EDITOR_FONT_SIZE } from "@/lib/editor-font-size"
 import type { FontSizePreference } from "@/lib/font-size-preference"
-import { TREE_FONT_SIZE, treeIconSize, treeRowSpacing } from "@/lib/tree-font-size"
+import { TREE_FONT_SIZE, treeMetrics } from "@/lib/tree-font-size"
 
 /**
  * One font-size preference as a settings section.
@@ -152,23 +152,33 @@ export function TreeFontSizeSettings() {
       title="File tree sidebar font size"
       description="How large the file names and icons in a project's file tree render, in pixels."
       preview={(size) => {
-        const icon = `${treeIconSize(size)}px`
-        const space = `${treeRowSpacing(size)}px`
-        // A folder and a file, as the tree draws them at the chosen size --
-        // padding and indent included, since they follow the size too.
-        const row = { gap: space, padding: space }
+        const m = treeMetrics(size)
+        const icon = { width: m.iconSize, height: m.iconSize, marginRight: m.gapLabel }
+        const chevron = { width: m.chevronBox, height: m.chevronBox, marginRight: m.gapChevron }
+        // A folder and a file inside it, as the tree draws them at the chosen
+        // size -- row height, chevron column, gaps and indent included, since
+        // they follow the size too.
+        const row = (depth: number) => ({
+          height: m.rowHeight,
+          paddingLeft: m.padX + m.indent * depth,
+          paddingRight: m.padX,
+        })
         return (
           <div
             aria-hidden
-            className="text-muted-foreground mt-4 flex flex-col rounded-md border px-2 py-1"
+            className="text-muted-foreground mt-4 flex flex-col rounded-md border py-1"
             style={{ fontSize: `${size}px` }}
           >
-            <div className="flex items-center" style={row}>
-              <FileTypeIcon name="src" kind="folder-open" style={{ width: icon, height: icon }} className="size-auto" />
+            <div className="flex items-center" style={row(0)}>
+              <span className="flex shrink-0 items-center justify-center" style={chevron}>
+                <ChevronDownIcon style={{ width: m.chevronGlyph, height: m.chevronGlyph }} />
+              </span>
+              <FileTypeIcon name="src" kind="folder-open" style={icon} className="size-auto" />
               <span>src</span>
             </div>
-            <div className="flex items-center" style={{ ...row, marginLeft: `calc(${space} * 2)` }}>
-              <FileTypeIcon name="index.ts" style={{ width: icon, height: icon }} className="size-auto" />
+            <div className="flex items-center" style={row(1)}>
+              <span className="shrink-0" style={chevron} />
+              <FileTypeIcon name="index.ts" style={icon} className="size-auto" />
               <span>index.ts</span>
             </div>
           </div>

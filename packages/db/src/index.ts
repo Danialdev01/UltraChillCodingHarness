@@ -15,14 +15,19 @@ export type Database = ReturnType<typeof createDatabase>;
  */
 export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
+/**
+ * Pool settings shared by both clients. Idle connections are closed after a
+ * minute and every connection is recycled after half an hour, so a quiet
+ * server does not hold Postgres slots it is not using and a connection never
+ * outlives a failover or a proxy's own idle cut-off by much.
+ */
+const POOL = { max: 10, idle_timeout: 60, max_lifetime: 30 * 60, onnotice: () => {} } as const;
+
 export function createDatabase(url: string) {
-  // `max: 1` is deliberate for the command worker's connection: commands are
-  // serialized through a single fiber, so a pool would only add ways for two
-  // decisions to interleave. Read paths get their own pooled client.
-  const sql = postgres(url, { max: 10, onnotice: () => {} });
+  const sql = postgres(url, POOL);
   return drizzle(sql, { schema });
 }
 
 export function createClient(url: string) {
-  return postgres(url, { max: 10, onnotice: () => {} });
+  return postgres(url, POOL);
 }

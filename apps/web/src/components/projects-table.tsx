@@ -20,6 +20,7 @@ import {
 } from "@/lib/stats-format";
 import type { Project } from "@/lib/session";
 import { TransitionLink } from "@/lib/view-transitions";
+import { useProjectHref } from "@/lib/workspace-context";
 
 /** The columns, and how each one sorts. */
 const COLUMNS = [
@@ -45,6 +46,7 @@ type SortKey = (typeof COLUMNS)[number]["key"];
  * that were written at the same moment.
  */
 export function ProjectsTable({ projects }: { projects: readonly Project[] }) {
+  const hrefOf = useProjectHref();
   const [sort, setSort] = React.useState<{ key: SortKey; desc: boolean }>({
     key: "lastActiveAt",
     desc: true,
@@ -119,7 +121,7 @@ export function ProjectsTable({ projects }: { projects: readonly Project[] }) {
                   } ${sort.key === column.key ? "text-foreground" : ""}`}
                 >
                   {column.label}
-                  <ArrowUpDownIcon className="size-3 opacity-50" />
+                  <ArrowUpDownIcon className="text-muted-foreground size-3" />
                 </button>
               </TableHead>
             ))}
@@ -136,7 +138,7 @@ export function ProjectsTable({ projects }: { projects: readonly Project[] }) {
                   {/* The whole name is the link, and the repo under it is
                       context rather than a second target to aim at. */}
                   <TransitionLink
-                    href={`/${project.hash}`}
+                    href={hrefOf(project.hash)}
                     className="hover:text-ucch-active block truncate font-medium"
                   >
                     {project.name}
@@ -180,7 +182,7 @@ export function ProjectsTable({ projects }: { projects: readonly Project[] }) {
                   {project.tokens ? (
                     <>
                       {compactNumber(project.tokens)}
-                      <span className="block text-xs opacity-70">{formatUsd(project.costUsd ?? 0)}</span>
+                      <span className="text-muted-foreground block text-xs">{formatUsd(project.costUsd ?? 0)}</span>
                     </>
                   ) : (
                     "—"
@@ -196,7 +198,7 @@ export function ProjectsTable({ projects }: { projects: readonly Project[] }) {
 
                 <TableCell className="text-right">
                   <TransitionLink
-                    href={`/${project.hash}`}
+                    href={hrefOf(project.hash)}
                     className="text-ucch-active text-xs whitespace-nowrap underline underline-offset-2"
                   >
                     Open

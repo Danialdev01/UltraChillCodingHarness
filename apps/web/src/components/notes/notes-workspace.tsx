@@ -5,6 +5,8 @@ import { usePathname, useSearchParams } from "next/navigation"
 import { LibraryBigIcon } from "lucide-react"
 
 import { DiagramsView } from "@/components/diagrams/diagrams-view"
+import { KeysWorkspace } from "@/components/keys/keys-workspace"
+import { DocViewTabs } from "@/components/notes/doc-view-toggle"
 import { NoteEditor } from "@/components/notes/note-editor"
 import { NotesProvider, type NotesContextValue } from "@/components/notes/notes-context"
 import { NoteTreeSidebar } from "@/components/notes/note-tree-sidebar"
@@ -30,25 +32,47 @@ import {
   useProjectEvents,
   useToast,
 } from "@/lib/realtime"
-import { docViewFromParam, noteHref, noteIdFromPath } from "@/lib/sections"
+import { DEFAULT_DOC_WIDTH, docMaxWidth, readDocWidth, watchDocWidth } from "@/lib/doc-width"
+import { docViewFromParam, noteHref, noteIdFromPath, type DocView } from "@/lib/sections"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 import type { Project } from "@/lib/session"
 import { useTransitionRouter } from "@/lib/view-transitions"
+
+/** Which page of the notes is open (null for the root), and which view. */
+export interface DocLocation {
+  noteId: string | null
+  view: DocView
+}
 
 /**
  * A project's notes: the page tree on the left, one page open on the right.
  *
- * The URL says which page is open (null for the root), and it is read from
- * the URL here rather than passed in: the notes layout renders this once and
- * keeps it mounted across `/notes/{id}` navigations, so the tree survives a
- * click on a row and only the editor changes. This component owns the tree
+ * On the documentation route the URL says which page is open (null for the
+ * root), and it is read from the URL here rather than passed in: the notes
+ * layout renders this once and keeps it mounted across `/notes/{id}`
+ * navigations, so the tree survives a click on a row and only the editor
+ * changes. In a project session it is one of the session's views instead,
+ * on the session's own URL, so `location` is passed in and every move is
+ * handed back through `onLocationChange` rather than navigated to. This component owns the tree
  * and the open page's record. The editor is keyed by page id, so moving
  * between pages remounts it with the new document rather than swapping
  * content under a live cursor -- and its autosave flushes on the way out.
  */
-export function NotesWorkspace({ project }: { project: Project }) {
+export function NotesWorkspace({
+  project,
+  location,
+  onLocationChange,
+}: {
+  project: Project
+  location?: DocLocation
+  onLocationChange?(next: DocLocation): void
+}) {
   const router = useTransitionRouter()
-  const noteId = noteIdFromPath(usePathname())
-  const view = docViewFromParam(useSearchParams().get("view"))
+  const ws = useWorkspaceHash()
+  const pathNoteId = noteIdFromPath(usePathname())
+  const paramView = docViewFromParam(useSearchParams().get("view"))
+  const noteId = location ? location.noteId : pathNoteId
+  const view = location ? location.view : paramView
   const [notes, setNotes] = React.useState<NoteSummary[]>([])
   const [rootId, setRootId] = React.useState<string | null>(null)
   const [treeError, setTreeError] = React.useState<string | null>(null)
@@ -56,6 +80,7 @@ export function NotesWorkspace({ project }: { project: Project }) {
   const [noteError, setNoteError] = React.useState<string | null>(null)
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [treeOpen, setTreeOpen] = React.useState(true)
+  const docWidth = useDocWidth()
 
   // ⌘P / Ctrl+P finds a page, wherever focus is; the browser's print
   // dialog is not what anyone wants from inside a notebook.
@@ -70,6 +95,27 @@ export function NotesWorkspace({ project }: { project: Project }) {
   }, [])
 
   const activeId = noteId ?? rootId
+
+  /**
+   * Opens a page (and with it the Notes view), or another view. On the route
+   * that is a navigation: Notes is the bare page URL, the others hang off
+   * the root as `?view=`, since they are not per page.
+   */
+  const go = React.useCallback(
+    (next: { noteId: string | null } | { view: DocView }) => {
+      if (location && onLocationChange) {
+        onLocationChange("view" in next ? { ...location, view: next.view } : { noteId: next.noteId, view: "notes" })
+        return
+      }
+      if ("view" in next && next.view !== "notes") {
+        router.push(`${noteHref(ws, project.hash, null)}?view=${next.view}`)
+        return
+      }
+      const id = "noteId" in next ? next.noteId : noteId
+      router.push(noteHref(ws, project.hash, id, rootId ?? undefined))
+    },
+    [location, onLocationChange, router, ws, project.hash, noteId, rootId],
+  )
 
   const refreshTree = React.useCallback(async () => {
     try {
@@ -156,7 +202,7 @@ export function NotesWorkspace({ project }: { project: Project }) {
           title: `“${title ?? "This page"}” was deleted in another window`,
           description: "Moved you to the page it was under.",
         })
-        router.push(noteHref(project.hash, event.parentId ?? null, rootId ?? undefined))
+        go({ noteId: event.parentId ?? null })
       }
     }
     void refreshTree()
@@ -168,9 +214,10 @@ export function NotesWorkspace({ project }: { project: Project }) {
   const viewers = usePresence(project.id)
   const others = activeId ? othersAt(viewers, `note:${activeId}`) : []
 
-  const open = React.useCallback(
-    (id: string) => router.push(noteHref(project.hash, id, rootId ?? undefined)),
-    [router, project.hash, rootId],
+  const open = React.useCallback((id: string) => go({ noteId: id }), [go])
+  const href = React.useCallback(
+    (id: string) => (location ? null : noteHref(ws, project.hash, id, rootId ?? undefined)),
+    [location, ws, project.hash, rootId],
   )
 
   const createPage = React.useCallback(
@@ -203,11 +250,11 @@ export function NotesWorkspace({ project }: { project: Project }) {
         return current.filter((n) => !gone.has(n.id))
       })
       if (activeId === id || (note && isUnder(notes, note.id, id))) {
-        router.push(noteHref(project.hash, null))
+        go({ noteId: null })
       }
       void refreshTree()
     },
-    [project.hash, activeId, note, notes, router, refreshTree],
+    [project.hash, activeId, note, notes, go, refreshTree],
   )
 
   const movePage = React.useCallback(
@@ -236,18 +283,18 @@ export function NotesWorkspace({ project }: { project: Project }) {
   }, [])
 
   const context = React.useMemo<NotesContextValue>(
-    () => ({ hash: project.hash, notes, rootId, activeId, createPage, open }),
-    [project.hash, notes, rootId, activeId, createPage, open],
+    () => ({ hash: project.hash, notes, rootId, activeId, createPage, open, href }),
+    [project.hash, notes, rootId, activeId, createPage, open, href],
   )
 
-  // After the hooks, so the tree is still held while another view is up and
-  // coming back to Notes does not refetch it.
-  if (view === "diagrams") return <DiagramsView project={project} />
-  if (view === "references") return <ReferencesPlaceholder />
-
-  return (
+  const notesView = (
     <NotesProvider value={context}>
-      <div className="flex min-h-0 flex-1">
+      {/* The page's width, from Preferences, as a variable the editor, its
+          placeholder and the skeleton below all read. */}
+      <div
+        className="flex min-h-0 flex-1"
+        style={{ "--ucch-doc-width": docMaxWidth(docWidth) } as React.CSSProperties}
+      >
         <NoteSearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <NoteBreadcrumb
@@ -291,6 +338,36 @@ export function NotesWorkspace({ project }: { project: Project }) {
       </div>
     </NotesProvider>
   )
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <DocViewTabs projectHash={project.hash} view={view} onSelect={(next) => go({ view: next })} />
+      {/* The tree is held above the views, so it survives another view
+          being up and coming back to Notes does not refetch it. */}
+      {view === "diagrams" ? (
+        <DiagramsView project={project} />
+      ) : view === "references" ? (
+        <ReferencesPlaceholder />
+      ) : view === "keys" ? (
+        <KeysWorkspace project={project} />
+      ) : (
+        notesView
+      )}
+    </div>
+  )
+}
+
+/**
+ * The page width chosen in the project's Preferences. Read after mount, like
+ * the font sizes, so the first paint matches the server's.
+ */
+function useDocWidth() {
+  const [width, setWidth] = React.useState(DEFAULT_DOC_WIDTH)
+  React.useEffect(() => {
+    setWidth(readDocWidth())
+    return watchDocWidth(setWidth)
+  }, [])
+  return width
 }
 
 /** Whether `id` is `ancestorId` or somewhere below it. */
@@ -325,7 +402,7 @@ function ReferencesPlaceholder() {
 
 function NotePageSkeleton() {
   return (
-    <div className="mx-auto w-full max-w-3xl px-8 py-12">
+    <div className="mx-auto w-full max-w-[var(--ucch-doc-width,48rem)] px-8 py-12">
       <Skeleton className="mb-6 h-9 w-2/5" />
       <Skeleton className="mb-3 h-4 w-full" />
       <Skeleton className="mb-3 h-4 w-11/12" />

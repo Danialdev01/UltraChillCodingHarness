@@ -3,6 +3,8 @@
 import { usePathname } from "next/navigation"
 import { ClockIcon, FileTextIcon, FolderIcon, LockIcon } from "lucide-react"
 
+import { Prefetch } from "@/components/route-warmup"
+import { MAIN_CONTENT_ID, SkipLink } from "@/components/skip-link"
 import { publicHref, type PublicProject } from "@/lib/public-api"
 import { cn } from "@/lib/utils"
 import { TransitionLink } from "@/lib/view-transitions"
@@ -12,6 +14,9 @@ const TABS = [
   { id: "timeline", title: "Timeline", icon: ClockIcon },
   { id: "documents", title: "Documents", icon: FolderIcon },
 ] as const
+
+/** Tiptap, which every page of the notes is drawn with; split out of the notes tab. */
+const READER = [() => import("@/components/public/note-reader-impl")]
 
 /**
  * The chrome of a public site: the project's name, the three tabs, and a
@@ -25,8 +30,11 @@ export function PublicShell({ project, children }: { project: PublicProject; chi
   const pathname = usePathname()
   return (
     <div className="bg-background text-foreground flex h-svh flex-col overflow-hidden">
+      <SkipLink />
+      {/* Once the first tab is idle, the other two and the page reader load behind it. */}
+      <Prefetch hrefs={TABS.map((tab) => publicHref(project.slug, tab.id))} chunks={READER} />
       <header className="flex h-12 shrink-0 items-center gap-4 border-b px-4">
-        <TransitionLink href={publicHref(project.slug)} className="min-w-0 truncate text-sm font-semibold">
+        <TransitionLink href={publicHref(project.slug, "notes")} className="min-w-0 truncate text-sm font-semibold">
           {project.name}
         </TransitionLink>
         <nav className="flex items-center gap-1" aria-label="Sections">
@@ -53,7 +61,9 @@ export function PublicShell({ project, children }: { project: PublicProject; chi
           <LockIcon className="size-3" /> Read-only
         </span>
       </header>
-      <main className="flex min-h-0 flex-1">{children}</main>
+      <main id={MAIN_CONTENT_ID} tabIndex={-1} className="flex min-h-0 flex-1 focus-visible:outline-none">
+        {children}
+      </main>
     </div>
   )
 }

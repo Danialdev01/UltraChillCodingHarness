@@ -114,6 +114,34 @@ Set `CRAWL4AI_URL` and `BROWSER_USE_API_KEY` to enable the second and third step
 
 On the native harness the research *is* the turn. On **Claude Code or Codex** — which bring their own tools — a research message runs in two phases under one turn: the pipeline runs first on OpenRouter, using the default model from Settings (or the server's `DEFAULT_MODEL`), and writes a brief; the CLI is then given your message with the brief appended as source material. The brief is recorded as a `context.injected` event and the phase's cost is folded into the turn's usage. The toggle works on any thread, including one that has been running under a CLI for a while.
 
+### Documentation
+
+Beside Research in the **+** menu (or `/documentation`) is **Documentation**: a mode for creating, editing and reading documents — mostly PDF, DOCX and DOC. Only one mode is on at a time.
+
+The model writes content and the templates own layout. A new document is Markdown with `type:` in its front matter (`report`, `spec`, `api-reference`, `proposal`, `runbook`, `memo`). Each type is a preset over one Typst template in `packages/agent/doc-kit/templates/base.typ`, so the model never sets margins, fonts or colours. The turn gets typed tools instead of a shell:
+
+| tool | does |
+|---|---|
+| `doc_read` | text, headings, tables and figures of a .pdf/.docx/.doc, with paragraph anchors |
+| `doc_inspect` | renders pages (or pulls out embedded figures) and asks a vision model (`DOC_VISION_MODEL`) a question, or reviews layout against a fixed rubric |
+| `doc_edit` | in-place .docx edits that keep the document's styles; PDF forms, pages and metadata |
+| `doc_render` | Markdown → Pandoc → Typst → PDF (or .docx/.html); ` ```mermaid `, ` ```dot ` and ` ```vega-lite ` fences become figures |
+| `doc_diagram`, `doc_chart` | one diagram or chart to SVG/PNG, cached by content |
+| `doc_check` | the deterministic checks: page budget, embedded fonts, links, overflow, captions, outline |
+| `doc_skill` | loads one of the skills in `doc-kit/skills/` (planning, style, rendering, diagrams, charts, layout QA, citations, accessibility, editing) |
+
+A new document runs render → `doc_check` → `doc_inspect` → patch → re-render, with at most two review rounds. Three failed renders of one file stop the repair loop. On **Claude Code or Codex**, the message is handed over with the same rules and the scripts' paths, for the CLI to run with its own shell.
+
+The toolchain is in the server image. To run it locally you need pandoc ≥ 3, typst, poppler-utils, LibreOffice, graphviz, `@mermaid-js/mermaid-cli`, and a Python with the kit's packages:
+
+```bash
+python3 -m venv ~/.ucch-doc-venv
+~/.ucch-doc-venv/bin/pip install python-docx==1.1.2 pypdf==5.1.0 pdfplumber==0.11.4 vl-convert-python==1.7.0
+# then set DOC_PYTHON to that venv's absolute path, e.g. /home/you/.ucch-doc-venv/bin/python, in .env
+```
+
+Running `DOC_PYTHON=… pnpm test` also runs the scripts' own tests, which are skipped without it.
+
 ---
 
 ## Running it locally
@@ -233,11 +261,20 @@ cat /run/ucch-secrets/default_user_password
 
 The account is created on the first boot only, so changing these variables later does not reset it. Then add your OpenRouter key under **Settings → Providers**.
 
-Optional GitHub sign-in: create an OAuth App with callback `https://<ROOT_DOMAIN>/api/auth/github/callback`, set `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, redeploy.
+Optional GitHub sign-in: create an OAuth App with callback `https://<ROOT_DOMAIN>/api/auth/github/callback`, set `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, and list who may sign in with `GITHUB_ALLOWED_USERS` (logins) and/or `GITHUB_ALLOWED_ORGS` (organisations), then redeploy. With neither set, GitHub sign-in only admits accounts that already exist — every account gets a shell, so new sign-ups are closed by default.
 
 ### Generated secrets
 
 [`deploy/secrets.sh`](deploy/secrets.sh) writes `secret_key`, `postgres_password`, `mysql_root_password`, `dev_db_password`, `default_user_password` and `crawl4ai_api_token` into the `secrets` volume. It only writes a file that is missing, so redeploys keep the values the databases were initialised with. A variable of the same name in the Environment tab takes precedence. Use that only to carry over an existing install's passwords. **Back up the `secrets` volume together with `postgres-data`**: without `secret_key`, stored API keys can't be decrypted.
+
+### Who can sign in
+
+**Only give accounts to people you trust with the server itself.** In this compose file the terminal, the agent's `bash` and the preview dev servers all run in the `server` container, as the same `node` user as the API. Anyone who can open a terminal can therefore:
+
+- read the server process's environment, including `SECRET_KEY` and `DATABASE_URL`;
+- read every other user's workspace and CLI credentials under `/srv/ucch`.
+
+Removing variables from the terminal's environment doesn't change this. Keep `GITHUB_ALLOWED_USERS` / `GITHUB_ALLOWED_ORGS` tight. Isolating users from each other needs a separate UID or container per project, which isn't built yet.
 
 ### Development databases
 

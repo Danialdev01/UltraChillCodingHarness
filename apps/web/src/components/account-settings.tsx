@@ -3,7 +3,6 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import {
-  CheckIcon,
   KeyRoundIcon,
   Loader2Icon,
   MailIcon,
@@ -15,6 +14,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Skeleton } from "@/components/ui/skeleton"
 import {
   fetchAccount,
   updateAvatar,
@@ -23,6 +23,7 @@ import {
   updatePassword,
   type Account,
 } from "@/lib/account-api"
+import { Outcome, useOutcome } from "@/components/settings-outcome"
 import { fileToAvatar } from "@/lib/avatar-image"
 
 /**
@@ -58,14 +59,7 @@ export function AccountSettings() {
       </section>
     )
   }
-  if (!account) {
-    return (
-      <section className="text-muted-foreground flex items-center gap-2 rounded-lg border p-6 text-sm">
-        <Loader2Icon className="size-4 animate-spin" />
-        Loading your account…
-      </section>
-    )
-  }
+  if (!account) return <AccountSkeleton />
 
   return (
     <>
@@ -77,45 +71,29 @@ export function AccountSettings() {
   )
 }
 
-/** A section's transient outcome: what went wrong, or that it worked. */
-function useOutcome() {
-  const [busy, setBusy] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
-  const [done, setDone] = React.useState<string | null>(null)
-
-  // The confirmation clears itself; an error stays until the next attempt,
-  // because it is the thing the reader has to act on.
-  React.useEffect(() => {
-    if (!done) return
-    const timer = setTimeout(() => setDone(null), 4000)
-    return () => clearTimeout(timer)
-  }, [done])
-
-  const run = React.useCallback(async (work: () => Promise<string>) => {
-    setBusy(true)
-    setError(null)
-    setDone(null)
-    try {
-      setDone(await work())
-      return true
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-      return false
-    } finally {
-      setBusy(false)
-    }
-  }, [])
-
-  return { busy, error, done, run }
-}
-
-function Outcome({ error, done }: { error: string | null; done: string | null }) {
-  if (!error && !done) return null
+/**
+ * The page before the account arrives: the picture's section with its round
+ * avatar, then the three form sections, each a title, a line and a field.
+ */
+function AccountSkeleton() {
   return (
-    <p className={`mt-3 flex items-center gap-1.5 text-sm ${error ? "text-destructive" : "text-ucch-active"}`}>
-      {!error && <CheckIcon className="size-4 shrink-0" />}
-      {error ?? done}
-    </p>
+    <>
+      <section className="rounded-lg border p-6">
+        <Skeleton className="h-4 w-32" />
+        <Skeleton className="mt-3 h-3.5 w-3/4 max-w-prose" />
+        <div className="mt-4 flex items-center gap-4">
+          <Skeleton className="size-16 rounded-full" />
+          <Skeleton className="h-8 w-28" />
+        </div>
+      </section>
+      {[0, 1, 2].map((i) => (
+        <section key={i} className="rounded-lg border p-6">
+          <Skeleton className="h-4" style={{ width: `${20 + i * 6}%` }} />
+          <Skeleton className="mt-3 h-3.5 w-2/3 max-w-prose" />
+          <Skeleton className="mt-4 h-9 w-full max-w-md" />
+        </section>
+      ))}
+    </>
   )
 }
 

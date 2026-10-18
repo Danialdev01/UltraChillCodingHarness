@@ -1,11 +1,14 @@
 "use client"
 
 import * as React from "react"
-import { AlertCircleIcon, FileTextIcon, ImageIcon, Loader2Icon } from "lucide-react"
+import { AlertCircleIcon, FileTextIcon, ImageIcon } from "lucide-react"
 import { extensionOf, previewKindFor } from "@ucch/protocol"
 
 import { ImageViewer } from "@/components/image-viewer"
+import { PdfViewer } from "@/components/pdf-viewer"
+import { Skeleton } from "@/components/ui/skeleton"
 import { basename, rawFileUrl } from "@/lib/files-api"
+import type { ProjectTarget } from "@/lib/project-target"
 
 /**
  * An image or a PDF, where the text editor would otherwise be.
@@ -19,11 +22,11 @@ import { basename, rawFileUrl } from "@/lib/files-api"
  * does not run it, whatever the file contains, so the preview is a picture
  * and nothing more.
  *
- * A PDF goes in a sandboxed `<iframe>` -- the browser's own viewer, which is
- * the only sensible way to page through one, with `sandbox` keeping it out of
- * this origin.
+ * A PDF goes in the browser's own viewer, which is the only sensible way to
+ * page through one -- through `PdfViewer`, which says why that cannot be a
+ * plain sandboxed `<iframe>` on this URL.
  */
-export function FilePreview({ hash, path }: { hash: string; path: string }) {
+export function FilePreview({ hash, path }: { hash: ProjectTarget; path: string }) {
   const kind = previewKindFor(path)
   const source = rawFileUrl(hash, path)
 
@@ -37,10 +40,7 @@ export function FilePreview({ hash, path }: { hash: string; path: string }) {
   return (
     <div className="bg-muted/30 relative flex min-h-0 flex-1 flex-col">
       {state === "loading" && (
-        <div className="text-muted-foreground absolute inset-0 flex items-center justify-center gap-2 text-xs">
-          <Loader2Icon className="size-3.5 animate-spin" />
-          Loading {basename(path)}…
-        </div>
+        <Skeleton className="absolute inset-0 rounded-none" />
       )}
 
       {state === "failed" ? (
@@ -63,15 +63,11 @@ export function FilePreview({ hash, path }: { hash: string; path: string }) {
           onError={() => setState("failed")}
         />
       ) : (
-        <iframe
+        <PdfViewer
           src={source}
           title={basename(path)}
           onLoad={() => setState("ready")}
           onError={() => setState("failed")}
-          // Empty `sandbox`: no scripts, no forms, no navigation, and an
-          // opaque origin. The built-in PDF viewer works inside it; a PDF
-          // with embedded JavaScript does not.
-          sandbox=""
           className="min-h-0 w-full flex-1 border-0 bg-white"
         />
       )}

@@ -43,6 +43,7 @@ function fakeDb(row: Record<string, unknown>) {
 const config = (over: Record<string, string> = {}) =>
   loadConfig({
     DATABASE_URL: "postgres://u:p@localhost:5432/ucch",
+    NODE_ENV: "test",
     DEV_AUTH_BYPASS: "true",
     CREDS_ROOT: root,
     SECRET_KEY: SECRET,

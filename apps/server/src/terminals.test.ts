@@ -1,9 +1,9 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DomainEvent } from "@ucch/protocol";
-import { isSecretName, loginShell, terminalEnv, TerminalReactor } from "./terminals.js";
+import { isSecretName, loginShell, shellArgv, terminalEnv, TerminalReactor } from "./terminals.js";
 
 const PROJECT = "33333333-3333-3333-3333-333333333333";
 const TERMINAL = "77777777-7777-7777-7777-777777777777";
@@ -30,6 +30,10 @@ async function until(pattern: RegExp, ms = 10_000): Promise<void> {
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "ucch-term-"));
   output = [];
+  // Bash, not the fish the server prefers: fish queries the terminal at
+  // startup and waits for an answer xterm.js gives and this bare pty never
+  // will.
+  vi.stubEnv("TERMINAL_SHELL", "/bin/bash");
 
   // Bound to *this* array rather than to the `output` variable: a shell
   // killed in `afterEach` reports its exit a moment later, and a closure over
@@ -41,6 +45,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   reactor.closeAll();
   await rm(root, { recursive: true, force: true });
 });
@@ -83,6 +88,35 @@ describe("a terminal session", () => {
     type("definitely-not-a-command\n");
     await until(/not found/);
     expect(printed()).toMatch(/definitely-not-a-command.*not found/s);
+  }, 20_000);
+
+  it("keeps cd inside the project folder", async () => {
+    create();
+    // `cd ..` from the top, then a path outside, then a bare `cd` from a
+    // subfolder: all three end at the project.
+    type("cd ..; echo up=$?=$PWD=end\n");
+    await until(/up=\d=\/.*=end/);
+    type("cd /; echo abs=$?=$PWD=end\n");
+    await until(/abs=\d=\/.*=end/);
+    type("mkdir -p sub && cd sub && cd; echo home=$PWD=end\n");
+    await until(/home=\/.*=end/);
+
+    const project = join(root, PROJECT);
+    expect(printed()).toContain(`up=1=${project}=end`);
+    expect(printed()).toContain(`abs=1=${project}=end`);
+    expect(printed()).toContain(`home=${project}=end`);
+    expect(printed()).toContain("only the project folder is reachable");
+  }, 20_000);
+
+  it("shows the path from the project, not from /", async () => {
+    create();
+    type("mkdir -p src && cd src\n");
+    await until(/@\S+ src> /);
+    // `user@host`, then the path from the project or nothing at all. (A
+    // profile may still put the real path in the window title, which is an
+    // escape sequence, not prompt text: `@host:/path`, no space.)
+    expect(printed()).toMatch(/@\S+> /);
+    expect(printed()).not.toMatch(/@\S+ \/\S*> /);
   }, 20_000);
 
   it("closes the shell, and says so", async () => {
@@ -235,12 +269,43 @@ describe("the environment a terminal is given", () => {
 });
 
 describe("which shell is started", () => {
-  it("is the one the operator chose", () => {
-    expect(loginShell({ SHELL: "/usr/bin/fish" })).toBe("/usr/bin/fish");
+  const noFish = () => false;
+  const fishAt = (at: string) => (path: string) => path === at;
+
+  it("is the one TERMINAL_SHELL pins", () => {
+    expect(loginShell({ TERMINAL_SHELL: "/bin/zsh" }, fishAt("/usr/bin/fish"))).toBe("/bin/zsh");
+  });
+
+  it("is fish when it is installed, whatever SHELL the server inherited", () => {
+    expect(loginShell({ SHELL: "/usr/bin/zsh" }, fishAt("/usr/bin/fish"))).toBe("/usr/bin/fish");
+    expect(loginShell({}, fishAt("/opt/homebrew/bin/fish"))).toBe("/opt/homebrew/bin/fish");
+  });
+
+  it("is SHELL on a host without fish", () => {
+    expect(loginShell({ SHELL: "/usr/bin/zsh" }, noFish)).toBe("/usr/bin/zsh");
   });
 
   it("falls back when a service manager sets no SHELL", () => {
-    expect(loginShell({})).toBe("/bin/bash");
+    expect(loginShell({}, noFish)).toBe("/bin/bash");
+  });
+});
+
+describe("how a shell is started", () => {
+  it("keeps fish and bash to the project with their init scripts", () => {
+    const fish = shellArgv("/usr/bin/fish");
+    expect(fish.slice(0, 3)).toEqual(["/usr/bin/fish", "-l", "-C"]);
+    expect(fish[3]).toMatch(/^source '.*\/shell\/ucch\.fish'$/);
+
+    expect(shellArgv("/bin/bash")).toEqual([
+      "/bin/bash",
+      "--rcfile",
+      expect.stringMatching(/\/shell\/ucch\.bashrc$/),
+      "-i",
+    ]);
+  });
+
+  it("starts any other shell as a plain login shell", () => {
+    expect(shellArgv("/usr/bin/zsh")).toEqual(["/usr/bin/zsh", "-l"]);
   });
 });
 
@@ -299,8 +364,9 @@ describe("a login terminal", () => {
     const { calls, spawn } = fakeSpawn();
     const plain = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, spawn }, () => {});
     plain.react({ type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24 }, USER);
-    expect(calls[0]?.args).toEqual(["-l"]);
+    expect(calls[0]?.args).toEqual(shellArgv("/bin/bash").slice(1));
     expect(calls[0]?.cwd).toBe(join(root, PROJECT));
+    expect(calls[0]?.env.UCCH_ROOT).toBe(join(root, PROJECT));
     plain.closeAll();
   });
 

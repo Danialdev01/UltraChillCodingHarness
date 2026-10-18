@@ -8,6 +8,7 @@ import {
   type ExecResult,
   type Executor,
 } from "../executor.js";
+import { assertRealpathInside, isGitInternalPath } from "./confine.js";
 
 /** Captured per stream before the remainder is drained and dropped. */
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -55,10 +56,13 @@ export class HostExecutor implements Executor {
    * caller like `list_dir`, and that is the caller's decision to make, not a
    * meaning this can guess.
    *
-   * The check is lexical. A symlink inside the tree pointing out of it still
-   * resolves outward when the filesystem follows it; that is not defensible
-   * from here, and it is not worth pretending otherwise while `bash` is in
-   * the tool set at all. The container is what closes it.
+   * The check here is lexical; the file methods add `#confined`, which
+   * follows symlinks. That does not contain `bash`, but it does mean that
+   * with the shell off, the file tools cannot be steered out of the tree by
+   * a link a cloned repository shipped.
+   *
+   * `.git` is refused outright: its config and hooks are commands the
+   * server runs on the next `git status`.
    */
   resolve(path: string): string {
     if (isAbsolute(path)) {
@@ -68,6 +72,9 @@ export class HostExecutor implements Executor {
     if (normalized === null) {
       throw new Error(`path escapes the workspace: ${JSON.stringify(path)}`);
     }
+    if (isGitInternalPath(normalized)) {
+      throw new Error(`the repository's .git directory is off limits: ${path}`);
+    }
 
     const absolute = resolvePath(this.#root, normalized);
     // Belt and braces: `normalizeWorkspacePath` has already refused traversal,
@@ -75,6 +82,17 @@ export class HostExecutor implements Executor {
     if (absolute !== this.#root && !absolute.startsWith(this.#root + sep)) {
       throw new Error(`path escapes the workspace: ${path}`);
     }
+    return absolute;
+  }
+
+  /** `resolve`, then refused if a symlink along the way leads out of the tree. */
+  async #confined(path: string): Promise<string> {
+    const absolute = this.resolve(path);
+    await assertRealpathInside(
+      this.#root,
+      absolute,
+      () => new Error(`path escapes the workspace through a symlink: ${path}`),
+    );
     return absolute;
   }
 
@@ -178,7 +196,7 @@ export class HostExecutor implements Executor {
   }
 
   async readFile(path: string, options: { maxBytes?: number } = {}): Promise<string> {
-    const absolute = this.resolve(path);
+    const absolute = await this.#confined(path);
     const max = options.maxBytes ?? DEFAULT_MAX_READ_BYTES;
 
     // Opened and read by the byte rather than slurped: a tool asking for the
@@ -194,7 +212,7 @@ export class HostExecutor implements Executor {
   }
 
   async writeFile(path: string, content: string): Promise<void> {
-    const absolute = this.resolve(path);
+    const absolute = await this.#confined(path);
     // A model writing `src/routes/health.ts` into a project that has no
     // `routes` directory means to create one.
     await mkdir(dirname(absolute), { recursive: true });
@@ -210,7 +228,7 @@ export class HostExecutor implements Executor {
    * checkpoint the turn took at its start.
    */
   async removeFile(path: string): Promise<boolean> {
-    const absolute = this.resolve(path);
+    const absolute = await this.#confined(path);
 
     const info = await stat(absolute).catch(() => null);
     if (info === null) return false;

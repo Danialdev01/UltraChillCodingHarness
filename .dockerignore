@@ -12,3 +12,4 @@ dist
 coverage
 documentation
 images
+**/__pycache__

@@ -325,6 +325,16 @@ describe("the mode of a user message", () => {
     expect(messages[0]!.mode).toBe("research");
     expect(messages[1]).not.toHaveProperty("mode");
   });
+
+  it("carries documentation through", () => {
+    const { messages } = log({
+      type: "user.message",
+      threadId: THREAD,
+      text: "turn the failover notes into a runbook PDF",
+      mode: "documentation",
+    });
+    expect(messages[0]!.mode).toBe("documentation");
+  });
 });
 
 describe("the running turn", () => {

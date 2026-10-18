@@ -114,7 +114,7 @@ export function DashboardStats({
   );
 }
 
-function StatCard({
+export function StatCard({
   icon: Icon,
   label,
   value,

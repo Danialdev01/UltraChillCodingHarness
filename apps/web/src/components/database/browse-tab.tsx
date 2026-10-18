@@ -7,7 +7,6 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   FilterIcon,
-  Loader2Icon,
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -22,6 +21,7 @@ import { selectClass } from "@/components/database/column-form"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { errorText, useDb, type Listing } from "@/components/database/db-context"
 import { RowFormDialog } from "@/components/database/row-form-dialog"
+import { TableRowsSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { deleteRows, fetchRows, insertRow, updateRow } from "@/lib/database-api"
@@ -177,7 +177,7 @@ export function BrowseTab({ table, detail }: { table: string; detail: TableDetai
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <form onSubmit={applyFilters} className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2">
-        <label className="bg-background text-muted-foreground focus-within:border-ring flex h-8 w-56 items-center gap-1.5 rounded-lg border px-2 text-sm">
+        <label className="bg-background text-muted-foreground border-input focus-within:border-ring focus-within:ring-2 focus-within:ring-ring flex h-8 w-56 items-center gap-1.5 rounded-lg border px-2 text-sm">
           <SearchIcon className="size-3.5 shrink-0" />
           <input
             value={qDraft}
@@ -262,9 +262,7 @@ export function BrowseTab({ table, detail }: { table: string; detail: TableDetai
             </Button>
           </div>
         ) : data.state === "loading" && !page ? (
-          <div className="text-muted-foreground flex items-center gap-2 p-4 text-sm">
-            <Loader2Icon className="size-4 animate-spin" /> Loading rows
-          </div>
+          <TableRowsSkeleton />
         ) : page && page.rows.length === 0 ? (
           <p className="text-muted-foreground p-4 text-sm">{query.q || query.where ? "No rows match." : "This table is empty."}</p>
         ) : page ? (
@@ -290,7 +288,10 @@ export function BrowseTab({ table, detail }: { table: string; detail: TableDetai
                       className="hover:bg-muted/60 flex h-8 w-full items-center gap-1 px-2 text-left whitespace-nowrap"
                       title={column.type}
                     >
-                      <span className={cn(column.primary && "underline decoration-amber-500 decoration-2 underline-offset-2")}>{column.name}</span>
+                      <span className={cn(column.primary && "underline decoration-warning decoration-2 underline-offset-2")}>
+                        {column.name}
+                        {column.primary && <span className="sr-only"> (primary key)</span>}
+                      </span>
                       {query.sort === column.name &&
                         (query.dir === "asc" ? <ArrowUpIcon className="size-3 shrink-0" /> : <ArrowDownIcon className="size-3 shrink-0" />)}
                     </button>

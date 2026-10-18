@@ -220,7 +220,7 @@ export function ColumnFields({
 }
 
 export const selectClass =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-8 rounded-lg border px-2 text-sm outline-none focus-visible:ring-3 disabled:opacity-50 dark:bg-input/30"
+  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring h-8 rounded-lg border px-2 text-sm outline-none focus-visible:ring-3 disabled:opacity-50 dark:bg-input/30"
 
 export function Flag({
   id,

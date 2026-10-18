@@ -1,4 +1,4 @@
-import { isValidHex, normalizeHex, type Theme, isTheme } from "./theme.js"
+import { coerceSettings, isValidHex, normalizeHex, type ThemeSettings } from "./theme.js"
 
 /**
  * The colours of code in the file view, and the presets a whole look is kept
@@ -45,7 +45,9 @@ export type SyntaxRole = (typeof SYNTAX_ROLES)[number]["key"]
 export type SyntaxTheme = Record<SyntaxRole, string>
 
 /**
- * The shipped colours, mirrored in `globals.css`. Light is CodeMirror's own
+ * The shipped colours, mirrored in `globals.css`. Fixed, never randomised:
+ * each one reaches 4.5:1 against every surface the engine can generate for
+ * its mode (checked in `color-engine.test.ts`). Light is CodeMirror's own
  * default style with a few tones pulled in; dark is in the family of One
  * Dark, since that is what most eyes expect a dark editor to look like.
  */
@@ -53,25 +55,25 @@ export const DEFAULT_SYNTAX_LIGHT: SyntaxTheme = {
   keyword: "#7c3aed",
   string: "#a31515",
   number: "#0f766e",
-  comment: "#6b7280",
+  comment: "#626977",
   function: "#1d4ed8",
   variable: "#1f2937",
   property: "#0e7490",
-  type: "#b45309",
+  type: "#ad4e00",
   operator: "#374151",
-  punctuation: "#6b7280",
+  punctuation: "#626977",
   tag: "#166534",
   attribute: "#92400e",
   heading: "#1d4ed8",
   link: "#0369a1",
-  invalid: "#dc2626",
+  invalid: "#d1141b",
 }
 
 export const DEFAULT_SYNTAX_DARK: SyntaxTheme = {
   keyword: "#c678dd",
   string: "#98c379",
   number: "#d19a66",
-  comment: "#7f848e",
+  comment: "#868b96",
   function: "#61afef",
   variable: "#e5e7eb",
   property: "#e06c75",
@@ -121,21 +123,29 @@ export function syntaxVars(theme: SyntaxTheme): Record<string, string> {
 export interface ThemePreset {
   id: string
   name: string
-  /** The 60-30-10 palette, or null for the shipped default. */
-  theme: Theme | null
+  /** The palette and mode, or null for the shipped default. */
+  theme: ThemeSettings | null
   /** The code colours, or null to follow the defaults for light/dark. */
   syntax: SyntaxTheme | null
 }
 
 export function isPreset(value: unknown): value is ThemePreset {
-  if (typeof value !== "object" || value === null) return false
+  return coercePreset(value) !== null
+}
+
+/**
+ * A preset out of storage, or null if it is unusable. Presets saved before
+ * modes existed hold three bare hex colours; `coerceSettings` carries those
+ * over as custom colours.
+ */
+export function coercePreset(value: unknown): ThemePreset | null {
+  if (typeof value !== "object" || value === null) return null
   const p = value as Record<string, unknown>
-  return (
-    typeof p.id === "string" &&
-    typeof p.name === "string" &&
-    (p.theme === null || isTheme(p.theme)) &&
-    (p.syntax === null || isSyntaxTheme(p.syntax))
-  )
+  if (typeof p.id !== "string" || typeof p.name !== "string") return null
+  if (!(p.syntax === null || isSyntaxTheme(p.syntax))) return null
+  const theme = p.theme === null ? null : coerceSettings(p.theme)
+  if (p.theme !== null && !theme) return null
+  return { id: p.id, name: p.name, theme, syntax: p.syntax as SyntaxTheme | null }
 }
 
 /** A preset name as it is kept: trimmed, non-empty, not absurdly long. */
@@ -194,7 +204,9 @@ export function readStoredPresets(): ThemePreset[] {
     const raw = globalThis.localStorage?.getItem(PRESETS_STORAGE_KEY)
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter(isPreset) : []
+    return Array.isArray(parsed)
+      ? parsed.map(coercePreset).filter((p): p is ThemePreset => p !== null)
+      : []
   } catch {
     return []
   }

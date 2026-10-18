@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { users, type Database } from "@ucch/db";
-import type { CliProviderId, ProviderId } from "@ucch/protocol";
+import { users, workspaces, type Database } from "@ucch/db";
+import type { CliProviderId, ProviderId, ReasoningEffort } from "@ucch/protocol";
 import {
   PROVIDER_LABELS,
   type AgentProvider,
@@ -23,8 +24,10 @@ import { terminalEnv } from "./terminals.js";
  *
  * The rules from the spec, in code rather than in prose:
  *
- * - Credential directories are per **user**, never per project. Two projects
- *   owned by one person share one login; two people never share one.
+ * - Credential directories are per **subject**, never per project: a user,
+ *   or a workspace's dedicated subscription (`ws-<id>`, see
+ *   `workspaceSubject`). Two projects billed to one subject share one
+ *   login; two people never share one unless a workspace says so.
  * - `0700`, and the server never reads what is in them. Its job is to name
  *   the directory, not to parse it.
  * - The pasted token is decrypted for one spawn's environment and nowhere
@@ -44,9 +47,24 @@ export interface ProviderCard extends ProviderHealth {
   label: string;
   /** False when the server refuses this provider outright, whatever its health. */
   enabled: boolean;
-  models: readonly { id: string; name: string }[];
+  models: readonly { id: string; name: string; efforts?: readonly ReasoningEffort[] }[];
   /** Claude only: the pasted-token state. */
   token?: { configured: boolean; issuedAt: string | null; expiresSoon: boolean };
+}
+
+/**
+ * The credential subject for a workspace's dedicated subscription. Every
+ * method below that takes a `userId` accepts one of these in its place:
+ * the directories live beside the users' under `CREDS_ROOT`, and the stored
+ * keys are read from the workspace row instead.
+ */
+export function workspaceSubject(workspaceId: string): string {
+  return `ws-${workspaceId}`;
+}
+
+/** The workspace id inside a subject, or null for a user. */
+export function workspaceOfSubject(subject: string): string | null {
+  return subject.startsWith("ws-") ? subject.slice(3) : null;
 }
 
 interface Cached {
@@ -148,15 +166,7 @@ export class ProviderService {
     const cached = this.#cache.get(userId);
     if (cached && !options.fresh && Date.now() - cached.at < HEALTH_TTL_MS) return cached.cards;
 
-    const [row] = await this.db
-      .select({
-        openrouter: users.openrouterKeyEncrypted,
-        token: users.claudeOauthTokenEncrypted,
-        issuedAt: users.claudeTokenIssuedAt,
-      })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
+    const row = await this.#storedKeys(userId);
 
     const enabled = cliProvidersEnabled(this.config);
     const probe = async (id: CliProviderId): Promise<ProviderHealth> => {
@@ -223,14 +233,24 @@ export class ProviderService {
    */
   async signOut(userId: string, id: CliProviderId): Promise<void> {
     const dir = this.credsDir(userId, id);
-    if (existsSync(dir)) {
-      for (const entry of readdirSync(dir)) rmSync(join(dir, entry), { recursive: true, force: true });
-    }
+    // Async, unlike `ensureCredsDir`: a CLI's credential folder can hold a
+    // cache of thousands of files, and a recursive delete of that on the
+    // event loop stalls every other request while it runs.
+    const entries = await readdir(dir).catch(() => [] as string[]);
+    await Promise.all(entries.map((entry) => rm(join(dir, entry), { recursive: true, force: true })));
     if (id === "claude") {
-      await this.db
-        .update(users)
-        .set({ claudeOauthTokenEncrypted: null, claudeTokenIssuedAt: null })
-        .where(eq(users.id, userId));
+      const workspaceId = workspaceOfSubject(userId);
+      if (workspaceId) {
+        await this.db
+          .update(workspaces)
+          .set({ claudeOauthTokenEncrypted: null, claudeTokenIssuedAt: null })
+          .where(eq(workspaces.id, workspaceId));
+      } else {
+        await this.db
+          .update(users)
+          .set({ claudeOauthTokenEncrypted: null, claudeTokenIssuedAt: null })
+          .where(eq(users.id, userId));
+      }
     }
     this.invalidate(userId);
   }
@@ -238,11 +258,7 @@ export class ProviderService {
   /** The pasted setup-token, decrypted, or null when there is none usable. */
   async claudeToken(userId: string): Promise<string | null> {
     if (!this.config.SECRET_KEY) return null;
-    const [row] = await this.db
-      .select({ token: users.claudeOauthTokenEncrypted })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
+    const row = await this.#storedKeys(userId);
     if (!row?.token) return null;
     try {
       return decryptSecret(row.token, this.config.SECRET_KEY);
@@ -251,5 +267,23 @@ export class ProviderService {
       // settings page already says so through `describeKey`.
       return null;
     }
+  }
+
+  /** A subject's stored OpenRouter key and Claude token, from its user or workspace row. */
+  async #storedKeys(
+    subject: string,
+  ): Promise<{ openrouter: string | null; token: string | null; issuedAt: Date | null } | undefined> {
+    const workspaceId = workspaceOfSubject(subject);
+    const table = workspaceId ? workspaces : users;
+    const [row] = await this.db
+      .select({
+        openrouter: table.openrouterKeyEncrypted,
+        token: table.claudeOauthTokenEncrypted,
+        issuedAt: table.claudeTokenIssuedAt,
+      })
+      .from(table)
+      .where(eq(table.id, workspaceId ?? subject))
+      .limit(1);
+    return row;
   }
 }

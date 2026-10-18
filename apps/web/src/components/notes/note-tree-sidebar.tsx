@@ -12,6 +12,7 @@ import {
 } from "lucide-react"
 
 import { useNotes } from "@/components/notes/notes-context"
+import { TreeRowsSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -94,7 +95,7 @@ export function NoteTreeSidebar({
             <TreeRow node={{ ...tree, title: tree.title || projectName }} depth={0} {...actions} />
           </DragContext.Provider>
         ) : (
-          <p className="text-muted-foreground px-3 py-2 text-xs">Loading…</p>
+          <TreeRowsSkeleton />
         )}
       </div>
     </aside>
@@ -198,7 +199,7 @@ function TreeRow({ node, depth, ...actions }: TreeActions & { node: NoteTree; de
           "group/row ucch-tree-row relative flex h-7 cursor-pointer items-center gap-1 pr-1 text-sm",
           active
             ? "bg-ucch-active-bg text-ucch-active"
-            : "text-foreground/80 hover:bg-muted hover:text-foreground",
+            : "text-muted-foreground hover:bg-muted hover:text-foreground",
           zone === "inside" && "ring-ucch-active bg-ucch-active-bg/60 ring-1 ring-inset",
         )}
         style={{ paddingLeft: 6 + depth * 14 }}

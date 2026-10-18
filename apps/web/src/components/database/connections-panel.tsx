@@ -46,7 +46,15 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { deleteConnection, fetchDatabases, onDatabasesChanged } from "@/lib/database-api"
-import { connectionHref, connectionIdFromPath, databaseHref, databasePathFromPath } from "@/lib/sections"
+import {
+  connectionHref,
+  connectionIdFromPath,
+  databaseHref,
+  databasePathFromPath,
+  sectionById,
+  sectionHref,
+} from "@/lib/sections"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
 
 /**
@@ -76,6 +84,7 @@ export function ConnectionsPanel({
 }) {
   const pathname = usePathname()
   const router = useTransitionRouter()
+  const ws = useWorkspaceHash()
   const current = databasePathFromPath(pathname)
   // On a connection's own page, or inside one of its databases.
   const currentConnectionId = current?.connectionId ?? connectionIdFromPath(pathname)
@@ -89,7 +98,7 @@ export function ConnectionsPanel({
 
   async function remove(connection: DatabaseConnectionSummary) {
     await deleteConnection(connection.id)
-    if (currentConnectionId === connection.id) router.push("/database")
+    if (currentConnectionId === connection.id) router.push(sectionHref(sectionById("database"), ws))
     router.refresh()
   }
 
@@ -173,6 +182,7 @@ function ConnectionRow({
 }) {
   const { isMobile } = useSidebar()
   const router = useTransitionRouter()
+  const ws = useWorkspaceHash()
   const [listing, setListing] = React.useState<Listing>({ state: "idle" })
   const [creating, setCreating] = React.useState(false)
   const [editing, setEditing] = React.useState(false)
@@ -212,7 +222,7 @@ function ConnectionRow({
           onNavigate?.()
         }}
         aria-expanded={open}
-        render={<TransitionLink href={connectionHref(connection.id)} />}
+        render={<TransitionLink href={connectionHref(ws, connection.id)} />}
       >
         <DatabaseIcon />
         <span className="truncate">{connection.name}</span>
@@ -267,7 +277,7 @@ function ConnectionRow({
             onCreated={async (name) => {
               onOpenChange(true)
               await load()
-              router.push(databaseHref(connection.id, name))
+              router.push(databaseHref(ws, connection.id, name))
             }}
           />
           <CollapsibleContent>
@@ -291,7 +301,7 @@ function ConnectionRow({
                     <SidebarMenuSubButton
                       isActive={active === db}
                       onClick={onNavigate}
-                      render={<TransitionLink href={databaseHref(connection.id, db)} />}
+                      render={<TransitionLink href={databaseHref(ws, connection.id, db)} />}
                     >
                       <CylinderIcon />
                       <span className="truncate">{db}</span>

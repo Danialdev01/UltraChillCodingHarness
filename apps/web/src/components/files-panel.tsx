@@ -13,7 +13,8 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { FileTypeIcon } from "@/components/file-type-icon"
-import { TREE_FONT_SIZE, treeIconSize, treeRowSpacing } from "@/lib/tree-font-size"
+import { TreeRowsSkeleton } from "@/components/page-skeletons"
+import { TREE_FONT_SIZE, treeMetricsStyle } from "@/lib/tree-font-size"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Dialog,
@@ -46,6 +47,7 @@ import {
   saveFile,
   type FileNode,
 } from "@/lib/files-api"
+import { targetOf, type ProjectTarget } from "@/lib/project-target"
 import { movableInto } from "@/lib/file-drop"
 import { isPreviewable } from "@ucch/protocol"
 import type { Project } from "@/lib/session"
@@ -58,7 +60,7 @@ export type { FileNode as Node }
 const DRAG_TYPE = "application/x-ucch-file"
 
 /** What the project page is showing: the conversation, the files, or a shell. */
-export type ViewMode = "chat" | "file" | "terminal" | "git"
+export type ViewMode = "chat" | "file" | "docs" | "terminal" | "git"
 
 /** Which panel the right-hand column is showing, or none. */
 export type Sidebar = "files" | "search" | "chat"
@@ -144,12 +146,12 @@ interface FilesPanelContextValue {
   revealInFile: (path: string, line: number) => void
 
   /**
-   * The edited text of every file opened so far, keyed by path. Buffers
-   * outlive both their tab and the editor itself, so closing a tab or
-   * stepping over to the chat does not throw away unsaved work.
+   * Paths whose buffer differs from what is on disk. The text itself is in
+   * `useFileBuffers`, so typing does not re-render everything that reads
+   * this context -- this set only changes when a file becomes or stops
+   * being modified.
    */
-  buffers: Readonly<Record<string, string>>
-  setBuffer: (path: string, text: string) => void
+  dirty: ReadonlySet<string>
   /** What is on disk, as of the last read or save. Dirty is the difference. */
   saved: Readonly<Record<string, string>>
   /** Files being read from the server right now. */
@@ -181,6 +183,8 @@ interface FilesPanelContextValue {
 
   tree: readonly FileNode[]
   treeLoading: boolean
+  /** False until this project's tree has answered once: an empty `tree` is then "not here yet". */
+  treeLoaded: boolean
   treeError: string | null
   treeTruncated: boolean
   refreshTree: () => void
@@ -223,6 +227,27 @@ interface FilesPanelContextValue {
 
 const FilesPanelContext = React.createContext<FilesPanelContextValue | null>(null)
 
+/**
+ * The edited text of every file opened so far, keyed by path. Buffers
+ * outlive both their tab and the editor itself, so closing a tab or stepping
+ * over to the chat does not throw away unsaved work.
+ *
+ * A context of its own because it changes on every keystroke: in the main
+ * one, each key re-rendered the whole file tree.
+ */
+interface FileBuffersContextValue {
+  buffers: Readonly<Record<string, string>>
+  setBuffer: (path: string, text: string) => void
+}
+
+const FileBuffersContext = React.createContext<FileBuffersContextValue | null>(null)
+
+export function useFileBuffers() {
+  const context = React.useContext(FileBuffersContext)
+  if (!context) throw new Error("useFileBuffers must be used within a FilesPanelProvider.")
+  return context
+}
+
 export function useFilesPanel() {
   const context = React.useContext(FilesPanelContext)
   if (!context) throw new Error("useFilesPanel must be used within a FilesPanelProvider.")
@@ -252,6 +277,16 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   const [activeTab, setActiveTab] = React.useState<string | null>(null)
   const [buffers, setBuffers] = React.useState<Record<string, string>>({})
   const [saved, setSaved] = React.useState<Record<string, string>>({})
+  // Read by the context's functions, which must not depend on `buffers`
+  // itself or the whole value would change on every keystroke.
+  const buffersRef = React.useRef(buffers)
+  buffersRef.current = buffers
+  const dirty = useStableSet(
+    React.useMemo(
+      () => Object.keys(buffers).filter((path) => buffers[path] !== saved[path]),
+      [buffers, saved],
+    ),
+  )
   /**
    * The version of each open file as it was read, so a save goes over that
    * version or not at all -- never over a change made elsewhere since.
@@ -266,6 +301,9 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   const [expanded, setExpandedSet] = React.useState<ReadonlySet<string>>(new Set())
   const [tree, setTree] = React.useState<readonly FileNode[]>([])
   const [treeLoading, setTreeLoading] = React.useState(false)
+  // The project whose tree has answered at least once. Until it matches, an
+  // empty `tree` means "not here yet" and the panel draws skeleton rows.
+  const [treeLoadedFor, setTreeLoadedFor] = React.useState<ProjectTarget | null>(null)
   const [treeError, setTreeError] = React.useState<string | null>(null)
   const [treeTruncated, setTreeTruncated] = React.useState(false)
   const [changed, setChanged] = React.useState<ReadonlySet<string>>(new Set())
@@ -292,7 +330,15 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   // project root.
   const createTarget = folderOf(tree, selected)
 
-  const hash = project?.hash ?? null
+  // The tree the panel shows: a project session's own worktree when the
+  // page is one's, else the project's checkout. Memoised so it is a stable
+  // identity for the effects and the "loaded for" check below.
+  const projectHash = project?.hash ?? null
+  const sessionHash = project?.sessionHash ?? null
+  const target = React.useMemo<ProjectTarget | null>(
+    () => (projectHash ? targetOf({ hash: projectHash, sessionHash }) : null),
+    [projectHash, sessionHash],
+  )
 
   /**
    * Rereads the tree.
@@ -303,10 +349,10 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   const treeRequest = React.useRef(0)
   const treeLoadFailed = React.useRef(false)
   const refreshTree = React.useCallback(() => {
-    if (!hash) return
+    if (!target) return
     const ticket = ++treeRequest.current
     setTreeLoading(true)
-    void fetchTree(hash)
+    void fetchTree(target)
       .then((result) => {
         if (ticket !== treeRequest.current) return
         setTree(result.tree)
@@ -327,27 +373,29 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         setTreeError(error instanceof Error ? error.message : String(error))
       })
       .finally(() => {
-        if (ticket === treeRequest.current) setTreeLoading(false)
+        if (ticket !== treeRequest.current) return
+        setTreeLoading(false)
+        setTreeLoadedFor(target)
       })
-  }, [hash])
+  }, [target])
 
   // The tree belongs to the project, so it is refetched when that changes --
   // including on first sight of one.
   React.useEffect(() => {
     setTreeError(null)
     treeLoadFailed.current = false
-    if (!hash) {
+    if (!target) {
       setTree([])
       return
     }
     refreshTree()
-  }, [hash, refreshTree])
+  }, [target, refreshTree])
 
   const readFile = React.useCallback(
     (path: string) => {
-      if (!hash) return
+      if (!target) return
       setLoadingFiles((current) => new Set(current).add(path))
-      void fetchFileVersion(hash, path)
+      void fetchFileVersion(target, path)
         .then(({ content, version }) => {
           versions.current[path] = version
           setBuffers((current) => ({ ...current, [path]: content }))
@@ -371,7 +419,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
           })
         })
     },
-    [hash],
+    [target],
   )
 
   const value = React.useMemo<FilesPanelContextValue>(() => {
@@ -411,11 +459,9 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       // Always reread: the agent may have rewritten the file since it was
       // last opened, and the version on disk is the one being edited.
       // A buffer with unsaved edits is left alone.
-      setBuffers((current) => {
-        const dirty = current[path] !== undefined && current[path] !== saved[path]
-        if (!dirty) readFile(path)
-        return current
-      })
+      const current = buffersRef.current
+      const isDirty = current[path] !== undefined && current[path] !== saved[path]
+      if (!isDirty) readFile(path)
     }
 
     // Shuts the tree or the search, whichever is up; the chat column is not
@@ -510,18 +556,17 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       openChatSidebar: () => setSidebar("chat"),
       closeChatSidebar: () => setSidebar((current) => (current === "chat" ? null : current)),
 
-      buffers,
-      setBuffer: (path, text) => setBuffers((current) => ({ ...current, [path]: text })),
+      dirty,
       saved,
       loadingFiles,
       fileErrors,
       saving: savingFiles,
       save: async (path) => {
-        const text = buffers[path]
-        if (!hash || text === undefined) return
+        const text = buffersRef.current[path]
+        if (!target || text === undefined) return
         setSavingFiles((current) => new Set(current).add(path))
         try {
-          versions.current[path] = await saveFile(hash, path, text, versions.current[path])
+          versions.current[path] = await saveFile(target, path, text, versions.current[path])
           // What is on disk is now what is in the buffer, so the tab stops
           // reading as modified.
           setSaved((current) => ({ ...current, [path]: text }))
@@ -609,6 +654,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
 
       tree,
       treeLoading,
+      treeLoaded: treeLoadedFor === target,
       treeError,
       treeTruncated,
       refreshTree,
@@ -622,9 +668,10 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         // Read from the closure rather than inside a state updater: an
         // updater is meant to be pure, and React runs it twice in
         // development, which fetched the file twice per change.
-        const open = buffers[path] !== undefined
-        const dirty = open && buffers[path] !== saved[path]
-        if (change !== "deleted" && open && !dirty) readFile(path)
+        const current = buffersRef.current
+        const open = current[path] !== undefined
+        const isDirty = open && current[path] !== saved[path]
+        if (change !== "deleted" && open && !isDirty) readFile(path)
       },
 
       creating,
@@ -634,11 +681,11 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       commitCreate: (name) => {
         const trimmed = name.trim()
         setCreating(null)
-        if (!trimmed || !creating || !hash) return
+        if (!trimmed || !creating || !target) return
 
         const path = createTarget ? `${createTarget}/${trimmed}` : trimmed
         setTreeError(null)
-        void createEntry(hash, path, creating === "folder" ? "directory" : "file")
+        void createEntry(target, path, creating === "folder" ? "directory" : "file")
           .then(() => {
             refreshTree()
             setSelected(path)
@@ -654,7 +701,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
 
       askDelete: setDeleting,
       remove: async (paths) => {
-        if (!hash) return
+        if (!target) return
         // The message is about the latest thing you did.
         setTreeError(null)
         // A path inside a selected folder goes with the folder; deleting it
@@ -666,7 +713,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         const failures: string[] = []
         for (const path of roots) {
           try {
-            await deleteEntry(hash, path)
+            await deleteEntry(target, path)
             gone.push(path)
           } catch (error) {
             failures.push(error instanceof Error ? error.message : String(error))
@@ -687,7 +734,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       },
 
       move: async (paths, folder) => {
-        if (!hash) return
+        if (!target) return
         setTreeError(null)
         const moves = movableInto(paths, folder).map(
           (p) => [p, folder ? `${folder}/${basename(p)}` : basename(p)] as const,
@@ -698,7 +745,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         const failures: string[] = []
         for (const [from, to] of moves) {
           try {
-            await moveEntry(hash, from, to)
+            await moveEntry(target, from, to)
             done.push([from, to])
           } catch (error) {
             failures.push(error instanceof Error ? error.message : String(error))
@@ -741,7 +788,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     mode,
     tabs,
     activeTab,
-    buffers,
+    dirty,
     saved,
     loadingFiles,
     savingFiles,
@@ -751,6 +798,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     expanded,
     tree,
     treeLoading,
+    treeLoadedFor,
     treeError,
     treeTruncated,
     changed,
@@ -761,7 +809,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     terminals,
     chatDock,
     codeChat,
-    hash,
+    target,
     readFile,
     refreshTree,
     toast,
@@ -777,8 +825,17 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     noteChangedRef.current(event.path, event.change)
   })
 
+  const buffersValue = React.useMemo<FileBuffersContextValue>(
+    () => ({
+      buffers,
+      setBuffer: (path, text) => setBuffers((current) => ({ ...current, [path]: text })),
+    }),
+    [buffers],
+  )
+
   return (
     <FilesPanelContext.Provider value={value}>
+    <FileBuffersContext.Provider value={buffersValue}>
       {children}
       <DeleteEntryDialog
         paths={deleting}
@@ -788,6 +845,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
           await value.remove(paths)
         }}
       />
+    </FileBuffersContext.Provider>
     </FilesPanelContext.Provider>
   )
 }
@@ -810,10 +868,11 @@ export function useCurrentProject(project: Project) {
       closeFiles()
       closeSearch()
     }
-    // Identity is the project, not the object: the page re-renders with a new
-    // object on every navigation within the same project.
+    // Identity is the project and the session's tree, not the object: the
+    // page re-renders with a new object on every navigation within the same
+    // project.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id])
+  }, [project.id, project.sessionHash])
 }
 
 /**
@@ -844,6 +903,7 @@ export function FilesTree() {
     closeFiles,
     tree,
     treeLoading,
+    treeLoaded,
     treeError,
     treeTruncated,
     refreshTree,
@@ -914,25 +974,26 @@ export function FilesTree() {
       <div
         className={cn(
           "min-h-0 flex-1 overflow-auto outline-hidden",
-          // The rows take their size from the preference rather than the
-          // sidebar's text-sm: the name from the font size, the icon and the
-          // folder chevron two pixels larger, the padding and the gap in
-          // proportion, and the row as tall as that needs -- the fixed h-8
-          // would clip a 24px name and float a 10px one.
-          "[&_[data-sidebar=menu-button]]:h-auto [&_[data-sidebar=menu-button]]:gap-(--ucch-tree-row-space) [&_[data-sidebar=menu-button]]:p-(--ucch-tree-row-space) [&_[data-sidebar=menu-button]]:text-(length:--ucch-tree-font-size)",
-          "[&_[data-sidebar=menu-button]_img]:size-(--ucch-tree-icon-size) [&_[data-sidebar=menu-button]>svg:first-child]:size-(--ucch-tree-icon-size)",
-          // A folder's children indent by the same measure, so the tree's
-          // steps stay in step with its rows.
-          "[&_[data-sidebar=menu-sub]]:mx-(--ucch-tree-row-space) [&_[data-sidebar=menu-sub]]:px-(--ucch-tree-row-space)",
+          // VS Code's explorer density: every measure is a variable set below
+          // from the font-size preference (`treeMetrics`), which at the 13px
+          // default is a 22px row with a 16px icon. A row is exactly its line
+          // tall, with nothing above or below it, so the hover and the
+          // selection fill it edge to edge and rows sit flush. The weight stays
+          // normal when selected, so picking a row never reflows its name.
+          "[&_[data-sidebar=menu-button]]:h-(--tree-row-height) [&_[data-sidebar=menu-button]]:leading-(--tree-row-height) [&_[data-sidebar=menu-button]]:py-0 [&_[data-sidebar=menu-button]]:gap-0 [&_[data-sidebar=menu-button]]:rounded-none [&_[data-sidebar=menu-button]]:font-normal! [&_[data-sidebar=menu-button]]:text-(length:--tree-font-size)",
+          // Nesting is drawn inside the row: its left padding grows by one
+          // indent a level (the depth is set on the item), so rows still run
+          // the sidebar's full width. Inset focus ring: the scroller would clip
+          // one drawn outside a full-width row.
+          "[&_[data-sidebar=menu-button]]:pr-(--tree-pad-x) [&_[data-sidebar=menu-button]]:pl-[calc(var(--tree-pad-x)+var(--tree-indent)*var(--ucch-tree-depth,0))] [&_[data-sidebar=menu-button]]:focus-visible:ring-inset",
+          "[&_[data-sidebar=menu-button]_img]:size-(--tree-icon-size) [&_[data-sidebar=menu-button]_img]:mr-(--tree-gap-label) [&_[data-tree-chevron]_svg]:size-(--tree-chevron-glyph)",
+          // A folder's children keep a faint guide line, under the folder's
+          // chevron, now that the list itself is no longer indented.
+          "[&_[data-sidebar=menu-sub]]:relative [&_[data-sidebar=menu-sub]]:m-0 [&_[data-sidebar=menu-sub]]:translate-x-0 [&_[data-sidebar=menu-sub]]:gap-0 [&_[data-sidebar=menu-sub]]:border-0 [&_[data-sidebar=menu-sub]]:p-0",
+          "[&_[data-sidebar=menu-sub]]:before:pointer-events-none [&_[data-sidebar=menu-sub]]:before:absolute [&_[data-sidebar=menu-sub]]:before:inset-y-0 [&_[data-sidebar=menu-sub]]:before:z-10 [&_[data-sidebar=menu-sub]]:before:w-px [&_[data-sidebar=menu-sub]]:before:bg-sidebar-border [&_[data-sidebar=menu-sub]]:before:opacity-60 [&_[data-sidebar=menu-sub]]:before:left-[calc(var(--tree-pad-x)+var(--tree-indent)*var(--ucch-tree-depth,0)+var(--tree-chevron-size)/2)]",
           dropTarget === "" && "bg-ucch-active-bg/30",
         )}
-        style={
-          {
-            "--ucch-tree-font-size": `${treeFontSize}px`,
-            "--ucch-tree-icon-size": `${treeIconSize(treeFontSize)}px`,
-            "--ucch-tree-row-space": `${treeRowSpacing(treeFontSize)}px`,
-          } as React.CSSProperties
-        }
+        style={treeMetricsStyle(treeFontSize) as React.CSSProperties}
         tabIndex={0}
         // The tree itself is the root: a drop that no folder row claimed --
         // on a file, in a gap, on the empty space below -- lands at the top.
@@ -956,8 +1017,10 @@ export function FilesTree() {
           }
         }}
       >
-        <SidebarGroup>
-          <SidebarGroupLabel>Files</SidebarGroupLabel>
+        <SidebarGroup className="p-0">
+          <SidebarGroupLabel className="h-(--tree-row-height) rounded-none px-(--tree-pad-x) text-[11px] font-normal tracking-[0.04em] uppercase">
+            Files
+          </SidebarGroupLabel>
           <SidebarGroupContent>
             {treeError && (
               <p role="alert" className="text-destructive px-2 py-1 text-xs">
@@ -968,13 +1031,14 @@ export function FilesTree() {
             <SidebarMenu>
               {/* At the root only when that is where the node is going --
                   inside a folder, the tree renders the row in place. */}
-              {creating && createTarget === "" && <NameInput kind={creating} />}
+              {creating && createTarget === "" && <NameInput kind={creating} depth={0} />}
               {tree.map((node) => (
                 <Tree key={node.name} node={node} path="" />
               ))}
             </SidebarMenu>
 
-            {tree.length === 0 && !treeLoading && !treeError && (
+            {tree.length === 0 && !treeLoaded && !treeError && <TreeRowsSkeleton rows={8} dense />}
+            {tree.length === 0 && treeLoaded && !treeLoading && !treeError && (
               // An empty workspace is a real answer, not a failure: a project
               // created before the clone reactor has nothing on disk yet.
               <p className="text-muted-foreground px-2 py-2 text-xs">
@@ -1023,18 +1087,23 @@ function visibleRows(tree: readonly FileNode[], expanded: ReadonlySet<string>): 
 }
 
 /** The row you type a new name into, committed with Enter and dropped with Escape. */
-function NameInput({ kind }: { kind: "file" | "folder" }) {
+function NameInput({ kind, depth }: { kind: "file" | "folder"; depth: number }) {
   const { commitCreate, cancelCreate } = useFilesPanel()
 
   return (
-    <SidebarMenuItem>
-      <div className="flex h-8 items-center gap-2 rounded-md px-2">
+    <SidebarMenuItem style={depthStyle(depth)}>
+      <div className="flex h-(--tree-row-height) items-center pr-(--tree-pad-x) pl-[calc(var(--tree-pad-x)+var(--tree-indent)*var(--ucch-tree-depth,0))]">
+        <ChevronColumn />
         {/* The default of its kind: there is no name to pick a better one by yet. */}
-        <FileTypeIcon name="" kind={kind} />
+        <FileTypeIcon
+          name=""
+          kind={kind}
+          className="mr-(--tree-gap-label) size-(--tree-icon-size) shrink-0"
+        />
         <input
           autoFocus
           placeholder={kind === "folder" ? "folder name" : "file name"}
-          className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-hidden"
+          className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-(length:--tree-font-size) outline-hidden"
           onKeyDown={(e) => {
             if (e.key !== "Enter" && e.key !== "Escape") return
             // Without this the keypress carries on to whatever gains focus
@@ -1146,6 +1215,33 @@ function dropHandlers({
   }
 }
 
+/**
+ * The fixed column at the start of a row that a folder's chevron is centred
+ * in. Files and the name input keep it empty, so every icon at one depth
+ * lines up.
+ */
+function ChevronColumn({ children }: { children?: React.ReactNode }) {
+  return (
+    <span
+      data-tree-chevron
+      aria-hidden
+      className="mr-(--tree-gap-chevron) flex size-(--tree-chevron-size) shrink-0 items-center justify-center"
+    >
+      {children}
+    </span>
+  )
+}
+
+/** How many folders deep a path sits: 0 for a top-level node. */
+function treeDepth(full: string): number {
+  return full.split("/").length - 1
+}
+
+/** The depth a tree row, and the guide under its children, indent by. */
+function depthStyle(depth: number): React.CSSProperties {
+  return { "--ucch-tree-depth": depth } as React.CSSProperties
+}
+
 function Tree({ node, path }: { node: FileNode; path: string }) {
   const full = path ? `${path}/${node.name}` : node.name
   return node.children ? (
@@ -1157,15 +1253,15 @@ function Tree({ node, path }: { node: FileNode; path: string }) {
 
 function FileRow({ name, full }: { name: string; full: string }) {
   const panel = useFilesPanel()
-  const { openFile, selectRow, selectedPaths, buffers, saved, loadingFiles, changed } = panel
+  const { openFile, selectRow, selectedPaths, dirty, loadingFiles, changed } = panel
 
   // Your own unsaved edit wins over the agent's: it is the later of the two,
   // and it is the one that is still only in this browser.
-  const edited = buffers[full] !== undefined && buffers[full] !== saved[full]
+  const edited = dirty.has(full)
   const mark = edited ? "MM" : changed.has(full) ? "MA" : null
 
   return (
-    <SidebarMenuItem>
+    <SidebarMenuItem style={depthStyle(treeDepth(full))}>
       {/* A plain click opens the file; with a modifier held it only changes
           the selection, so building a set to delete does not open each one. */}
       <SidebarMenuButton
@@ -1179,6 +1275,9 @@ function FileRow({ name, full }: { name: string; full: string }) {
           openFile(full)
         }}
       >
+        {/* No chevron, but its column: the icon lines up with its sibling
+            folders' icons rather than with their chevrons. */}
+        <ChevronColumn />
         {/* The Material icon for the type, which is also what says an image
             or a PDF will open into a preview rather than the editor. */}
         <FileTypeIcon name={name} />
@@ -1191,7 +1290,7 @@ function FileRow({ name, full }: { name: string; full: string }) {
             // underneath it.
             className={cn(
               "ml-auto shrink-0 pr-4 font-mono text-[10px] font-medium",
-              edited ? "text-ucch-active" : "text-amber-600 dark:text-amber-500",
+              edited ? "text-ucch-active" : "text-warning",
             )}
           >
             {mark}
@@ -1249,9 +1348,9 @@ function FolderRow({
   }, [isTarget, full, setExpanded])
 
   return (
-    <SidebarMenuItem>
+    <SidebarMenuItem style={depthStyle(treeDepth(full))}>
       <Collapsible
-        className="group/collapsible [&[data-open]>button>svg:first-child]:rotate-90"
+        className="group/collapsible [&[data-open]>button>[data-tree-chevron]>svg]:rotate-90"
         open={open}
         onOpenChange={setOpen}
       >
@@ -1286,13 +1385,15 @@ function FolderRow({
             />
           }
         >
-          <ChevronRightIcon className="transition-transform" />
+          <ChevronColumn>
+            <ChevronRightIcon className="transition-transform" />
+          </ChevronColumn>
           <FileTypeIcon name={name} kind={open ? "folder-open" : "folder"} />
           <span className="truncate">{name}</span>
         </CollapsibleTrigger>
         <CollapsibleContent>
           <SidebarMenuSub>
-            {isTarget && creating && <NameInput kind={creating} />}
+            {isTarget && creating && <NameInput kind={creating} depth={treeDepth(full) + 1} />}
             {children_.map((child) => (
               <Tree key={child.name} node={child} path={full} />
             ))}
@@ -1361,4 +1462,17 @@ function DeleteEntryDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+/**
+ * The same Set for as long as its members stay the same, so a memo or
+ * context keyed on it does not change when nothing in it did.
+ */
+function useStableSet(items: readonly string[]): ReadonlySet<string> {
+  const ref = React.useRef<ReadonlySet<string>>(new Set())
+  const current = ref.current
+  if (items.length !== current.size || items.some((item) => !current.has(item))) {
+    ref.current = new Set(items)
+  }
+  return ref.current
 }

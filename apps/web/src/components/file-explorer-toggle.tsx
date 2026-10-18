@@ -1,9 +1,31 @@
 "use client"
 
-import { PanelRightCloseIcon, PanelRightOpenIcon, SearchIcon } from "lucide-react"
+import * as React from "react"
+import {
+  FolderIcon,
+  FolderOpenIcon,
+  FolderTreeIcon,
+  PencilIcon,
+  SearchIcon,
+  SettingsIcon,
+  Trash2Icon,
+} from "lucide-react"
 
+import { DeleteProjectDialog } from "@/components/delete-project-dialog"
 import { useFilesPanel } from "@/components/files-panel"
+import { RenameSessionDialog } from "@/components/session-list"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { projectPageHref } from "@/lib/sections"
+import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
+import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 
 /**
  * The two sidebar buttons, at the right end of the view switcher.
@@ -26,12 +48,17 @@ import { cn } from "@/lib/utils"
  *
  * Hidden on small screens along with the column they control, so neither is ever
  * a button that does nothing.
+ *
+ * In a session a settings menu follows them: the session's own actions, which
+ * used to hide behind a 3-dot button on every card in the sidebar. In a
+ * project a settings button follows them instead, to the project's Manage
+ * page, which no longer has a row under the project in the sidebar.
  */
-export function SidebarToggles() {
+export function SidebarToggles({ session = false }: { session?: boolean }) {
   const { project, filesOpen, searchOpen, openFiles, closeFiles, openSearch, closeSearch } =
     useFilesPanel()
 
-  const TreeIcon = filesOpen ? PanelRightCloseIcon : PanelRightOpenIcon
+  const TreeIcon = filesOpen ? FolderOpenIcon : FolderIcon
 
   return (
     <>
@@ -53,6 +80,79 @@ export function SidebarToggles() {
         disabled={!project}
         onToggle={() => (searchOpen ? closeSearch() : openSearch())}
         icon={SearchIcon}
+      />
+
+      {session && project && <SessionSettingsMenu session={project} />}
+      {!session && project && <ProjectSettingsLink project={project} />}
+    </>
+  )
+}
+
+/** The project's Manage page: what it has used, and where its repository lives. */
+function ProjectSettingsLink({ project }: { project: Project }) {
+  const ws = useWorkspaceHash()
+  return (
+    <TransitionLink
+      href={projectPageHref(ws, project.hash, "manage")}
+      title="Project settings"
+      className="text-muted-foreground hover:text-foreground hidden size-7 items-center justify-center rounded-md transition-colors md:flex"
+    >
+      <SettingsIcon className="size-3.5" />
+      <span className="sr-only">Settings for {project.name}</span>
+    </TransitionLink>
+  )
+}
+
+/** Rename, open the files of, or delete the session on screen. */
+function SessionSettingsMenu({ session }: { session: Project }) {
+  const { openFiles, closeFiles } = useFilesPanel()
+  const router = useTransitionRouter()
+  const ws = useWorkspaceHash()
+  const [renaming, setRenaming] = React.useState(false)
+  const [deleting, setDeleting] = React.useState(false)
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          title="Session settings"
+          className="text-muted-foreground hover:text-foreground aria-expanded:bg-background aria-expanded:text-foreground aria-expanded:shadow-sm hidden size-7 items-center justify-center rounded-md transition-colors md:flex"
+        >
+          <SettingsIcon className="size-3.5" />
+          <span className="sr-only">Settings for {session.name}</span>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="w-44" align="end">
+          <DropdownMenuItem onClick={() => setRenaming(true)}>
+            <PencilIcon className="text-muted-foreground" />
+            <span>Rename</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => openFiles(session)}>
+            <FolderTreeIcon className="text-muted-foreground" />
+            <span>Open Files</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" onClick={() => setDeleting(true)}>
+            <Trash2Icon />
+            <span>Delete</span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <RenameSessionDialog
+        session={renaming ? session : null}
+        onOpenChange={setRenaming}
+        onRenamed={() => router.refresh()}
+      />
+      <DeleteProjectDialog
+        project={deleting ? session : null}
+        open={deleting}
+        onOpenChange={setDeleting}
+        onDeleted={() => {
+          // The page on screen is the session that no longer exists.
+          closeFiles()
+          router.push(`/${ws}`)
+          router.refresh()
+        }}
       />
     </>
   )

@@ -1,18 +1,21 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
+import type { ReadStream } from "node:fs";
 import {
   access,
   mkdir,
+  open,
   readdir,
   readFile,
-  realpath,
   rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { assertRealpathInside, isGitInternalPath } from "@ucch/agent";
 import { normalizeWorkspacePath } from "@ucch/protocol";
+import type { TreeTarget } from "./trees.js";
 
 /**
  * The project's files, as the browser is allowed to see them.
@@ -63,7 +66,8 @@ const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 16 * 1024 * 1024;
 
 export type RawReadResult =
-  | { kind: "file"; bytes: Buffer }
+  /** Opened, not read: the route pipes it, so a 16 MB PDF is never one buffer. */
+  | { kind: "file"; stream: ReadStream; size: number }
   | { kind: "too_large"; size: number }
   | { kind: "missing" }
   | { kind: "directory" };
@@ -80,14 +84,14 @@ export class WorkspaceFiles {
   constructor(private readonly workspaceRoot: string) {}
 
   /** The project's own directory, created if a clone has not made it yet. */
-  async ensureRoot(projectId: string): Promise<string> {
+  async ensureRoot(projectId: TreeTarget): Promise<string> {
     const root = this.root(projectId);
     await mkdir(root, { recursive: true });
     return root;
   }
 
-  root(projectId: string): string {
-    return resolve(this.workspaceRoot, projectId);
+  root(projectId: TreeTarget): string {
+    return typeof projectId === "string" ? resolve(this.workspaceRoot, projectId) : resolve(projectId.tree);
   }
 
   /**
@@ -99,14 +103,18 @@ export class WorkspaceFiles {
    * that got past it however it managed to.
    *
    * The check is lexical, so a symlink inside the tree pointing out of it
-   * still resolves outward when the filesystem follows it. `realpath` is
-   * applied by the methods that touch an existing file, which is where a
-   * symlink can actually be followed.
+   * still resolves outward when the filesystem follows it. Every method
+   * that touches the filesystem also runs `#refuseEscapingSymlink`, which
+   * follows links -- including in the parents of a path not created yet.
+   *
+   * The repository's `.git` is refused too: its config and hooks are
+   * commands the server's own git calls would run.
    */
-  resolve(projectId: string, path: string): string {
+  resolve(projectId: TreeTarget, path: string): string {
     if (isAbsolute(path)) throw new PathError(`path must be relative: ${path}`);
     const normalized = normalizeWorkspacePath(path);
     if (normalized === null) throw new PathError(`path escapes the workspace: ${path}`);
+    if (isGitInternalPath(normalized)) throw new PathError(`the .git directory cannot be edited: ${path}`);
 
     const root = this.root(projectId);
     const absolute = resolve(root, normalized);
@@ -117,14 +125,14 @@ export class WorkspaceFiles {
   }
 
   /** The whole tree, folders first, capped so one enormous repository cannot hang the panel. */
-  async tree(projectId: string): Promise<{ tree: FileNode[]; truncated: boolean }> {
+  async tree(projectId: TreeTarget): Promise<{ tree: FileNode[]; truncated: boolean }> {
     const root = await this.ensureRoot(projectId);
     const budget = { left: MAX_ENTRIES };
     const tree = await walk(root, budget);
     return { tree, truncated: budget.left <= 0 };
   }
 
-  async read(projectId: string, path: string): Promise<ReadResult> {
+  async read(projectId: TreeTarget, path: string): Promise<ReadResult> {
     const absolute = this.resolve(projectId, path);
 
     let info;
@@ -155,7 +163,7 @@ export class WorkspaceFiles {
    * the workspace rules and a symlink out of the tree is refused -- so this
    * can reach no file the editor could not.
    */
-  async readBytes(projectId: string, path: string): Promise<RawReadResult> {
+  async readBytes(projectId: TreeTarget, path: string): Promise<RawReadResult> {
     const absolute = this.resolve(projectId, path);
 
     let info;
@@ -168,7 +176,8 @@ export class WorkspaceFiles {
     if (info.size > MAX_PREVIEW_BYTES) return { kind: "too_large", size: info.size };
     await this.#refuseEscapingSymlink(projectId, absolute);
 
-    return { kind: "file", bytes: await readFile(absolute) };
+    const handle = await open(absolute, "r");
+    return { kind: "file", stream: handle.createReadStream(), size: info.size };
   }
 
   /**
@@ -181,7 +190,7 @@ export class WorkspaceFiles {
    * cannot both pass the check.
    */
   async write(
-    projectId: string,
+    projectId: TreeTarget,
     path: string,
     content: string,
     ifVersion?: string,
@@ -191,8 +200,8 @@ export class WorkspaceFiles {
     }
     const absolute = this.resolve(projectId, path);
     return this.#serially(absolute, async () => {
+      await this.#refuseEscapingSymlink(projectId, absolute);
       const existed = await exists(absolute);
-      if (existed) await this.#refuseEscapingSymlink(projectId, absolute);
       if (ifVersion !== undefined) {
         const current = existed ? await readFile(absolute) : null;
         if (!current || contentVersion(current) !== ifVersion) {
@@ -228,8 +237,9 @@ export class WorkspaceFiles {
   }
 
   /** Creates an empty file or a directory. Refuses to clobber either. */
-  async create(projectId: string, path: string, kind: "file" | "directory"): Promise<void> {
+  async create(projectId: TreeTarget, path: string, kind: "file" | "directory"): Promise<void> {
     const absolute = this.resolve(projectId, path);
+    await this.#refuseEscapingSymlink(projectId, absolute);
     if (await exists(absolute)) throw new ConflictError(`${path} already exists`);
 
     if (kind === "directory") {
@@ -243,7 +253,7 @@ export class WorkspaceFiles {
   }
 
   /** Removes a file, or a directory and everything under it. */
-  async remove(projectId: string, path: string): Promise<boolean> {
+  async remove(projectId: TreeTarget, path: string): Promise<boolean> {
     const absolute = this.resolve(projectId, path);
     // The project root itself is not a thing the file tree may delete: that
     // is what deleting the project is for.
@@ -259,7 +269,7 @@ export class WorkspaceFiles {
    * Moves a file or directory, keeping its contents. Reports a source that
    * was not there, and refuses to clobber whatever is at the destination.
    */
-  async move(projectId: string, from: string, to: string): Promise<boolean> {
+  async move(projectId: TreeTarget, from: string, to: string): Promise<boolean> {
     const source = this.resolve(projectId, from);
     const destination = this.resolve(projectId, to);
     if (source === this.root(projectId)) throw new PathError("the project root cannot be moved");
@@ -271,6 +281,7 @@ export class WorkspaceFiles {
     if (!(await exists(source))) return false;
 
     await this.#refuseEscapingSymlink(projectId, source);
+    await this.#refuseEscapingSymlink(projectId, destination);
     if (await exists(destination)) throw new ConflictError(`${to} already exists`);
 
     await mkdir(dirname(destination), { recursive: true });
@@ -281,29 +292,43 @@ export class WorkspaceFiles {
   /**
    * Refuses a path that only *lexically* sits inside the workspace.
    *
-   * `resolve()` cannot see a symlink; this can, because the file is there to
-   * be resolved. A link planted by the agent -- or by a repository that was
+   * `resolve()` cannot see a symlink; this can. A path that does not exist
+   * yet is judged by its deepest existing parent, which is where a write
+   * would follow a link. A link planted by the agent -- or by a repository that was
    * cloned with one -- must not become a way to read or overwrite the host's
    * files through the editor.
    */
-  async #refuseEscapingSymlink(projectId: string, absolute: string): Promise<void> {
-    const root = this.root(projectId);
-    let real: string;
-    let realRoot: string;
-    try {
-      real = await realpath(absolute);
-      realRoot = await realpath(root);
-    } catch {
-      return; // Not there any more; the caller's own stat will say so.
-    }
-    if (real !== realRoot && !real.startsWith(realRoot + sep)) {
-      throw new PathError("path escapes the workspace");
-    }
+  async #refuseEscapingSymlink(projectId: TreeTarget, absolute: string): Promise<void> {
+    await assertRealpathInside(this.root(projectId), absolute, () => new PathError("path escapes the workspace"));
   }
 }
 
 /** A refused path. Reported as 400, never as a server error. */
 export class PathError extends Error {}
+
+/**
+ * A file name that holds credentials rather than code.
+ *
+ * The owner's own editor shows these -- they are the project's, and the
+ * server writes `.env` there itself -- but a public site must not: the slug
+ * is the only grant, and a database password is not part of what was shared.
+ * Matched on the last segment, so it holds in any folder.
+ */
+const SECRET_FILE = /^(\.env(\..*)?|\.npmrc|\.pypirc|\.netrc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx))$/i;
+
+export function isSecretPath(path: string): boolean {
+  const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+  // `.env.example` is meant to be read; it is the template, not the secret.
+  if (/^\.env\.(example|sample|template)$/i.test(name)) return false;
+  return SECRET_FILE.test(name);
+}
+
+/** The tree without any file `isSecretPath` refuses, for a public reader. */
+export function withoutSecrets(nodes: FileNode[]): FileNode[] {
+  return nodes
+    .filter((node) => node.children !== undefined || !isSecretPath(node.name))
+    .map((node) => (node.children ? { ...node, children: withoutSecrets(node.children) } : node));
+}
 
 /** The target is already there. Reported as 409. */
 export class ConflictError extends Error {}

@@ -17,6 +17,31 @@ export const DEFAULT_DB_PORTS: Record<DatabaseEngine, number> = {
   postgresql: 5432,
 };
 
+/**
+ * The name of a development database a project asks the harness to create.
+ *
+ * Narrower than either engine allows, on purpose: lower-case, starting with a
+ * letter, letters/digits/underscores only. It is the same identifier on MySQL
+ * and PostgreSQL without quoting, and it is safe in a URL and a `.env` file.
+ */
+export const DevDatabaseName = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/, "lower-case letters, digits and underscores, starting with a letter");
+export type DevDatabaseName = z.infer<typeof DevDatabaseName>;
+
+/** A project's own development database: which shared server, and its name. */
+export const ProjectDatabase = z.object({ engine: DatabaseEngine, name: DevDatabaseName });
+export type ProjectDatabase = z.infer<typeof ProjectDatabase>;
+
+/** Turns a project name into a database name a person would probably pick. */
+export function suggestDevDatabaseName(projectName: string): string {
+  const cleaned = projectName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^[^a-z]+/, "")
+    .replace(/_+$/, "")
+    .slice(0, 63);
+  return cleaned;
+}
+
 export const DATABASE_ENGINE_LABELS: Record<DatabaseEngine, string> = {
   mysql: "MySQL",
   postgresql: "PostgreSQL",

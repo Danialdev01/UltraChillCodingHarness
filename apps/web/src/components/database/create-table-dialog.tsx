@@ -20,6 +20,7 @@ import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { createTable } from "@/lib/database-api"
 import { databaseHref } from "@/lib/sections"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 import { useTransitionRouter } from "@/lib/view-transitions"
 
 /** The column most tables start with, so a new table is one click from usable. */
@@ -41,6 +42,7 @@ function idColumn(engine: "mysql" | "postgresql"): ColumnDraft {
 export function CreateTableDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { ref, engine, connection, db, reloadTables } = useDb()
   const router = useTransitionRouter()
+  const ws = useWorkspaceHash()
   const [name, setName] = React.useState("")
   const [columns, setColumns] = React.useState<ColumnDraft[]>([])
   const [pending, setPending] = React.useState(false)
@@ -75,7 +77,7 @@ export function CreateTableDialog({ open, onOpenChange }: { open: boolean; onOpe
       await createTable(ref, { name: tableName.data, columns: specs })
       await reloadTables()
       onOpenChange(false)
-      router.push(databaseHref(connection.id, db, tableName.data))
+      router.push(databaseHref(ws, connection.id, db, tableName.data))
     } catch (caught) {
       setError(errorText(caught))
       setPending(false)

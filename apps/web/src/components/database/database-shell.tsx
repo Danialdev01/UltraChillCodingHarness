@@ -26,7 +26,8 @@ export function DatabaseShell({
   return (
     <DbProvider connection={connection} db={db}>
       <div className="flex min-h-0 flex-1">
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">{children}</main>
+        {/* A div, not <main>: this sits inside the app shell's <main> already. */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">{children}</div>
         <TablesColumn />
       </div>
     </DbProvider>

@@ -6,6 +6,8 @@ import { markdown } from "@codemirror/lang-markdown"
 import { php } from "@codemirror/lang-php"
 import type { LanguageSupport } from "@codemirror/language"
 
+import { mermaid } from "@/lib/mermaid-language"
+
 /**
  * The language mode for a path, or nothing for a file we have no grammar for.
  *
@@ -36,6 +38,9 @@ export function languageFor(path: string): LanguageSupport | null {
       return html()
     case "css":
       return css()
+    case "mmd":
+    case "mermaid":
+      return mermaid()
     default:
       return null
   }

@@ -5,9 +5,10 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { MySQL, PostgreSQL, sql } from "@codemirror/lang-sql"
 import { bracketMatching, syntaxHighlighting } from "@codemirror/language"
 import { EditorState, Prec } from "@codemirror/state"
-import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers, placeholder } from "@codemirror/view"
+import { drawSelection, EditorView, keymap, lineNumbers, placeholder } from "@codemirror/view"
 import type { DatabaseEngine } from "@ucch/protocol"
 
+import { editorSelection } from "@/lib/editor-selection"
 import { syntaxHighlightStyle } from "@/lib/syntax-highlight"
 
 /** The look shared with the file editor, minus what only vim mode needs. */
@@ -26,10 +27,6 @@ const theme = EditorView.theme({
     paddingRight: "0.25rem",
   },
   ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--foreground)" },
-  ".cm-activeLine": { backgroundColor: "color-mix(in oklch, var(--muted) 45%, transparent)" },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "var(--ucch-active-bg)",
-  },
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": { backgroundColor: "var(--ucch-active-bg)", outline: "none" },
   ".cm-placeholder": { color: "var(--muted-foreground)" },
 })
@@ -79,7 +76,7 @@ export function SqlEditor({
         lineNumbers(),
         history(),
         drawSelection(),
-        highlightActiveLine(),
+        editorSelection(),
         bracketMatching(),
         sql({ dialect: engine === "mysql" ? MySQL : PostgreSQL, upperCaseKeywords: true }),
         syntaxHighlighting(syntaxHighlightStyle),

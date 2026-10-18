@@ -865,7 +865,7 @@ describe("htmlToText", () => {
 });
 
 describe("the tool surface", () => {
-  it("registers all sixteen, in the canonical order", () => {
+  it("registers all twenty-four, in the canonical order", () => {
     expect(ALL.map((t) => t.name)).toEqual([
       "read_file",
       "list_dir",
@@ -883,6 +883,14 @@ describe("the tool surface", () => {
       "research_search",
       "research_read",
       "research_browse",
+      "doc_skill",
+      "doc_read",
+      "doc_inspect",
+      "doc_edit",
+      "doc_render",
+      "doc_diagram",
+      "doc_chart",
+      "doc_check",
     ]);
   });
 
@@ -912,8 +920,37 @@ describe("the tool surface", () => {
     }
     // And the standard preset is exactly what it was before they existed.
     expect(toolsFor("standard").map((t) => t.name)).toEqual(
-      ALL.map((t) => t.name).filter((n) => !n.startsWith("research_")),
+      ALL.map((t) => t.name).filter((n) => !n.startsWith("research_") && !n.startsWith("doc_")),
     );
+  });
+
+  // The same rule for the document pipeline, and no shell on its preset:
+  // the scripts behind the tools are the only way it runs anything.
+  it("offers the document tools on the documentation preset alone", () => {
+    expect(toolsFor("documentation").map((t) => t.name)).toEqual([
+      "read_file",
+      "list_dir",
+      "write_file",
+      "edit_file",
+      "glob",
+      "grep",
+      "current_time",
+      "web_search",
+      "web_fetch",
+      "attach_upload",
+      "delete_file",
+      "doc_skill",
+      "doc_read",
+      "doc_inspect",
+      "doc_edit",
+      "doc_render",
+      "doc_diagram",
+      "doc_chart",
+      "doc_check",
+    ]);
+    for (const preset of ["standard", "readonly", "minimal", "ptc", "research"] as const) {
+      expect(toolsFor(preset).some((t) => t.name.startsWith("doc_"))).toBe(false);
+    }
   });
 
   it("withholds the shell when the deployment has not allowed it", () => {

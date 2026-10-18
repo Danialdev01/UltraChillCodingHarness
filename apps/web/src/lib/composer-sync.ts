@@ -10,8 +10,11 @@
  *   echoed back -- never merely because one went past while it was typing.
  *   So two windows typing at once cannot both win: the later one is refused.
  * - A remote draft is shown at once when this window has nothing unsent.
- *   Otherwise it is held, and if this window's update is then refused, the
- *   held draft replaces what was typed here: an error, and a revert.
+ *   Otherwise it is held. If this window's update is then refused because
+ *   another window typed first, the held draft replaces what was typed here.
+ *   If it was refused over a change nobody typed -- the box emptied after a
+ *   send, or a snapshot this window missed -- what was typed here is resent
+ *   on the newer rev instead, so no keystrokes are lost.
  */
 
 import type { ComposerDraft } from "@ucch/protocol";
@@ -21,6 +24,8 @@ export interface ComposerEvent {
   draft: ComposerDraft;
   /** This window's own update, echoed back. */
   own: boolean;
+  /** Another window's keystrokes, as opposed to a change nobody typed (a clear after a send). */
+  typed: boolean;
 }
 
 export interface ComposerSyncOptions {
@@ -30,8 +35,6 @@ export interface ComposerSyncOptions {
   isConflict(error: unknown): boolean;
   /** Puts a draft from elsewhere into the prompt box. */
   apply(draft: ComposerDraft): void;
-  /** This window's edits were refused and replaced by `apply`. */
-  onReverted(): void;
   setTimeout?: (fn: () => void, ms: number) => unknown;
   clearTimeout?: (handle: unknown) => void;
 }
@@ -55,7 +58,7 @@ export function draftKey(draft: ComposerDraft): string {
     draft.text,
     draft.attachments.map((a) => a.uploadId ?? a.id),
     draft.reference,
-    draft.research ?? false,
+    draft.mode ?? (draft.research ? "research" : null),
     draft.effort ?? null,
   ]);
 }
@@ -92,12 +95,20 @@ export function createComposerSync(options: ComposerSyncOptions): ComposerSync {
       await options.send(baseRev, draft);
       synced = draftKey(draft);
     } catch (error) {
-      if (options.isConflict(error)) {
-        // Another window wrote first. Its draft -- pushed just before the
+      if (options.isConflict(error) && held?.typed) {
+        // Another window typed first. Its draft -- pushed just before the
         // refusal -- replaces everything typed here that had not gone.
         waiting = null;
-        if (held) adopt(held);
-        options.onReverted();
+        adopt(held);
+      } else if (options.isConflict(error)) {
+        // The box moved on without anyone typing in it: build on that and
+        // send what was typed here again.
+        if (held) {
+          baseRev = held.rev;
+          synced = draftKey(held.draft);
+          held = null;
+        }
+        waiting = waiting ?? draft;
       } else {
         // Not a clash, just not delivered: try again with whatever is newest.
         waiting = waiting ?? draft;

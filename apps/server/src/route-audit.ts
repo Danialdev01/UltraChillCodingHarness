@@ -55,6 +55,8 @@ export const SELF_AUDITED = new Set([
   "POST /api/projects/:hash/file",
   "PATCH /api/projects/:hash/file",
   "DELETE /api/projects/:hash/file",
+  // Logged only when a session was actually removed: `?ifEmpty=1` often keeps it.
+  "DELETE /api/projects/:hash/sessions/:sessionHash",
 ]);
 
 /** Writes that change nothing anyone would call a change. */
@@ -108,6 +110,18 @@ const TABLE: Record<string, Describe> = {
     summary: b?.enabled === false ? "Unpublished the public site" : "Changed the public site",
     resource: "project_settings",
   }),
+  "PUT /api/projects/:hash/task-settings": (_p, b) => {
+    const autoRun = b?.autoRun as { enabled?: unknown; time?: unknown; timezone?: unknown } | undefined;
+    return {
+      action: "task.settings",
+      targetType: "project",
+      summary:
+        autoRun?.enabled === true
+          ? `Turned on Auto Run Tasks at ${String(autoRun.time)} (${String(autoRun.timezone)})`
+          : "Saved the task automation settings",
+      resource: "project_settings",
+    };
+  },
   "DELETE /api/projects/:hash": () => ({
     action: "project.delete",
     targetType: "project",
@@ -121,6 +135,98 @@ const TABLE: Record<string, Describe> = {
     summary: `Created workspace ${quoted(b?.name, "")}`.trim(),
     resource: "projects",
     scope: "account",
+  }),
+  "PATCH /api/workspaces/:id": (p, b) => ({
+    action: b?.archived === true ? "workspace.archive" : b?.archived === false ? "workspace.unarchive" : "workspace.update",
+    targetType: "workspace",
+    targetId: p.id,
+    summary:
+      b?.archived === true
+        ? "Archived a workspace"
+        : b?.archived === false
+          ? "Restored an archived workspace"
+          : `Renamed a workspace to ${quoted(b?.name, "")}`.trim(),
+    resource: "projects",
+    scope: "account",
+  }),
+  "DELETE /api/workspaces/:id": (p) => ({
+    action: "workspace.delete",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: "Deleted an empty workspace",
+    resource: "projects",
+    scope: "account",
+  }),
+  // -- Workspace sharing -----------------------------------------------------
+  "POST /api/workspaces/:id/members": (p, b) => ({
+    action: "workspace.member_add",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: `Added ${quoted(b?.identifier, "a member")} as ${str(b?.role) ?? "member"}`,
+    resource: "workspace_members",
+    scope: "account",
+  }),
+  "PATCH /api/workspaces/:id/members/:userId": (p, b) => ({
+    action: "workspace.member_update",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: str(b?.role) ? `Changed a member's role to ${str(b?.role)}` : "Changed a member's permissions",
+    resource: "workspace_members",
+    scope: "account",
+  }),
+  "DELETE /api/workspaces/:id/members/:userId": (p) => ({
+    action: "workspace.member_remove",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: "Removed a member from a workspace",
+    resource: "workspace_members",
+    scope: "account",
+  }),
+  "POST /api/workspaces/:id/invites": (p, b) => ({
+    action: "workspace.invite_create",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: `Created an invite link for a ${str(b?.role) ?? "member"}`,
+    resource: "workspace_members",
+    scope: "account",
+  }),
+  "DELETE /api/workspaces/:id/invites/:inviteId": (p) => ({
+    action: "workspace.invite_revoke",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: "Revoked an invite link",
+    resource: "workspace_members",
+    scope: "account",
+  }),
+  "POST /api/invites/:token/accept": () => ({
+    action: "workspace.join",
+    targetType: "workspace",
+    summary: "Joined a workspace by invite link",
+    resource: "projects",
+    scope: "account",
+  }),
+  "PATCH /api/workspaces/:id/settings": (p, b) => ({
+    action: "workspace.credential_policy",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: `Set the workspace's harness subscription to ${str(b?.credentialPolicy) ?? "a new policy"}`,
+    resource: "workspace_members",
+    scope: "account",
+  }),
+  // The value is never read: only which credential changed.
+  "PUT /api/workspaces/:id/credentials/:kind": (p, b) => ({
+    action: "workspace.credential_set",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: `${b?.value === null ? "Removed" : "Updated"} the workspace's ${p.kind === "openrouter" ? "OpenRouter key" : "Claude token"}`,
+    resource: "workspace_members",
+    scope: "account",
+  }),
+  "PATCH /api/projects/:hash": (_p, b) => ({
+    action: "project.rename",
+    targetType: "project",
+    summary: `Renamed to ${quoted(b?.name, "")}`.trim(),
+    resource: "projects",
   }),
   "POST /api/projects/:hash/diagrams/:kind/generate": (p) => ({
     action: "diagram.generate",

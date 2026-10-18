@@ -116,6 +116,13 @@ const Push = z.object({
   subscriptionId: z.string(),
   seq: z.number().int().nonnegative().nullable(),
   at: z.string().datetime().optional(),
+  /**
+   * The project the event belongs to. A thread's events name only the
+   * thread, so without this a view watching several projects -- the
+   * sidebar's agent badges -- could not tell whose turn just ended.
+   * Absent on the user's own topic, which belongs to no project.
+   */
+  projectId: z.string().uuid().optional(),
   event: DomainEvent,
 });
 

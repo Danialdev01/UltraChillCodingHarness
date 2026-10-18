@@ -14,7 +14,15 @@ import {
   uuid,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
-import type { DomainEvent, NoteDoc, TokenUsage } from "@ucch/protocol";
+import type {
+  DomainEvent,
+  NoteDoc,
+  TaskAutoRun,
+  TaskFeedback,
+  TaskReference,
+  TaskVerification,
+  TokenUsage,
+} from "@ucch/protocol";
 
 /**
  * `events` is the source of truth. Every other table here is a projection --
@@ -107,10 +115,9 @@ export const users = pgTable("users", {
  * it as a company or a team. One user has many workspaces; each workspace has
  * many projects; each project has many sub-agents.
  *
- * Ownership is a single `ownerUserId` for now. Multi-member workspaces need a
- * `workspace_members` join table, which is additive: nothing here has to
- * change to support it, and authorization already resolves through the
- * workspace rather than through the project.
+ * `ownerUserId` is the person who created it and can never be removed from
+ * it; everyone with access -- the owner included -- has a row in
+ * `workspace_members`, and authorization reads that table, never this column.
  */
 export const workspaces = pgTable(
   "workspaces",
@@ -118,10 +125,40 @@ export const workspaces = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     /** URL-safe identifier, unique per owner rather than globally. */
     slug: text("slug").notNull(),
+    /** The workspace's address in the web app, `/{hash}`. Same grammar as a project hash. */
+    hash: text("hash").notNull().unique(),
     name: text("name").notNull(),
     ownerUserId: uuid("owner_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    /**
+     * project | session. A session workspace holds the same project rows,
+     * but each is a lightweight chat with its own files and terminal rather
+     * than a named codebase -- only the UI treats the two differently.
+     */
+    kind: text("kind").notNull().default("project"),
+    /** Set while archived: hidden from the switcher's main list, not deleted. */
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    /**
+     * The switcher's logo, as a small `data:image/...;base64` URL. Inline
+     * rather than a stored file: the browser shrinks it to a few KB before
+     * upload, and it then travels with the workspace list at no extra request.
+     */
+    logo: text("logo"),
+    /**
+     * Whose harness subscription the workspace's turns run on: `member` (each
+     * person's own), `workspace` (the credentials below, for everyone) or
+     * `either` (chosen per session). See `CredentialPolicy`.
+     */
+    credentialPolicy: text("credential_policy").notNull().default("member"),
+    /**
+     * The workspace's dedicated OpenRouter key and `claude setup-token`
+     * token, encrypted at rest the way the per-user columns are and never
+     * returned to a client. CLI logins live under `CREDS_ROOT/ws-<id>/`.
+     */
+    openrouterKeyEncrypted: text("openrouter_key_encrypted"),
+    claudeOauthTokenEncrypted: text("claude_oauth_token_encrypted"),
+    claudeTokenIssuedAt: timestamp("claude_token_issued_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -129,6 +166,58 @@ export const workspaces = pgTable(
     uniqueIndex("workspaces_owner_slug_idx").on(t.ownerUserId, t.slug),
     index("workspaces_owner_idx").on(t.ownerUserId),
   ],
+);
+
+/**
+ * Who can reach a workspace, and as what. The owner has a row like everyone
+ * else, so every access check is one lookup here.
+ *
+ * `role` is owner | admin | member | viewer (see `WorkspaceRole`). The two
+ * `can*` columns override the role's default for one person; null follows it.
+ */
+export const workspaceMembers = pgTable(
+  "workspace_members",
+  {
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role").notNull().default("member"),
+    canCreateProject: boolean("can_create_project"),
+    canCreateSession: boolean("can_create_session"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("workspace_members_pk_idx").on(t.workspaceId, t.userId),
+    index("workspace_members_user_idx").on(t.userId),
+  ],
+);
+
+/**
+ * A shareable join link. Only the sha256 of the token is stored, as with
+ * `sessions`: the link is shown once, when it is made.
+ */
+export const workspaceInvites = pgTable(
+  "workspace_invites",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    /** The role a person joining by this link gets; never `owner`. */
+    role: text("role").notNull().default("member"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    uses: integer("uses").notNull().default(0),
+    /** Null is unlimited. */
+    maxUses: integer("max_uses"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("workspace_invites_workspace_idx").on(t.workspaceId)],
 );
 
 export const projects = pgTable(
@@ -141,10 +230,11 @@ export const projects = pgTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     /**
-     * Denormalised from the owning workspace so the idle reaper and other
-     * background scans can filter by user without a join. Authorization does
-     * NOT read this -- it resolves through the workspace, so the two can
-     * never disagree in a way that grants access.
+     * The person who created the project -- the workspace owner, or a member
+     * of a shared workspace. Background scans use it as the account to act
+     * as. Authorization does NOT read this -- it resolves through
+     * `workspace_members`, so the two can never disagree in a way that
+     * grants access.
      */
     userId: uuid("user_id")
       .notNull()
@@ -158,7 +248,12 @@ export const projects = pgTable(
      */
     repoUrl: text("repo_url"),
     defaultBranch: text("default_branch").notNull().default("main"),
-    /** Detected stack: laravel | nextjs | vite | php | static | node | unknown. */
+    /**
+     * Detected stack, as `detectStack` in apps/server/src/clone.ts names it:
+     * a framework (laravel, nextjs, nuxt, react, django, rails, …), else a
+     * language or runtime (node, python, rust, go, php, …), else static, or
+     * unknown before the clone. Set at clone and re-checked every few turns.
+     */
     stack: text("stack").notNull().default("unknown"),
     containerState: text("container_state").notNull().default("absent"),
     containerError: text("container_error"),
@@ -169,6 +264,13 @@ export const projects = pgTable(
      */
     previewPort: integer("preview_port"),
     /**
+     * Set when the preview is a static site rather than a dev server: the
+     * folder in the working tree it is served from, "" for the root. The
+     * proxy then serves those files itself on `previewPort`'s subdomain, so
+     * the address and the cookie work the same either way.
+     */
+    previewStaticDir: text("preview_static_dir"),
+    /**
      * The read-only public site's address segment, `{name}-{6 chars}`, minted
      * the first time the owner makes the project public and kept from then
      * on: a link that was shared keeps working across a toggle off and on.
@@ -176,6 +278,14 @@ export const projects = pgTable(
      */
     publicSlug: text("public_slug").unique(),
     publicEnabled: boolean("public_enabled").notNull().default(false),
+    /**
+     * The agent the Tasks board runs with: native | claude | codex, and a
+     * model for it. Null falls back to the owning account's defaults.
+     */
+    taskAgentProvider: text("task_agent_provider"),
+    taskAgentModel: text("task_agent_model"),
+    /** When the board moves Idea cards to Research by itself. Null is off. */
+    taskAutoRun: jsonb("task_auto_run").$type<TaskAutoRun>(),
     lastActiveAt: timestamp("last_active_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -212,9 +322,35 @@ export const threads = pgTable(
      * conversation is this log.
      */
     providerSessionId: text("provider_session_id"),
+    /** Who started the thread; whose own subscription a `member` thread bills. */
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /**
+     * `member` or `workspace`: whose credentials this thread's turns run on,
+     * fixed when it is created. Null on threads older than the column, which
+     * run on the workspace owner's account as they always did.
+     */
+    credentialSource: text("credential_source"),
+    /** The session's address in the web app, `/{ws}/p/{project}/{hash}`. */
+    hash: text("hash").notNull().unique(),
+    /**
+     * A project session runs in its own git worktree on `branch`, forked
+     * from `baseBranch` when it was created. Both null: the thread works in
+     * the project's main folder, as every thread did before worktrees.
+     */
+    baseBranch: text("base_branch"),
+    branch: text("branch"),
+    /** creating | ready | error, while `branch` is set; null otherwise. */
+    worktreeState: text("worktree_state"),
+    worktreeError: text("worktree_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("threads_project_idx").on(t.projectId)],
+  (t) => [
+    index("threads_project_idx").on(t.projectId),
+    // The sidebar's thread list: one project's, newest first.
+    index("threads_project_created_idx").on(t.projectId, t.createdAt),
+  ],
 );
 
 export const events = pgTable(
@@ -240,7 +376,11 @@ export const events = pgTable(
     // fails the transaction rather than silently interleaving.
     uniqueIndex("events_thread_seq_idx").on(t.threadId, t.seq),
     index("events_project_idx").on(t.projectId, t.id),
-    index("events_type_idx").on(t.type),
+    // `nextSeq` for project-scoped events: max(seq) where thread_id is null.
+    // Without it every such append scanned the project's whole log.
+    index("events_project_seq_idx")
+      .on(t.projectId, t.seq)
+      .where(sql`${t.threadId} is null`),
   ],
 );
 
@@ -447,6 +587,43 @@ export const timelineTasks = pgTable(
 );
 
 /**
+ * The cards on a project's Tasks board.
+ *
+ * Plain rows like `timeline_tasks`. A person writes the idea; the pipeline
+ * fills in the rest as it carries the card along -- the research brief, the
+ * thread the agent worked in, the verifier's verdict -- so the card is the
+ * whole record of what was done for it.
+ */
+export const projectTasks = pgTable(
+  "project_tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    references: jsonb("references").$type<TaskReference[]>().notNull().default([]),
+    /** idea | research | ongoing | verification | done */
+    stage: text("stage").notNull().default("idea"),
+    /** idle | running | needs_input | failed */
+    status: text("status").notNull().default("idle"),
+    /** Order within the column, top to bottom. */
+    position: real("position").notNull().default(0),
+    research: text("research"),
+    verification: jsonb("verification").$type<TaskVerification>(),
+    feedback: jsonb("feedback").$type<TaskFeedback[]>().notNull().default([]),
+    /** The chat thread the coding agent worked in; kept if the thread goes. */
+    threadId: uuid("thread_id").references(() => threads.id, { onDelete: "set null" }),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("project_tasks_project_idx").on(t.projectId, t.stage, t.position)],
+);
+
+/**
  * A project's saved keys: API keys, tokens and passwords that a provider
  * shows once and cannot show again, kept here so they can be handed back.
  *
@@ -484,7 +661,11 @@ export const sessions = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("sessions_user_idx").on(t.userId)],
+  (t) => [
+    index("sessions_user_idx").on(t.userId),
+    // The expired-session sweep.
+    index("sessions_expires_idx").on(t.expiresAt),
+  ],
 );
 
 export const workspacesRelations = relations(workspaces, ({ many, one }) => ({
@@ -519,12 +700,15 @@ export const threadsRelations = relations(threads, ({ many, one }) => ({
 }));
 
 export type Workspace = typeof workspaces.$inferSelect;
+export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
+export type WorkspaceInvite = typeof workspaceInvites.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Subagent = typeof subagents.$inferSelect;
 export type Thread = typeof threads.$inferSelect;
 export type Turn = typeof turns.$inferSelect;
 export type Note = typeof notes.$inferSelect;
 export type TimelineTask = typeof timelineTasks.$inferSelect;
+export type ProjectTaskRow = typeof projectTasks.$inferSelect;
 export type ProjectKey = typeof projectKeys.$inferSelect;
 export type Preview = typeof previews.$inferSelect;
 export type User = typeof users.$inferSelect;
@@ -568,5 +752,8 @@ export const auditLog = pgTable(
   (t) => [
     index("audit_log_project_idx").on(t.projectId, t.updatedAt),
     index("audit_log_user_idx").on(t.userId, t.updatedAt),
+    // The activity feeds page by id, newest first.
+    index("audit_log_project_id_idx").on(t.projectId, t.id),
+    index("audit_log_user_id_idx").on(t.userId, t.id),
   ],
 );

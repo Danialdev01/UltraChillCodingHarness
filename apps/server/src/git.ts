@@ -17,6 +17,7 @@ import {
 } from "@ucch/protocol";
 import { PathError } from "./files.js";
 import { GitError, runGit, safeRepoUrl } from "./git-exec.js";
+import type { TreeTarget } from "./trees.js";
 
 /** The most changed files a status carries; a vendored tree can have far more. */
 const MAX_STATUS_FILES = 2000;
@@ -55,6 +56,9 @@ export class GitRefError extends Error {}
  * project are queued behind each other because git takes `index.lock` and
  * the agent may be committing at the same moment a person clicks "stage".
  */
+/** A project's checkout by id, or one session's worktree of it. */
+export type GitTarget = TreeTarget;
+
 export class GitService {
   readonly #chains = new Map<string, Promise<unknown>>();
 
@@ -63,12 +67,16 @@ export class GitService {
     private readonly timeoutMs = 30_000,
   ) {}
 
-  dir(projectId: string): string {
-    return join(this.workspaceRoot, projectId);
+  /**
+   * The working tree a target names: a project's checkout by its id, or a
+   * session's worktree, already resolved by the caller through `treeFor`.
+   */
+  dir(target: GitTarget): string {
+    return typeof target === "string" ? join(this.workspaceRoot, target) : target.tree;
   }
 
   /** Whether the project directory is a repository at all. */
-  async isRepo(projectId: string): Promise<boolean> {
+  async isRepo(projectId: GitTarget): Promise<boolean> {
     try {
       await runGit(["rev-parse", "--git-dir"], this.dir(projectId), this.timeoutMs);
       return true;
@@ -78,7 +86,7 @@ export class GitService {
   }
 
   /** Where `origin` points, or null when there is no remote. */
-  async remoteUrl(projectId: string): Promise<string | null> {
+  async remoteUrl(projectId: GitTarget): Promise<string | null> {
     const out = await runGit(["remote", "get-url", "origin"], this.dir(projectId), this.timeoutMs, {
       okExitCodes: [0, 2, 128],
     });
@@ -87,7 +95,7 @@ export class GitService {
 
   // ---- reading ----------------------------------------------------------
 
-  async status(projectId: string): Promise<GitStatus> {
+  async status(projectId: GitTarget): Promise<GitStatus> {
     const cwd = this.dir(projectId);
     const [raw, gitDir, shallow, remotes] = await Promise.all([
       this.#git(cwd, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
@@ -118,7 +126,21 @@ export class GitService {
     };
   }
 
-  async diff(projectId: string, path: string, scope: GitDiffScope): Promise<GitDiff> {
+  /**
+   * How many commits HEAD has that `base` does not: what a session has
+   * committed since it forked. 0 for an unborn branch or a base git no
+   * longer knows, so a session is never held back by a ref it cannot read.
+   */
+  async commitsSince(projectId: GitTarget, base: string): Promise<number> {
+    const cwd = this.dir(projectId);
+    const out = await this.#git(cwd, ["rev-list", "--count", `${this.#refName(base)}..HEAD`, "--"], {
+      okExitCodes: [0, 128],
+    });
+    const count = Number.parseInt(out.trim(), 10);
+    return Number.isFinite(count) ? count : 0;
+  }
+
+  async diff(projectId: GitTarget, path: string, scope: GitDiffScope): Promise<GitDiff> {
     const cwd = this.dir(projectId);
     const rel = this.#path(path);
     if (scope === "untracked") {
@@ -148,7 +170,7 @@ export class GitService {
     return patchResult(patch);
   }
 
-  async log(projectId: string, options: { skip?: number; limit?: number } = {}): Promise<GitLogPage> {
+  async log(projectId: GitTarget, options: { skip?: number; limit?: number } = {}): Promise<GitLogPage> {
     const cwd = this.dir(projectId);
     const skip = Math.max(0, options.skip ?? 0);
     const limit = Math.min(100, Math.max(1, options.limit ?? 50));
@@ -172,7 +194,7 @@ export class GitService {
     return { commits: commits.slice(0, limit), hasMore: commits.length > limit, isShallow: shallow };
   }
 
-  async show(projectId: string, sha: string): Promise<GitCommitDetail> {
+  async show(projectId: GitTarget, sha: string): Promise<GitCommitDetail> {
     const cwd = this.dir(projectId);
     const ref = this.#sha(sha);
     const meta = await this.#git(cwd, ["show", "-s", `--format=${LOG_FORMAT}`, ref, "--"]);
@@ -191,7 +213,7 @@ export class GitService {
     return { commit, files: parseNameStatusZ(names) };
   }
 
-  async commitDiff(projectId: string, sha: string, path: string): Promise<GitDiff> {
+  async commitDiff(projectId: GitTarget, sha: string, path: string): Promise<GitDiff> {
     const cwd = this.dir(projectId);
     const ref = this.#sha(sha);
     const rel = this.#path(path);
@@ -212,7 +234,7 @@ export class GitService {
     return patchResult(patch);
   }
 
-  async branches(projectId: string): Promise<GitBranchList> {
+  async branches(projectId: GitTarget): Promise<GitBranchList> {
     const cwd = this.dir(projectId);
     const out = await this.#git(cwd, [
       "for-each-ref",
@@ -226,14 +248,14 @@ export class GitService {
 
   // ---- the index and working tree ---------------------------------------
 
-  stage(projectId: string, paths: string[] | "all"): Promise<void> {
+  stage(projectId: GitTarget, paths: string[] | "all"): Promise<void> {
     return this.#serial(projectId, async (cwd) => {
       if (paths === "all") await this.#git(cwd, ["add", "-A"]);
       else await this.#git(cwd, ["add", "-A", "--", ...this.#paths(paths)]);
     });
   }
 
-  unstage(projectId: string, paths: string[] | "all"): Promise<void> {
+  unstage(projectId: GitTarget, paths: string[] | "all"): Promise<void> {
     return this.#serial(projectId, async (cwd) => {
       const rel = paths === "all" ? [] : this.#paths(paths);
       if (await this.#hasHead(cwd)) {
@@ -250,7 +272,7 @@ export class GitService {
    * Throws away changes: tracked files go back to HEAD, untracked ones are
    * deleted. `all` means every changed file in the status.
    */
-  discard(projectId: string, paths: string[] | "all"): Promise<GitChangedPath[]> {
+  discard(projectId: GitTarget, paths: string[] | "all"): Promise<GitChangedPath[]> {
     return this.#serial(projectId, async (cwd) => {
       const status = parseStatusV2(
         await this.#git(cwd, ["status", "--porcelain=v2", "-z", "--untracked-files=all"]),
@@ -277,7 +299,7 @@ export class GitService {
   }
 
   commit(
-    projectId: string,
+    projectId: GitTarget,
     message: { summary: string; description?: string },
     author: GitAuthor,
   ): Promise<{ sha: string; branch: string | null }> {
@@ -306,7 +328,7 @@ export class GitService {
    * Switches branches. A remote branch (`origin/x`) gets a local `x`
    * tracking it, or is simply switched to when `x` already exists.
    */
-  checkout(projectId: string, branch: string, remote = false): Promise<GitChangedPath[]> {
+  checkout(projectId: GitTarget, branch: string, remote = false): Promise<GitChangedPath[]> {
     return this.#serial(projectId, async (cwd) => {
       const before = await this.#head(cwd);
       if (remote) {
@@ -322,7 +344,7 @@ export class GitService {
     });
   }
 
-  createBranch(projectId: string, name: string): Promise<void> {
+  createBranch(projectId: GitTarget, name: string): Promise<void> {
     return this.#serial(projectId, async (cwd) => {
       await this.#git(cwd, ["switch", "-c", this.#branchName(name)]);
     });
@@ -330,7 +352,7 @@ export class GitService {
 
   // ---- the remote -------------------------------------------------------
 
-  fetch(projectId: string, token: string | null, options: { unshallow?: boolean } = {}): Promise<void> {
+  fetch(projectId: GitTarget, token: string | null, options: { unshallow?: boolean } = {}): Promise<void> {
     return this.#serial(projectId, async (cwd) => {
       await this.#widenRefspec(cwd);
       const args = ["fetch", "--prune", "origin"];
@@ -347,7 +369,7 @@ export class GitService {
    * exits 1, the tree holds the markers, and the caller shows the resolver.
    */
   pull(
-    projectId: string,
+    projectId: GitTarget,
     token: string | null,
     author: GitAuthor,
   ): Promise<{ conflicts: boolean; changed: GitChangedPath[] }> {
@@ -367,7 +389,7 @@ export class GitService {
   }
 
   /** Pushes the current branch, publishing it when it has no upstream yet. */
-  push(projectId: string, token: string | null): Promise<{ branch: string; remoteSha: string }> {
+  push(projectId: GitTarget, token: string | null): Promise<{ branch: string; remoteSha: string }> {
     return this.#serial(projectId, async (cwd) => {
       await this.#widenRefspec(cwd);
       const branch = (await this.#git(cwd, ["branch", "--show-current"])).trim();
@@ -396,7 +418,7 @@ export class GitService {
    * a typo does not leave `origin` pointing at nothing.
    */
   connectRemote(
-    projectId: string,
+    projectId: GitTarget,
     url: string,
     token: string | null,
     author: GitAuthor,
@@ -435,9 +457,27 @@ export class GitService {
     });
   }
 
+  /**
+   * Points an existing `origin` somewhere else. Nothing is fetched or
+   * merged: the history stays as it is, and the next fetch or push is what
+   * talks to the new address.
+   */
+  setRemoteUrl(projectId: GitTarget, url: string): Promise<void> {
+    return this.#serial(projectId, async (cwd) => {
+      await this.#git(cwd, ["remote", "set-url", "origin", "--", safeRepoUrl(url)]);
+    });
+  }
+
+  /** Forgets `origin`, and with it every remote-tracking branch. Local commits stay. */
+  removeRemote(projectId: GitTarget): Promise<void> {
+    return this.#serial(projectId, async (cwd) => {
+      await this.#git(cwd, ["remote", "remove", "origin"]);
+    });
+  }
+
   // ---- conflicts --------------------------------------------------------
 
-  resolve(projectId: string, path: string, strategy: GitResolveStrategy): Promise<void> {
+  resolve(projectId: GitTarget, path: string, strategy: GitResolveStrategy): Promise<void> {
     return this.#serial(projectId, async (cwd) => {
       const rel = this.#path(path);
       if (strategy !== "mark") {
@@ -447,7 +487,7 @@ export class GitService {
     });
   }
 
-  abortMerge(projectId: string): Promise<GitChangedPath[]> {
+  abortMerge(projectId: GitTarget): Promise<GitChangedPath[]> {
     return this.#serial(projectId, async (cwd) => {
       const gitDir = (await this.#git(cwd, ["rev-parse", "--absolute-git-dir"])).trim();
       const changedBefore = parseStatusV2(
@@ -476,15 +516,17 @@ export class GitService {
   }
 
   /** Runs one mutation after any other in flight for the same project. */
-  #serial<T>(projectId: string, work: (cwd: string) => Promise<T>): Promise<T> {
-    const previous = this.#chains.get(projectId) ?? Promise.resolve();
+  #serial<T>(projectId: GitTarget, work: (cwd: string) => Promise<T>): Promise<T> {
+    // Keyed by tree: each worktree has an index (and `index.lock`) of its own.
+    const cwd = this.dir(projectId);
+    const previous = this.#chains.get(cwd) ?? Promise.resolve();
     const next = previous.then(
-      () => work(this.dir(projectId)),
-      () => work(this.dir(projectId)),
+      () => work(cwd),
+      () => work(cwd),
     );
-    this.#chains.set(projectId, next);
+    this.#chains.set(cwd, next);
     next.finally(() => {
-      if (this.#chains.get(projectId) === next) this.#chains.delete(projectId);
+      if (this.#chains.get(cwd) === next) this.#chains.delete(cwd);
     }).catch(() => {});
     return next;
   }

@@ -496,3 +496,37 @@ describe("connectRemote", () => {
     await expect(git.connectRemote(PROJECT, `file://${bare}`, null, AUTHOR)).rejects.toThrow(/already exists/);
   });
 });
+
+describe("setRemoteUrl and removeRemote", () => {
+  beforeEach(async () => {
+    await write("a.txt", "a\n");
+    await commitAll("first");
+  });
+
+  it("moves origin without touching the history", async () => {
+    await sh(["remote", "add", "origin", "https://example.com/old.git"]);
+    const head = (await sh(["rev-parse", "HEAD"])).trim();
+    await git.setRemoteUrl(PROJECT, "https://example.com/new.git");
+    expect(await git.remoteUrl(PROJECT)).toBe("https://example.com/new.git");
+    expect((await sh(["rev-parse", "HEAD"])).trim()).toBe(head);
+  });
+
+  it("refuses a transport it does not allow", async () => {
+    await sh(["remote", "add", "origin", "https://example.com/old.git"]);
+    await expect(git.setRemoteUrl(PROJECT, "ext::sh -c whoami")).rejects.toThrow(/transport/);
+    expect(await git.remoteUrl(PROJECT)).toBe("https://example.com/old.git");
+  });
+
+  it("forgets origin and keeps the commits", async () => {
+    await sh(["remote", "add", "origin", "https://example.com/old.git"]);
+    await git.removeRemote(PROJECT);
+    expect(await git.remoteUrl(PROJECT)).toBeNull();
+    expect((await git.status(PROJECT)).hasRemote).toBe(false);
+    expect((await sh(["log", "--format=%s"])).trim()).toBe("first");
+  });
+
+  it("cannot move or remove a remote that is not there", async () => {
+    await expect(git.setRemoteUrl(PROJECT, "https://example.com/new.git")).rejects.toThrow(GitError);
+    await expect(git.removeRemote(PROJECT)).rejects.toThrow(GitError);
+  });
+});

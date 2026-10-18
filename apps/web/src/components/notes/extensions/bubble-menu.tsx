@@ -76,7 +76,7 @@ export function NoteBubbleMenu({ editor }: { editor: Editor }) {
               if (event.key === "Escape") setLinkOpen(false)
             }}
             placeholder="https://"
-            className="bg-background h-7 w-56 rounded border px-2 text-xs outline-none"
+            className="bg-background h-7 w-56 border-input rounded border px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
           />
           <Button type="submit" size="xs" variant="secondary">
             Set

@@ -5,12 +5,14 @@ import dynamic from "next/dynamic"
 import { FileIcon, Loader2Icon, SaveIcon, XIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { useFilesPanel } from "@/components/files-panel"
+import { useFileBuffers, useFilesPanel } from "@/components/files-panel"
 import { FilePreview } from "@/components/file-preview"
 import { FileTypeIcon } from "@/components/file-type-icon"
 import { LeaderPicker, type PickerItem } from "@/components/leader-picker"
+import { CodeLinesSkeleton } from "@/components/page-skeletons"
 import { flattenTree } from "@/lib/file-tree"
 import { basename } from "@/lib/files-api"
+import { targetOf } from "@/lib/project-target"
 import type { LeaderCommand } from "@/lib/leader-keymap"
 import { matchLines } from "@/lib/line-search"
 import { cn } from "@/lib/utils"
@@ -27,7 +29,9 @@ const VimEditor = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="text-muted-foreground min-h-0 flex-1 p-4 font-code text-xs">Loading…</div>
+      <div className="min-h-0 flex-1">
+        <CodeLinesSkeleton />
+      </div>
     ),
   },
 )
@@ -47,8 +51,6 @@ export function CodeEditor() {
     activeTab,
     selectTab,
     closeTab,
-    buffers,
-    setBuffer,
     saved,
     save,
     saving,
@@ -61,6 +63,7 @@ export function CodeEditor() {
     openSearch,
     tree,
   } = useFilesPanel()
+  const { buffers, setBuffer } = useFileBuffers()
   const strip = React.useRef<HTMLDivElement>(null)
 
   /**
@@ -237,9 +240,11 @@ export function CodeEditor() {
           </div>
 
           {isPreviewable(activeTab) ? (
-            project && <FilePreview hash={project.hash} path={activeTab} />
+            project && <FilePreview hash={targetOf(project)} path={activeTab} />
           ) : loadingFiles.has(activeTab) && buffers[activeTab] === undefined ? (
-            <div className="text-muted-foreground min-h-0 flex-1 p-4 text-xs">Reading…</div>
+            <div className="min-h-0 flex-1">
+              <CodeLinesSkeleton />
+            </div>
           ) : buffers[activeTab] === undefined ? (
             // No buffer and not loading: the read failed, and the message is
             // already in the bar above.

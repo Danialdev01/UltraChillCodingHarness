@@ -365,7 +365,7 @@ export function NoteEditorImpl({
           </div>
         </div>
       )}
-      <div className="group/head mx-auto w-full max-w-3xl px-8 pt-6 pb-32 md:px-12">
+      <div className="group/head mx-auto w-full max-w-[var(--ucch-doc-width,48rem)] px-8 pt-6 pb-32 md:px-12">
         <div className="mb-2 flex h-5 items-center justify-end gap-2">
           {presence}
           <SaveStatusPill status={status} error={saveError} />
@@ -431,7 +431,7 @@ export function NoteEditorImpl({
           value={title}
           placeholder="Untitled"
           aria-label="Page title"
-          className="placeholder:text-muted-foreground/50 mb-4 w-full bg-transparent text-3xl font-semibold outline-none"
+          className="placeholder:text-text-subtle mb-4 w-full rounded-sm bg-transparent text-3xl font-semibold outline-none focus-visible:shadow-[inset_0_-2px_0_var(--focus-ring)]"
           onChange={(event) => patchField({ title: event.target.value })}
           onKeyDown={(event) => {
             if (event.key === "Enter" || (event.key === "ArrowDown" && !event.shiftKey)) {
@@ -525,7 +525,6 @@ function SaveStatusPill({ status, error }: { status: SaveStatus; error: string |
       className={cn(
         "flex items-center gap-1 text-[11px]",
         trouble ? "text-destructive" : "text-muted-foreground",
-        status === "saved" && "opacity-60",
       )}
     >
       <Icon className={cn("size-3", status === "saving" && "animate-spin")} />

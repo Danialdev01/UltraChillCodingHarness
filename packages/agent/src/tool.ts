@@ -2,6 +2,7 @@ import type { DomainEvent } from "@ucch/protocol";
 import type { z } from "zod/v4";
 import type { Complete } from "./completion.js";
 import type { Executor } from "./executor.js";
+import type { DocumentsProvider } from "./documents.js";
 import type { ResearchProvider } from "./research.js";
 import type { UploadStaging } from "./uploads.js";
 import type { WebProvider } from "./web.js";
@@ -47,6 +48,12 @@ export interface ToolContext {
    * is not, which cannot happen through the registry but can through a test.
    */
   research?: ResearchProvider;
+  /**
+   * The document toolchain and its vision call, bound to this turn's key.
+   * Present only on a documentation turn; the document tools say so when
+   * it is not.
+   */
+  documents?: DocumentsProvider;
   /**
    * Files the person attached, staged outside the workspace until placed.
    * Absent when the harness has no staging configured, which `attach_upload`

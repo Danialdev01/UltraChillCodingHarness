@@ -60,7 +60,7 @@ export function TurnProgress({ active }: { active: TurnActivity }) {
         </span>
         )
       </span>
-      <span className="text-muted-foreground/70 ml-auto hidden sm:inline">esc to stop</span>
+      <span className="text-text-subtle ml-auto hidden sm:inline">esc to stop</span>
     </div>
   )
 }

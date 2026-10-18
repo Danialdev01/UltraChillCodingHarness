@@ -6,7 +6,8 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ViewTransitionsProvider } from "@/lib/view-transitions";
 import {
-  deriveTheme,
+  DEFAULT_SETTINGS,
+  needsInlineVars,
   parseThemeCookie,
   THEME_COOKIE,
   themeToStyle,
@@ -65,6 +66,9 @@ const jetbrainsMono = JetBrains_Mono({
   weight: ["100", "200", "300", "400", "500", "600", "700", "800"],
   display: "swap",
   variable: "--font-jetbrains-mono",
+  // Only the code editors use it, and they load after the page does; a
+  // preload on every page would fetch it for visits that never open one.
+  preload: false,
   // The rest of the stack is left to `next/font`, which appends a
   // metric-matched local fallback of its own so the page does not reflow when
   // the real face arrives.
@@ -79,12 +83,15 @@ export const metadata: Metadata = {
  * The chrome every page renders into, and the palette it renders in.
  *
  * The theme is read from a cookie here and painted straight onto <html> as
- * inline custom properties. Three things follow from doing it server-side that
- * did not hold when a blocking script did it in the browser:
+ * inline custom properties, each a `light-dark(<light>, <dark>)` pair, with
+ * `data-theme-mode` choosing the side through `color-scheme` in the
+ * stylesheet. Three things follow from doing it server-side that did not hold
+ * when a blocking script did it in the browser:
  *
  * The first paint is already correct -- there is no moment, however short, when
  * a dark theme shows the stylesheet's white, and it holds with JavaScript
- * disabled or still downloading.
+ * disabled or still downloading. System needs no script either: the browser
+ * resolves `light-dark()` against the OS preference itself.
  *
  * `<body>` has exactly one child. That reads like a detail and is not: `useId`
  * is derived from the tree path, which encodes how many children each ancestor
@@ -105,24 +112,26 @@ export const metadata: Metadata = {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const jar = await cookies();
   // User-controlled input: `parseThemeCookie` returns null for anything that is
-  // not three valid hex colours, and the shipped palette stands.
+  // not a valid theme, and the shipped palette stands.
   const theme = parseThemeCookie(jar.get(THEME_COOKIE)?.value);
+  const settings = theme ?? DEFAULT_SETTINGS;
 
   return (
     <html
       lang="en"
-      // `dark` travels with the variables so Tailwind's `dark:` variants agree
-      // with the ink the palette resolved to.
+      // `dark` marks a forced Dark so Tailwind's `dark:` variants agree with
+      // the palette; on System they follow the OS through a media query.
       className={[
         inter.variable,
         sourceSerif.variable,
         iaWriterMono.variable,
         jetbrainsMono.variable,
-        theme && deriveTheme(theme).dark ? "dark" : "",
+        settings.mode === "dark" ? "dark" : "",
       ]
         .filter(Boolean)
         .join(" ")}
-      style={theme ? themeToStyle(theme) : undefined}
+      data-theme-mode={settings.mode}
+      style={needsInlineVars(settings) ? themeToStyle(settings) : undefined}
       suppressHydrationWarning
     >
       <body>

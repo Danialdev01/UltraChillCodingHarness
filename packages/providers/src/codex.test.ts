@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DomainEvent } from "@ucch/protocol";
 import { describe, expect, it } from "vitest";
-import { CodexNormaliser, CodexProvider, codexArgv, probeCodex } from "./codex.js";
+import { CodexNormaliser, CodexProvider, codexArgv, codexPrompt, probeCodex } from "./codex.js";
 import { FakeProcessHost, stdout } from "./testing.js";
 
 const WORKSPACE = "/srv/ucch/workspaces/11111111-1111-4111-8111-111111111111";
@@ -49,6 +49,14 @@ describe("codexArgv", () => {
     expect(argv).toContain("--skip-git-repo-check");
     expect(argv).not.toContain("--ignore-rules");
     expect(argv.join(" ")).toContain("--model gpt-5");
+  });
+});
+
+describe("codexPrompt", () => {
+  it("puts the project's knowledge ahead of a new session's message only", () => {
+    expect(codexPrompt("fix it", "INFO")).toBe("<project-knowledge>\nINFO\n</project-knowledge>\n\nfix it");
+    expect(codexPrompt("fix it", "INFO", "th-1")).toBe("fix it");
+    expect(codexPrompt("fix it")).toBe("fix it");
   });
 });
 

@@ -91,16 +91,22 @@ function FileDiff({ file, path }: { file: DiffFile; path: string }) {
                 <tr
                   key={i}
                   className={cn(
-                    line.kind === "add" && "bg-[color-mix(in_oklch,var(--ucch-note-green)_18%,transparent)]",
-                    line.kind === "del" && "bg-[color-mix(in_oklch,var(--ucch-note-red)_18%,transparent)]",
+                    // Low-alpha tints that work on either ground; the +/−
+                    // gutter carries the meaning for anyone who can't tell
+                    // the two apart by colour.
+                    line.kind === "add" && "bg-diff-add",
+                    line.kind === "del" && "bg-diff-del",
                   )}
                 >
                   <Gutter no={line.oldNo} />
                   <Gutter no={line.newNo} />
                   <td className="w-full px-2 whitespace-pre">
-                    <span className="text-muted-foreground mr-2 inline-block w-3 select-none">
-                      {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}
+                    <span className="text-muted-foreground mr-2 inline-block w-3 select-none" aria-hidden>
+                      {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                     </span>
+                    {line.kind !== "context" && (
+                      <span className="sr-only">{line.kind === "add" ? "Added: " : "Removed: "}</span>
+                    )}
                     {tokensFor(line).map((token, t) => (
                       <span key={t} className={token.cls || undefined}>
                         {token.text}
@@ -176,7 +182,7 @@ function ConflictDiffView({ content, path, truncated }: { content: string; path:
 
 function Gutter({ no }: { no: number | undefined }) {
   return (
-    <td className="text-muted-foreground/70 w-10 min-w-10 border-r px-2 text-right align-top select-none">
+    <td className="text-text-subtle w-10 min-w-10 border-r px-2 text-right align-top select-none">
       {no ?? ""}
     </td>
   )
@@ -187,9 +193,9 @@ function Badge({ tone, children }: { tone: "add" | "del" | "conflict"; children:
     <span
       className={cn(
         "rounded px-1.5 py-px text-[0.65rem] font-medium uppercase tracking-wide",
-        tone === "add" && "bg-[color-mix(in_oklch,var(--ucch-note-green)_25%,transparent)]",
-        tone === "del" && "bg-[color-mix(in_oklch,var(--ucch-note-red)_25%,transparent)]",
-        tone === "conflict" && "bg-[color-mix(in_oklch,var(--ucch-note-orange)_30%,transparent)]",
+        tone === "add" && "bg-success-soft text-success",
+        tone === "del" && "bg-danger-soft text-danger",
+        tone === "conflict" && "bg-warning-soft text-warning",
       )}
     >
       {children}

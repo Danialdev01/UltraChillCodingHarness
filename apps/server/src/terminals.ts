@@ -1,8 +1,10 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as pty from "@lydell/node-pty";
 import type { Command, DomainEvent } from "@ucch/protocol";
+import { sessionTree } from "./trees.js";
 
 /**
  * A real terminal per tab, running in the project's workspace.
@@ -100,7 +102,14 @@ export class TerminalReactor {
     switch (command.type) {
       case "terminal.create":
         try {
-          this.#open(command.terminalId, command.projectId, userId, command.program ?? "shell");
+          this.#open(
+            command.terminalId,
+            command.projectId,
+            userId,
+            command.program ?? "shell",
+            command.credentialWorkspaceId ? `ws-${command.credentialWorkspaceId}` : userId,
+            command.sessionHash,
+          );
         } catch (error) {
           this.onError(error);
         }
@@ -175,7 +184,14 @@ export class TerminalReactor {
    * the tab opens -- so an `await` here, however brief, is a window where
    * typing goes nowhere. The one blocking call is a `mkdir` on a local path.
    */
-  #open(terminalId: string, projectId: string, userId: string, program: TerminalProgram): void {
+  #open(
+    terminalId: string,
+    projectId: string,
+    userId: string,
+    program: TerminalProgram,
+    credentialSubject: string = userId,
+    sessionHash?: string,
+  ): void {
     if (this.#sessions.has(terminalId)) return;
 
     if (!this.options.allowHostShell) {
@@ -188,7 +204,7 @@ export class TerminalReactor {
       return;
     }
 
-    const launch = this.#launch(projectId, userId, program);
+    const launch = this.#launch(projectId, credentialSubject, program, sessionHash);
     if (!launch) {
       this.#say(projectId, terminalId, "That sign-in flow is not available on this server.\r\n");
       return;
@@ -240,14 +256,23 @@ export class TerminalReactor {
    * the CLI shows the code-paste prompt, which is the documented path for a
    * box whose browser is elsewhere, and exactly what a terminal is for.
    */
-  #launch(projectId: string, userId: string, program: TerminalProgram): LoginLaunch | null {
+  #launch(
+    projectId: string,
+    userId: string,
+    program: TerminalProgram,
+    sessionHash?: string,
+  ): LoginLaunch | null {
     if (program !== "shell") {
       return this.options.login?.(userId, program) ?? null;
     }
 
+    // A session's worktree, when it has one. The path is under this
+    // project's own folder of worktrees, so a hash from another project
+    // simply is not there -- and falls back to the project's checkout.
+    const tree = sessionHash ? sessionTree(this.options.workspaceRoot, projectId, sessionHash) : null;
+    const cwd = tree && existsSync(join(tree, ".git")) ? tree : join(this.options.workspaceRoot, projectId);
     // The clone reactor usually made this; a project created before it did,
     // or one whose clone failed, still gets a directory to stand in.
-    const cwd = join(this.options.workspaceRoot, projectId);
     mkdirSync(cwd, { recursive: true });
 
     // A login shell, so the profile that sets up nvm, asdf, pyenv, Homebrew
@@ -256,7 +281,8 @@ export class TerminalReactor {
     // not found" happens in a terminal where node is plainly installed.
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(terminalEnv())) if (value !== undefined) env[name] = value;
-    return { argv: [loginShell(), "-l"], cwd, env };
+    env.UCCH_ROOT = cwd;
+    return { argv: shellArgv(loginShell()), cwd, env };
   }
 
   /** The session, if it is this user's. Anyone else gets nothing. */
@@ -280,15 +306,54 @@ export class TerminalReactor {
   }
 }
 
+/** Where fish lives on the systems the harness runs on. */
+const FISH_PATHS = ["/usr/bin/fish", "/usr/local/bin/fish", "/opt/homebrew/bin/fish"];
+
 /**
  * The shell to start.
  *
- * `$SHELL` is the one the operator chose; the fallback chain is for a service
- * manager that does not set it. Not `sh`: the point is the shell they
- * actually use, with their prompt and their completions.
+ * `TERMINAL_SHELL` pins it outright. Otherwise fish, when it is installed:
+ * `$SHELL` is whatever launched the server -- an editor's integrated
+ * terminal, a tool runner -- not a choice anyone made for this terminal, and
+ * it brought in that shell's rc files (a random oh-my-zsh theme on every new
+ * tab). `$SHELL` and then bash remain the fallbacks for a host without fish,
+ * like the production image. Not `sh`: the point is a shell with a prompt
+ * and completions.
  */
-export function loginShell(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SHELL || "/bin/bash";
+export function loginShell(
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  if (env.TERMINAL_SHELL) return env.TERMINAL_SHELL;
+  const fish = FISH_PATHS.find(exists);
+  return fish ?? (env.SHELL || "/bin/bash");
+}
+
+/** The scripts that keep a shell inside its project; see `shell/ucch.fish`. */
+const FISH_INIT = fileURLToPath(new URL("./shell/ucch.fish", import.meta.url));
+const BASH_RC = fileURLToPath(new URL("./shell/ucch.bashrc", import.meta.url));
+
+/**
+ * The command line that starts `shell` in a project, kept to its folder.
+ *
+ * fish sources the guard after the user's own config, so its prompt is the
+ * one in play; bash takes it as `--rcfile`, which sources the login profile
+ * itself. Any other shell -- one pinned with `TERMINAL_SHELL` -- starts as a
+ * plain login shell in the folder.
+ */
+export function shellArgv(shell: string): string[] {
+  switch (basename(shell)) {
+    case "fish":
+      return [shell, "-l", "-C", `source ${fishQuote(FISH_INIT)}`];
+    case "bash":
+      return [shell, "--rcfile", BASH_RC, "-i"];
+    default:
+      return [shell, "-l"];
+  }
+}
+
+function fishQuote(text: string): string {
+  return `'${text.replace(/[\\']/g, "\\$&")}'`;
 }
 
 /**

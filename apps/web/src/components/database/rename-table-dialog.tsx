@@ -11,6 +11,7 @@ import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { renameTable } from "@/lib/database-api"
 import { databaseHref } from "@/lib/sections"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 import { useTransitionRouter } from "@/lib/view-transitions"
 
 /** Rename a table, then follow it if its page was the one open. */
@@ -28,6 +29,7 @@ export function RenameTableDialog({
 }) {
   const { ref, connection, db, reloadTables } = useDb()
   const router = useTransitionRouter()
+  const ws = useWorkspaceHash()
   const [name, setName] = React.useState(table)
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -51,7 +53,7 @@ export function RenameTableDialog({
       await reloadTables()
       onOpenChange(false)
       // Stay on Operations: that is where the rename was asked for.
-      if (follow) router.replace(`${databaseHref(connection.id, db, parsed.data)}?tab=operations`)
+      if (follow) router.replace(`${databaseHref(ws, connection.id, db, parsed.data)}?tab=operations`)
     } catch (caught) {
       setError(errorText(caught))
       setPending(false)

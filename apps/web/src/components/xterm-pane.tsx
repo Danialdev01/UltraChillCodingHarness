@@ -7,6 +7,11 @@ import { Terminal } from "@xterm/xterm"
 
 import "@xterm/xterm/css/xterm.css"
 
+import { useTheme } from "@/components/theme-provider"
+import { ansiPalette } from "@/lib/color-engine"
+import type { TerminalOutput } from "@/lib/terminal-output"
+import type { Mode, Tokens } from "@/lib/theme"
+
 /**
  * One xterm.js screen, wired to a session on the server.
  *
@@ -28,14 +33,14 @@ export function XtermPane({
 }: {
   hidden: boolean
   /** Output as it arrives. Each chunk is written once, in order. */
-  data: readonly string[]
+  data: TerminalOutput
   onInput: (data: string) => void
   onResize: (cols: number, rows: number) => void
 }) {
   const host = React.useRef<HTMLDivElement>(null)
   const terminal = React.useRef<Terminal | null>(null)
   const fit = React.useRef<FitAddon | null>(null)
-  /** How much of `data` has been written, so nothing is written twice. */
+  /** How many chunks of `data.total` have been written, so nothing is written twice. */
   const written = React.useRef(0)
 
   // The callbacks are read through refs so the terminal can be created once
@@ -43,14 +48,20 @@ export function XtermPane({
   const handlers = React.useRef({ onInput, onResize })
   handlers.current = { onInput, onResize }
 
+  const { tokens, resolvedMode } = useTheme()
+  const theme = React.useMemo(() => xtermTheme(tokens, resolvedMode), [tokens, resolvedMode])
+  // Read at creation through a ref, so the terminal is still created once.
+  const themeRef = React.useRef(theme)
+  themeRef.current = theme
+
   React.useEffect(() => {
     const element = host.current
     if (!element) return
 
     const term = new Terminal({
-      // Read from the app's own tokens, so a terminal follows the theme
-      // rather than being the one black rectangle in a light interface.
-      theme: readTheme(element),
+      // From the app's own tokens, so a terminal follows the theme rather
+      // than being the one black rectangle in a light interface.
+      theme: themeRef.current,
       fontFamily: "var(--app-font-mono), ui-monospace, monospace",
       fontSize: 13,
       lineHeight: 1.2,
@@ -84,13 +95,21 @@ export function XtermPane({
     }
   }, [])
 
-  // New output only. `data` grows; rewriting it whole would redraw the screen
-  // from the beginning on every chunk.
+  // A theme or mode change repaints the open screen in place.
+  React.useEffect(() => {
+    if (terminal.current) terminal.current.options.theme = theme
+  }, [theme])
+
+  // New output only, counted by `total` rather than by the array: the array
+  // is capped, so once full its length stops moving and a cursor into it
+  // would never see another chunk. Anything that fell off the front before
+  // it was drawn is gone; xterm's own scrollback is what keeps history.
   React.useEffect(() => {
     const term = terminal.current
     if (!term) return
-    for (let i = written.current; i < data.length; i++) term.write(data[i]!)
-    written.current = data.length
+    const fresh = Math.min(data.total - written.current, data.chunks.length)
+    if (fresh > 0) term.write(data.chunks.slice(-fresh).join(""))
+    written.current = data.total
   }, [data])
 
   /**
@@ -171,23 +190,19 @@ function isEditable(node: HTMLElement): boolean {
 }
 
 /**
- * The palette, taken from the app's CSS variables.
- *
- * Resolved once at creation because xterm wants concrete colours rather than
- * `var(...)`. A theme changed while a terminal is open keeps the colours it
- * opened with until the tab is reopened -- worth far less than the complexity
- * of restyling a live screen.
+ * The terminal's palette: the page's own background, text and accent, plus a
+ * 16-colour ANSI set for the mode with every foreground at 4.5:1 on that
+ * background. xterm's defaults are tuned for black, so its blue vanishes on
+ * dark and its yellow on light; bright-black ("gray") is the usual casualty.
  */
-function readTheme(element: HTMLElement): Record<string, string> {
-  const styles = getComputedStyle(element)
-  const token = (name: string, fallback: string) =>
-    styles.getPropertyValue(name).trim() || fallback
-
+function xtermTheme(tokens: Tokens, mode: Mode) {
+  const background = tokens.background!
   return {
-    background: token("--background", "#0b0b0c"),
-    foreground: token("--foreground", "#fafafa"),
-    cursor: token("--ucch-active", "#7aa2f7"),
-    cursorAccent: token("--background", "#0b0b0c"),
-    selectionBackground: token("--ucch-active-bg", "rgba(122,162,247,0.3)"),
+    background,
+    foreground: tokens.foreground!,
+    cursor: tokens["ucch-active"]!,
+    cursorAccent: background,
+    selectionBackground: tokens["ucch-active-bg"]!,
+    ...ansiPalette(mode, background),
   }
 }

@@ -225,7 +225,7 @@ function ActivityRow({ entry, now }: { entry: AuditEntry; now: number }) {
       </span>
       {typeof added === "number" && typeof removed === "number" && (added > 0 || removed > 0) && (
         <span className="shrink-0 font-mono text-xs">
-          {added > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{added}</span>}
+          {added > 0 && <span className="text-success">+{added}</span>}
           {added > 0 && removed > 0 && " "}
           {removed > 0 && <span className="text-destructive">−{removed}</span>}
         </span>

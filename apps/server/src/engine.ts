@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   generateHash,
   hasScope,
@@ -10,11 +10,21 @@ import {
   type ProviderId,
   type StoredEvent,
 } from "@ucch/protocol";
-import { previews, projects, threads, turns, workspaces, type Database, type Transaction } from "@ucch/db";
+import {
+  previews,
+  projects,
+  threads,
+  turns,
+  workspaceMembers,
+  workspaces,
+  type Database,
+  type Transaction,
+} from "@ucch/db";
 import type { EventStore } from "./eventstore.js";
 import type { Principal } from "./auth.js";
 import { decide, type DecisionContext, type DecisionState } from "./decide.js";
 import { DrainableWorker } from "./worker.js";
+import { toMembership, toPolicy } from "./workspaces.js";
 
 export type EngineResult =
   | { ok: true; events: StoredEvent[] }
@@ -128,6 +138,14 @@ export class OrchestrationEngine {
           projectId: row.projectId,
           status: row.status as "idle" | "running" | "cancelling" | "error",
           provider: (row.provider as ProviderId | null) ?? null,
+          credentialSource:
+            row.credentialSource === "workspace" || row.credentialSource === "member"
+              ? row.credentialSource
+              : null,
+          worktreeState:
+            row.worktreeState === "creating" || row.worktreeState === "ready" || row.worktreeState === "error"
+              ? row.worktreeState
+              : null,
         };
       }
     }
@@ -135,9 +153,8 @@ export class OrchestrationEngine {
     const projectId = "projectId" in command ? command.projectId : state.thread?.projectId;
     if (projectId) {
       const [row] = await this.db
-        .select({ project: projects, ownerUserId: workspaces.ownerUserId })
+        .select({ project: projects })
         .from(projects)
-        .innerJoin(workspaces, eq(projects.workspaceId, workspaces.id))
         .where(eq(projects.id, projectId))
         .limit(1);
       if (row) {
@@ -145,8 +162,6 @@ export class OrchestrationEngine {
           id: row.project.id,
           hash: row.project.hash,
           workspaceId: row.project.workspaceId,
-          // The workspace owner, not projects.user_id.
-          userId: row.ownerUserId,
           containerState: row.project.containerState as ContainerState,
           defaultBranch: row.project.defaultBranch,
         };
@@ -155,12 +170,36 @@ export class OrchestrationEngine {
 
     const workspaceId = "workspaceId" in command ? command.workspaceId : state.project?.workspaceId;
     if (workspaceId) {
+      // The caller's membership comes with the workspace: it is what every
+      // decision about a project or thread in it is checked against.
       const [row] = await this.db
-        .select({ id: workspaces.id, ownerUserId: workspaces.ownerUserId })
+        .select({
+          id: workspaces.id,
+          credentialPolicy: workspaces.credentialPolicy,
+          role: workspaceMembers.role,
+          canCreateProject: workspaceMembers.canCreateProject,
+          canCreateSession: workspaceMembers.canCreateSession,
+        })
         .from(workspaces)
+        .leftJoin(
+          workspaceMembers,
+          and(eq(workspaceMembers.workspaceId, workspaces.id), eq(workspaceMembers.userId, principal.userId)),
+        )
         .where(eq(workspaces.id, workspaceId))
         .limit(1);
-      if (row) state.workspace = { id: row.id, ownerUserId: row.ownerUserId };
+      if (row) {
+        state.workspace = {
+          id: row.id,
+          credentialPolicy: toPolicy(row.credentialPolicy),
+          membership: row.role
+            ? toMembership({
+                role: row.role,
+                canCreateProject: row.canCreateProject,
+                canCreateSession: row.canCreateSession,
+              })
+            : null,
+        };
+      }
     }
 
     const turnId = "turnId" in command ? command.turnId : undefined;
@@ -233,6 +272,10 @@ export async function applyProjection(
           .where(eq(projects.id, event.projectId));
         break;
 
+      case "project.stack_detected":
+        await tx.update(projects).set({ stack: event.stack }).where(eq(projects.id, event.projectId));
+        break;
+
       case "container.state_changed":
         await tx
           .update(projects)
@@ -294,7 +337,29 @@ export async function applyProjection(
           id: event.threadId,
           projectId: event.projectId,
           title: event.title,
+          createdByUserId: event.createdByUserId ?? null,
+          credentialSource: event.credentialSource ?? null,
+          // Events from before sessions had addresses replay to one derived
+          // from the id, so a rebuilt table still has a unique hash per row.
+          hash: event.hash ?? event.threadId.replace(/-/g, "").slice(0, 12),
+          baseBranch: event.baseBranch ?? null,
+          branch: event.branch ?? null,
+          worktreeState: event.branch ? "creating" : null,
         });
+        break;
+
+      case "thread.worktree_ready":
+        await tx
+          .update(threads)
+          .set({ worktreeState: "ready", worktreeError: null })
+          .where(eq(threads.id, event.threadId));
+        break;
+
+      case "thread.worktree_failed":
+        await tx
+          .update(threads)
+          .set({ worktreeState: "error", worktreeError: event.error })
+          .where(eq(threads.id, event.threadId));
         break;
 
       case "agent.turn_completed":

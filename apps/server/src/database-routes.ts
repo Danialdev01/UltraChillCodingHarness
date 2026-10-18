@@ -1,6 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
-import { CreateDatabaseBody, DatabaseConnectionCreate, DatabaseConnectionUpdate, DbName } from "@ucch/protocol";
+import {
+  CreateDatabaseBody,
+  DatabaseConnectionCreate,
+  DatabaseConnectionUpdate,
+  DbName,
+  type WorkspacePermission,
+} from "@ucch/protocol";
 import { decryptSecret } from "./crypto.js";
 import type { DatabaseConnectionService } from "./database-connections.js";
 import type { ProbeTarget } from "./database-probe.js";
@@ -11,8 +17,8 @@ type Principal = { userId: string };
 export interface DatabaseRouteDeps {
   /** Who is asking, from the request's cookies, or null. */
   principalFor(cookies: Record<string, string | undefined>): Promise<Principal | null>;
-  /** Whether the workspace exists and is this user's -- one predicate, on purpose. */
-  workspaceOwnedBy(workspaceId: string, userId: string): Promise<boolean>;
+  /** Whether the workspace exists and this user's role in it allows `permission` -- one predicate, on purpose. */
+  workspaceAllows(workspaceId: string, userId: string, permission: WorkspacePermission): Promise<boolean>;
   connections: DatabaseConnectionService;
   /** `SECRET_KEY`; without it no password can be stored, so no connection can be. */
   secretKey: string | undefined;
@@ -37,7 +43,7 @@ export function registerDatabaseRoutes(app: FastifyInstance, deps: DatabaseRoute
     async (request, reply) => {
       const principal = await deps.principalFor(request.cookies);
       if (!principal) return reply.code(401).send({ error: "unauthorized" });
-      if (!(await deps.workspaceOwnedBy(request.params.id, principal.userId))) {
+      if (!(await deps.workspaceAllows(request.params.id, principal.userId, "workspace.view"))) {
         return reply.code(404).send({ error: "workspace not found" });
       }
       return { connections: await deps.connections.list(request.params.id) };
@@ -56,7 +62,7 @@ export function registerDatabaseRoutes(app: FastifyInstance, deps: DatabaseRoute
           .code(400)
           .send({ error: issue ? `${issue.path.join(".") || "body"}: ${issue.message}` : "invalid body" });
       }
-      if (!(await deps.workspaceOwnedBy(request.params.id, principal.userId))) {
+      if (!(await deps.workspaceAllows(request.params.id, principal.userId, "workspace.manage"))) {
         return reply.code(404).send({ error: "workspace not found" });
       }
       if (!deps.secretKey) return reply.code(409).send({ error: NO_SECRET_KEY });

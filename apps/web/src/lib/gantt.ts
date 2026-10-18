@@ -202,7 +202,7 @@ export interface BarBox {
  * starts before the first ends, there is no gap to turn in, so the arrow
  * loops out past the first bar and back in below the row.
  */
-export function dependencyPath(from: BarBox, to: BarBox, rowHeight: number): string {
+export function dependencyPath(from: BarBox, to: Pick<BarBox, "x" | "row">, rowHeight: number): string {
   const gap = 8;
   const x1 = from.x + from.width;
   const y1 = from.row * rowHeight + rowHeight / 2;

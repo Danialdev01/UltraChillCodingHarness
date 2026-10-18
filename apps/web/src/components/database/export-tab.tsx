@@ -6,6 +6,7 @@ import type { ExportFormat } from "@ucch/protocol"
 
 import { Flag } from "@/components/database/column-form"
 import { useDb } from "@/components/database/db-context"
+import { ListRowsSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import { exportUrl } from "@/lib/database-api"
 import { cn } from "@/lib/utils"
@@ -102,8 +103,10 @@ export function ExportTab({ table }: { table?: string }) {
             )}
           </legend>
           <div className="max-h-80 overflow-y-auto rounded-lg border p-2">
-            {tables.state !== "loaded" ? (
-              <p className="text-muted-foreground p-2 text-xs">{tables.state === "failed" ? tables.error : "Loading tables"}</p>
+            {tables.state === "failed" ? (
+              <p className="text-muted-foreground p-2 text-xs">{tables.error}</p>
+            ) : tables.state !== "loaded" ? (
+              <ListRowsSkeleton rows={6} />
             ) : all.length === 0 ? (
               <p className="text-muted-foreground p-2 text-xs">No tables to export.</p>
             ) : (

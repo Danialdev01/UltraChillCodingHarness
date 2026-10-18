@@ -148,6 +148,14 @@ export const GitConnectResult = z.object({
 });
 export type GitConnectResult = z.infer<typeof GitConnectResult>;
 
+/** Where `origin` points, as the manage page shows it, with the fresh status. */
+export const GitRemoteInfo = z.object({
+  /** Null when the repository has no `origin`. Never carries credentials. */
+  url: z.string().nullable(),
+  status: GitStatus,
+});
+export type GitRemoteInfo = z.infer<typeof GitRemoteInfo>;
+
 // ---- request bodies ------------------------------------------------------
 
 /** A path list is bounded so one request cannot build a command line git chokes on. */

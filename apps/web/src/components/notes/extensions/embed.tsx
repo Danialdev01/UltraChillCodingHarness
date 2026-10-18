@@ -135,7 +135,7 @@ function EmbedView({ node, updateAttributes, selected }: NodeViewProps) {
         </div>
         {src ? (
           <div
-            className={cn("relative w-full bg-black/5", video && "aspect-video")}
+            className={cn("relative w-full bg-muted", video && "aspect-video")}
             style={video ? undefined : { height }}
             contentEditable={false}
           >
@@ -173,7 +173,7 @@ function EmbedView({ node, updateAttributes, selected }: NodeViewProps) {
               onKeyDown={(event) => event.stopPropagation()}
               placeholder="Paste a link to a video, a design, a page…"
               aria-label="Link to embed"
-              className="bg-background h-7 min-w-0 flex-1 rounded border px-2 text-xs outline-none"
+              className="bg-background h-7 min-w-0 flex-1 border-input rounded border px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
             />
             <Button type="submit" size="xs" variant="secondary">
               Embed

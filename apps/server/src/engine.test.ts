@@ -70,9 +70,14 @@ const project = {
   id: PROJECT,
   hash: "abcdef123456",
   workspaceId: "77777777-7777-7777-7777-777777777777",
-  userId: USER,
   containerState: "running" as const,
   defaultBranch: "main",
+};
+
+const workspace = {
+  id: "77777777-7777-7777-7777-777777777777",
+  credentialPolicy: "member" as const,
+  membership: { role: "owner" as const, canCreateProject: null, canCreateSession: null },
 };
 
 describe("turn.started", () => {
@@ -104,7 +109,11 @@ describe("turn.started", () => {
     const status = (await apply(send)).find((s) => s.table === "threads")!.values.status;
 
     const second = decide(
-      { project, thread: { id: THREAD, projectId: PROJECT, status: status as "running", provider: null } },
+      {
+        project,
+        workspace,
+        thread: { id: THREAD, projectId: PROJECT, status: status as "running", provider: null, credentialSource: null },
+      },
       { type: "thread.send", threadId: THREAD, text: "again" },
       ctx,
     );
@@ -116,7 +125,11 @@ describe("turn.started", () => {
     const status = (await apply(send)).find((s) => s.table === "threads")!.values.status;
 
     const cancel = decide(
-      { project, thread: { id: THREAD, projectId: PROJECT, status: status as "running", provider: null } },
+      {
+        project,
+        workspace,
+        thread: { id: THREAD, projectId: PROJECT, status: status as "running", provider: null, credentialSource: null },
+      },
       { type: "thread.cancel", threadId: THREAD },
       ctx,
     );

@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
 import {
   formatPercent,
   formatResetsIn,
@@ -100,7 +101,7 @@ export function QuotaRail() {
 const FILL: Record<ReturnType<typeof quotaTone>, string> = {
   idle: "bg-transparent",
   normal: "bg-ucch-active",
-  warn: "bg-amber-500",
+  warn: "bg-warning",
   full: "bg-destructive",
 }
 
@@ -118,34 +119,58 @@ function QuotaBar({
   const percent = window?.usedPercent ?? null
   const tone = quotaTone(percent)
   // Not signed in is not a number, and a bar at zero would read as "plenty
-  // left" -- so the whole row fades instead of the fill.
-  const faded = quota?.status === "no_auth"
+  // left" -- so the track goes hollow and dashed instead. Fading the whole
+  // row did the same job but took the tag below a readable contrast.
+  const signedOut = quota?.status === "no_auth"
+  const resets = window ? formatResetsIn(window.resetsAt) : ""
+  const valueText = !quota
+    ? "Checking"
+    : signedOut
+      ? "Not signed in"
+      : percent === null
+        ? "No limits reported"
+        : `${formatPercent(percent)} used${resets ? `, ${resets}` : ""}`
 
   return (
     <Tooltip>
       <TooltipTrigger
         render={
           // A div, not a button: a readout with nothing to press, the same as
-          // the context meter. The tab stop would only be in the way of the
-          // settings icon below it.
+          // the context meter. Still a tab stop, so the words in the tooltip
+          // are not for mouse users only.
           <div
-            className={`flex cursor-default flex-col items-center gap-1 ${faded ? "opacity-40" : ""}`}
+            className="flex cursor-default flex-col items-center gap-1 rounded-sm focus-visible:outline-offset-0"
             role="meter"
+            tabIndex={0}
             aria-label={`${label} session quota`}
             aria-valuemin={0}
             aria-valuemax={100}
+            aria-valuetext={valueText}
             {...(percent === null ? {} : { "aria-valuenow": Math.round(percent) })}
           />
         }
       >
-        {/* Fills from the bottom, the way a gauge does. */}
-        <div className="bg-muted flex h-7 w-1.5 items-end overflow-hidden rounded-full">
+        {/* Fills from the bottom, the way a gauge does. The outline keeps the
+            track visible at 3:1 against the rail; a high bar also gets a cap
+            in the ink colour, so "nearly out" does not rest on red alone. */}
+        <div
+          className={cn(
+            "flex h-7 w-1.5 items-end overflow-hidden rounded-full",
+            signedOut ? "border-border-strong border border-dashed" : "bg-muted ring-border-strong ring-1",
+            // Not measured yet: the empty track pulses, the way a skeleton does.
+            !quota && "animate-pulse",
+          )}
+        >
           <div
-            className={`w-full rounded-full transition-[height] duration-500 ${FILL[tone]}`}
+            className={cn(
+              "w-full rounded-full transition-[height] duration-500",
+              FILL[tone],
+              (tone === "warn" || tone === "full") && "border-foreground border-t-2",
+            )}
             style={{ height: `${percent ?? 0}%` }}
           />
         </div>
-        <span className="text-muted-foreground font-mono text-[8px] leading-none tracking-tight select-none">
+        <span className="text-muted-foreground font-mono text-[10px] leading-none tracking-tight select-none">
           {tag}
         </span>
       </TooltipTrigger>
@@ -160,19 +185,19 @@ function QuotaBar({
 
 /** The tooltip's lines: every window the vendor reported, or why there are none. */
 function QuotaWords({ quota }: { quota: SessionQuota | null }) {
-  if (!quota) return <p className="text-xs opacity-70">Checking…</p>
+  if (!quota) return <p className="text-xs">Checking…</p>
   if (quota.status === "no_auth") {
-    return <p className="text-xs opacity-70">Not signed in. Connect it in Settings.</p>
+    return <p className="text-xs">Not signed in. Connect it in Settings.</p>
   }
   if (quota.status === "unavailable") {
     return (
-      <p className="text-xs opacity-70">
+      <p className="text-xs">
         Couldn&apos;t read the quota{quota.error ? `: ${quota.error}` : "."}
       </p>
     )
   }
   if (quota.windows.length === 0) {
-    return <p className="text-xs opacity-70">No limits reported for this account.</p>
+    return <p className="text-xs">No limits reported for this account.</p>
   }
   return (
     <>

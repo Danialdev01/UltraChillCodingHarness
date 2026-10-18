@@ -11,11 +11,13 @@ import {
   SearchIcon,
   StickyNoteIcon,
   LayersIcon,
+  MessageSquarePlusIcon,
 } from "lucide-react";
 
 import { NewDatabaseDialog } from "@/components/new-database-dialog";
 import { NewProjectDialog } from "@/components/new-project-dialog";
-import { NewWorkspaceDialog, selectWorkspace } from "@/components/new-workspace-dialog";
+import { ProjectStackIcon } from "@/components/project-stack-icon";
+import { NewWorkspaceDialog } from "@/components/new-workspace-dialog";
 import {
   CommandDialog,
   CommandEmpty,
@@ -28,6 +30,9 @@ import {
 } from "@/components/ui/command";
 import type { Project } from "@/lib/session";
 import type { Workspace } from "@/components/workspace-switcher";
+import { useNewSession } from "@/lib/use-new-session";
+import { countLabel } from "@/lib/workspace-api";
+import { projectHref, sectionById, sectionHref } from "@/lib/sections";
 import { useTransitionRouter } from "@/lib/view-transitions";
 
 /**
@@ -55,6 +60,15 @@ export function QuickMenu({
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [connectingDatabase, setConnectingDatabase] = useState(false);
+  const session = useNewSession(activeWorkspaceId);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
+  const sessionWorkspace = activeWorkspace?.kind === "session";
+  const permissions = activeWorkspace?.permissions ?? [];
+  const canCreateProject = permissions.includes("project.create");
+  const canStartSession = canCreateProject && permissions.includes("session.create");
+  // Archived workspaces are restored from the switcher, not jumped to.
+  const switchable = workspaces.filter((w) => !w.archived);
+  const ws = activeWorkspace?.hash ?? "";
 
   // The conventional palette shortcut. Registered on the window so it works
   // wherever focus happens to be, except inside a text field.
@@ -104,16 +118,27 @@ export function QuickMenu({
           <CommandEmpty>No results.</CommandEmpty>
 
           <CommandGroup heading="Create">
-            <CommandItem onSelect={() => run(() => setCreatingProject(true))}>
-              <FolderGitIcon />
-              New project
-              <CommandShortcut>from a repository</CommandShortcut>
-            </CommandItem>
-            <CommandItem onSelect={() => run(() => setConnectingDatabase(true))}>
-              <DatabaseIcon />
-              New database connection
-              <CommandShortcut>MySQL or PostgreSQL</CommandShortcut>
-            </CommandItem>
+            {sessionWorkspace ? (
+              canStartSession && (
+                <CommandItem onSelect={() => run(session.start)}>
+                  <MessageSquarePlusIcon />
+                  New session
+                </CommandItem>
+              )
+            ) : (
+              canCreateProject && <CommandItem onSelect={() => run(() => setCreatingProject(true))}>
+                <FolderGitIcon />
+                New project
+                <CommandShortcut>from a repository</CommandShortcut>
+              </CommandItem>
+            )}
+            {permissions.includes("workspace.manage") && (
+              <CommandItem onSelect={() => run(() => setConnectingDatabase(true))}>
+                <DatabaseIcon />
+                New database connection
+                <CommandShortcut>MySQL or PostgreSQL</CommandShortcut>
+              </CommandItem>
+            )}
             <CommandItem onSelect={() => run(() => setCreatingWorkspace(true))}>
               <LayersIcon />
               New workspace
@@ -130,14 +155,14 @@ export function QuickMenu({
           {projects.length > 0 && (
             <>
               <CommandSeparator />
-              <CommandGroup heading="Projects">
+              <CommandGroup heading={sessionWorkspace ? "Sessions" : "Projects"}>
                 {projects.map((project) => (
                   <CommandItem
                     key={project.id}
                     value={`project ${project.name} ${project.hash}`}
-                    onSelect={() => run(() => router.push(`/${project.hash}`))}
+                    onSelect={() => run(() => router.push(projectHref(ws, activeWorkspace?.kind ?? "project", project.hash)))}
                   >
-                    <FolderGitIcon />
+                    <ProjectStackIcon stack={project.stack} />
                     {project.name}
                     <CommandShortcut>{project.stack}</CommandShortcut>
                   </CommandItem>
@@ -146,24 +171,21 @@ export function QuickMenu({
             </>
           )}
 
-          {workspaces.length > 1 && (
+          {switchable.length > 1 && (
             <>
               <CommandSeparator />
               <CommandGroup heading="Switch workspace">
-                {workspaces.map((workspace) => (
+                {switchable.map((workspace) => (
                   <CommandItem
                     key={workspace.id}
                     value={`workspace ${workspace.name}`}
                     onSelect={() =>
-                      run(() => {
-                        selectWorkspace(workspace.id);
-                        router.refresh();
-                      })
+                      run(() => router.push(`/${workspace.hash}`))
                     }
                   >
                     <LayersIcon />
                     {workspace.name}
-                    <CommandShortcut>{workspace.projectCount} projects</CommandShortcut>
+                    <CommandShortcut>{countLabel(workspace)}</CommandShortcut>
                   </CommandItem>
                 ))}
               </CommandGroup>
@@ -172,11 +194,11 @@ export function QuickMenu({
 
           <CommandSeparator />
           <CommandGroup heading="Go to">
-            <CommandItem onSelect={() => run(() => router.push("/dashboard"))}>
+            <CommandItem onSelect={() => run(() => router.push(sectionHref(sectionById("dashboard"), ws)))}>
               <CodeIcon />
               Coding
             </CommandItem>
-            <CommandItem onSelect={() => run(() => router.push("/database"))}>
+            <CommandItem onSelect={() => run(() => router.push(sectionHref(sectionById("database"), ws)))}>
               <DatabaseIcon />
               Database
             </CommandItem>
@@ -206,10 +228,7 @@ export function QuickMenu({
       <NewWorkspaceDialog
         open={creatingWorkspace}
         onOpenChange={setCreatingWorkspace}
-        onCreated={(id) => {
-          selectWorkspace(id);
-          router.refresh();
-        }}
+        onCreated={(workspace) => router.push(`/${workspace.hash}`)}
       />
     </>
   );

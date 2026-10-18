@@ -139,7 +139,7 @@ function ChangeRow({
       )}
     >
       {file.conflicted ? (
-        <AlertTriangleIcon className="size-3.5 shrink-0 text-[var(--ucch-note-orange)]" aria-label="Conflicted" />
+        <AlertTriangleIcon className="size-3.5 shrink-0 text-warning" aria-label="Conflicted" />
       ) : (
         <input
           type="checkbox"
@@ -220,12 +220,12 @@ export function StatusBadge({ file }: { file: Pick<GitFileStatus, "index" | "wor
         : file.index
   const tone =
     letter === "A" || letter === "U"
-      ? "var(--ucch-note-green)"
+      ? "var(--success)"
       : letter === "D"
-        ? "var(--ucch-note-red)"
+        ? "var(--danger)"
         : letter === "R" || letter === "C"
-          ? "var(--ucch-note-blue)"
-          : "var(--ucch-note-orange)"
+          ? "var(--info)"
+          : "var(--warning)"
   const LABELS: Record<string, string> = { A: "Added", M: "Modified", D: "Deleted", R: "Renamed", C: "Copied", T: "Type changed", U: "Untracked", "!": "Conflicted" }
   const label = LABELS[letter] ?? letter
   return (

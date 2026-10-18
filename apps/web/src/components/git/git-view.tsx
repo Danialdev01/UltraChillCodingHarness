@@ -2,11 +2,11 @@
 
 import * as React from "react"
 import type { GitCommitFile } from "@ucch/protocol"
-import { GitBranchIcon, Loader2Icon, XIcon } from "lucide-react"
+import { GitBranchIcon, XIcon } from "lucide-react"
 
 import { useFilesPanel } from "@/components/files-panel"
 import { FileTypeIcon } from "@/components/file-type-icon"
-import { GitSkeleton } from "@/components/page-skeletons"
+import { CodeLinesSkeleton, GitSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -32,6 +32,7 @@ import {
   gitUnstage,
 } from "@/lib/git-api"
 import { relativeTime } from "@/lib/stats-format"
+import { targetOf } from "@/lib/project-target"
 import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
 
@@ -58,7 +59,7 @@ export function GitView({ project }: { project: Project }) {
   const [tab, setTab] = React.useState<"changes" | "history">("changes")
   const [discarding, setDiscarding] = React.useState<string[] | "all" | null>(null)
   const [connecting, setConnecting] = React.useState(false)
-  const hash = project.hash
+  const hash = targetOf(project)
 
   const open = (path: string) => {
     openFile(path)
@@ -107,9 +108,9 @@ export function GitView({ project }: { project: Project }) {
         />
       )}
       {git.error && !connecting && (
-        <div className="bg-destructive/10 text-destructive flex items-start gap-2 border-b px-3 py-2 text-xs">
+        <div className="bg-danger-soft text-destructive flex items-start gap-2 border-b px-3 py-2 text-xs">
           <p className="min-w-0 flex-1 break-words whitespace-pre-wrap">{git.error}</p>
-          <button type="button" onClick={git.clearError} aria-label="Dismiss" className="shrink-0 rounded p-0.5 hover:bg-destructive/10">
+          <button type="button" onClick={git.clearError} aria-label="Dismiss" className="shrink-0 rounded p-0.5 hover:bg-danger-soft">
             <XIcon className="size-3.5" />
           </button>
         </div>
@@ -179,8 +180,8 @@ export function GitView({ project }: { project: Project }) {
           ) : null}
           <div className="relative min-h-0 flex-1 overflow-auto">
             {git.diffLoading && (
-              <div className="bg-background/60 absolute inset-0 z-20 flex items-start justify-center pt-8">
-                <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+              <div className="bg-background absolute inset-0 z-20">
+                <CodeLinesSkeleton rows={12} />
               </div>
             )}
             {git.selection === null ? (

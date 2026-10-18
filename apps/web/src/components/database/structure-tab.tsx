@@ -21,6 +21,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { dropTable, truncateTable } from "@/lib/database-api"
 import { compactNumber, formatBytes } from "@/lib/stats-format"
 import { databaseHref } from "@/lib/sections"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 import { TransitionLink } from "@/lib/view-transitions"
 
 /**
@@ -29,6 +30,7 @@ import { TransitionLink } from "@/lib/view-transitions"
  * here for the size and the comment, and for the actions a row offers.
  */
 export function StructureTab() {
+  const ws = useWorkspaceHash()
   const { ref, connection, db, tables, reloadTables } = useDb()
   const [creating, setCreating] = React.useState(false)
   const [renaming, setRenaming] = React.useState<TableSummary | null>(null)
@@ -94,7 +96,7 @@ export function StructureTab() {
             </TableHeader>
             <TableBody>
               {tables.data.map((table) => {
-                const href = databaseHref(connection.id, db, table.name)
+                const href = databaseHref(ws, connection.id, db, table.name)
                 const Icon = table.tableType === "view" ? EyeIcon : TableIcon
                 return (
                   <TableRow key={table.name}>

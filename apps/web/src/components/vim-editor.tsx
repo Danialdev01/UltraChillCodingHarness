@@ -8,7 +8,6 @@ import { Compartment, EditorState, Prec, type Extension } from "@codemirror/stat
 import {
   drawSelection,
   EditorView,
-  highlightActiveLine,
   highlightActiveLineGutter,
   highlightSpecialChars,
   keymap,
@@ -20,6 +19,7 @@ import { getCM, Vim, vim } from "@replit/codemirror-vim"
 
 import { replacement } from "@/lib/doc-sync"
 import { languageFor } from "@/lib/languages"
+import { editorSelection } from "@/lib/editor-selection"
 import { readEditorFontSize, watchEditorFontSize } from "@/lib/editor-font-size"
 import {
   readEditorKeybindings,
@@ -28,6 +28,7 @@ import {
 } from "@/lib/editor-keybindings"
 import { leaderChildren, type LeaderCommand } from "@/lib/leader-keymap"
 import { syntaxHighlightStyle } from "@/lib/syntax-highlight"
+import { cn } from "@/lib/utils"
 import { activeLeader, registerVimKeymap } from "@/lib/vim-keymap"
 
 
@@ -64,10 +65,18 @@ const keybindings = new Compartment()
  */
 const fontSize = new Compartment()
 
+/** Whether the text can be changed, swapped while something else rewrites it. */
+const editable = new Compartment()
+
+function editableFor(readOnly: boolean): Extension {
+  return [EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]
+}
+
 function fontSizeFor(px: number): Extension {
   // The line height follows the font once the font outgrows it: 24px is the
   // shipped look at 12px, and a 20px face on a 24px line would be cramped.
-  const lineHeight = Math.max(24, Math.round(px * 1.5))
+  // The leading above and below the text is then trimmed by a tenth.
+  const lineHeight = px + (Math.max(24, Math.round(px * 1.5)) - px) * 0.9
   return EditorView.theme({
     "&": { fontSize: `${px}px` },
     ".cm-scroller": { lineHeight: `${lineHeight}px` },
@@ -85,6 +94,7 @@ function extensions(
   path: string,
   onChange: (text: string) => void,
   onSave: () => void,
+  readOnly: boolean,
 ): Extension[] {
   const language = languageFor(path)
   // Mappings live on a keymap shared by every editor, so they are installed
@@ -95,14 +105,16 @@ function extensions(
   return [
     keybindings.of(keybindingsFor(readEditorKeybindings())),
     fontSize.of(fontSizeFor(readEditorFontSize())),
+    editable.of(editableFor(readOnly)),
 
     lineNumbers(),
     highlightActiveLineGutter(),
-    highlightActiveLine(),
     highlightSpecialChars(),
     // Vim's own selection is drawn rather than native, which is what makes
     // block-wise visual mode possible: it is several ranges at once.
     drawSelection(),
+    // Its colours, and the current line drawn beneath it.
+    editorSelection(),
     rectangularSelection(),
     bracketMatching(),
     // `u` and Ctrl-r are CodeMirror's undo/redo underneath, so vim has no
@@ -185,10 +197,6 @@ const theme = EditorView.theme({
     paddingRight: "0.25rem",
   },
   ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--foreground)" },
-  ".cm-activeLine": { backgroundColor: "color-mix(in oklch, var(--muted) 45%, transparent)" },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "var(--ucch-active-bg)",
-  },
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
     backgroundColor: "var(--ucch-active-bg)",
     color: "inherit",
@@ -328,6 +336,9 @@ export function VimEditor({
   onChat,
   onLeader,
   reveal,
+  autoFocus = true,
+  readOnly = false,
+  className,
 }: {
   path: string
   initialText: string
@@ -344,12 +355,12 @@ export function VimEditor({
    * Asks the agent about lines `from`-`to` (1-based, inclusive). Bound to
    * `:chat`; `command` is whatever followed it on the ex line, often nothing.
    */
-  onChat: (from: number, to: number, command: string) => void
+  onChat?: (from: number, to: number, command: string) => void
   /**
    * A leader-key command -- `SPC s s`, `SPC .` -- for the file view to act
    * on, with the cursor's line (1-based) at the time.
    */
-  onLeader: (command: LeaderCommand, line: number) => void
+  onLeader?: (command: LeaderCommand, line: number) => void
   /**
    * A line to put the cursor on, from a search result.
    *
@@ -358,6 +369,11 @@ export function VimEditor({
    * tell apart from the last one rather than a value that has not changed.
    */
   reveal?: { line: number; token: number } | null
+  /** Takes the keyboard when it opens. Off where the editor is not the page's point. */
+  autoFocus?: boolean
+  /** Shows the text without letting it change: while the AI is rewriting it, say. */
+  readOnly?: boolean
+  className?: string
 }) {
   const host = React.useRef<HTMLDivElement>(null)
   const editor = React.useRef<EditorView | null>(null)
@@ -377,9 +393,15 @@ export function VimEditor({
     if (!parent) return
 
     registerExCommands()
-    activeSave.current = () => latestSave.current()
-    activeChat.current = (from, to, command) => latestChat.current(from, to, command)
-    activeLeader.current = (command, line) => latestLeader.current(command, line)
+    // `:w`, `:chat` and the leader keys are shared by every editor, so they
+    // follow whichever one was opened or focused last.
+    const claim = () => {
+      activeSave.current = () => latestSave.current()
+      activeChat.current = (from, to, command) => latestChat.current?.(from, to, command)
+      activeLeader.current = (command, line) => latestLeader.current?.(command, line)
+    }
+    claim()
+    parent.addEventListener("focusin", claim)
 
     const view = new EditorView({
       doc: initialText,
@@ -388,10 +410,11 @@ export function VimEditor({
         path,
         (text) => latest.current(text),
         () => latestSave.current(),
+        readOnly,
       ),
     })
     editor.current = view
-    view.focus()
+    if (autoFocus) view.focus()
 
     // The which-key popup follows the vim layer's own key buffer: after each
     // key it holds whatever sequence is still waiting for more, and it is
@@ -425,6 +448,7 @@ export function VimEditor({
       view.dispatch({ effects: fontSize.reconfigure(fontSizeFor(px)) })
     })
     return () => {
+      parent.removeEventListener("focusin", claim)
       unwatchKeys()
       unwatchSize()
       detach()
@@ -467,8 +491,12 @@ export function VimEditor({
     jumpToLine(view, reveal.line)
   }, [reveal?.token, reveal?.line])
 
+  React.useEffect(() => {
+    editor.current?.dispatch({ effects: editable.reconfigure(editableFor(readOnly)) })
+  }, [readOnly])
+
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div className={cn("relative flex min-h-0 flex-1 flex-col", className)}>
       <div ref={host} className="min-h-0 flex-1 overflow-hidden [&_.cm-editor]:h-full" />
       <WhichKey pending={pending} />
     </div>

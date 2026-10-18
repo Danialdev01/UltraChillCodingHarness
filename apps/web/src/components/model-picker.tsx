@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ChevronsUpDownIcon } from "lucide-react"
+import { ChevronDownIcon, ChevronsUpDownIcon } from "lucide-react"
 
 import type { ReasoningEffort } from "@ucch/protocol"
 import { Button } from "@/components/ui/button"
@@ -14,6 +14,37 @@ import {
   CommandList,
 } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Skeleton } from "@/components/ui/skeleton"
+import { cn } from "@/lib/utils"
+
+/**
+ * How a picker's trigger looks: a bordered field, for forms; or plain text
+ * on the composer's toolbar, where a row of boxes would outweigh the box you
+ * type in.
+ */
+export type PickerLook = "field" | "inline"
+
+/** The trigger's button styling for a look; `className` sizes the field one. */
+export function pickerTrigger(look: PickerLook, className: string) {
+  return look === "inline"
+    ? {
+        variant: "ghost" as const,
+        className: cn(
+          "h-7 w-auto max-w-44 min-w-0 shrink justify-start gap-1 px-1.5 text-xs font-normal",
+          className,
+        ),
+      }
+    : { variant: "outline" as const, className: cn("h-8 justify-between px-2 text-xs font-normal", className) }
+}
+
+/** The chevron that goes with it. */
+export function PickerChevron({ look }: { look: PickerLook }) {
+  return look === "inline" ? (
+    <ChevronDownIcon className="text-muted-foreground size-3 shrink-0" />
+  ) : (
+    <ChevronsUpDownIcon className="text-muted-foreground size-3.5 shrink-0" />
+  )
+}
 
 export interface ModelChoice {
   id: string
@@ -56,12 +87,6 @@ export function useModels(): { models: ModelChoice[]; defaultModel: string | nul
   return { models, defaultModel }
 }
 
-// `max-w` in container units: these sit in the composer's controls row, and
-// a 13rem model name beside the effort select and the context meter is what
-// pushes that row onto three lines in a narrow chat.
-const SELECT =
-  "border-input bg-background focus-visible:ring-ring h-8 max-w-32 truncate rounded-md border px-2 text-xs outline-none focus-visible:ring-2 disabled:opacity-60 @md:max-w-52"
-
 /** Rendered at once. The catalogue runs past four hundred entries. */
 const MAX_RESULTS = 60
 
@@ -83,11 +108,13 @@ export function ModelSelect({
   value,
   onChange,
   disabled,
+  look = "field",
 }: {
   models: ModelChoice[]
   value: string
   onChange: (id: string) => void
   disabled?: boolean
+  look?: PickerLook
 }) {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState("")
@@ -134,19 +161,18 @@ export function ModelSelect({
       <PopoverTrigger
         render={
           <Button
-            variant="outline"
+            {...pickerTrigger(look, look === "inline" ? "text-foreground font-medium" : "w-52")}
             role="combobox"
             aria-expanded={open}
             aria-label="Model"
             disabled={disabled || empty}
-            className="h-8 w-52 justify-between px-2 text-xs font-normal"
           />
         }
       >
         <span className="truncate">
-          {empty ? "Loading models…" : (selected?.name ?? value ?? "Select a model…")}
+          {empty ? <Skeleton className="h-3 w-24" /> : (selected?.name ?? value ?? "Select a model…")}
         </span>
-        <ChevronsUpDownIcon className="size-3.5 shrink-0 opacity-50" />
+        <PickerChevron look={look} />
       </PopoverTrigger>
 
       {/* Wider than the trigger: model names are long, and a panel clipped to
@@ -196,34 +222,109 @@ export function ModelSelect({
   )
 }
 
-const EFFORTS: ReasoningEffort[] = ["off", "low", "medium", "high"]
+const LEVELS: Record<ReasoningEffort, { label: string; hint: string }> = {
+  off: { label: "No reasoning", hint: "Fastest" },
+  low: { label: "Low", hint: "A little thinking first" },
+  medium: { label: "Medium", hint: "Balanced" },
+  high: { label: "High", hint: "Slower, more thorough" },
+  xhigh: { label: "Extra high", hint: "Slower still" },
+  max: { label: "Max", hint: "Slowest, most thorough" },
+}
 
+/** What OpenRouter takes. Claude Code's levels come from its model list. */
+export const NATIVE_EFFORTS: readonly ReasoningEffort[] = ["off", "low", "medium", "high"]
+
+/**
+ * What an effort level is called and what it means. Under a CLI, `off` passes
+ * no flag and the CLI uses the model's own default -- which is not the same as
+ * not reasoning, so it is not called that.
+ */
+export function describeEffort(effort: ReasoningEffort, offMeansDefault?: boolean) {
+  return effort === "off" && offMeansDefault
+    ? { label: "Default", hint: "The model's own setting" }
+    : LEVELS[effort]
+}
+
+/**
+ * The reasoning effort, in the same popover as the model picker so the two
+ * read as one row of controls.
+ *
+ * No search box: a handful of fixed choices are faster clicked than typed.
+ * The caller decides which levels the model takes and renders nothing for
+ * one that takes none -- a control that does nothing is noise.
+ */
 export function EffortSelect({
   value,
+  levels,
+  offMeansDefault,
   onChange,
   disabled,
-  supported,
+  look = "field",
 }: {
   value: ReasoningEffort
+  /** Lowest first, `off` included when it is a choice. */
+  levels: readonly ReasoningEffort[]
+  /**
+   * Under a CLI, `off` passes no flag and the CLI uses the model's own
+   * default -- which is not the same as not reasoning, so it is not called that.
+   */
+  offMeansDefault?: boolean
   onChange: (effort: ReasoningEffort) => void
   disabled?: boolean
-  /** False when the chosen model does not reason, so effort would do nothing. */
-  supported: boolean
+  look?: PickerLook
 }) {
+  const [open, setOpen] = React.useState(false)
+  const describe = (effort: ReasoningEffort) => describeEffort(effort, offMeansDefault)
+  const options = levels.map((effort) => ({ value: effort, ...describe(effort) }))
+  const current = levels.includes(value) ? value : levels[0]!
+  const selected = { value: current, ...describe(current) }
+
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as ReasoningEffort)}
-      disabled={disabled || !supported}
-      aria-label="Reasoning effort"
-      title={supported ? "Reasoning effort" : "This model does not expose reasoning effort"}
-      className={SELECT}
-    >
-      {EFFORTS.map((effort) => (
-        <option key={effort} value={effort}>
-          {effort === "off" ? "No reasoning" : `Effort: ${effort}`}
-        </option>
-      ))}
-    </select>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            {...pickerTrigger(look, look === "inline" ? "text-muted-foreground shrink-0" : "w-32")}
+            role="combobox"
+            aria-expanded={open}
+            aria-label="Reasoning effort"
+            disabled={disabled}
+          />
+        }
+      >
+        <span className="truncate">
+          {/* Beside the model on the toolbar, the level alone says enough. */}
+          {selected.value === "off" || look === "inline"
+            ? selected.label
+            : `Effort: ${selected.label.toLowerCase()}`}
+        </span>
+        <PickerChevron look={look} />
+      </PopoverTrigger>
+
+      <PopoverContent className="w-64 p-0">
+        <Command>
+          <CommandList>
+            <CommandGroup heading="Reasoning effort">
+              {options.map((effort) => (
+                <CommandItem
+                  key={effort.value}
+                  value={effort.value}
+                  data-checked={effort.value === value}
+                  onSelect={() => {
+                    onChange(effort.value)
+                    setOpen(false)
+                  }}
+                >
+                  <span className="shrink-0">{effort.label}</span>
+                  <span className="text-muted-foreground ml-auto min-w-0 truncate text-[10px]">
+                    {effort.hint}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }

@@ -7,3 +7,4 @@ dist/
 .DS_Store
 coverage/
 .env.deploy
+__pycache__/

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckIcon, CopyIcon, ExternalLinkIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, ExternalLinkIcon, FileCodeIcon, ServerIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -16,16 +16,27 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { fetchPreviewStatus, setPreviewPort } from "@/lib/preview-api";
+import { fetchPreviewStatus, setPreviewPort, setStaticPreview } from "@/lib/preview-api";
 import type { Project } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 const STATUS_POLL_MS = 3000;
 
+type Mode = "server" | "static";
+
+const MODES: { value: Mode; label: string; icon: typeof ServerIcon }[] = [
+  { value: "server", label: "Dev server", icon: ServerIcon },
+  { value: "static", label: "Static site", icon: FileCodeIcon },
+];
+
+const modeOf = (project: Project): Mode => (project.previewStaticDir != null ? "static" : "server");
+
 /**
  * Where a project's dev server can be reached from the outside.
  *
- * The owner names a port; the server answers with two addresses. The alias
+ * The owner names a port -- or, for plain HTML with nothing to run, a folder
+ * of the working tree that the proxy serves itself -- and the server answers
+ * with two addresses. The alias
  * on this app is the one to share -- it is what checks the session and hands
  * the visitor through -- and the subdomain is where they land. Both are
  * shown because the second is what the app itself sees as its origin, which
@@ -44,7 +55,9 @@ export function PreviewDialog({
   // The saved state, kept locally so the URLs appear the moment the save
   // returns rather than after the layout's project list has refreshed.
   const [saved, setSaved] = useState<Project>(project);
+  const [mode, setMode] = useState<Mode>(modeOf(project));
   const [port, setPort] = useState(project.previewPort ? String(project.previewPort) : "");
+  const [dir, setDir] = useState(project.previewStaticDir ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listening, setListening] = useState<boolean | null>(null);
@@ -52,7 +65,9 @@ export function PreviewDialog({
   useEffect(() => {
     if (!open) return;
     setSaved(project);
+    setMode(modeOf(project));
     setPort(project.previewPort ? String(project.previewPort) : "");
+    setDir(project.previewStaticDir ?? "");
     setError(null);
   }, [open, project]);
 
@@ -74,22 +89,35 @@ export function PreviewDialog({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [open, saved.hash, saved.previewPort]);
+  }, [open, saved.hash, saved.previewPort, saved.previewStaticDir]);
 
   const parsed = Number(port);
-  const valid = port !== "" && Number.isInteger(parsed) && parsed >= 1024 && parsed <= 65535;
-  const unchanged = valid && parsed === saved.previewPort;
+  const savedStatic = saved.previewStaticDir != null;
+  const folder = dir.trim().replace(/^\/+|\/+$/g, "");
+  const valid =
+    mode === "static" ||
+    (port !== "" && Number.isInteger(parsed) && parsed >= 1024 && parsed <= 65535);
+  const unchanged =
+    mode === "static"
+      ? savedStatic && folder === saved.previewStaticDir
+      : !savedStatic && parsed === saved.previewPort;
 
-  async function save(next: number | null) {
+  async function save(next: { port: number } | { dir: string } | null) {
     setPending(true);
     setError(null);
     try {
-      const updated = await setPreviewPort(saved.hash, next);
+      const updated =
+        next !== null && "dir" in next
+          ? await setStaticPreview(saved.hash, next.dir)
+          : await setPreviewPort(saved.hash, next?.port ?? null);
       setSaved(updated);
-      setPort(updated.previewPort ? String(updated.previewPort) : "");
+      setPort(
+        updated.previewPort && updated.previewStaticDir == null ? String(updated.previewPort) : "",
+      );
+      setDir(updated.previewStaticDir ?? "");
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the preview port.");
+      setError(err instanceof Error ? err.message : "Could not save the preview.");
     } finally {
       setPending(false);
     }
@@ -97,8 +125,11 @@ export function PreviewDialog({
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (valid) void save(parsed);
+    if (!valid) return;
+    void save(mode === "static" ? { dir: folder } : { port: parsed });
   }
+
+  const savedFolder = saved.previewStaticDir ? `${saved.previewStaticDir}/` : "the project root";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -111,47 +142,116 @@ export function PreviewDialog({
           <DialogHeader>
             <DialogTitle>Preview</DialogTitle>
             <DialogDescription>
-              Open the app running in this project from anywhere. Start your dev server in the
-              terminal, then tell the preview which port it listens on.
+              Open the app in this project from anywhere. Point the preview at the port your dev
+              server listens on, or serve a folder of plain HTML straight from the project.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-4">
-            <Field>
-              <FieldLabel htmlFor="preview-port">Dev server port</FieldLabel>
-              <div className="flex gap-2">
-                <Input
-                  id="preview-port"
-                  type="number"
-                  inputMode="numeric"
-                  min={1024}
-                  max={65535}
-                  value={port}
-                  onChange={(e) => setPort(e.target.value)}
-                  placeholder="8001"
-                  autoFocus
-                  disabled={pending}
-                  className="max-w-40"
-                />
-                <Button type="submit" disabled={pending || !valid || unchanged}>
-                  {pending ? "Saving…" : "Save"}
-                </Button>
-                {saved.previewPort && (
-                  <Button
+            <div
+              role="radiogroup"
+              aria-label="What to preview"
+              className="inline-flex rounded-lg border p-0.5"
+            >
+              {MODES.map(({ value, label, icon: Icon }) => {
+                const checked = mode === value;
+                return (
+                  <button
+                    key={value}
                     type="button"
-                    variant="ghost"
+                    role="radio"
+                    aria-checked={checked}
                     disabled={pending}
-                    onClick={() => void save(null)}
+                    onClick={() => {
+                      setMode(value);
+                      setError(null);
+                    }}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm",
+                      checked
+                        ? "bg-accent-soft text-foreground font-medium"
+                        : "text-muted-foreground hover:bg-muted",
+                    )}
                   >
-                    Clear
+                    <Icon className="size-4" aria-hidden />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {mode === "static" ? (
+              <Field>
+                <FieldLabel htmlFor="preview-dir">Folder</FieldLabel>
+                <div className="flex gap-2">
+                  <Input
+                    id="preview-dir"
+                    value={dir}
+                    onChange={(e) => setDir(e.target.value)}
+                    placeholder="/ (project root)"
+                    autoComplete="off"
+                    spellCheck={false}
+                    autoFocus
+                    disabled={pending}
+                    className="max-w-56"
+                  />
+                  <Button type="submit" disabled={pending || unchanged}>
+                    {pending ? "Saving…" : "Save"}
                   </Button>
-                )}
-              </div>
-              <FieldDescription>
-                For example <code>php artisan serve --port=8001</code>. The server must accept
-                connections on loopback (127.0.0.1 or ::1).
-              </FieldDescription>
-            </Field>
+                  {saved.previewPort && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={pending}
+                      onClick={() => void save(null)}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+                <FieldDescription>
+                  The folder holding your <code>index.html</code>, for example <code>dist</code> or{" "}
+                  <code>public</code>. Leave it empty to serve the project root. Files are served as
+                  they are, so changes show on reload.
+                </FieldDescription>
+              </Field>
+            ) : (
+              <Field>
+                <FieldLabel htmlFor="preview-port">Dev server port</FieldLabel>
+                <div className="flex gap-2">
+                  <Input
+                    id="preview-port"
+                    type="number"
+                    inputMode="numeric"
+                    min={1024}
+                    max={65535}
+                    value={port}
+                    onChange={(e) => setPort(e.target.value)}
+                    placeholder="8001"
+                    autoFocus
+                    disabled={pending}
+                    className="max-w-40"
+                  />
+                  <Button type="submit" disabled={pending || !valid || unchanged}>
+                    {pending ? "Saving…" : "Save"}
+                  </Button>
+                  {saved.previewPort && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={pending}
+                      onClick={() => void save(null)}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+                <FieldDescription>
+                  For example <code>php artisan serve --port=8001</code>. The server must accept
+                  connections on loopback (127.0.0.1 or ::1).
+                </FieldDescription>
+              </Field>
+            )}
 
             {error && (
               <p role="alert" className="text-destructive text-sm">
@@ -166,14 +266,23 @@ export function PreviewDialog({
                     aria-hidden
                     className={cn(
                       "size-2 rounded-full",
-                      listening === true && "bg-emerald-500",
-                      listening === false && "bg-amber-500",
+                      listening === true && "bg-success",
+                      listening === false && "bg-warning",
                       listening === null && "bg-muted-foreground/40",
                     )}
                   />
                   <span className="text-muted-foreground">
-                    {listening === true && `Listening on port ${saved.previewPort}`}
-                    {listening === false && `Nothing on port ${saved.previewPort} yet`}
+                    {savedStatic ? (
+                      <>
+                        {listening === true && `Serving index.html from ${savedFolder}`}
+                        {listening === false && `No index.html in ${savedFolder} yet`}
+                      </>
+                    ) : (
+                      <>
+                        {listening === true && `Listening on port ${saved.previewPort}`}
+                        {listening === false && `Nothing on port ${saved.previewPort} yet`}
+                      </>
+                    )}
                     {listening === null && "Checking…"}
                   </span>
                 </div>

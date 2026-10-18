@@ -164,12 +164,46 @@ describe("detectStack", () => {
     ["node", ["package.json"]],
     ["php", ["index.php"]],
     ["static", ["index.html"]],
+    ["nuxt", ["nuxt.config.ts", "package.json"]],
+    ["astro", ["astro.config.mjs", "package.json"]],
+    ["svelte", ["svelte.config.js", "vite.config.ts", "package.json"]],
+    ["angular", ["angular.json", "package.json"]],
+    ["deno", ["deno.json"]],
+    ["bun", ["bun.lockb", "package.json"]],
+    ["django", ["manage.py", "requirements.txt"]],
+    ["python", ["pyproject.toml"]],
+    ["rust", ["Cargo.toml"]],
+    ["go", ["go.mod"]],
+    ["ruby", ["Gemfile"]],
+    ["java", ["pom.xml"]],
+    ["dart", ["pubspec.yaml"]],
+    ["elixir", ["mix.exs"]],
+    ["swift", ["Package.swift"]],
+    ["dotnet", ["App.csproj"]],
   ];
 
   it.each(cases)("detects %s", async (expected, files) => {
     const dir = await mkdtemp(join(scratch, `stack-${expected}-`));
     for (const file of files) await writeFile(join(dir, file), "");
     expect(await detectStack(dir)).toBe(expected);
+  });
+
+  it.each([
+    ["react", { dependencies: { react: "^19.0.0" } }],
+    ["vue", { devDependencies: { vue: "^3.5.0" } }],
+  ] as const)("reads package.json for %s", async (expected, pkg) => {
+    const dir = await mkdtemp(join(scratch, `stack-${expected}-`));
+    await writeFile(join(dir, "package.json"), JSON.stringify(pkg));
+    await writeFile(join(dir, "vite.config.ts"), "");
+    expect(await detectStack(dir)).toBe(expected);
+  });
+
+  it("tells rails from plain ruby by its application config", async () => {
+    const dir = await mkdtemp(join(scratch, "stack-rails-"));
+    await writeFile(join(dir, "Gemfile"), "");
+    await mkdir(join(dir, "config"));
+    await writeFile(join(dir, "config", "application.rb"), "");
+    expect(await detectStack(dir)).toBe("rails");
   });
 
   it("reports unknown for a directory that is not there", async () => {
@@ -435,5 +469,126 @@ describe("how a private clone is authenticated", () => {
     const config = await readFile(join(root, PROJECT, ".git", "config"), "utf8");
     expect(config).not.toContain("ghp_secret");
     expect(config).not.toContain("credential");
+  }, 60_000);
+});
+
+describe("CloneReactor: settings and development database", () => {
+  const SERVER = {
+    engine: "postgresql" as const,
+    host: "db.local",
+    port: 5432,
+    username: "dev",
+    password: "p@ss",
+    database: "dev",
+  };
+
+  /** An adapter that only knows the two calls the reactor makes. */
+  function fakeAdapter(existing: string[] = [], fail?: Error) {
+    const made: string[] = [];
+    const adapterFor = () =>
+      ({
+        listDatabases: async () => {
+          if (fail) throw fail;
+          return [...existing, ...made];
+        },
+        createDatabase: async (name: string) => {
+          made.push(name);
+        },
+      }) as unknown as import("./db-manager/index.js").DbAdapter;
+    return { made, adapterFor };
+  }
+
+  it("writes .ucch/INFO.md for every project, and nothing about a database", async () => {
+    const root = join(scratch, "ctx-1");
+    const { clones, emitted, errors } = reactor(root, created({ mode: "research", database: null }));
+    await clones.drain();
+
+    expect(errors).toEqual([]);
+    expect(emitted[0]).not.toHaveProperty("databaseError");
+    const context = await readFile(join(root, PROJECT, ".ucch", "INFO.md"), "utf8");
+    expect(context).toContain("Mode: Research");
+    expect(context).not.toContain("database");
+    await expect(readFile(join(root, PROJECT, ".env"), "utf8")).rejects.toThrow();
+  }, 60_000);
+
+  it("creates the database, points .env at it, and registers it once", async () => {
+    const root = join(scratch, "ctx-2");
+    const { made, adapterFor } = fakeAdapter();
+    const registered: string[] = [];
+    const options = {
+      devDatabases: { postgresql: SERVER },
+      adapterFor,
+      registerConnection: async (_e: unknown, _s: unknown, name: string) => {
+        registered.push(name);
+      },
+    };
+    const event = created({ database: { engine: "postgresql", name: "app_dev" } });
+
+    const first = reactor(root, event, options);
+    await first.clones.drain();
+    expect(first.errors).toEqual([]);
+    expect(first.emitted[0]).not.toHaveProperty("databaseError");
+    expect(made).toEqual(["app_dev"]);
+
+    const dest = join(root, PROJECT);
+    expect(await readFile(join(dest, ".env"), "utf8")).toBe(
+      "DATABASE_URL=postgres://dev:p%40ss@db.local:5432/app_dev\n",
+    );
+    expect(await readFile(join(dest, ".gitignore"), "utf8")).toContain(".env\n");
+    const context = await readFile(join(dest, ".ucch", "INFO.md"), "utf8");
+    expect(context).toContain("`app_dev`");
+    expect(context).not.toContain("p@ss");
+
+    // Redelivered: the database already exists, so nothing is made twice.
+    const second = reactor(root, event, options);
+    await second.clones.drain();
+    expect(second.errors).toEqual([]);
+    expect(made).toEqual(["app_dev"]);
+    expect(await readFile(join(dest, ".env"), "utf8")).toBe(
+      "DATABASE_URL=postgres://dev:p%40ss@db.local:5432/app_dev\n",
+    );
+  }, 60_000);
+
+  it("opens the project anyway when the database cannot be made, and says why", async () => {
+    const root = join(scratch, "ctx-3");
+    const { adapterFor } = fakeAdapter([], new Error("connection refused"));
+    const { clones, emitted, errors } = reactor(
+      root,
+      created({ database: { engine: "postgresql", name: "app_dev" } }),
+      { devDatabases: { postgresql: SERVER }, adapterFor },
+    );
+    await clones.drain();
+
+    expect(errors).toEqual([]);
+    expect(emitted[0]?.databaseError).toContain("connection refused");
+    expect(emitted[0]?.headSha).toBe(originSha);
+  }, 60_000);
+
+  it("commits a started project's settings but never its .env", async () => {
+    const root = join(scratch, "ctx-5");
+    const { adapterFor } = fakeAdapter();
+    const { clones, errors } = reactor(
+      root,
+      created({ repoUrl: null, database: { engine: "postgresql", name: "app_dev" } }),
+      { devDatabases: { postgresql: SERVER }, adapterFor },
+    );
+    await clones.drain();
+    expect(errors).toEqual([]);
+
+    const dest = join(root, PROJECT);
+    const { stdout: tracked } = await run("git", ["-C", dest, "ls-files"]);
+    expect(tracked.split("\n").filter(Boolean).sort()).toEqual([".gitignore", ".ucch/INFO.md", "README.md"]);
+    const { stdout: status } = await run("git", ["-C", dest, "status", "--porcelain"]);
+    expect(status.trim()).toBe("");
+    expect(await readFile(join(dest, ".env"), "utf8")).toContain("DATABASE_URL=");
+  }, 60_000);
+
+  it("reports an engine with no server configured", async () => {
+    const root = join(scratch, "ctx-4");
+    const { clones, emitted } = reactor(root, created({ database: { engine: "mysql", name: "app_dev" } }), {
+      devDatabases: { postgresql: SERVER },
+    });
+    await clones.drain();
+    expect(emitted[0]?.databaseError).toMatch(/MySQL development server is not configured/);
   }, 60_000);
 });

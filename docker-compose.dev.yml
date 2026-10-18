@@ -1,7 +1,9 @@
 # Databases for local development; `pnpm dev:up` starts this and the app.
 # The app itself runs on the host (hot reload), not in a container.
 #
-#   docker compose -f docker-compose.dev.yml --profile mysql up -d   # + MySQL
+# Both servers also host the projects' own development databases: a project
+# created with a database gets a new one on the matching server, owned by the
+# `dev` account (DEV_POSTGRES_URL / DEV_MYSQL_URL in .env).
 
 name: ucch-dev
 
@@ -13,10 +15,13 @@ services:
       POSTGRES_USER: ucch
       POSTGRES_PASSWORD: ucch
       POSTGRES_DB: ucch
+      # Read by deploy/postgres-init.sh on first boot only.
+      DEV_DB_PASSWORD: dev
     ports:
       - "55432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres-init.sh:/docker-entrypoint-initdb.d/10-dev-role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ucch -d ucch"]
       interval: 2s
@@ -25,7 +30,6 @@ services:
 
   mysql:
     image: mysql:8.4
-    profiles: [mysql]
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: dev
@@ -36,6 +40,13 @@ services:
       - "53306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
+      - ./deploy/mysql-init.sql:/docker-entrypoint-initdb.d/10-dev-grants.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -pdev --silent"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
 
 volumes:
   postgres-data:

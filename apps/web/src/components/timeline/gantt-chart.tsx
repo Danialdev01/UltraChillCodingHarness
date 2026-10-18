@@ -23,6 +23,8 @@ export const ROW_HEIGHT = 36
 export const HEADER_HEIGHT = 44
 
 const BAR_INSET = 8
+/** The progress strip along the bottom of each bar. */
+const PROGRESS_HEIGHT = 4
 const HANDLE_WIDTH = 8
 
 /** A bar being dragged: which task, by which part, and how far so far. */
@@ -263,11 +265,14 @@ export function GanttChart({
               onPointerMove={move}
               onPointerUp={(e) => end(e, task)}
             />
+            {/* Progress as a strip along the bottom rather than a fill under
+                the title: a solid fill put the label on a mid-tone it could
+                not reach 4.5:1 against. */}
             <rect
               x={x}
-              y={y}
+              y={y + barHeight - PROGRESS_HEIGHT}
               width={(barWidth * task.progress) / 100}
-              height={barHeight}
+              height={PROGRESS_HEIGHT}
               fill={fill}
               clipPath={`url(#bar-${task.id})`}
               pointerEvents="none"

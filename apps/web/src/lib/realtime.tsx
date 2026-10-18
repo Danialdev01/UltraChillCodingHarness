@@ -4,6 +4,13 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 import type { DomainEvent, LiveResource, PresenceViewer } from "@ucch/protocol"
 
+import {
+  agentStatus,
+  nextExpiry,
+  reduceActivity,
+  type ActivityState,
+  type AgentStatus,
+} from "@/lib/agent-activity"
 import { UcchClient, type ClientEvent } from "@/lib/client"
 import { TAB_ID, installTabHeader } from "@/lib/tab-id"
 
@@ -124,6 +131,65 @@ export function useProjectEvents(
   }, [client, projectId])
 
   return client
+}
+
+const TURN_EDGES: ReadonlySet<DomainEvent["type"]> = new Set([
+  "turn.started",
+  "agent.turn_completed",
+  "agent.turn_failed",
+])
+
+/**
+ * Whether each project's agent is working, done, or idle, for the sidebar.
+ *
+ * Watches every listed project quietly -- turn starts and ends still arrive,
+ * the token stream does not. `running` on each project is the page's own
+ * snapshot, used until the socket has something newer to say.
+ *
+ * `onStackChange` is called when a watched project's stack is detected
+ * afresh, so the caller can fetch the list again with its new icon.
+ */
+export function useAgentActivity(
+  projects: readonly { id: string; running?: boolean; failed?: boolean }[],
+  onStackChange?: () => void,
+): (project: { id: string; running?: boolean; failed?: boolean }) => AgentStatus {
+  const { client } = useRealtime()
+  const stackChanged = React.useRef(onStackChange)
+  stackChanged.current = onStackChange
+  const [state, setState] = React.useState<ActivityState>({})
+  const [now, setNow] = React.useState(() => Date.now())
+  const ids = projects.map((p) => p.id).join(",")
+
+  React.useEffect(() => {
+    if (!client || !ids) return
+    const watched = new Set(ids.split(","))
+    for (const projectId of watched) {
+      void client.subscribe({ name: "project", projectId, quiet: true }).catch(() => {})
+    }
+    return client.onEvent(({ event, projectId, receivedAt }) => {
+      if (!projectId || !watched.has(projectId)) return
+      // Fresh ones only: a subscribe replays history, and a stack detected
+      // last week is already in the list the page was rendered with.
+      if (event.type === "project.stack_detected" && Date.now() - receivedAt < 60_000) {
+        stackChanged.current?.()
+      }
+      if (!TURN_EDGES.has(event.type)) return
+      setState((current) => reduceActivity(current, projectId, event, receivedAt))
+      setNow(Date.now())
+    })
+  }, [client, ids])
+
+  // One timer for whichever done mark lapses first, so the row turns back
+  // without the sidebar re-rendering on a clock.
+  React.useEffect(() => {
+    const next = nextExpiry(state, now)
+    if (next === null) return
+    const timer = window.setTimeout(() => setNow(Date.now()), next - now)
+    return () => window.clearTimeout(timer)
+  }, [state, now])
+
+  return (project) =>
+    agentStatus(state[project.id], project.running === true, now, project.failed === true)
 }
 
 /** Everyone with the project open, and where. Includes this tab. */

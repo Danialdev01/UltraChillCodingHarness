@@ -31,6 +31,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { dropTable, truncateTable } from "@/lib/database-api"
 import { compactNumber } from "@/lib/stats-format"
 import { databaseHref, databasePathFromPath } from "@/lib/sections"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 import { cn } from "@/lib/utils"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
 
@@ -46,6 +47,7 @@ export function TablesColumn() {
   const { db, connection, tables, reloadTables } = useDb()
   const pathname = usePathname()
   const router = useTransitionRouter()
+  const ws = useWorkspaceHash()
   const current = databasePathFromPath(pathname)?.table ?? null
   const [filter, setFilter] = React.useState("")
   const [creating, setCreating] = React.useState(false)
@@ -60,7 +62,7 @@ export function TablesColumn() {
 
   async function drop(table: TableSummary) {
     await dropTable({ connectionId: connection.id, db }, table.name)
-    if (current === table.name) router.push(databaseHref(connection.id, db))
+    if (current === table.name) router.push(databaseHref(ws, connection.id, db))
     await reloadTables()
   }
 
@@ -78,7 +80,7 @@ export function TablesColumn() {
     >
       <div className="flex h-10 shrink-0 items-center gap-1 border-b pr-1.5 pl-3 text-sm">
         <TransitionLink
-          href={databaseHref(connection.id, db)}
+          href={databaseHref(ws, connection.id, db)}
           className="flex min-w-0 items-center gap-1.5 font-medium hover:underline"
           title={`${connection.name} · ${db}`}
         >
@@ -99,7 +101,7 @@ export function TablesColumn() {
       </div>
 
       <div className="border-b px-2 py-1.5">
-        <label className="bg-background text-muted-foreground focus-within:border-ring flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs">
+        <label className="bg-background text-muted-foreground border-input focus-within:border-ring focus-within:ring-2 focus-within:ring-ring flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs">
           <SearchIcon className="size-3.5 shrink-0" />
           <input
             value={filter}
@@ -143,7 +145,7 @@ export function TablesColumn() {
                 key={table.name}
                 table={table}
                 active={current === table.name}
-                href={databaseHref(connection.id, db, table.name)}
+                href={databaseHref(ws, connection.id, db, table.name)}
                 onEmpty={() => setEmptying(table)}
                 onDrop={() => setDropping(table)}
               />

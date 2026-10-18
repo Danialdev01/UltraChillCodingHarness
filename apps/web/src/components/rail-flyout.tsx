@@ -5,10 +5,11 @@ import { PreviewCard } from "@base-ui/react/preview-card"
 
 import { SectionPanel } from "@/components/section-panel"
 import { SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar"
-import type { Section } from "@/lib/sections"
+import { sectionEntry, type Section } from "@/lib/sections"
 import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { TransitionLink } from "@/lib/view-transitions"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 
 /**
  * A rail icon, and what it opens when the sidebar is collapsed.
@@ -43,6 +44,7 @@ export function RailItem({
   onOpenSidebar: () => void
 }) {
   const { state, isMobile } = useSidebar()
+  const ws = useWorkspaceHash()
   const collapsed = state === "collapsed"
   const [open, setOpen] = React.useState(false)
 
@@ -51,8 +53,8 @@ export function RailItem({
     <SidebarMenuButton
       isActive={isActive}
       onClick={onOpenSidebar}
-      className="px-2.5 md:px-2"
-      render={<TransitionLink href={section.href} />}
+      className="px-2"
+      render={<TransitionLink href={sectionEntry(section, ws)} />}
       // The rail is icon-width whether or not the sidebar is expanded, so the
       // label is never beside the icon and the tooltip always earns its place
       // -- `hidden: false` overrides the button's own collapsed-only rule.

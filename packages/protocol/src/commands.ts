@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { MessageImage, MessageMode, ProviderId } from "./events.js";
-import { PreviewHash } from "./ids.js";
+import { ProjectDatabase } from "./database.js";
+import { MessageImage, MessageMode, ProjectMode, ProviderId } from "./events.js";
+import { BranchName, PreviewHash, ThreadHash } from "./ids.js";
 
 /**
  * Commands are the only way a client changes anything.
@@ -26,6 +27,10 @@ const ProjectCreate = z.object({
   repoUrl: z.string().url().optional(),
   name: z.string().min(1).max(100).optional(),
   branch: z.string().optional(),
+  /** Development when absent. */
+  mode: ProjectMode.optional(),
+  /** A database to create on the shared dev server. Development projects only. */
+  database: ProjectDatabase.optional(),
 });
 
 const ProjectStart = z.object({
@@ -47,13 +52,28 @@ const ThreadCreate = z.object({
   type: z.literal("thread.create"),
   projectId: z.string().uuid(),
   title: z.string().max(200).optional(),
+  /**
+   * Whose subscription the thread runs on, when the workspace lets the
+   * starter choose (`either`). Ignored under a fixed policy.
+   */
+  credentialSource: z.enum(["member", "workspace"]).optional(),
+  /**
+   * Makes this a parallel project session: it gets its own git worktree on
+   * a new branch forked from this one. Absent, the thread shares the
+   * project's main folder.
+   */
+  baseBranch: BranchName.optional(),
 });
 
 /**
  * How hard a reasoning model should think before answering. Models that do
  * not reason ignore it, so it is safe to send either way.
+ *
+ * `xhigh` and `max` are Claude Code's levels above `high`; OpenRouter stops
+ * at `high`, and the native loop clamps to it. Under a CLI, `off` means "no
+ * flag": the CLI's own default for the model, not reasoning switched off.
  */
-export const ReasoningEffort = z.enum(["off", "low", "medium", "high"]);
+export const ReasoningEffort = z.enum(["off", "low", "medium", "high", "xhigh", "max"]);
 export type ReasoningEffort = z.infer<typeof ReasoningEffort>;
 
 /** Queues an agent turn. The turn itself runs in `AgentTurnReactor`. */
@@ -87,7 +107,10 @@ const ThreadSend = z.object({
    * to read, a browser agent for what the crawler cannot reach. On the
    * native loop that is the turn itself; on a CLI provider the pipeline runs
    * first, on OpenRouter, and its brief is handed to the CLI with the
-   * message. Allowed on any thread, bound or not.
+   * message. `documentation` runs the document pipeline: typed tools that
+   * read, edit, render and check PDF/DOCX/DOC files on the native loop, or
+   * the same rules and scripts prepended for a CLI provider. Allowed on any
+   * thread, bound or not.
    */
   mode: MessageMode.optional(),
 });
@@ -158,6 +181,14 @@ const TerminalCreate = z.object({
    * command string: the client picks a program, the server knows the argv.
    */
   program: z.enum(["shell", "claude-login", "codex-login"]).optional(),
+  /**
+   * A login program only: sign in the workspace's dedicated subscription
+   * rather than the caller's own. Must be the project's workspace, and the
+   * caller must be allowed to manage its credentials.
+   */
+  credentialWorkspaceId: z.string().uuid().optional(),
+  /** A project session's hash: the shell opens in that session's worktree. */
+  sessionHash: ThreadHash.optional(),
 });
 
 const TerminalInput = z.object({

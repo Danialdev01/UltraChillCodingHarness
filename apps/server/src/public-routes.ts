@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { mediaTypeFor } from "@ucch/protocol";
-import { PathError, type WorkspaceFiles } from "./files.js";
+import { isSecretPath, PathError, withoutSecrets, type WorkspaceFiles } from "./files.js";
 import type { GitService } from "./git.js";
 import type { NotesService } from "./notes.js";
 import type { UploadStore } from "./uploads.js";
@@ -79,7 +79,7 @@ export function registerPublicRoutes(app: FastifyInstance, deps: PublicRouteDeps
     const mediaType = mediaTypeFor(upload.name);
     if (!mediaType?.startsWith("image/")) return reply.code(404).send(notFound);
 
-    const file = await uploads.readBytes(project.id, request.params.id);
+    const file = await uploads.openStream(project.id, request.params.id);
     if (!file) return reply.code(404).send(notFound);
     return reply
       .header("content-type", mediaType)
@@ -87,13 +87,15 @@ export function registerPublicRoutes(app: FastifyInstance, deps: PublicRouteDeps
       .header("content-security-policy", "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox")
       .header("content-disposition", "inline")
       .header("cache-control", "public, max-age=300")
-      .send(file.bytes);
+      .header("content-length", file.size)
+      .send(file.stream);
   });
 
   app.get<{ Params: Slug }>("/api/public/:slug/files", async (request, reply) => {
     const project = await projectFor(request.params.slug);
     if (!project) return reply.code(404).send(notFound);
-    return files.tree(project.id);
+    const { tree, truncated } = await files.tree(project.id);
+    return { tree: withoutSecrets(tree), truncated };
   });
 
   app.get<{ Params: Slug; Querystring: { path?: string } }>("/api/public/:slug/file", async (request, reply) => {
@@ -101,6 +103,9 @@ export function registerPublicRoutes(app: FastifyInstance, deps: PublicRouteDeps
     if (!project) return reply.code(404).send(notFound);
     const path = request.query.path;
     if (!path) return reply.code(400).send({ error: "a path is required" });
+    // Answered as though it were not there, so a visitor cannot tell a
+    // project with a `.env` from one without.
+    if (isSecretPath(path)) return reply.code(404).send(notFound);
     try {
       const result = await files.read(project.id, path);
       switch (result.kind) {

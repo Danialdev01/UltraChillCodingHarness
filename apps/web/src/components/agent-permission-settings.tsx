@@ -4,6 +4,7 @@ import * as React from "react"
 import { CheckIcon, Loader2Icon, ShieldCheckIcon } from "lucide-react"
 import type { AgentPermissionMode } from "@ucch/protocol"
 
+import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
 const CHOICES: { id: AgentPermissionMode; label: string; hint: string }[] = [
@@ -123,10 +124,13 @@ export function AgentPermissionSettings() {
 
       {error ? (
         <p className="text-destructive mt-3 text-sm">{error}</p>
+      ) : current ? (
+        <p className="text-muted-foreground mt-3 max-w-prose text-sm">{current.hint}</p>
       ) : (
-        <p className="text-muted-foreground mt-3 max-w-prose text-sm">
-          {current?.hint ?? "Loading…"}
-        </p>
+        <div className="mt-3 flex max-w-prose flex-col gap-2 py-0.5">
+          <Skeleton className="h-3.5 w-full" />
+          <Skeleton className="h-3.5 w-2/3" />
+        </div>
       )}
     </section>
   )

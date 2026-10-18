@@ -1,4 +1,4 @@
-import type { DomainEvent } from "@ucch/protocol";
+import type { DomainEvent, MessageMode } from "@ucch/protocol";
 import { parseAttachments, type MessageAttachment } from "./attachments.js";
 
 /**
@@ -60,7 +60,7 @@ export interface ChatMessage {
    */
   attachments?: MessageAttachment[];
   /** How the message asked to be answered. Absent on an ordinary one. */
-  mode?: "research";
+  mode?: MessageMode;
   parts: MessagePart[];
   reasoning: string;
   /** True while the turn is open: no `turn_completed` and no `turn_failed`. */

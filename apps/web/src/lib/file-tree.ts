@@ -18,3 +18,29 @@ export function flattenTree(tree: readonly FileNode[]): string[] {
   walk(tree, "")
   return out
 }
+
+/** One row of the tree as a path from the project root, folders included. */
+export interface TreeEntry {
+  path: string
+  name: string
+  kind: "file" | "folder"
+}
+
+/**
+ * Every file and folder in the tree, depth-first.
+ *
+ * For the composer's `@` picker, where a folder is as good a thing to point
+ * the agent at as a file.
+ */
+export function flattenEntries(tree: readonly FileNode[]): TreeEntry[] {
+  const out: TreeEntry[] = []
+  const walk = (nodes: readonly FileNode[], parent: string) => {
+    for (const node of nodes) {
+      const path = parent ? `${parent}/${node.name}` : node.name
+      out.push({ path, name: node.name, kind: node.children ? "folder" : "file" })
+      if (node.children) walk(node.children, path)
+    }
+  }
+  walk(tree, "")
+  return out
+}

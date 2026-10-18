@@ -10,11 +10,11 @@ export function PresenceBadge({ others }: { others: readonly { clientId: string;
   return (
     <span
       className={
-        "flex items-center gap-1 text-[11px] " + (typing ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")
+        "flex items-center gap-1 text-[11px] " + (typing ? "text-warning" : "text-muted-foreground")
       }
       title="Changes made there appear here as they are saved. If you both edit at once, the later save is reverted."
     >
-      <span className={"size-1.5 rounded-full " + (typing ? "animate-pulse bg-amber-500" : "bg-emerald-500")} />
+      <span aria-hidden className={"size-1.5 rounded-full " + (typing ? "animate-pulse bg-warning" : "bg-success")} />
       {typing
         ? "Being edited in another window"
         : others.length === 1

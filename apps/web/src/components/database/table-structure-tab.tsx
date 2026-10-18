@@ -7,6 +7,7 @@ import { Identifier, type ColumnInfo, type IndexInfo, type TableDetail } from "@
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ColumnFormDialog, Flag, selectClass } from "@/components/database/column-form"
 import { errorText, useDb } from "@/components/database/db-context"
+import { CodeLinesSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -62,7 +63,7 @@ export function TableStructureTab({ detail, onChanged }: { detail: TableDetail; 
                 <TableRow key={column.name}>
                   <TableCell className="font-mono text-xs font-medium">
                     <span className="flex items-center gap-1.5">
-                      {column.primary && <KeyRoundIcon className="size-3 text-amber-500" aria-label="primary key" />}
+                      {column.primary && <KeyRoundIcon className="size-3 text-warning" aria-label="primary key" />}
                       {column.name}
                     </span>
                   </TableCell>
@@ -274,8 +275,8 @@ function CreateStatement({ table }: { table: string }) {
       </CollapsibleTrigger>
       <CollapsibleContent>
         {sql === null ? (
-          <div className="text-muted-foreground flex items-center gap-2 py-2 text-sm">
-            <Loader2Icon className="size-3.5 animate-spin" /> Loading
+          <div className="mt-2 rounded-lg border">
+            <CodeLinesSkeleton rows={6} />
           </div>
         ) : sql.error ? (
           <p role="alert" className="text-destructive py-2 text-sm">

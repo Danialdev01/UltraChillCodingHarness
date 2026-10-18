@@ -73,7 +73,7 @@ const COMPONENTS: Components = {
 
   strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
-  del: ({ children }) => <del className="opacity-70">{children}</del>,
+  del: ({ children }) => <del className="text-muted-foreground">{children}</del>,
 
   hr: () => <hr className="border-border my-4" />,
 

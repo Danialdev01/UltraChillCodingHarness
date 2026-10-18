@@ -12,6 +12,15 @@ const Env = z.object({
 
   DATABASE_URL: z.string().url(),
 
+  /**
+   * The shared servers projects' development databases are created on, as an
+   * account that may create databases and nothing more privileged. Either one
+   * unset makes that engine unavailable to new projects; empty counts as
+   * unset, because Compose passes an unset variable through as "".
+   */
+  DEV_POSTGRES_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
+  DEV_MYSQL_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
+
   /** Public root domain. All public URLs are derived from this. */
   ROOT_DOMAIN: z.string().default("ucch.localhost"),
   PUBLIC_SCHEME: z.enum(["http", "https"]).default("http"),
@@ -75,6 +84,19 @@ const Env = z.object({
   BROWSER_USE_API_URL: z.string().url().optional(),
 
   /**
+   * The document pipeline behind the composer's Documentation toggle.
+   *
+   * The kit -- scripts, templates, skills -- ships in `packages/agent/doc-kit`
+   * and is found from there unless moved. The interpreter is the one with
+   * python-docx, pypdf, pdfplumber and vl-convert installed (the image's
+   * venv). The vision model reads page renders and figures for
+   * `doc_inspect`, billed to the person's own key like search.
+   */
+  DOC_KIT_DIR: z.string().optional(),
+  DOC_PYTHON: z.string().default("python3"),
+  DOC_VISION_MODEL: z.string().default("google/gemini-2.5-flash"),
+
+  /**
    * The hard stop on the agent loop. A model that keeps calling tools without
    * ever answering costs money on every iteration, so the cap is a budget
    * bound as much as a liveness one; hitting it is reported as
@@ -114,6 +136,16 @@ const Env = z.object({
 
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
+
+  /**
+   * Who may sign in with GitHub, by login and by organisation membership
+   * (comma-separated, case-insensitive). Either list admits. With both
+   * empty, GitHub sign-in admits only accounts that already exist here:
+   * every account gets a shell, so "anyone with a GitHub account" is never
+   * the default.
+   */
+  GITHUB_ALLOWED_USERS: z.string().optional().transform(csvLower),
+  GITHUB_ALLOWED_ORGS: z.string().optional().transform(csvLower),
 
   /** 32-byte hex key for AES-256-GCM at-rest encryption of stored secrets. */
   SECRET_KEY: z.string().length(64).optional(),
@@ -157,6 +189,13 @@ const Env = z.object({
 
 export type Config = Readonly<z.infer<typeof Env>>;
 
+function csvLower(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 /** The origin the browser reaches the web app on. */
 export function webOrigin(config: Config): string {
   return config.PUBLIC_WEB_ORIGIN ?? `${config.PUBLIC_SCHEME}://${config.ROOT_DOMAIN}`;
@@ -174,8 +213,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   }
   const config = parsed.data;
 
-  if (config.DEV_AUTH_BYPASS && config.NODE_ENV === "production") {
-    throw new Error("DEV_AUTH_BYPASS must not be enabled in production");
+  // Checked against the environments that may have it rather than the one
+  // that may not: `NODE_ENV` defaults to development, so a server started
+  // outside the image with no `NODE_ENV` at all would otherwise come up open.
+  // The bypass has to be asked for in an environment that says what it is.
+  if (config.DEV_AUTH_BYPASS && source.NODE_ENV !== "development" && source.NODE_ENV !== "test") {
+    throw new Error("DEV_AUTH_BYPASS is only allowed when NODE_ENV is explicitly development or test");
   }
   // The server needs at least one way to authenticate somebody. Password
   // login, GitHub, or the development bypass all qualify; none of them does

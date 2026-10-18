@@ -1,4 +1,9 @@
-import type { AgentPermissionMode, CliProviderId, DomainEvent } from "@ucch/protocol";
+import type {
+  AgentPermissionMode,
+  CliProviderId,
+  DomainEvent,
+  ReasoningEffort,
+} from "@ucch/protocol";
 import type { ProcessHost } from "./process.js";
 
 /**
@@ -55,8 +60,19 @@ export interface ProviderRunInput {
   /** The provider's own session id from a previous turn, to resume. */
   resumeToken?: string;
   model?: string;
+  /**
+   * How hard the model thinks. `off` and absent both mean the CLI's own
+   * default. A provider that has no such setting ignores it.
+   */
+  effort?: ReasoningEffort;
   /** How much the CLI may do unasked. A provider that cannot ask ignores it. */
   permissionMode?: AgentPermissionMode;
+  /**
+   * The project's `.ucch/` knowledge, as the native loop is given it. Each
+   * provider hands it to its model the way its CLI allows: Claude Code as an
+   * appended system prompt, Codex ahead of a new session's first message.
+   */
+  instructions?: string;
 }
 
 /** What a person said to a CLI's permission prompt. */
@@ -84,6 +100,11 @@ export interface AgentRun {
 export interface ProviderModel {
   id: string;
   name: string;
+  /**
+   * The effort levels this model takes, lowest first. Absent when the
+   * provider passes none on, and the composer then offers no effort control.
+   */
+  efforts?: readonly ReasoningEffort[];
 }
 
 export interface AgentProvider {

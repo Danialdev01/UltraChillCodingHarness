@@ -3,6 +3,7 @@ import { cliProvidersEnabled, loadConfig, shellPluginEnabled, webOrigin } from "
 
 const base = {
   DATABASE_URL: "postgres://u:p@localhost:5432/ucch",
+  NODE_ENV: "test",
   DEV_AUTH_BYPASS: "true",
 };
 
@@ -100,5 +101,14 @@ describe("preview configuration", () => {
     expect(load().PUBLIC_PREVIEW_PORT).toBeUndefined();
     expect(load({ PUBLIC_PREVIEW_PORT: "3001" }).PUBLIC_PREVIEW_PORT).toBe(3001);
     expect(() => load({ PUBLIC_PREVIEW_PORT: "70000" })).toThrow(/PUBLIC_PREVIEW_PORT/);
+  });
+});
+
+describe("DEV_AUTH_BYPASS", () => {
+  it("is refused unless the environment says development or test", () => {
+    const { NODE_ENV: _, ...withoutEnv } = base;
+    expect(() => loadConfig(withoutEnv)).toThrow(/DEV_AUTH_BYPASS/);
+    expect(() => load({ NODE_ENV: "production" })).toThrow(/DEV_AUTH_BYPASS/);
+    expect(load({ NODE_ENV: "development" }).DEV_AUTH_BYPASS).toBe(true);
   });
 });

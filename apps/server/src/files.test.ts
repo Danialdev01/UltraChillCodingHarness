@@ -30,6 +30,10 @@ describe("resolve", () => {
     "with\0nul",
     "",
     ".",
+    ".git/config",
+    ".git/hooks/pre-commit",
+    "sub/.git/config",
+    ".GIT/config",
   ];
 
   it.each(refused)("refuses %j", (path) => {
@@ -136,7 +140,12 @@ describe("readBytes", () => {
 
     const result = await files.readBytes(PROJECT, "logo.png");
     expect(result.kind).toBe("file");
-    if (result.kind === "file") expect(result.bytes.equals(png)).toBe(true);
+    if (result.kind === "file") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of result.stream) chunks.push(chunk as Buffer);
+      expect(Buffer.concat(chunks).equals(png)).toBe(true);
+      expect(result.size).toBe(png.length);
+    }
   });
 
   it("reports what it will not serve", async () => {
@@ -221,6 +230,49 @@ describe("write", () => {
     await expect(files.write(PROJECT, "link.txt", "overwritten")).rejects.toThrow(PathError);
     expect(await readFile(join(outside, "target.txt"), "utf8")).toBe("original");
     await rm(outside, { recursive: true, force: true });
+  });
+});
+
+describe("symlinked parents", () => {
+  let outside: string;
+
+  beforeEach(async () => {
+    outside = await mkdtemp(join(tmpdir(), "ucch-outside-"));
+    // What a cloned repository can ship: a directory that is really elsewhere.
+    await symlink(outside, join(dir, "linked"));
+  });
+
+  afterEach(async () => {
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  it("refuses to write a new file under a symlinked directory", async () => {
+    await expect(files.write(PROJECT, "linked/new.txt", "x")).rejects.toThrow(PathError);
+    await expect(readFile(join(outside, "new.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("refuses to create a file or folder under one", async () => {
+    await expect(files.create(PROJECT, "linked/new.txt", "file")).rejects.toThrow(PathError);
+    await expect(files.create(PROJECT, "linked/deep/dir", "directory")).rejects.toThrow(PathError);
+  });
+
+  it("refuses to move a file into one", async () => {
+    await writeFile(join(dir, "a.txt"), "x");
+    await expect(files.move(PROJECT, "a.txt", "linked/a.txt")).rejects.toThrow(PathError);
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("x");
+  });
+
+  it("refuses to write through a dangling link", async () => {
+    await symlink(join(outside, "not-yet.txt"), join(dir, "dangling.txt"));
+    await expect(files.write(PROJECT, "dangling.txt", "x")).rejects.toThrow(PathError);
+    await expect(readFile(join(outside, "not-yet.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("still allows a symlink that stays inside the workspace", async () => {
+    await mkdir(join(dir, "real"));
+    await symlink(join(dir, "real"), join(dir, "alias"));
+    expect(await files.write(PROJECT, "alias/ok.txt", "x")).toBe("added");
+    expect(await readFile(join(dir, "real/ok.txt"), "utf8")).toBe("x");
   });
 });
 

@@ -3,28 +3,43 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import compress from "@fastify/compress";
 import cookie from "@fastify/cookie";
+import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
-import { desc, eq, inArray } from "drizzle-orm";
-import { createDatabase, projects, runMigrations, threads, users } from "@ucch/db";
+import { and, desc, eq, inArray, lt, notLike, sql } from "drizzle-orm";
+import { createDatabase, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
 import {
   AgentPermissionMode,
+  can,
   DEFAULT_AGENT_PERMISSION_MODE,
   MAX_AVATAR_BYTES,
   mediaTypeFor,
   projectUrl,
   ProviderId,
+  ThreadHash,
+  WorkspaceHash,
   type ChangeOrigin,
   type Command,
   type DomainEvent,
 } from "@ucch/protocol";
 import { HostProcessHost, createProviders } from "@ucch/providers";
 import { AgentTurnReactor } from "./agent.js";
+import { documentsBackends } from "./documents.js";
 import { researchBackends } from "./research.js";
-import { DIAGRAM_FILES, databaseDiagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
+import { DIAGRAM_FILES, diagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
 import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.js";
-import { ConflictError, PathError, StaleWriteError, WorkspaceFiles, contentVersion } from "./files.js";
+import { WorktreeReactor } from "./worktrees.js";
+import { sessionTreesOf, treeFor, type TreeTarget } from "./trees.js";
+import {
+  ConflictError,
+  PathError,
+  StaleWriteError,
+  WorkspaceFiles,
+  contentVersion,
+  isSecretPath,
+} from "./files.js";
 import { ProjectAccess } from "./access.js";
 import { AuditLog, textDelta, type AuditInput } from "./audit.js";
 import { ComposerStore } from "./composer.js";
@@ -42,7 +57,9 @@ import { TerminalReactor } from "./terminals.js";
 import { AuthService, DEV_USER_ID } from "./auth.js";
 import { EventBus } from "./bus.js";
 import { cliProvidersEnabled, loadConfig, shellPluginEnabled, webOrigin } from "./config.js";
-import { ProviderService } from "./providers.js";
+import { BASELINE_HEADERS, originAllowed } from "./http-guards.js";
+import { admitGithubUser } from "./github-admission.js";
+import { ProviderService, workspaceSubject } from "./providers.js";
 import { OrchestrationEngine, applyProjection, type Reactors } from "./engine.js";
 import { EventStore } from "./eventstore.js";
 import { WebSocketGateway } from "./ws.js";
@@ -55,10 +72,17 @@ import { registerTimelineRoutes } from "./timeline-routes.js";
 import { registerKeyRoutes } from "./keys-routes.js";
 import { ProjectKeyService } from "./keys.js";
 import { TimelineService } from "./timeline.js";
+import { TasksService } from "./tasks.js";
+import { registerTaskRoutes } from "./tasks-routes.js";
+import { TaskPipeline } from "./task-pipeline.js";
+import { TaskScheduler } from "./task-scheduler.js";
 import { registerDatabaseRoutes } from "./database-routes.js";
+import { WorkspaceMemberService } from "./workspace-members.js";
+import { registerWorkspaceMemberRoutes } from "./workspace-members-routes.js";
 import { registerDbManagerRoutes } from "./db-manager-routes.js";
 import { adapterFor } from "./db-manager/index.js";
 import { DatabaseConnectionService } from "./database-connections.js";
+import { devServersFromConfig, ensureProjectInfo, renderDefaultInfo } from "./dev-database.js";
 import { probe } from "./database-probe.js";
 import { GitService } from "./git.js";
 import { registerGitRoutes } from "./git-routes.js";
@@ -69,7 +93,14 @@ import {
   identify,
   listBranches,
   listRepos,
+  tokenAppliesTo,
 } from "./github.js";
+import {
+  SessionBusyError,
+  SessionLifecycle,
+  SessionUnsavedError,
+  type SessionRecord,
+} from "./session-lifecycle.js";
 import { cachedCatalogue, catalogue, keyQuota, type KeyQuota } from "./openrouter.js";
 import {
   fetchClaudeUsage,
@@ -172,6 +203,7 @@ const agentTurns = new AgentTurnReactor(
     maxIterations: config.AGENT_MAX_ITERATIONS,
     uploads,
     research: researchBackends(config),
+    documents: documentsBackends(config),
     // Decided once, at boot: in production the shell plugin loads only when
     // it has been asked for explicitly.
     registry: { allowHostShell: shellPluginEnabled(config) },
@@ -225,6 +257,8 @@ async function ownerCredentials(
  * have something real to read. Its events carry no thread, so they are
  * appended against the project alone.
  */
+const databaseConnections = new DatabaseConnectionService(db);
+
 const clones = new CloneReactor(
   async (event) => {
     await store.append({ projectId: event.projectId, threadId: null }, [event], (tx) =>
@@ -237,8 +271,45 @@ const clones = new CloneReactor(
     // about to run: a private repository needs the account's token, and an
     // empty one needs a name to make its first commit under.
     credentials: (event) => ownerCredentials(event.projectId),
+    devDatabases: devServersFromConfig(config),
+    // The new database shows up in the Database view with nothing to type.
+    // Named after the project, and skipped when the name is already saved, so
+    // a redelivered event does not list it twice.
+    registerConnection: async (event, server, name) => {
+      if (!config.SECRET_KEY) throw new Error("SECRET_KEY is not configured, so no password can be stored");
+      const label = `${event.name} (dev)`.slice(0, 80);
+      const existing = await databaseConnections.list(event.workspaceId);
+      if (existing.some((c) => c.name === label)) return;
+      await databaseConnections.create(
+        event.workspaceId,
+        {
+          name: label,
+          engine: server.engine,
+          host: server.host,
+          port: server.port,
+          username: server.username,
+          password: server.password,
+          database: name,
+        },
+        config.SECRET_KEY,
+      );
+    },
   },
   (error, event) => app.log.error({ err: error, projectId: event.projectId }, "clone failed"),
+);
+
+/**
+ * A git worktree for each project session, so sessions on the same project
+ * run side by side on branches of their own.
+ */
+const worktrees = new WorktreeReactor(
+  async (event, projectId) => {
+    await store.append({ projectId, threadId: event.threadId }, [event], (tx) =>
+      applyProjection(tx, [event], null),
+    );
+  },
+  { workspaceRoot: config.WORKSPACE_ROOT },
+  (error, event) => app.log.error({ err: error, threadId: event.threadId }, "worktree failed"),
 );
 
 /**
@@ -280,6 +351,7 @@ const reactors: Reactors = {
   react(command: Command, events, principal) {
     agentTurns.react(command, events);
     clones.react(command, events);
+    worktrees.react(command, events);
     terminals.react(command, principal.userId);
   },
 };
@@ -411,6 +483,18 @@ const preview = new PreviewGateway({
   secret: config.SECRET_KEY,
   resolve: (hash) => workspaceService.previewTarget(hash),
   target: (_project, port) => ({ hosts: ["127.0.0.1", "::1"], port }),
+  // Through the same path rules as the editor, so a static site reaches no
+  // file the owner could not open -- and not the ones a share must not show.
+  readStatic: async (project, path) => {
+    if (isSecretPath(path)) return { kind: "missing" };
+    try {
+      const file = await workspaceFiles.readBytes(project.id, path);
+      return file.kind === "too_large" ? { kind: "missing" } : file;
+    } catch (error) {
+      if (error instanceof PathError) return { kind: "missing" };
+      throw error;
+    }
+  },
   devBypass: config.DEV_AUTH_BYPASS,
   log: { error: (obj, msg) => app.log.error(obj, msg) },
 });
@@ -426,6 +510,65 @@ const app = Fastify({
 
 await app.register(cookie);
 
+// Behind Traefik the API's JSON -- file trees, diffs, thread history -- went
+// out uncompressed. Below a kilobyte the headers cost more than they save.
+await app.register(compress, { threshold: 1024 });
+
+// Every public page and the login form are reachable without a session, so
+// both are throttled per address: one guesses passwords, the other guesses
+// share slugs. Opt-in per route, so nothing signed-in is ever slowed down.
+app.addHook("onRoute", (route) => {
+  if (route.url.startsWith("/api/public/")) {
+    route.config = { ...(route.config as object), rateLimit: { max: 120, timeWindow: "1 minute" } };
+  }
+});
+await app.register(rateLimit, { global: false });
+
+const allowedOrigins = new Set([webOrigin(config), `${config.PUBLIC_SCHEME}://${config.ROOT_DOMAIN}`]);
+
+app.addHook("onRequest", async (request, reply) => {
+  if (!originAllowed(request.method, request.headers.origin, allowedOrigins, config.NODE_ENV !== "production")) {
+    return reply.code(403).send({ error: "cross-origin request refused" });
+  }
+});
+
+/**
+ * A viewer may read a project but change nothing in it. Every write under
+ * `/api/projects/:hash` -- files, notes, keys, tasks, git, preview -- passes
+ * here, so a route added later is covered without remembering to ask. A
+ * non-member is left to the route itself, which answers 404 as before.
+ */
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+app.addHook("preHandler", async (request, reply) => {
+  if (READ_METHODS.has(request.method)) return;
+  if (!request.routeOptions.url?.startsWith("/api/projects/:hash")) return;
+  const hash = (request.params as { hash?: string }).hash;
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal || !hash) return;
+  const project = await workspaceService.findByHash(hash, principal.userId);
+  if (project && !can(project.membership, "project.write")) {
+    return reply.code(403).send({ error: "your role in this workspace is read-only" });
+  }
+});
+
+app.addHook("onSend", async (_request, reply) => {
+  for (const [name, value] of Object.entries(BASELINE_HEADERS)) {
+    if (!reply.hasHeader(name)) reply.header(name, value);
+  }
+});
+
+// Fastify's default answer to a thrown error includes its message, which for
+// a 500 is whatever a driver or the filesystem said -- a path, a host, a SQL
+// fragment. Those belong in the log; the caller gets the status.
+app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
+  const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
+  if (status >= 500) {
+    request.log.error({ err: error }, "request failed");
+    return reply.code(status).send({ error: "internal server error" });
+  }
+  return reply.code(status).send({ error: error.message });
+});
+
 const SESSION_COOKIE = "ucch_session";
 const OAUTH_STATE_COOKIE = "ucch_oauth_state";
 const secureCookies = config.PUBLIC_SCHEME === "https";
@@ -438,6 +581,14 @@ if (recovered.length > 0) {
 uploads.startSweeper(15 * 60_000, (error) =>
   app.log.error({ err: error }, "could not sweep staged uploads"),
 );
+
+// Expired sessions were only removed when someone presented one; a session
+// nobody uses again would otherwise sit in the table forever.
+setInterval(() => {
+  auth.sweepExpiredSessions().catch((error) =>
+    app.log.error({ err: error }, "could not sweep expired sessions"),
+  );
+}, 60 * 60_000).unref();
 
 /**
  * Raw bytes for an upload.
@@ -621,16 +772,93 @@ app.post("/api/workspaces", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
 
-  const parsed = z.object({ name: z.string().trim().min(1).max(60) }).safeParse(request.body);
+  const parsed = z
+    .object({
+      name: z.string().trim().min(1).max(60),
+      kind: z.enum(["project", "session"]).default("project"),
+    })
+    .safeParse(request.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: "a workspace name of 1-60 characters is required" });
   }
 
-  const created = await workspaceService.create(principal.userId, parsed.data.name);
+  const created = await workspaceService.create(
+    principal.userId,
+    parsed.data.name,
+    parsed.data.kind,
+  );
   if ("conflict" in created) {
     return reply.code(409).send({ error: "too many workspaces with a similar name" });
   }
   return reply.code(201).send(created);
+});
+
+/**
+ * Raster only: an SVG data URL is harmless in an <img>, but nothing stops a
+ * later change from rendering it some other way. The browser rasterises
+ * uploads before sending, so this only turns away hand-made requests.
+ */
+const WorkspaceLogo = z
+  .string()
+  .max(64 * 1024)
+  .regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/);
+
+/** One workspace by its web address, for `/{hash}`. Not a member reads as not found. */
+app.get<{ Params: { hash: string } }>("/api/workspaces/by-hash/:hash", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  if (!WorkspaceHash.safeParse(request.params.hash).success) {
+    return reply.code(404).send({ error: "workspace not found" });
+  }
+  const workspace = await workspaceService.findWorkspaceByHash(request.params.hash, principal.userId);
+  if (!workspace) return reply.code(404).send({ error: "workspace not found" });
+  return workspace;
+});
+
+app.patch<{ Params: { id: string } }>("/api/workspaces/:id", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const parsed = z
+    .object({
+      name: z.string().trim().min(1).max(60).optional(),
+      archived: z.boolean().optional(),
+      logo: WorkspaceLogo.nullable().optional(),
+    })
+    .safeParse(request.body);
+  if (!parsed.success) {
+    const logoIssue = parsed.error.issues.some((issue) => issue.path[0] === "logo");
+    return reply.code(400).send({
+      error: logoIssue
+        ? "the logo must be a PNG, JPEG or WebP image under 64 KB"
+        : "a workspace name of 1-60 characters is required",
+    });
+  }
+
+  const updated = await workspaceService.update(request.params.id, principal.userId, parsed.data);
+  if (!updated) return reply.code(404).send({ error: "workspace not found" });
+  return updated;
+});
+
+/**
+ * Only an empty workspace can be deleted; one with projects is archived.
+ * The menu offers whichever applies, and this refuses the other.
+ */
+app.delete<{ Params: { id: string } }>("/api/workspaces/:id", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const result = await workspaceService.deleteWorkspace(request.params.id, principal.userId);
+  if ("error" in result) {
+    if (result.error === "not_empty") {
+      return reply.code(409).send({ error: "workspace is not empty -- archive it instead" });
+    }
+    if (result.error === "forbidden") {
+      return reply.code(403).send({ error: "only the owner can delete a workspace" });
+    }
+    return reply.code(404).send({ error: "workspace not found" });
+  }
+  return reply.code(204).send();
 });
 
 app.get<{ Params: { id: string } }>("/api/workspaces/:id/projects", async (request, reply) => {
@@ -692,6 +920,24 @@ app.get<{ Params: { id: string } }>("/api/workspaces/:id/storage", async (reques
   return storage;
 });
 
+/**
+ * The manage page's figures for one project: what its turns were billed and
+ * what its directory occupies. Together because the page shows them side by
+ * side; the walk is one directory, not a workspace's worth.
+ */
+app.get<{ Params: { hash: string } }>("/api/projects/:hash/stats", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  const [usage, storageBytes] = await Promise.all([
+    workspaceService.projectUsage(project.id),
+    storageService.projectBytes(project.id),
+  ]);
+  return { ...usage, storageBytes };
+});
+
 app.get<{ Params: { hash: string } }>("/api/projects/:hash", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
@@ -724,7 +970,23 @@ function withPreviewUrls<T extends ProjectSummary>(
   };
 }
 
-const PreviewPortBody = z.object({ port: z.number().int().min(1024).max(65535).nullable() });
+const PreviewPortBody = z.object({
+  port: z.number().int().min(1024).max(65535).nullable(),
+  /** Present for a static site: the folder it is served from, "" for the root. */
+  staticDir: z.string().max(512).nullable().optional(),
+});
+
+/** The subdomain a static site gets when the project has no port of its own yet. */
+const STATIC_PREVIEW_PORT = 8080;
+
+/** A static site's folder as stored: relative, normalized, without slashes at either end. */
+function staticPreviewDir(projectId: string, input: string): string {
+  const trimmed = input.trim().replace(/^[\\/]+|[\\/]+$/g, "");
+  if (trimmed === "" || trimmed === ".") return "";
+  // Throws a PathError for anything outside the tree or inside `.git`.
+  workspaceFiles.resolve(projectId, trimmed);
+  return trimmed.split(/[\\/]+/).filter((part) => part && part !== ".").join("/");
+}
 
 app.put<{ Params: { hash: string } }>("/api/projects/:hash/preview", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
@@ -735,11 +997,31 @@ app.put<{ Params: { hash: string } }>("/api/projects/:hash/preview", async (requ
     return reply.code(400).send({ error: "a port between 1024 and 65535, or null, is required" });
   }
 
-  const project = await workspaceService.setPreviewPort(
-    request.params.hash,
-    principal.userId,
-    parsed.data.port,
-  );
+  const existing = await workspaceService.findByHash(request.params.hash, principal.userId);
+  if (!existing) return reply.code(404).send({ error: "project not found" });
+
+  let staticDir: string | null = null;
+  let port = parsed.data.port;
+  if (parsed.data.staticDir != null) {
+    try {
+      staticDir = staticPreviewDir(existing.id, parsed.data.staticDir);
+    } catch (error) {
+      if (error instanceof PathError) return reply.code(400).send({ error: error.message });
+      throw error;
+    }
+    const folder = await workspaceFiles.read(existing.id, staticDir || ".").catch(() => null);
+    if (staticDir !== "" && folder?.kind !== "directory") {
+      return reply.code(400).send({ error: `there is no folder ${staticDir} in the project` });
+    }
+    // The subdomain still names a port, so the address and the preview
+    // cookie work as they do for a dev server; nothing has to listen on it.
+    port ??= existing.previewPort ?? STATIC_PREVIEW_PORT;
+  }
+
+  const project = await workspaceService.setPreview(request.params.hash, principal.userId, {
+    port,
+    staticDir,
+  });
   if (!project) return reply.code(404).send({ error: "project not found" });
   preview.invalidate(request.params.hash);
   return withPreviewUrls(project);
@@ -750,12 +1032,25 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/preview/status", asyn
   const project = await projectFor(request);
   if (!project) return reply.code(404).send({ error: "project not found" });
   if (!project.previewPort) return reply.code(404).send({ error: "no preview port set" });
-  const listening = await preview.listening(
-    { id: project.id, userId: "", previewPort: project.previewPort },
-    project.previewPort,
-  );
-  return { port: project.previewPort, listening };
+  const target = {
+    id: project.id,
+    userId: "",
+    previewPort: project.previewPort,
+    previewStaticDir: project.previewStaticDir,
+  };
+  // For a static site "listening" means there is a page at its root.
+  const listening =
+    project.previewStaticDir != null
+      ? await preview.hasStaticIndex(target)
+      : await preview.listening(target, project.previewPort);
+  return { port: project.previewPort, staticDir: project.previewStaticDir, listening };
 });
+
+/** Where a project opens in the web app: `/{ws}/s/{hash}` or `/{ws}/p/{hash}`. */
+function webPathOf(project: ProjectSummary): string {
+  if (!project.workspaceHash) return `/${project.hash}`;
+  return `/${project.workspaceHash}/${project.workspaceKind === "session" ? "s" : "p"}/${project.hash}`;
+}
 
 /**
  * The shareable entry point, `/{hash}/preview[/rest]` on the web app, which
@@ -773,7 +1068,7 @@ async function openPreview(
   const project = await workspaceService.findByHash(request.params.hash, principal.userId);
   if (!project) return reply.code(404).send({ error: "project not found" });
   if (!project.previewPort) {
-    return reply.redirect(`${webOrigin(config)}/${project.hash}?preview=setup`);
+    return reply.redirect(`${webOrigin(config)}${webPathOf(project)}?preview=setup`);
   }
 
   const ticket = preview.issueTicket({
@@ -799,6 +1094,25 @@ app.get("/api/projects/:hash/preview/open/*", openPreview);
  * The client confirms by typing the project's name -- this is unrecoverable,
  * and the log it deletes is the only record of the work.
  */
+/** Renames a project -- a session's title, set from its first message. */
+app.patch<{ Params: { hash: string } }>("/api/projects/:hash", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const parsed = z.object({ name: z.string().trim().min(1).max(100) }).safeParse(request.body);
+  if (!parsed.success) {
+    return reply.code(400).send({ error: "a name of 1-100 characters is required" });
+  }
+
+  const project = await workspaceService.renameProject(
+    request.params.hash,
+    principal.userId,
+    parsed.data.name,
+  );
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  return { id: project.id, hash: project.hash, name: project.name };
+});
+
 app.delete<{ Params: { hash: string } }>("/api/projects/:hash", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
@@ -810,6 +1124,9 @@ app.delete<{ Params: { hash: string } }>("/api/projects/:hash", async (request, 
         .code(409)
         .send({ error: "a turn is still running in this project -- stop it, then delete" });
     }
+    if (result.error === "forbidden") {
+      return reply.code(403).send({ error: "only a workspace admin can delete a project" });
+    }
     return reply.code(404).send({ error: "project not found" });
   }
 
@@ -820,6 +1137,9 @@ app.delete<{ Params: { hash: string } }>("/api/projects/:hash", async (request, 
   const workspace = join(config.WORKSPACE_ROOT, result.projectId);
   try {
     await rm(workspace, { recursive: true, force: true });
+    // Its sessions' worktrees live beside it, and go with it. Their
+    // branches were in the repository just removed.
+    await rm(sessionTreesOf(config.WORKSPACE_ROOT, result.projectId), { recursive: true, force: true });
     // Staging is outside the workspace, so removing the tree does not take
     // it: an attachment nobody placed would otherwise outlive its project.
     await uploads.discardAll(result.projectId);
@@ -921,6 +1241,29 @@ async function projectFor(
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return null;
   return workspaceService.findByHash(request.params.hash, principal.userId);
+}
+
+/**
+ * The tree a project request works on. `?session={threadHash}` names a
+ * project session, whose files are its own worktree; without one it is the
+ * project's checkout. A session of another project is null, never a
+ * fallback to somebody else's tree.
+ */
+async function sessionTarget(
+  request: { query?: unknown },
+  project: ProjectSummary,
+): Promise<TreeTarget | null> {
+  const query = request.query as { session?: unknown } | undefined;
+  const session = typeof query?.session === "string" ? query.session : null;
+  if (!session) return project.id;
+  if (!ThreadHash.safeParse(session).success) return null;
+  const [thread] = await db
+    .select({ projectId: threads.projectId, hash: threads.hash, worktreeState: threads.worktreeState })
+    .from(threads)
+    .where(and(eq(threads.hash, session), eq(threads.projectId, project.id)))
+    .limit(1);
+  if (!thread) return null;
+  return { projectId: project.id, tree: treeFor(config.WORKSPACE_ROOT, project.id, thread) };
 }
 
 /** The browser tab a request came from, as the web app's fetch stamps it. */
@@ -1048,6 +1391,88 @@ async function announceFileChange(
 }
 
 const gitService = new GitService(config.WORKSPACE_ROOT);
+
+/**
+ * Removing project sessions: settled by hand (their work pushed first), or
+ * swept away for having nothing in them. See `session-lifecycle.ts`.
+ */
+const sessionLifecycle = new SessionLifecycle({
+  git: gitService,
+  workspaceRoot: config.WORKSPACE_ROOT,
+  turnCount: async (threadId) => {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(turns)
+      .where(eq(turns.threadId, threadId));
+    return row?.count ?? 0;
+  },
+  deleteThread: async (threadId) => {
+    await db.delete(threads).where(eq(threads.id, threadId));
+  },
+  // The same token the push route uses: the owner's, and only for a host it
+  // belongs to.
+  credentials: async (projectId) => {
+    const [credentials, url] = await Promise.all([ownerCredentials(projectId), gitService.remoteUrl(projectId)]);
+    return { token: url && tokenAppliesTo(url) ? credentials.token : null, author: credentials.author };
+  },
+  announce: async (projectId, event) => {
+    await store
+      .append({ projectId, threadId: null }, [event])
+      .catch((error) => app.log.error({ err: error }, "could not announce a removed session"));
+  },
+  onCleanupError: (error, session) =>
+    app.log.error({ err: error, threadId: session.id }, "could not remove a session's worktree"),
+});
+
+const SESSION_COLUMNS = {
+  id: threads.id,
+  projectId: threads.projectId,
+  hash: threads.hash,
+  title: threads.title,
+  status: threads.status,
+  branch: threads.branch,
+  baseBranch: threads.baseBranch,
+  worktreeState: threads.worktreeState,
+};
+
+/** How old an empty session has to be before the sweep takes it. */
+const EMPTY_SESSION_AGE_MS = 30 * 60_000;
+
+/**
+ * Empty project sessions nobody is looking at, removed. Leaving a session
+ * removes it at once (the web app asks); this catches the ones left behind
+ * by a closed tab. Only project workspaces' threads, never the Tasks
+ * board's, never one with a turn, never one someone has open -- and each is
+ * inspected again before it goes, so an edit made meanwhile keeps it.
+ */
+async function sweepEmptySessions(): Promise<void> {
+  const candidates: SessionRecord[] = await db
+    .select(SESSION_COLUMNS)
+    .from(threads)
+    .innerJoin(projects, eq(projects.id, threads.projectId))
+    .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+    .where(
+      and(
+        eq(workspaces.kind, "project"),
+        eq(threads.status, "idle"),
+        lt(threads.createdAt, new Date(Date.now() - EMPTY_SESSION_AGE_MS)),
+        notLike(threads.title, "Task: %"),
+        notLike(threads.title, "Verify: %"),
+        sql`not exists (select 1 from ${turns} where ${turns.threadId} = ${threads.id})`,
+      ),
+    )
+    .limit(200);
+  for (const session of candidates) {
+    if (presence.list(session.projectId).some((v) => v.location === `thread:${session.id}`)) continue;
+    await sessionLifecycle
+      .removeIfEmpty(session)
+      .catch((error) => app.log.error({ err: error, threadId: session.id }, "could not sweep a session"));
+  }
+}
+
+setInterval(() => {
+  sweepEmptySessions().catch((error) => app.log.error({ err: error }, "could not sweep empty sessions"));
+}, 5 * 60_000).unref();
 const notesService = new NotesService(db);
 
 registerNoteRoutes(app, {
@@ -1076,21 +1501,107 @@ registerTimelineRoutes(app, {
   },
 });
 
+/**
+ * The Tasks board. A card in Research, Ongoing or Verification is carried
+ * by the pipeline, in chat threads of the project under the owner's name;
+ * the scheduler moves Idea cards to Research on the board's own schedule.
+ */
+const tasksService = new TasksService(db);
+const interruptedTasks = await tasksService.recoverInterrupted();
+if (interruptedTasks > 0) app.log.info({ count: interruptedTasks }, "marked interrupted tasks as failed");
+
+const announceTask = async (projectId: string, task: { id: string; updatedAt: string }) => {
+  await store
+    .append({ projectId, threadId: null }, [
+      { type: "task.changed", projectId, taskId: task.id, change: "updated", updatedAt: task.updatedAt },
+    ])
+    .catch((error) => app.log.error({ err: error }, "could not announce a task change"));
+};
+
+const taskPipeline = new TaskPipeline({
+  tasks: tasksService,
+  dispatch: (principal, command) => engine.dispatch(principal, command),
+  bus,
+  agent: agentTurns,
+  ownerOf: async (projectId) => {
+    const [row] = await db
+      .select({ userId: users.id, defaultProvider: users.defaultProvider })
+      .from(projects)
+      .innerJoin(users, eq(users.id, projects.userId))
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    return row ?? null;
+  },
+  announce: announceTask,
+  onError: (error, context) => app.log.error({ err: error }, context),
+});
+
+registerTaskRoutes(app, {
+  projectFor,
+  originOf,
+  audit: (input) => audit.record(input),
+  tasks: tasksService,
+  pipeline: taskPipeline,
+  uploads,
+  announce: async (event) => {
+    await store
+      .append({ projectId: event.projectId, threadId: null }, [event])
+      .catch((error) => app.log.error({ err: error }, "could not announce a task change"));
+  },
+});
+
+const taskScheduler = new TaskScheduler({
+  tasks: tasksService,
+  quotaFor: async (userId, provider) => (await sessionQuotasFor(userId))[provider],
+  defaultProviderOf: async (userId) => {
+    const [row] = await db
+      .select({ provider: users.defaultProvider })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return row?.provider ?? null;
+  },
+  enqueue: (projectId, taskId) => taskPipeline.enqueue(projectId, taskId),
+  announce: announceTask,
+  onError: (error) => app.log.error({ err: error }, "task auto-run failed"),
+});
+taskScheduler.start();
+
 registerKeyRoutes(app, {
   projectFor,
   keys: config.SECRET_KEY ? new ProjectKeyService(db, config.SECRET_KEY) : null,
 });
 
-const databaseConnections = new DatabaseConnectionService(db);
-
 registerDatabaseRoutes(app, {
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
-  workspaceOwnedBy: (workspaceId, userId) => workspaceService.ownedBy(workspaceId, userId),
+  workspaceAllows: (workspaceId, userId, permission) =>
+    workspaceService.allows(workspaceId, userId, permission),
   connections: databaseConnections,
   secretKey: config.SECRET_KEY,
   probe,
   adapterFor,
 });
+
+registerWorkspaceMemberRoutes(app, {
+  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  members: new WorkspaceMemberService(db, workspaceService, config.SECRET_KEY),
+  credentialsChanged: (workspaceId) => providerService.invalidate(workspaceSubject(workspaceId)),
+});
+
+/**
+ * The credential subject a provider route acts on: the caller's own, or --
+ * with `?workspace=<id>` -- that workspace's dedicated subscription, which
+ * any member may look at and only an admin may change.
+ */
+async function providerSubject(
+  userId: string,
+  workspaceId: string | undefined,
+  permission: "workspace.view" | "credentials.manage",
+): Promise<string | null> {
+  if (!workspaceId) return userId;
+  if (!z.string().uuid().safeParse(workspaceId).success) return null;
+  return (await workspaceService.allows(workspaceId, userId, permission)) ? workspaceSubject(workspaceId) : null;
+}
 
 registerDbManagerRoutes(app, {
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
@@ -1139,9 +1650,10 @@ registerPublicRoutes(app, {
 
 registerGitRoutes(app, {
   projectFor,
+  treeFor: sessionTarget,
   git: gitService,
   credentialsFor: ownerCredentials,
-  remoteAdded: (projectId, url) => workspaceService.setRepoUrl(projectId, url),
+  remoteChanged: (projectId, url) => workspaceService.setRepoUrl(projectId, url),
   announce: async (projectId, events) => {
     await store
       .append({ projectId, threadId: null }, events)
@@ -1159,7 +1671,9 @@ function fileFailure(error: unknown, reply: { code(status: number): { send(body:
 app.get<{ Params: { hash: string } }>("/api/projects/:hash/files", async (request, reply) => {
   const project = await projectFor(request);
   if (!project) return reply.code(404).send({ error: "project not found" });
-  return workspaceFiles.tree(project.id);
+  const tree = await sessionTarget(request, project);
+  if (!tree) return reply.code(404).send({ error: "session not found" });
+  return workspaceFiles.tree(tree);
 });
 
 app.get<{ Params: { hash: string }; Querystring: { path?: string } }>(
@@ -1167,10 +1681,12 @@ app.get<{ Params: { hash: string }; Querystring: { path?: string } }>(
   async (request, reply) => {
     const project = await projectFor(request);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const tree = await sessionTarget(request, project);
+    if (!tree) return reply.code(404).send({ error: "session not found" });
     if (!request.query.path) return reply.code(400).send({ error: "a path is required" });
 
     try {
-      const result = await workspaceFiles.read(project.id, request.query.path);
+      const result = await workspaceFiles.read(tree, request.query.path);
       switch (result.kind) {
         case "text":
           return { path: request.query.path, content: result.content, version: result.version };
@@ -1220,13 +1736,15 @@ app.get<{ Params: { hash: string }; Querystring: { path?: string } }>(
   async (request, reply) => {
     const project = await projectFor(request);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const tree = await sessionTarget(request, project);
+    if (!tree) return reply.code(404).send({ error: "session not found" });
     if (!request.query.path) return reply.code(400).send({ error: "a path is required" });
 
     const mediaType = mediaTypeFor(request.query.path);
     if (!mediaType) return reply.code(415).send({ error: "this file cannot be previewed" });
 
     try {
-      const result = await workspaceFiles.readBytes(project.id, request.query.path);
+      const result = await workspaceFiles.readBytes(tree, request.query.path);
       switch (result.kind) {
         case "missing":
           return reply.code(404).send({ error: "file not found" });
@@ -1248,7 +1766,8 @@ app.get<{ Params: { hash: string }; Querystring: { path?: string } }>(
             // The workspace is mutable and per-user: a cached preview would
             // survive the agent rewriting the file underneath it.
             .header("cache-control", "private, no-store")
-            .send(result.bytes);
+            .header("content-length", result.size)
+            .send(result.stream);
       }
     } catch (error) {
       return fileFailure(error, reply);
@@ -1266,6 +1785,8 @@ const FileWrite = z.object({
 app.put<{ Params: { hash: string } }>("/api/projects/:hash/file", async (request, reply) => {
   const project = await projectFor(request);
   if (!project) return reply.code(404).send({ error: "project not found" });
+  const tree = await sessionTarget(request, project);
+  if (!tree) return reply.code(404).send({ error: "session not found" });
 
   const parsed = FileWrite.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "a path and content are required" });
@@ -1274,9 +1795,9 @@ app.put<{ Params: { hash: string } }>("/api/projects/:hash/file", async (request
   const { path, content, ifVersion } = parsed.data;
   // What it held before, for how much this save changed. Read before the
   // write, best-effort: a file that cannot be read is simply "new".
-  const before = await workspaceFiles.read(project.id, path).catch(() => null);
+  const before = await workspaceFiles.read(tree, path).catch(() => null);
   try {
-    const change = await workspaceFiles.write(project.id, path, content, ifVersion);
+    const change = await workspaceFiles.write(tree, path, content, ifVersion);
     await announceFileChange(project.id, path, change, origin);
     void audit.record({
       projectId: project.id,
@@ -1339,12 +1860,12 @@ async function runDiagramJob(project: ProjectSummary, kind: DiagramKind): Promis
     const outcome = await agentTurns.generateFromCodebase({
       projectId: project.id,
       stack: project.stack,
-      ask: databaseDiagramAsk(),
+      ask: diagramAsk(kind),
       signal: controller.signal,
     });
-    const source = extractMermaid(outcome.text);
+    const source = extractMermaid(outcome.text, kind);
     const path = DIAGRAM_FILES[kind];
-    const change = await workspaceFiles.write(project.id, path, source);
+    const change = await workspaceFiles.write(tree, path, source);
     await announceFileChange(project.id, path, change);
     return { state: "done", path, source, model: outcome.model };
   } catch (error) {
@@ -1363,6 +1884,8 @@ app.post<{ Params: { hash: string; kind: string } }>(
   async (request, reply) => {
     const project = await projectFor(request);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const tree = await sessionTarget(request, project);
+    if (!tree) return reply.code(404).send({ error: "session not found" });
     const { kind } = request.params;
     if (!isDiagramKind(kind)) return reply.code(400).send({ error: "that diagram cannot be generated yet" });
     const key = `${project.id}:${kind}`;
@@ -1380,6 +1903,8 @@ app.get<{ Params: { hash: string; kind: string } }>(
   async (request, reply) => {
     const project = await projectFor(request);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const tree = await sessionTarget(request, project);
+    if (!tree) return reply.code(404).send({ error: "session not found" });
     if (!isDiagramKind(request.params.kind)) {
       return reply.code(400).send({ error: "that diagram cannot be generated yet" });
     }
@@ -1395,12 +1920,14 @@ const FileCreate = z.object({
 app.post<{ Params: { hash: string } }>("/api/projects/:hash/file", async (request, reply) => {
   const project = await projectFor(request);
   if (!project) return reply.code(404).send({ error: "project not found" });
+  const tree = await sessionTarget(request, project);
+  if (!tree) return reply.code(404).send({ error: "session not found" });
 
   const parsed = FileCreate.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "a path and a kind are required" });
 
   try {
-    await workspaceFiles.create(project.id, parsed.data.path, parsed.data.kind);
+    await workspaceFiles.create(tree, parsed.data.path, parsed.data.kind);
     const origin = await originOf(request);
     // A new directory holds nothing, so there is no file to announce.
     if (parsed.data.kind === "file") await announceFileChange(project.id, parsed.data.path, "added", origin);
@@ -1424,10 +1951,12 @@ app.delete<{ Params: { hash: string }; Querystring: { path?: string } }>(
   async (request, reply) => {
     const project = await projectFor(request);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const tree = await sessionTarget(request, project);
+    if (!tree) return reply.code(404).send({ error: "session not found" });
     if (!request.query.path) return reply.code(400).send({ error: "a path is required" });
 
     try {
-      const removed = await workspaceFiles.remove(project.id, request.query.path);
+      const removed = await workspaceFiles.remove(tree, request.query.path);
       if (!removed) return reply.code(404).send({ error: "file not found" });
       const origin = await originOf(request);
       await announceFileChange(project.id, request.query.path, "deleted", origin);
@@ -1455,12 +1984,14 @@ const FileMove = z.object({
 app.patch<{ Params: { hash: string } }>("/api/projects/:hash/file", async (request, reply) => {
   const project = await projectFor(request);
   if (!project) return reply.code(404).send({ error: "project not found" });
+  const tree = await sessionTarget(request, project);
+  if (!tree) return reply.code(404).send({ error: "session not found" });
 
   const parsed = FileMove.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "a from and a to path are required" });
 
   try {
-    const moved = await workspaceFiles.move(project.id, parsed.data.from, parsed.data.to);
+    const moved = await workspaceFiles.move(tree, parsed.data.from, parsed.data.to);
     if (!moved) return reply.code(404).send({ error: "file not found" });
     // A move is a departure and an arrival to everyone else: the two events
     // that already exist say exactly that, so there is no third kind.
@@ -1635,7 +2166,7 @@ app.get<{ Params: { hash: string; id: string }; Querystring: { download?: string
       return reply.code(415).send({ error: "this attachment cannot be previewed" });
     }
 
-    const file = await uploads.readBytes(project.id, request.params.id);
+    const file = await uploads.openStream(project.id, request.params.id);
     if (!file) return reply.code(404).send({ error: "that upload is no longer staged" });
 
     return reply
@@ -1648,7 +2179,8 @@ app.get<{ Params: { hash: string; id: string }; Querystring: { download?: string
       .header("content-disposition", download ? contentDisposition(upload.name) : "inline")
       // Staging is per-user and expires; a cached copy would outlive it.
       .header("cache-control", "private, no-store")
-      .send(file.bytes);
+      .header("content-length", file.size)
+      .send(file.stream);
   },
 );
 
@@ -1791,14 +2323,20 @@ const sessionQuotaCache = new Map<string, { at: number; quotas: SessionQuotas }>
 app.get("/api/account/quotas", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  return sessionQuotasFor(principal.userId);
+});
 
-  const cached = sessionQuotaCache.get(principal.userId);
+/**
+ * One account's usage of each provider, through the same minute-long cache
+ * the meters read -- the Tasks board's auto-run checks it before starting.
+ */
+async function sessionQuotasFor(userId: string): Promise<SessionQuotas> {
+  const cached = sessionQuotaCache.get(userId);
   if (cached && Date.now() - cached.at < QUOTA_TTL_MS) return cached.quotas;
 
-  const userId = principal.userId;
   const checkedAt = new Date().toISOString();
   const failed = (provider: ProviderId, error: unknown): SessionQuota => {
-    request.log.warn({ err: error, provider }, "session quota lookup failed");
+    app.log.warn({ err: error, provider }, "session quota lookup failed");
     return { provider, status: "unavailable", error: error instanceof Error ? error.message : String(error) };
   };
 
@@ -1856,7 +2394,7 @@ app.get("/api/account/quotas", async (request, reply) => {
   };
   sessionQuotaCache.set(userId, { at: Date.now(), quotas });
   return quotas;
-});
+}
 
 app.get("/api/settings", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
@@ -2052,9 +2590,11 @@ app.put("/api/settings/default-model", async (request, reply) => {
  * Probed through the CLIs themselves, cached briefly; `?fresh=1` after a
  * sign-in forces another look.
  */
-app.get<{ Querystring: { fresh?: string } }>("/api/providers", async (request, reply) => {
+app.get<{ Querystring: { fresh?: string; workspace?: string } }>("/api/providers", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const subject = await providerSubject(principal.userId, request.query.workspace, "workspace.view");
+  if (!subject) return reply.code(404).send({ error: "workspace not found" });
 
   const [row] = await db
     .select({ defaultProvider: users.defaultProvider })
@@ -2062,7 +2602,7 @@ app.get<{ Querystring: { fresh?: string } }>("/api/providers", async (request, r
     .where(eq(users.id, principal.userId))
     .limit(1);
 
-  const providers = await providerService.health(principal.userId, {
+  const providers = await providerService.health(subject, {
     fresh: request.query.fresh === "1",
   });
   return {
@@ -2115,7 +2655,7 @@ app.put("/api/settings/claude-token", async (request, reply) => {
 });
 
 /** Signs a CLI provider out: credential directory emptied, stored token gone. */
-app.delete<{ Params: { id: string } }>(
+app.delete<{ Params: { id: string }; Querystring: { workspace?: string } }>(
   "/api/providers/:id/credentials",
   async (request, reply) => {
     const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
@@ -2123,9 +2663,11 @@ app.delete<{ Params: { id: string } }>(
 
     const id = request.params.id;
     if (id !== "claude" && id !== "codex") return reply.code(404).send({ error: "unknown provider" });
+    const subject = await providerSubject(principal.userId, request.query.workspace, "credentials.manage");
+    if (!subject) return reply.code(403).send({ error: "only a workspace admin can sign its subscription out" });
 
-    await providerService.signOut(principal.userId, id);
-    sessionQuotaCache.delete(principal.userId);
+    await providerService.signOut(subject, id);
+    sessionQuotaCache.delete(subject);
     return reply.code(204).send();
   },
 );
@@ -2266,9 +2808,14 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
   const rows = await db
     .select({
       id: threads.id,
+      hash: threads.hash,
       title: threads.title,
       status: threads.status,
       provider: threads.provider,
+      baseBranch: threads.baseBranch,
+      branch: threads.branch,
+      worktreeState: threads.worktreeState,
+      worktreeError: threads.worktreeError,
       createdAt: threads.createdAt,
     })
     .from(threads)
@@ -2278,6 +2825,65 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
   return { threads: rows };
 });
 
+/**
+ * Removes a project session. By default it settles it: any uncommitted
+ * edits are committed and its branch pushed to origin first, and if that
+ * cannot happen nothing is removed (409, with why). With `?ifEmpty=1` it is
+ * only removed when it has nothing in it -- what the web app asks when a
+ * session is left -- and is otherwise left alone.
+ */
+app.delete<{ Params: { hash: string; sessionHash: string }; Querystring: { ifEmpty?: string } }>(
+  "/api/projects/:hash/sessions/:sessionHash",
+  async (request, reply) => {
+    const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+    if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+    const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (!can(project.membership, "project.write")) {
+      return reply.code(403).send({ error: "you cannot change this project" });
+    }
+    if (!ThreadHash.safeParse(request.params.sessionHash).success) {
+      return reply.code(404).send({ error: "session not found" });
+    }
+    const [session] = await db
+      .select(SESSION_COLUMNS)
+      .from(threads)
+      .where(and(eq(threads.hash, request.params.sessionHash), eq(threads.projectId, project.id)))
+      .limit(1);
+    if (!session) return reply.code(404).send({ error: "session not found" });
+
+    const record = (summary: string) =>
+      audit
+        .record({
+          projectId: project.id,
+          userId: principal.userId,
+          clientId: clientIdOf(request),
+          action: "session.remove",
+          targetType: "session",
+          targetId: session.hash,
+          summary,
+        })
+        .catch((error) => app.log.error({ err: error }, "could not log a removed session"));
+
+    try {
+      if (request.query.ifEmpty === "1") {
+        const removed = await sessionLifecycle.removeIfEmpty(session);
+        if (removed) await record("Removed an empty session");
+        return { removed, pushed: null };
+      }
+      const { pushed } = await sessionLifecycle.settle(session);
+      await record(pushed ? `Settled “${session.title}”, its work pushed to ${pushed}` : `Settled “${session.title}”`);
+      return { removed: true, pushed };
+    } catch (error) {
+      if (error instanceof SessionBusyError || error instanceof SessionUnsavedError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  },
+);
+
 // -- Password login ----------------------------------------------------------
 
 const Credentials = z.object({
@@ -2285,7 +2891,14 @@ const Credentials = z.object({
   password: z.string().min(1),
 });
 
-app.post("/api/auth/login", async (request, reply) => {
+app.post("/api/auth/login", {
+  config: {
+    // Per address: twenty tries a minute is far more than a person mistyping
+    // and far less than a guesser, whether it aims at one account or sprays
+    // one password across many. scrypt was the only brake before this.
+    rateLimit: { max: 20, timeWindow: "1 minute" },
+  },
+}, async (request, reply) => {
   const parsed = Credentials.safeParse(request.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: "email and password are required" });
@@ -2338,7 +2951,9 @@ app.get("/api/auth/github", async (request, reply) => {
   url.searchParams.set("redirect_uri", `${publicOrigin()}/api/auth/github/callback`);
   // `repo` is required to clone and push private repositories, which is the
   // whole point of the harness.
-  url.searchParams.set("scope", "repo read:user");
+  // `read:org` only when sign-in depends on organisation membership, which
+  // GitHub will not report for a private membership without it.
+  url.searchParams.set("scope", config.GITHUB_ALLOWED_ORGS.length ? "repo read:user read:org" : "repo read:user");
   url.searchParams.set("state", state);
   return reply.redirect(url.toString());
 });
@@ -2387,6 +3002,30 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
 
     if (!config.SECRET_KEY) {
       return reply.code(500).send({ error: "SECRET_KEY is required to store GitHub credentials" });
+    }
+
+    const admitted = await admitGithubUser(
+      { allowedUsers: config.GITHUB_ALLOWED_USERS, allowedOrgs: config.GITHUB_ALLOWED_ORGS },
+      {
+        login: profile.login,
+        existing: await auth.hasGithubUser(String(profile.id)),
+        isOrgMember: async (org) => {
+          const response = await fetch(
+            `https://api.github.com/user/memberships/orgs/${encodeURIComponent(org)}`,
+            { headers: { authorization: `Bearer ${token.access_token}`, accept: "application/vnd.github+json" } },
+          );
+          if (!response.ok) return false;
+          const membership = (await response.json()) as { state?: string };
+          return membership.state === "active";
+        },
+      },
+    );
+    if (!admitted) {
+      request.log.warn({ login: profile.login }, "github sign-in refused: not on the allowlist");
+      return reply
+        .code(403)
+        .type("text/plain")
+        .send("This GitHub account is not allowed to sign in here. Ask the operator to add it to GITHUB_ALLOWED_USERS or GITHUB_ALLOWED_ORGS.");
     }
 
     const userId = await auth.upsertGithubUser({
@@ -2491,7 +3130,27 @@ const shutdown = async (signal: string) => {
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
+// Longer than Traefik's idle timeout, so the proxy closes a pooled connection
+// before Node does and never sends a request down a socket being torn down.
+app.server.keepAliveTimeout = 65_000;
+app.server.headersTimeout = 66_000;
+
 await app.listen({ port: config.PORT, host: config.HOST });
+
+// Every project keeps its knowledge in `.ucch/`, and projects made before
+// that did not get the folder at creation. Each turn fills it in too; this is
+// for the projects nobody has opened a chat in. Checkouts only: a clone still
+// queued must find its directory empty.
+void (async () => {
+  const rows = await db.select({ id: projects.id, name: projects.name }).from(projects);
+  for (const row of rows) {
+    const dir = join(config.WORKSPACE_ROOT, row.id);
+    if (!existsSync(join(dir, ".git"))) continue;
+    await ensureProjectInfo(dir, renderDefaultInfo(row.name)).catch((err: unknown) =>
+      app.log.warn({ err, projectId: row.id }, "could not write .ucch/INFO.md"),
+    );
+  }
+})().catch((err: unknown) => app.log.warn({ err }, ".ucch backfill failed"));
 app.log.info(
   {
     rootDomain: config.ROOT_DOMAIN,

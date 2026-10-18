@@ -5,6 +5,8 @@
  * comes back.
  */
 
+import type { ReasoningEffort } from "@ucch/protocol"
+
 export type ProviderId = "native" | "claude" | "codex";
 
 export interface ProviderCard {
@@ -20,7 +22,8 @@ export interface ProviderCard {
   warnings?: string[];
   /** False when the server refuses this provider, whatever its health. */
   enabled: boolean;
-  models: { id: string; name: string }[];
+  /** `efforts`: the levels the model takes. Absent, it offers no effort control. */
+  models: { id: string; name: string; efforts?: ReasoningEffort[] }[];
   token?: { configured: boolean; issuedAt: string | null; expiresSoon: boolean };
 }
 
@@ -45,26 +48,39 @@ async function check<T>(response: Response): Promise<T> {
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
 }
 
-export async function fetchProviders(fresh = false): Promise<ProvidersResponse> {
-  return check(
-    await fetch(`/api/providers${fresh ? "?fresh=1" : ""}`, { credentials: "include" }),
-  );
+/** `workspaceId`: that workspace's dedicated subscription rather than your own. */
+function scoped(path: string, query: Record<string, string | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value) params.set(key, value);
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
 }
 
-export async function saveClaudeToken(token: string | null): Promise<void> {
-  await check(
-    await fetch("/api/settings/claude-token", {
-      method: "PUT",
+export async function fetchProviders(fresh = false, workspaceId?: string): Promise<ProvidersResponse> {
+  return check(
+    await fetch(scoped("/api/providers", { fresh: fresh ? "1" : undefined, workspace: workspaceId }), {
       credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token }),
     }),
   );
 }
 
-export async function signOutProvider(id: "claude" | "codex"): Promise<void> {
+export async function saveClaudeToken(token: string | null, workspaceId?: string): Promise<void> {
   await check(
-    await fetch(`/api/providers/${id}/credentials`, { method: "DELETE", credentials: "include" }),
+    await fetch(workspaceId ? `/api/workspaces/${workspaceId}/credentials/claude-token` : "/api/settings/claude-token", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(workspaceId ? { value: token } : { token }),
+    }),
+  );
+}
+
+export async function signOutProvider(id: "claude" | "codex", workspaceId?: string): Promise<void> {
+  await check(
+    await fetch(scoped(`/api/providers/${id}/credentials`, { workspace: workspaceId }), {
+      method: "DELETE",
+      credentials: "include",
+    }),
   );
 }
 

@@ -43,13 +43,21 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
 
       if (!response.ok) {
         const body = (await response.json().catch(() => ({}))) as { error?: string };
-        setError(body.error ?? "Could not sign in. Please try again.");
+        // A 5xx with no JSON body comes from the Next proxy, not the API: the
+        // API server is down, which no retry of the password will fix.
+        setError(
+          body.error ??
+            (response.status >= 500
+              ? "Could not reach the server. Is it running?"
+              : "Could not sign in. Please try again."),
+        );
         return;
       }
 
       // `refresh()` discards the cached RSC payload, so the layout re-runs its
       // session check instead of rendering the signed-out shell from cache.
-      router.replace("/dashboard");
+      // Every sign-in starts at the workspace list.
+      router.replace("/");
       router.refresh();
     } catch {
       setError("Could not reach the server. Is it running?");
@@ -104,7 +112,7 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
                 disabled={pending}
                 aria-label={showPassword ? "Hide password" : "Show password"}
                 aria-pressed={showPassword}
-                className="absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-lg text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+                className="absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-lg text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
               >
                 {showPassword ? (
                   <EyeOffIcon className="size-4" aria-hidden="true" />

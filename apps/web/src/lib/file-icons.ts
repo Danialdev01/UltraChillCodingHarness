@@ -17,7 +17,8 @@ export interface IconManifest {
   folderExpanded: string
 }
 
-export type IconKind = "file" | "folder" | "folder-open"
+/** `icon` asks for an icon by its own id, for callers that already know which -- a project's stack. */
+export type IconKind = "file" | "folder" | "folder-open" | "icon"
 
 /**
  * The icon's name in the manifest, never undefined: the theme's defaults
@@ -30,6 +31,7 @@ export type IconKind = "file" | "folder" | "folder-open"
 export function iconNameFor(manifest: IconManifest, kind: IconKind, name: string): string {
   const lower = name.toLowerCase()
 
+  if (kind === "icon") return Object.hasOwn(manifest.iconDefinitions, lower) ? lower : manifest.file
   if (kind === "folder") return manifest.folderNames[lower] ?? manifest.folder
   if (kind === "folder-open") return manifest.folderNamesExpanded[lower] ?? manifest.folderExpanded
 

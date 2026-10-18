@@ -20,6 +20,9 @@
 <!-- - add material file icons. -->
 
 - add manage project function
+  - add function share with other users.
+  - add storage usage metrics and git repo settings
+  - 
 - inside the search function, add replace multiple keyword feature
 
 ################### Low priority

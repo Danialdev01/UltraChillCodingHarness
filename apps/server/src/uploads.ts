@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type ReadStream } from "node:fs";
 import {
   access,
   copyFile,
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
@@ -20,6 +21,7 @@ import {
   type StagedUpload,
   type UploadStaging,
 } from "@ucch/agent";
+import { assertRealpathInside } from "@ucch/agent";
 import { PathError, type WorkspaceFiles } from "./files.js";
 
 /**
@@ -156,6 +158,12 @@ export class UploadStore implements UploadStaging {
     if (destination === this.files.root(projectId)) {
       throw new PathError("a destination filename is required");
     }
+    // A cloned repository can ship `assets -> /etc`; the move must not follow it.
+    await assertRealpathInside(
+      this.files.root(projectId),
+      destination,
+      () => new PathError("path escapes the workspace"),
+    );
     if (await exists(destination)) {
       throw new UploadConflictError(`${path} already exists`);
     }
@@ -214,6 +222,26 @@ export class UploadStore implements UploadStaging {
     if (!upload) return null;
     try {
       return { bytes: await readFile(resolve(directory, uploadId)), contentType: upload.contentType };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A staged file opened for sending, rather than read whole: uploads go up
+   * to `UPLOAD_MAX_BYTES`, and the content route only ever pipes them on.
+   */
+  async openStream(
+    projectId: string,
+    uploadId: string,
+  ): Promise<{ stream: ReadStream; size: number; contentType: string } | null> {
+    const directory = this.#directory(projectId);
+    const upload = await this.#read(directory, uploadId);
+    if (!upload) return null;
+    try {
+      const handle = await open(resolve(directory, uploadId), "r");
+      const { size } = await handle.stat();
+      return { stream: handle.createReadStream(), size, contentType: upload.contentType };
     } catch {
       return null;
     }

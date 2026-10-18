@@ -13,6 +13,7 @@ import {
   fetchGitLog,
   fetchGitStatus,
 } from "@/lib/git-api"
+import { targetOf } from "@/lib/project-target"
 import type { Project } from "@/lib/session"
 
 /** What the main pane is showing: a working-tree change, or a file of a commit. */
@@ -54,7 +55,12 @@ export interface GitState {
 }
 
 export function useGitState(project: Project): GitState {
-  const { hash, id: projectId } = project
+  const { id: projectId } = project
+  // A project session's worktree when the page is one's: each session is
+  // its own branch, with its own status and history.
+  const projectHash = project.hash
+  const sessionHash = project.sessionHash ?? null
+  const hash = React.useMemo(() => targetOf({ hash: projectHash, sessionHash }), [projectHash, sessionHash])
   const [status, setStatus] = React.useState<GitStatus | null>(null)
   const [branches, setBranches] = React.useState<GitBranchList | null>(null)
   const [log, setLog] = React.useState<GitLogPage | null>(null)

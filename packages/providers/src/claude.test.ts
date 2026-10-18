@@ -6,6 +6,7 @@ import {
   ClaudeNormaliser,
   ClaudeProvider,
   claudeArgv,
+  explainClaudeError,
   maskEmail,
   probeClaude,
   workspaceRelative,
@@ -31,14 +32,46 @@ function feed(normaliser: ClaudeNormaliser, text: string): DomainEvent[] {
 
 const caps = { permissionPrompts: true, settingSources: true };
 
+describe("explainClaudeError", () => {
+  const EXPIRED = "Failed to authenticate: OAuth session expired and could not be refreshed";
+
+  it("says how to sign in again when the login is gone, keeping the CLI's words", () => {
+    const explained = explainClaudeError(EXPIRED);
+    expect(explained).toContain("Settings → Agent Providers → Claude Code");
+    expect(explained).toContain("setup token");
+    expect(explained).toContain(EXPIRED);
+  });
+
+  it("leaves every other error alone", () => {
+    expect(explainClaudeError("claude exited with code 1")).toBe("claude exited with code 1");
+    expect(explainClaudeError("overloaded_error")).toBe("overloaded_error");
+  });
+
+  it("explains a failed result line", () => {
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const events = normaliser.push(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: EXPIRED }));
+    const failed = events.find((e) => e.type === "agent.turn_failed");
+    expect(failed && "error" in failed ? failed.error : "").toContain("Sign in again");
+  });
+
+  it("explains a CLI that died with the message on stderr", () => {
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const events = normaliser.finish({ code: 1, signal: null, interrupted: false, stderrTail: EXPIRED });
+    const failed = events.find((e) => e.type === "agent.turn_failed");
+    expect(failed && "error" in failed ? failed.error : "").toContain("Sign in again");
+  });
+});
+
 describe("claudeArgv", () => {
-  it("names the stream, a permission mode and no prompt host", () => {
+  it("names the stream, a permission mode and the host for prompts", () => {
     const argv = claudeArgv({ bin: "claude", caps });
     expect(argv.slice(0, 2)).toEqual(["claude", "-p"]);
     expect(argv).toContain("stream-json");
     expect(argv).toContain("--include-partial-messages");
     expect(argv.join(" ")).toContain("--permission-mode acceptEdits");
-    expect(argv.join(" ")).toContain("--permission-prompts none");
+    expect(argv.join(" ")).toContain("--input-format stream-json");
+    expect(argv.join(" ")).toContain("--permission-prompt-tool stdio");
+    expect(argv.join(" ")).toContain("--permission-prompts host");
     expect(argv.join(" ")).toContain("--setting-sources user");
   });
 
@@ -53,6 +86,19 @@ describe("claudeArgv", () => {
       expect(argv).not.toContain("--bare");
       expect(argv).not.toContain("bypassPermissions");
     }
+  });
+
+  it("passes the effort level, and none for off", () => {
+    expect(claudeArgv({ bin: "claude", caps, effort: "xhigh" }).join(" ")).toContain("--effort xhigh");
+    expect(claudeArgv({ bin: "claude", caps, effort: "off" })).not.toContain("--effort");
+    expect(claudeArgv({ bin: "claude", caps })).not.toContain("--effort");
+  });
+
+  it("appends the project's knowledge to the system prompt, resumed turns included", () => {
+    const argv = claudeArgv({ bin: "claude", caps, resumeToken: "abc", appendSystemPrompt: "--- .ucch/INFO.md ---" });
+    const at = argv.indexOf("--append-system-prompt");
+    expect(argv[at + 1]).toBe("--- .ucch/INFO.md ---");
+    expect(claudeArgv({ bin: "claude", caps })).not.toContain("--append-system-prompt");
   });
 
   it("starts in default mode under Strict, so edits ask too", () => {
@@ -391,7 +437,10 @@ describe("ClaudeProvider.run", () => {
     const run = new ClaudeProvider("claude").run(input(host));
     const events: DomainEvent[] = [];
     for await (const event of run.events) events.push(event);
-    expect(host.spawned[0]?.stdin).toBe("say pong");
+    expect(JSON.parse(host.spawned[0]?.stdin ?? "")).toEqual({
+      type: "user",
+      message: { role: "user", content: "say pong" },
+    });
     expect(host.spawned[0]?.env.CLAUDE_CONFIG_DIR).toBe("/creds");
     expect(events[0]?.type).toBe("agent.session_started");
     expect(events.at(-1)?.type).toBe("agent.turn_completed");

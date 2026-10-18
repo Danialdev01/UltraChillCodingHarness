@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect } from "node:net";
-import type { Duplex } from "node:stream";
+import type { Readable, Duplex } from "node:stream";
 import { parseHost } from "@ucch/protocol";
 
 /**
@@ -38,7 +38,18 @@ export interface PreviewProject {
   id: string;
   userId: string;
   previewPort: number | null;
+  /**
+   * Set for a static site: the working-tree folder its files are served
+   * from, "" for the root. Absent or null, the port is a dev server's.
+   */
+  previewStaticDir?: string | null;
 }
+
+/** One file of a static preview, as the workspace hands it over. */
+export type StaticFile =
+  | { kind: "file"; stream: Readable & { destroy(): void }; size: number }
+  | { kind: "directory" }
+  | { kind: "missing" };
 
 export interface PreviewGatewayOptions {
   rootDomain: string;
@@ -55,6 +66,12 @@ export interface PreviewGatewayOptions {
    * accepts a connection is used. Loopback until containers arrive.
    */
   target: (project: PreviewProject, port: number) => { hosts: string[]; port: number };
+  /**
+   * Reads a static preview's file from the project's working tree. It is the
+   * workspace's path rules that keep this inside the tree (and away from
+   * `.git` and secrets), so a path it refuses comes back as `missing`.
+   */
+  readStatic?: (project: PreviewProject, path: string) => Promise<StaticFile>;
   /** Accept any visitor -- for the same development setup as DEV_AUTH_BYPASS. */
   devBypass?: boolean;
   log: { error(obj: object, msg: string): void };
@@ -294,6 +311,11 @@ export class PreviewGateway {
       return;
     }
 
+    if (project.previewStaticDir != null) {
+      await this.#serveStatic(project, project.previewStaticDir, url, req, res);
+      return;
+    }
+
     const target = await this.#connectTarget(project, port);
     const upstream = httpRequest({
       host: target.host,
@@ -322,6 +344,103 @@ export class PreviewGateway {
     req.pipe(upstream);
   }
 
+  /**
+   * A static site, served straight from the working tree the way any static
+   * file server would: a folder answers with its `index.html`, a folder
+   * without its trailing slash is redirected to it (so relative links
+   * resolve), and an extensionless path falls back to `{path}.html`.
+   *
+   * The preview host is its own origin, which is what makes serving the
+   * repository's HTML here safe when the API origin never may.
+   */
+  async #serveStatic(
+    project: PreviewProject,
+    dir: string,
+    url: URL,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405, { allow: "GET, HEAD" });
+      res.end();
+      return;
+    }
+    const read = this.options.readStatic;
+    if (!read) {
+      sendHtml(res, 501, "Static preview unavailable", "This server cannot serve static previews.");
+      return;
+    }
+
+    let relative: string;
+    try {
+      relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+    } catch {
+      sendHtml(res, 400, "Bad path", "That address could not be decoded.");
+      return;
+    }
+    // The URL parser has already resolved literal `..`, but not an encoded
+    // one; refusing it keeps the site inside its folder, not just the tree.
+    if (relative.split(/[\\/]/).includes("..") || relative.includes("\0")) {
+      sendHtml(res, 400, "Bad path", "That address leaves the site's folder.");
+      return;
+    }
+    const inDir = (path: string) => (dir ? `${dir}/${path}` : path) || ".";
+
+    const candidates =
+      relative === "" || relative.endsWith("/")
+        ? [`${relative}index.html`]
+        : /\.[^/]*$/.test(relative)
+          ? [relative]
+          : [relative, `${relative}.html`];
+
+    for (const candidate of candidates) {
+      const file = await read(project, inDir(candidate));
+      if (file.kind === "directory") {
+        res.writeHead(301, { location: `${url.pathname}/${url.search}`, "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      if (file.kind !== "file") continue;
+
+      res.writeHead(200, {
+        "content-type": staticMediaType(candidate),
+        "content-length": file.size,
+        "x-content-type-options": "nosniff",
+        // The agent may rewrite any of these files at any moment; a cached
+        // copy would hide the change it just made.
+        "cache-control": "no-cache",
+      });
+      if (req.method === "HEAD") {
+        file.stream.destroy();
+        res.end();
+        return;
+      }
+      file.stream.on("error", () => res.destroy());
+      res.on("close", () => file.stream.destroy());
+      file.stream.pipe(res);
+      return;
+    }
+
+    sendHtml(
+      res,
+      404,
+      "Not found",
+      `There is no <code>${escape(url.pathname)}</code> in ${dir ? `<code>${escape(dir)}/</code>` : "the project root"}.`,
+    );
+  }
+
+  /**
+   * Whether a static preview has a page to show: an `index.html` in its
+   * folder, which is what the root of the subdomain serves.
+   */
+  async hasStaticIndex(project: PreviewProject): Promise<boolean> {
+    const dir = project.previewStaticDir;
+    if (dir == null || !this.options.readStatic) return false;
+    const file = await this.options.readStatic(project, dir ? `${dir}/index.html` : "index.html");
+    if (file.kind === "file") file.stream.destroy();
+    return file.kind === "file";
+  }
+
   async #serveUpgrade(
     hash: string,
     port: number,
@@ -337,6 +456,12 @@ export class PreviewGateway {
     const cookies = parseCookies(req.headers.cookie);
     if (!this.options.devBypass && !this.#verifyCookie(cookies.get(PREVIEW_COOKIE), project, port)) {
       rejectSocket(socket, "401 Unauthorized");
+      return;
+    }
+
+    // A static site has nothing to hold a socket open with.
+    if (project.previewStaticDir != null) {
+      rejectSocket(socket, "404 Not Found");
       return;
     }
 
@@ -441,6 +566,47 @@ function notListening(port: number, err: NodeJS.ErrnoException): string {
       ? `Nothing is listening on port ${port} on this machine's loopback (127.0.0.1 or ::1).`
       : `The dev server on port ${port} could not be reached (${err.code ?? err.message}).`;
   return `${why} Start it in the project terminal, for example:<pre>php artisan serve --port=${port}\nnpm run dev -- --port ${port}\npython3 -m http.server ${port}</pre>Vite 6 and later also need <code>server.allowedHosts: true</code> so it accepts the preview hostname.`;
+}
+
+/** What a static site's files are served as, by extension; anything else is a download. */
+const STATIC_MEDIA_TYPES: Record<string, string> = {
+  html: "text/html; charset=utf-8",
+  htm: "text/html; charset=utf-8",
+  css: "text/css; charset=utf-8",
+  js: "text/javascript; charset=utf-8",
+  mjs: "text/javascript; charset=utf-8",
+  json: "application/json; charset=utf-8",
+  map: "application/json; charset=utf-8",
+  webmanifest: "application/manifest+json",
+  txt: "text/plain; charset=utf-8",
+  md: "text/plain; charset=utf-8",
+  xml: "application/xml",
+  csv: "text/csv; charset=utf-8",
+  svg: "image/svg+xml",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  ico: "image/x-icon",
+  bmp: "image/bmp",
+  woff: "font/woff",
+  woff2: "font/woff2",
+  ttf: "font/ttf",
+  otf: "font/otf",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  pdf: "application/pdf",
+  wasm: "application/wasm",
+};
+
+export function staticMediaType(path: string): string {
+  const ext = /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
+  return STATIC_MEDIA_TYPES[ext] ?? "application/octet-stream";
 }
 
 function sendHtml(res: ServerResponse, status: number, title: string, body: string): void {

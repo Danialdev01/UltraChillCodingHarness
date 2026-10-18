@@ -1,6 +1,25 @@
 import { randomBytes } from "node:crypto";
 import { and, asc, eq, getTableName, inArray, sql, type Column, type SQL } from "drizzle-orm";
-import { previews, projects, threads, turns, workspaces, type Database } from "@ucch/db";
+import {
+  previews,
+  projects,
+  threads,
+  turns,
+  users,
+  workspaceMembers,
+  workspaces,
+  type Database,
+} from "@ucch/db";
+import {
+  can,
+  CredentialPolicy,
+  generateHash,
+  LIMIT_STOP_REASONS,
+  permissionsOf,
+  WorkspaceRole,
+  type Membership,
+  type WorkspacePermission,
+} from "@ucch/protocol";
 
 /**
  * A column spelled out with its table, for correlated sub-selects inside a
@@ -23,7 +42,14 @@ export interface ProjectSummary {
   containerState: string;
   /** The port the owner's dev server listens on; null until set. */
   previewPort: number | null;
+  /** The working-tree folder a static preview is served from; null for a dev server. */
+  previewStaticDir: string | null;
   workspaceId?: string;
+  /** The project's workspace address and kind, so a client can build its URL. */
+  workspaceHash?: string;
+  workspaceKind?: WorkspaceKind;
+  /** The caller's standing in the project's workspace, when resolved for a caller. */
+  membership?: Membership;
 }
 
 /**
@@ -41,6 +67,12 @@ export interface ProjectRow extends ProjectSummary {
   createdAt: Date;
   /** Whether a turn is in flight in any of this project's threads. */
   running: boolean;
+  /**
+   * Whether the project's latest turn failed or was cut off by a limit, as
+   * `stoppedShort` in @ucch/protocol judges a stop reason -- the sidebar's
+   * red dot, so it is still there after a reload.
+   */
+  failed: boolean;
   threadCount: number;
   /** Every token this project's turns have been billed for, all kinds summed. */
   tokens: number;
@@ -71,6 +103,13 @@ export interface WorkspaceStats {
   todo: { due: number; open: number } | null;
 }
 
+/** One project's share of the bill, for its manage page. */
+export interface ProjectUsage {
+  tokens: WorkspaceStats["tokens"];
+  costUsd: number;
+  turnCount: number;
+}
+
 /** One model's share of a workspace's bill. */
 export interface ModelUsage {
   /** The provider's id, or null for turns recorded before it was stored. */
@@ -93,11 +132,56 @@ export interface WorkspaceUsage {
   models: ModelUsage[];
 }
 
+export type WorkspaceKind = "project" | "session";
+
 export interface WorkspaceSummary {
   id: string;
   slug: string;
+  /** The workspace's address in the web app, `/{hash}`. */
+  hash: string;
   name: string;
+  /** What the workspace holds: named projects, or quick sessions. */
+  kind: WorkspaceKind;
+  archived: boolean;
   projectCount: number;
+  /** A `data:image/...` URL, or null for the default icon. */
+  logo: string | null;
+  /** The caller's role here, and what it lets them do. */
+  role: WorkspaceRole;
+  permissions: WorkspacePermission[];
+  /** True when somebody else owns it and the caller is a member. */
+  shared: boolean;
+  ownerName: string;
+  credentialPolicy: CredentialPolicy;
+}
+
+/** A membership row read back with the person it belongs to. */
+export interface MemberRow extends Membership {
+  userId: string;
+  login: string;
+  name: string | null;
+  email: string | null;
+  avatarUrl: string | null;
+  joinedAt: Date;
+}
+
+/** Narrows the stored text columns to the enums; anything unknown reads as the least access. */
+export function toMembership(row: {
+  role: string;
+  canCreateProject: boolean | null;
+  canCreateSession: boolean | null;
+}): Membership {
+  const role = WorkspaceRole.safeParse(row.role);
+  return {
+    role: role.success ? role.data : "viewer",
+    canCreateProject: row.canCreateProject,
+    canCreateSession: row.canCreateSession,
+  };
+}
+
+export function toPolicy(value: string): CredentialPolicy {
+  const parsed = CredentialPolicy.safeParse(value);
+  return parsed.success ? parsed.data : "member";
 }
 
 /**
@@ -108,42 +192,138 @@ export interface WorkspaceSummary {
 export class WorkspaceService {
   constructor(private readonly db: Database) {}
 
+  /** Every workspace the caller is a member of, their own and shared ones alike. */
   async list(userId: string): Promise<WorkspaceSummary[]> {
     const rows = await this.db
       .select({
         id: workspaces.id,
         slug: workspaces.slug,
+        hash: workspaces.hash,
         name: workspaces.name,
-        projectCount: sql<number>`count(${projects.id})::int`,
+        kind: workspaces.kind,
+        archivedAt: workspaces.archivedAt,
+        logo: workspaces.logo,
+        ownerUserId: workspaces.ownerUserId,
+        credentialPolicy: workspaces.credentialPolicy,
+        role: workspaceMembers.role,
+        canCreateProject: workspaceMembers.canCreateProject,
+        canCreateSession: workspaceMembers.canCreateSession,
+        ownerName: sql<string>`coalesce(${users.name}, ${users.login})`,
+        projectCount: sql<number>`(select count(*)::int from ${projects} where ${projects.workspaceId} = ${workspaces.id})`,
       })
-      .from(workspaces)
-      .leftJoin(projects, eq(projects.workspaceId, workspaces.id))
-      .where(eq(workspaces.ownerUserId, userId))
-      .groupBy(workspaces.id)
+      .from(workspaceMembers)
+      .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
+      .innerJoin(users, eq(users.id, workspaces.ownerUserId))
+      .where(eq(workspaceMembers.userId, userId))
       .orderBy(asc(workspaces.createdAt));
 
-    return rows;
+    return rows.map(
+      ({ archivedAt, kind, ownerUserId, credentialPolicy, role, canCreateProject, canCreateSession, ...row }) => {
+        const membership = toMembership({ role, canCreateProject, canCreateSession });
+        return {
+          ...row,
+          kind: kind === "session" ? "session" : "project",
+          archived: archivedAt !== null,
+          role: membership.role,
+          permissions: permissionsOf(membership),
+          shared: ownerUserId !== userId,
+          credentialPolicy: toPolicy(credentialPolicy),
+        };
+      },
+    );
   }
 
-  async create(userId: string, name: string): Promise<WorkspaceSummary | { conflict: true }> {
+  async create(
+    userId: string,
+    name: string,
+    kind: WorkspaceKind = "project",
+  ): Promise<WorkspaceSummary | { conflict: true }> {
     const trimmed = name.trim();
     const slug = await this.#uniqueSlug(userId, trimmed);
     if (!slug) return { conflict: true };
+    const hash = await this.#uniqueHash();
 
+    const row = await this.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(workspaces)
+        .values({ ownerUserId: userId, name: trimmed, slug, hash, kind })
+        .returning();
+      await tx.insert(workspaceMembers).values({ workspaceId: created!.id, userId, role: "owner" });
+      return created!;
+    });
+
+    return (await this.list(userId)).find((w) => w.id === row.id)!;
+  }
+
+  /**
+   * Renames, archives and sets the logo of a workspace. The slug stays put: it is an
+   * identifier, and a rename should not move anything that points at it.
+   */
+  async update(
+    workspaceId: string,
+    userId: string,
+    patch: { name?: string; archived?: boolean; logo?: string | null },
+  ): Promise<WorkspaceSummary | null> {
+    if (!can(await this.membership(workspaceId, userId), "workspace.manage")) return null;
+
+    const set: { name?: string; archivedAt?: Date | null; logo?: string | null } = {};
+    if (patch.logo !== undefined) set.logo = patch.logo;
+    if (patch.name !== undefined) set.name = patch.name.trim();
+    if (patch.archived !== undefined) set.archivedAt = patch.archived ? new Date() : null;
+    if (Object.keys(set).length > 0) {
+      await this.db.update(workspaces).set(set).where(eq(workspaces.id, workspaceId));
+    }
+    return (await this.list(userId)).find((w) => w.id === workspaceId) ?? null;
+  }
+
+  /**
+   * Removes a workspace, but only an empty one.
+   *
+   * Projects would cascade with it, and a workspace's projects are the
+   * expensive part to lose -- so one that still has any is archived instead,
+   * and this refuses it rather than trusting the menu to have hidden the
+   * option.
+   */
+  async deleteWorkspace(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ ok: true } | { error: "not_found" | "forbidden" | "not_empty" }> {
+    const workspace = (await this.list(userId)).find((w) => w.id === workspaceId);
+    if (!workspace) return { error: "not_found" };
+    if (!workspace.permissions.includes("workspace.delete")) return { error: "forbidden" };
+    if (workspace.projectCount > 0) return { error: "not_empty" };
+
+    await this.db.delete(workspaces).where(eq(workspaces.id, workspaceId));
+    return { ok: true };
+  }
+
+  /** A workspace by its URL hash, or null when the caller is not a member of it. */
+  async findWorkspaceByHash(hash: string, userId: string): Promise<WorkspaceSummary | null> {
     const [row] = await this.db
-      .insert(workspaces)
-      .values({ ownerUserId: userId, name: trimmed, slug })
-      .returning();
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.hash, hash))
+      .limit(1);
+    if (!row) return null;
+    return (await this.list(userId)).find((w) => w.id === row.id) ?? null;
+  }
 
-    return { id: row!.id, slug: row!.slug, name: row!.name, projectCount: 0 };
+  /** Renames a project, through `findByHash` so only a member can. */
+  async renameProject(hash: string, userId: string, name: string): Promise<ProjectSummary | null> {
+    const project = await this.findByHash(hash, userId);
+    if (!project) return null;
+    const trimmed = name.trim();
+    await this.db.update(projects).set({ name: trimmed }).where(eq(projects.id, project.id));
+    return { ...project, name: trimmed };
   }
 
   /**
    * A project by its public hash, scoped to the caller.
    *
-   * The ownership check is part of the query rather than a second lookup, so
-   * a hash belonging to someone else is indistinguishable from one that does
-   * not exist.
+   * The membership check is part of the query rather than a second lookup, so
+   * a hash in a workspace the caller is not in is indistinguishable from one
+   * that does not exist. The membership comes back with it, for the routes
+   * that also need to know what the caller may do.
    */
   async findByHash(hash: string, userId: string): Promise<ProjectSummary | null> {
     const [row] = await this.db
@@ -154,14 +334,30 @@ export class WorkspaceService {
         stack: projects.stack,
         containerState: projects.containerState,
         previewPort: projects.previewPort,
+        previewStaticDir: projects.previewStaticDir,
         workspaceId: projects.workspaceId,
+        workspaceHash: workspaces.hash,
+        workspaceKind: workspaces.kind,
+        role: workspaceMembers.role,
+        canCreateProject: workspaceMembers.canCreateProject,
+        canCreateSession: workspaceMembers.canCreateSession,
       })
       .from(projects)
-      .innerJoin(workspaces, eq(projects.workspaceId, workspaces.id))
-      .where(and(eq(projects.hash, hash), eq(workspaces.ownerUserId, userId)))
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .innerJoin(
+        workspaceMembers,
+        and(eq(workspaceMembers.workspaceId, projects.workspaceId), eq(workspaceMembers.userId, userId)),
+      )
+      .where(eq(projects.hash, hash))
       .limit(1);
+    if (!row) return null;
 
-    return row ?? null;
+    const { role, canCreateProject, canCreateSession, workspaceKind, ...project } = row;
+    return {
+      ...project,
+      workspaceKind: workspaceKind === "session" ? "session" : "project",
+      membership: toMembership({ role, canCreateProject, canCreateSession }),
+    };
   }
 
   /**
@@ -176,7 +372,7 @@ export class WorkspaceService {
    * the browser, where the reader can change their mind.
    */
   async listProjects(workspaceId: string, userId: string): Promise<ProjectRow[] | null> {
-    if (!(await this.ownedBy(workspaceId, userId))) return null;
+    if (!(await this.canView(workspaceId, userId))) return null;
 
     return this.db
       .select({
@@ -186,6 +382,10 @@ export class WorkspaceService {
         stack: projects.stack,
         containerState: projects.containerState,
         previewPort: projects.previewPort,
+        previewStaticDir: projects.previewStaticDir,
+        workspaceId: projects.workspaceId,
+        workspaceHash: workspaces.hash,
+        workspaceKind: workspaces.kind,
         repoUrl: projects.repoUrl,
         defaultBranch: projects.defaultBranch,
         lastActiveAt: projects.lastActiveAt,
@@ -194,6 +394,15 @@ export class WorkspaceService {
           select 1 from ${threads}
           where ${threads.projectId} = ${qualified(projects.id)} and ${threads.status} = 'running'
         )`,
+        failed: sql<boolean>`coalesce((
+          select ${qualified(turns.error)} is not null
+            or ${qualified(turns.stopReason)} in (${sql.join([...LIMIT_STOP_REASONS].map((r) => sql`${r}`), sql`, `)})
+            or ${qualified(turns.stopReason)} like 'error%'
+          from ${turns} join ${threads} on ${turns.threadId} = ${qualified(threads.id)}
+          where ${threads.projectId} = ${qualified(projects.id)}
+          order by ${qualified(turns.createdAt)} desc
+          limit 1
+        ), false)`,
         threadCount: sql<number>`(
           select count(*)::int from ${threads} where ${threads.projectId} = ${qualified(projects.id)}
         )`,
@@ -217,11 +426,13 @@ export class WorkspaceService {
         )`,
       })
       .from(projects)
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
       .where(eq(projects.workspaceId, workspaceId))
       .orderBy(asc(projects.name))
       .then((rows) =>
         rows.map((row) => ({
           ...row,
+          workspaceKind: row.workspaceKind === "session" ? ("session" as const) : ("project" as const),
           tokens: Number(row.tokens ?? 0),
           costUsd: Number(row.costUsd ?? 0),
         })),
@@ -242,7 +453,7 @@ export class WorkspaceService {
    * them.
    */
   async stats(workspaceId: string, userId: string): Promise<WorkspaceStats | null> {
-    if (!(await this.ownedBy(workspaceId, userId))) return null;
+    if (!(await this.canView(workspaceId, userId))) return null;
 
     const usage = (key: string) =>
       sql<number>`coalesce(sum((${turns.usage} ->> ${key})::double precision), 0)`;
@@ -327,7 +538,7 @@ export class WorkspaceService {
    * with the thread history the reader can see.
    */
   async usage(workspaceId: string, userId: string): Promise<WorkspaceUsage | null> {
-    if (!(await this.ownedBy(workspaceId, userId))) return null;
+    if (!(await this.canView(workspaceId, userId))) return null;
 
     const usage = (key: string) =>
       sql<number>`coalesce(sum((${turns.usage} ->> ${key})::double precision), 0)`;
@@ -443,19 +654,25 @@ export class WorkspaceService {
   }
 
   /**
-   * Records the port the owner's dev server listens on, or clears it. Goes
-   * through `findByHash`, so somebody else's hash is refused the same way a
-   * missing one is.
+   * Records how the project is previewed: the port the owner's dev server
+   * listens on, or -- with `staticDir` -- the folder of a static site, served
+   * on `port`'s subdomain. A null port clears both. Goes through
+   * `findByHash`, so somebody else's hash is refused the same way a missing
+   * one is.
    */
-  async setPreviewPort(
+  async setPreview(
     hash: string,
     userId: string,
-    port: number | null,
+    preview: { port: number | null; staticDir: string | null },
   ): Promise<ProjectSummary | null> {
     const project = await this.findByHash(hash, userId);
     if (!project) return null;
-    await this.db.update(projects).set({ previewPort: port }).where(eq(projects.id, project.id));
-    return { ...project, previewPort: port };
+    const next = {
+      previewPort: preview.port,
+      previewStaticDir: preview.port === null ? null : preview.staticDir,
+    };
+    await this.db.update(projects).set(next).where(eq(projects.id, project.id));
+    return { ...project, ...next };
   }
 
   /**
@@ -463,8 +680,43 @@ export class WorkspaceService {
    * project that was started rather than cloned. By id rather than hash:
    * the git routes have already resolved the caller's project.
    */
-  async setRepoUrl(projectId: string, repoUrl: string): Promise<void> {
+  async setRepoUrl(projectId: string, repoUrl: string | null): Promise<void> {
     await this.db.update(projects).set({ repoUrl }).where(eq(projects.id, projectId));
+  }
+
+  /**
+   * The same token sums `stats` makes, for one project. The caller has
+   * already resolved the project through `findByHash`, which is the
+   * ownership check.
+   */
+  async projectUsage(projectId: string): Promise<ProjectUsage> {
+    const usage = (key: string) =>
+      sql<number>`coalesce(sum((${turns.usage} ->> ${key})::double precision), 0)`;
+
+    const [row] = await this.db
+      .select({
+        input: usage("inputTokens"),
+        output: usage("outputTokens"),
+        cacheRead: usage("cacheReadInputTokens"),
+        cacheWrite: usage("cacheCreationInputTokens"),
+        costUsd: sql<number>`coalesce(sum(${turns.costUsd})::double precision, 0)`,
+        turnCount: sql<number>`count(*)::int`,
+      })
+      .from(turns)
+      .innerJoin(threads, eq(turns.threadId, threads.id))
+      .where(eq(threads.projectId, projectId));
+
+    const tokens = {
+      input: Number(row?.input ?? 0),
+      output: Number(row?.output ?? 0),
+      cacheRead: Number(row?.cacheRead ?? 0),
+      cacheWrite: Number(row?.cacheWrite ?? 0),
+    };
+    return {
+      tokens: { ...tokens, total: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite },
+      costUsd: Number(row?.costUsd ?? 0),
+      turnCount: Number(row?.turnCount ?? 0),
+    };
   }
 
   /**
@@ -475,9 +727,14 @@ export class WorkspaceService {
    */
   async previewTarget(
     hash: string,
-  ): Promise<{ id: string; userId: string; previewPort: number | null } | null> {
+  ): Promise<{ id: string; userId: string; previewPort: number | null; previewStaticDir: string | null } | null> {
     const [row] = await this.db
-      .select({ id: projects.id, userId: projects.userId, previewPort: projects.previewPort })
+      .select({
+        id: projects.id,
+        userId: projects.userId,
+        previewPort: projects.previewPort,
+        previewStaticDir: projects.previewStaticDir,
+      })
       .from(projects)
       .where(eq(projects.hash, hash))
       .limit(1);
@@ -487,11 +744,12 @@ export class WorkspaceService {
   async deleteProject(
     hash: string,
     userId: string,
-  ): Promise<{ projectId: string } | { error: "not_found" | "busy" }> {
-    // Through `findByHash`, so a hash belonging to somebody else is refused
+  ): Promise<{ projectId: string } | { error: "not_found" | "forbidden" | "busy" }> {
+    // Through `findByHash`, so a hash in somebody else's workspace is refused
     // by the same predicate that refuses one that does not exist.
     const project = await this.findByHash(hash, userId);
     if (!project) return { error: "not_found" };
+    if (!can(project.membership, "workspace.manage")) return { error: "forbidden" };
 
     const [busy] = await this.db
       .select({ id: threads.id })
@@ -507,17 +765,29 @@ export class WorkspaceService {
   }
 
   /**
-   * Confirms the workspace exists AND belongs to this user -- both conditions
-   * in one predicate. Checking them separately would let any user who owns
-   * some workspace pass the check for somebody else's.
+   * The caller's membership of a workspace, or null when they have none --
+   * which is also the answer for a workspace that does not exist, so the two
+   * cannot be told apart.
    */
-  async ownedBy(workspaceId: string, userId: string): Promise<boolean> {
+  async membership(workspaceId: string, userId: string): Promise<Membership | null> {
     const [row] = await this.db
-      .select({ id: workspaces.id })
-      .from(workspaces)
-      .where(and(eq(workspaces.id, workspaceId), eq(workspaces.ownerUserId, userId)))
+      .select({
+        role: workspaceMembers.role,
+        canCreateProject: workspaceMembers.canCreateProject,
+        canCreateSession: workspaceMembers.canCreateSession,
+      })
+      .from(workspaceMembers)
+      .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, userId)))
       .limit(1);
-    return Boolean(row);
+    return row ? toMembership(row) : null;
+  }
+
+  async canView(workspaceId: string, userId: string): Promise<boolean> {
+    return (await this.membership(workspaceId, userId)) !== null;
+  }
+
+  async allows(workspaceId: string, userId: string, permission: WorkspacePermission): Promise<boolean> {
+    return can(await this.membership(workspaceId, userId), permission);
   }
 
   /**
@@ -525,13 +795,17 @@ export class WorkspaceService {
    * left blank, so the switcher has something meaningful in it on first load.
    */
   async ensureDefault(userId: string, name = "Personal"): Promise<WorkspaceSummary> {
-    const existing = await this.list(userId);
+    // An archived workspace does not count: someone who archived every one
+    // they had still needs somewhere to land. Nor does one shared with them,
+    // which they can be removed from.
+    const existing = (await this.list(userId)).filter((w) => !w.archived && !w.shared);
     if (existing.length > 0) return existing[0]!;
 
     const created = await this.create(userId, name);
     if ("conflict" in created) {
       // Another boot won the race; whichever landed first is fine.
-      return (await this.list(userId))[0]!;
+      const all = (await this.list(userId)).filter((w) => !w.shared);
+      return all.find((w) => !w.archived) ?? all[0]!;
     }
     return created;
   }
@@ -540,9 +814,27 @@ export class WorkspaceService {
    * Slugs are unique per owner, so a second "Acme" becomes "acme-2". Gives up
    * after a bounded number of attempts rather than looping forever.
    */
+  /** A workspace hash nobody holds yet; the column's unique constraint is the backstop. */
+  async #uniqueHash(): Promise<string> {
+    for (;;) {
+      const hash = generateHash();
+      const [taken] = await this.db
+        .select({ id: workspaces.id })
+        .from(workspaces)
+        .where(eq(workspaces.hash, hash))
+        .limit(1);
+      if (!taken) return hash;
+    }
+  }
+
   async #uniqueSlug(userId: string, name: string): Promise<string | null> {
     const base = slugify(name);
-    const taken = new Set((await this.list(userId)).map((w) => w.slug));
+    // Unique per owner, so only the caller's own workspaces can collide.
+    const own = await this.db
+      .select({ slug: workspaces.slug })
+      .from(workspaces)
+      .where(eq(workspaces.ownerUserId, userId));
+    const taken = new Set(own.map((w) => w.slug));
 
     if (!taken.has(base)) return base;
     for (let i = 2; i <= 50; i++) {
@@ -567,10 +859,16 @@ export interface PublicProject {
   slug: string;
 }
 
-/** The address shape: `{name}-{6 chars}`, which is what the web app routes on. */
-export const PUBLIC_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,60}[a-z0-9])?-[a-z0-9]{6}$/;
+/**
+ * The address shape: `{name}-{12 chars}`, which is what the web app routes on.
+ * Six-character tokens minted before the switch to twelve still resolve.
+ */
+export const PUBLIC_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,60}[a-z0-9])?-[a-z0-9]{6}(?:[a-z0-9]{6})?$/;
 
-/** `my-project-k3f9x2`: the name, made a slug, and six characters of chance. */
+/**
+ * `my-project-k3f9x2m81qza`: the name, made a slug, and twelve characters of
+ * chance -- the slug is the whole grant, so it has to be too many to guess.
+ */
 export function publicSlugFor(name: string): string {
   const base = slugify(name).slice(0, 40).replace(/-+$/, "") || "project";
   return `${base}-${shortToken()}`;
@@ -578,7 +876,7 @@ export function publicSlugFor(name: string): string {
 
 function shortToken(): string {
   const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
-  const bytes = randomBytes(6);
+  const bytes = randomBytes(12);
   let out = "";
   for (const b of bytes) out += alphabet[b % alphabet.length];
   return out;

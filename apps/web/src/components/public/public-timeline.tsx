@@ -5,7 +5,7 @@ import type { GitCommit, GitLogPage } from "@ucch/protocol"
 import { GitCommitHorizontalIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
+import { PublicTimelineSkeleton } from "@/components/page-skeletons"
 import { fetchPublicLog } from "@/lib/public-api"
 import { relativeTime } from "@/lib/stats-format"
 
@@ -45,19 +45,7 @@ export function PublicTimeline({ slug }: { slug: string }) {
 
   if (error) return <p className="text-muted-foreground p-8 text-sm">{error}</p>
   if (!page) {
-    return (
-      <div className="mx-auto w-full max-w-3xl px-8 py-10">
-        {Array.from({ length: 6 }, (_, i) => (
-          <div key={i} className="mb-5 flex gap-4">
-            <Skeleton className="size-3 shrink-0 rounded-full" />
-            <div className="flex-1">
-              <Skeleton className="mb-2 h-3.5" style={{ width: `${45 + ((i * 23) % 40)}%` }} />
-              <Skeleton className="h-3 w-32" />
-            </div>
-          </div>
-        ))}
-      </div>
-    )
+    return <PublicTimelineSkeleton />
   }
   if (commits.length === 0) {
     return (

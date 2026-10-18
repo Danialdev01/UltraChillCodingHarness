@@ -2,11 +2,14 @@
  * The project's real files, over the API.
  *
  * Everything here is a thin call to `/api/projects/{hash}/file(s)`, which
- * reads and writes `WORKSPACE_ROOT/{projectId}` on the server -- the same
+ * reads and writes `WORKSPACE_ROOT/{projectId}` on the server -- or a
+ * project session's own worktree, when the target names one -- the same
  * directory the agent's tools work in, so what the tree shows is what the
  * model sees. Nothing is cached here; the panel holds the tree and the
  * editor holds the buffers, and both refetch when a change is announced.
  */
+
+import { projectApiUrl, type ProjectTarget } from "./project-target";
 
 /** A directory is `{ name, children }`; a file is `{ name }`. */
 export interface FileNode {
@@ -20,23 +23,23 @@ async function fail(response: Response, fallback: string): Promise<never> {
   throw new Error(body.error ?? fallback);
 }
 
-export async function fetchTree(hash: string): Promise<{ tree: FileNode[]; truncated: boolean }> {
-  const response = await fetch(`/api/projects/${hash}/files`, { credentials: "include" });
+export async function fetchTree(target: ProjectTarget): Promise<{ tree: FileNode[]; truncated: boolean }> {
+  const response = await fetch(projectApiUrl(target, "files"), { credentials: "include" });
   if (!response.ok) await fail(response, "Could not read the project's files.");
   return (await response.json()) as { tree: FileNode[]; truncated: boolean };
 }
 
-export async function fetchFile(hash: string, path: string): Promise<string> {
-  return (await fetchFileVersion(hash, path)).content;
+export async function fetchFile(target: ProjectTarget, path: string): Promise<string> {
+  return (await fetchFileVersion(target, path)).content;
 }
 
 /** A file's text and the version naming it, for a save that must not overwrite another. */
 export async function fetchFileVersion(
-  hash: string,
+  target: ProjectTarget,
   path: string,
 ): Promise<{ content: string; version: string | null }> {
   const response = await fetch(
-    `/api/projects/${hash}/file?path=${encodeURIComponent(path)}`,
+    projectApiUrl(target, "file", { path }),
     { credentials: "include" },
   );
   if (!response.ok) await fail(response, "Could not open the file.");
@@ -63,12 +66,12 @@ export class FileConflictError extends Error {
  * Resolves with the new version.
  */
 export async function saveFile(
-  hash: string,
+  target: ProjectTarget,
   path: string,
   content: string,
   ifVersion?: string | null,
 ): Promise<string | null> {
-  const response = await fetch(`/api/projects/${hash}/file`, {
+  const response = await fetch(projectApiUrl(target, "file"), {
     method: "PUT",
     headers: { "content-type": "application/json" },
     credentials: "include",
@@ -93,11 +96,11 @@ export async function saveFile(
 }
 
 export async function createEntry(
-  hash: string,
+  target: ProjectTarget,
   path: string,
   kind: "file" | "directory",
 ): Promise<void> {
-  const response = await fetch(`/api/projects/${hash}/file`, {
+  const response = await fetch(projectApiUrl(target, "file"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     credentials: "include",
@@ -107,8 +110,8 @@ export async function createEntry(
 }
 
 /** Renames or relocates a file or folder, contents and all. */
-export async function moveEntry(hash: string, from: string, to: string): Promise<void> {
-  const response = await fetch(`/api/projects/${hash}/file`, {
+export async function moveEntry(target: ProjectTarget, from: string, to: string): Promise<void> {
+  const response = await fetch(projectApiUrl(target, "file"), {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     credentials: "include",
@@ -117,9 +120,9 @@ export async function moveEntry(hash: string, from: string, to: string): Promise
   if (!response.ok) await fail(response, `Could not move ${from}.`);
 }
 
-export async function deleteEntry(hash: string, path: string): Promise<void> {
+export async function deleteEntry(target: ProjectTarget, path: string): Promise<void> {
   const response = await fetch(
-    `/api/projects/${hash}/file?path=${encodeURIComponent(path)}`,
+    projectApiUrl(target, "file", { path }),
     { method: "DELETE", credentials: "include" },
   );
   if (!response.ok) await fail(response, `Could not delete ${path}.`);
@@ -133,8 +136,8 @@ export async function deleteEntry(hash: string, path: string): Promise<void> {
  * -- are what make displaying a workspace file safe. Routing it through a
  * blob would strip exactly those.
  */
-export function rawFileUrl(hash: string, path: string): string {
-  return `/api/projects/${hash}/file/raw?path=${encodeURIComponent(path)}`;
+export function rawFileUrl(target: ProjectTarget, path: string): string {
+  return projectApiUrl(target, "file/raw", { path });
 }
 
 /** "app/page.tsx" -> "page.tsx" */

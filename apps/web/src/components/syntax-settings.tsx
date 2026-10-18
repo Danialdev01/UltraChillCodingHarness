@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { CodeIcon, RotateCcwIcon } from "lucide-react"
+import { AlertTriangleIcon, CheckIcon, CodeIcon, RotateCcwIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,7 +12,8 @@ import {
   type SyntaxRole,
   type SyntaxTheme,
 } from "@/lib/syntax-theme"
-import { deriveTheme, isValidHex, normalizeHex } from "@/lib/theme"
+import type { SelectionColors } from "@/lib/selection-color"
+import { contrast, isValidHex, normalizeHex } from "@/lib/theme"
 
 /**
  * A sample of code, one span per token, coloured by the same variables the
@@ -72,8 +73,8 @@ const SAMPLE: ReadonlyArray<ReadonlyArray<[SyntaxRole | null, string]>> = [
  * those defaults into a custom set so the other roles stay as they were.
  */
 export function SyntaxSettings() {
-  const { theme, syntax, setSyntax } = useTheme()
-  const dark = deriveTheme(theme).dark
+  const { syntax, setSyntax, resolvedMode, tokens, selection } = useTheme()
+  const dark = resolvedMode === "dark"
   const effective: SyntaxTheme = syntax ?? defaultSyntaxTheme(dark)
 
   // Drafts so a half-typed hex is not normalised out from under the cursor;
@@ -116,6 +117,8 @@ export function SyntaxSettings() {
         ))}
       </pre>
 
+      <SelectionPreview selection={selection} syntax={effective} background={tokens.background!} />
+
       <div className="mt-5 grid max-w-xl gap-3">
         {SYNTAX_ROLES.map((role) => (
           <div key={role.key} className="flex flex-wrap items-center gap-3">
@@ -138,6 +141,8 @@ export function SyntaxSettings() {
               </p>
               <p className="text-muted-foreground truncate text-xs">{role.hint}</p>
             </div>
+
+            <ContrastBadge color={effective[role.key]} surfaces={[tokens.background!, tokens.card!, tokens.muted!]} />
 
             <Input
               value={drafts[role.key]}
@@ -169,5 +174,89 @@ export function SyntaxSettings() {
         </span>
       </div>
     </section>
+  )
+}
+
+/** One selected line: a comment, then a keyword and plain text. */
+const SELECTED_SAMPLE: ReadonlyArray<ReadonlyArray<[SyntaxRole | null, string]>> = [
+  [["comment", "%% Write the schema here"]],
+  [["keyword", "PK"], [null, " "], ["type", "uuid"], [null, " id "], ["string", '"project"']],
+]
+
+/**
+ * Selected text as the editor paints it, focused and unfocused, on the
+ * editor's own background. The selection is derived from the accent rather
+ * than used as picked (see `selection-color.ts`); when it had to move for a
+ * token to stay readable, this says so -- the pick itself is left alone.
+ */
+function SelectionPreview({
+  selection,
+  syntax,
+  background,
+}: {
+  selection: SelectionColors
+  syntax: SyntaxTheme
+  background: string
+}) {
+  const states = [
+    ["Focused", selection.focused],
+    ["Unfocused", selection.unfocused],
+  ] as const
+  return (
+    <div className="mt-5 max-w-xl">
+      <h3 className="text-sm font-medium">Selected text</h3>
+      <div
+        aria-label="Selected text sample"
+        className="border-border mt-2 grid gap-2 rounded-md border p-3 font-mono text-xs leading-relaxed"
+        style={{ backgroundColor: background }}
+      >
+        {states.map(([label, state]) => (
+          <div key={label} className="flex items-start gap-3">
+            <span className="text-muted-foreground w-20 shrink-0 font-sans">{label}</span>
+            <pre className="m-0">
+              {SELECTED_SAMPLE.map((line, i) => (
+                <React.Fragment key={i}>
+                  <span style={{ backgroundColor: state.background }}>
+                    {line.map(([role, text], j) => (
+                      <span key={j} style={{ color: state.text ?? (role ? syntax[role] : undefined) }}>
+                        {text}
+                      </span>
+                    ))}
+                  </span>
+                  {"\n"}
+                </React.Fragment>
+              ))}
+            </pre>
+          </div>
+        ))}
+      </div>
+      {selection.focused.adjusted && (
+        <p className="text-muted-foreground mt-2 text-xs">
+          Adjusted for readability: the selection is shifted from your accent so every code
+          colour stays readable on it
+          {selection.focused.text ? ", and selected text is shown in a single colour" : ""}.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * A colour's contrast against the editor's surfaces, live. Code colours are
+ * the user's to choose, but a comment you cannot read is still a bug: below
+ * 4.5:1 this says so, with an icon as well as colour.
+ */
+function ContrastBadge({ color, surfaces }: { color: string; surfaces: string[] }) {
+  const ratio = Math.min(...surfaces.map((s) => contrast(color, s)))
+  const ok = ratio >= 4.5
+  return (
+    <span
+      className={"inline-flex w-20 items-center gap-1 font-mono text-xs " + (ok ? "text-muted-foreground" : "text-warning")}
+      title={ok ? "Readable (WCAG AA)" : "Below 4.5:1 on the editor background"}
+    >
+      {ok ? <CheckIcon className="size-3" aria-hidden /> : <AlertTriangleIcon className="size-3" aria-hidden />}
+      {ratio.toFixed(1)}:1
+      <span className="sr-only">{ok ? "contrast passes" : "contrast too low"}</span>
+    </span>
   )
 }

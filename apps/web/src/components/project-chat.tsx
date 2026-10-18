@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent, type ReactNode, type Ref } from "react";
 import {
   AlertCircleIcon,
   ArrowDownIcon,
+  AsteriskIcon,
   ArrowUpIcon,
   BlocksIcon,
+  BotIcon,
   BrainIcon,
   CheckIcon,
   CodeIcon,
@@ -14,6 +16,9 @@ import {
   ChevronUpIcon,
   CopyIcon,
   DownloadIcon,
+  EraserIcon,
+  FileTextIcon,
+  GaugeIcon,
   ImageIcon,
   Loader2Icon,
   PaperclipIcon,
@@ -23,6 +28,7 @@ import {
   TelescopeIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
+  UploadIcon,
   XIcon,
 } from "lucide-react";
 
@@ -30,6 +36,8 @@ import { useFilesPanel } from "@/components/files-panel";
 import {
   EffortSelect,
   ModelSelect,
+  describeEffort,
+  NATIVE_EFFORTS,
   useModels,
   type ModelChoice,
 } from "@/components/model-picker";
@@ -72,7 +80,8 @@ import {
   rememberLastProvider,
 } from "@/lib/model-preference";
 import { ProviderSelect, useProviders } from "@/components/provider-picker";
-import { billingLabel, type ProviderId } from "@/lib/providers-api";
+import { billingLabel, providerBlocker, type ProviderId } from "@/lib/providers-api";
+import { readCredentialChoice } from "@/lib/credential-choice";
 import { composerMaxLines, MIN_COMPOSER_LINES } from "@/lib/composer-size";
 import { historyDirection, idleCursor, step, type HistoryCursor } from "@/lib/prompt-history";
 import {
@@ -93,25 +102,45 @@ import {
   type ChatMessage,
   type ToolPart,
 } from "@/lib/chat-messages";
-import { readRatings, transcript, writeRating, type Rating } from "@/lib/chat-feedback";
+import { readRatings, writeRating, type Rating } from "@/lib/chat-feedback";
 import { copyText } from "@/lib/clipboard";
 import { codeChatPrompt, type CodeReference } from "@/lib/code-chat";
-import { basename } from "@/lib/files-api";
-import type { ComposerDraft, MessageImage, ReasoningEffort } from "@ucch/protocol";
-import type { Project } from "@/lib/session";
+import { basename, dirname } from "@/lib/files-api";
+import { flattenEntries } from "@/lib/file-tree";
+import { insertMention, mentionAt, rankEntries, type Mention } from "@/lib/file-mention";
+import { matchCommands, matchOptions, SLASH_COMMANDS, slashAt, type Slash } from "@/lib/slash-commands";
+import { ComposerMenu, type MenuRow } from "@/components/composer-menu";
+import { FileTypeIcon } from "@/components/file-type-icon";
+import { ConversationSkeleton } from "@/components/page-skeletons";
+import type { ComposerDraft, MessageImage, MessageMode, ReasoningEffort } from "@ucch/protocol";
+import type { Project, ProjectSession } from "@/lib/session";
 import { ServerError } from "@/lib/client";
 import { createComposerSync, type ComposerSync } from "@/lib/composer-sync";
-import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents, useToast } from "@/lib/realtime";
+import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents } from "@/lib/realtime";
+import { isTaskThreadTitle } from "@/lib/tasks-api";
+import { NEW_SESSION_NAME, renameProject, sessionTitleFrom } from "@/lib/create-project";
+import { useRouter } from "next/navigation";
+import { keepSession, removeWhenLeft, startProjectSession } from "@/lib/project-sessions";
+import { projectHref } from "@/lib/sections";
+import { useTransitionRouter } from "@/lib/view-transitions";
+import { useViewerFirstName } from "@/components/viewer";
+
+/** Which menu the composer has open, and the word it was opened by. */
+type ComposerMenuState = { kind: "mention"; mention: Mention } | { kind: "slash"; slash: Slash };
 
 /**
- * The conversation view for one project.
+ * The conversation view for one project -- or, given `session`, for that one
+ * session of it, the conversation `/{ws}/p/{project}/{session}` names.
  *
  * Everything on screen is derived from the event log rather than held
  * separately: a message is what the server recorded, and a reply in progress
  * is the deltas that have arrived so far. Reloading mid-turn therefore shows
  * the same thread, because there is no local state to lose.
  */
-export function ProjectChat({ project }: { project: Project }) {
+export function ProjectChat({ project, session }: { project: Project; session?: ProjectSession }) {
+  const sessionId = session?.id ?? null;
+  const sessionProvider = session?.provider ?? null;
+  const transitionRouter = useTransitionRouter();
   // Owned by the effect below rather than by a memo: the effect is what
   // connects and what closes, so tying the client's lifetime to anything else
   // leaves a socket alive that nothing is reading. A ref, because the
@@ -119,6 +148,9 @@ export function ProjectChat({ project }: { project: Project }) {
   const clientRef = useRef<UcchClient | null>(null);
   const [events, setEvents] = useState<readonly ClientEvent[]>([]);
   const [threadId, setThreadId] = useState<string | null>(null);
+  // Until the opening thread's history has replayed, an empty `events` means
+  // "not here yet" rather than "nothing said", and the list is a skeleton.
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<readonly Attachment[]>([]);
   /**
@@ -180,7 +212,7 @@ export function ProjectChat({ project }: { project: Project }) {
    * socket that is already open rather than a second one of its own, and an
    * open file the model rewrote is reread underneath the editor.
    */
-  const { noteChanged } = useFilesPanel();
+  const { noteChanged, tree } = useFilesPanel();
   const seenFileEvents = useRef(0);
 
   useEffect(() => {
@@ -211,16 +243,24 @@ export function ProjectChat({ project }: { project: Project }) {
   const cli = provider !== "native";
 
   /**
-   * Whether the next message runs the research pipeline before anything
-   * else. Stays on across sends, like a mode rather than an attachment: a
-   * person researching asks several questions in a row.
+   * The mode the next message runs in, or null for an ordinary coding turn.
+   * Stays on across sends, like a mode rather than an attachment: a person
+   * researching, or working on a document, asks several things in a row.
+   * One value rather than a flag per mode, so turning one on turns the
+   * other off.
    *
-   * Any provider, any thread. On the native loop the research is the turn;
-   * on Claude Code or Codex it runs first, on OpenRouter, and the CLI is
-   * handed the brief with the message -- so a thread that has been running
-   * under a CLI for an hour can still switch it on for the next question.
+   * Any provider, any thread. Research on the native loop is the turn; on
+   * Claude Code or Codex it runs first, on OpenRouter, and the CLI is handed
+   * the brief with the message. Documentation on the native loop gets the
+   * typed document tools; a CLI is handed the same rules and scripts.
    */
-  const [research, setResearch] = useState(false);
+  const [mode, setMode] = useState<MessageMode | null>(null);
+  const research = mode === "research";
+  const documentation = mode === "documentation";
+  const toggleMode = useCallback(
+    (next: MessageMode) => setMode((current) => (current === next ? null : next)),
+    [],
+  );
 
   const chooseProvider = useCallback(
     (id: ProviderId) => {
@@ -311,6 +351,22 @@ export function ProjectChat({ project }: { project: Project }) {
   const reasons = models.find((m) => m.id === model)?.reasoning ?? false;
 
   /**
+   * The effort levels the chosen model takes, or null for none. OpenRouter
+   * says per model whether it reasons; a CLI lists its levels per model, and
+   * one that lists none (Codex, so far) gets no control at all.
+   */
+  const effortLevels: readonly ReasoningEffort[] | null = useMemo(() => {
+    if (!cli) return reasons ? NATIVE_EFFORTS : null;
+    const levels = providers.cards?.[provider]?.models.find((m) => m.id === cliModel)?.efforts;
+    return levels?.length ? ["off", ...levels] : null;
+  }, [cli, reasons, providers.cards, provider, cliModel]);
+  // One choice serves every harness, so a level the current model does not
+  // take -- `max`, carried back to OpenRouter -- falls back to the default
+  // rather than being sent to be refused.
+  const sentEffort: ReasoningEffort =
+    effortLevels?.includes(effort) ? effort : "off";
+
+  /**
    * Pictures attached to a model that cannot look at them.
    *
    * Checked here rather than left to the server, which would fail the turn
@@ -332,28 +388,47 @@ export function ProjectChat({ project }: { project: Project }) {
       await client.connect();
       if (cancelled) return;
 
-      // A project's conversation lives in a thread. Reuse the newest one so a
-      // reload continues where it left off; only create when there is none.
-      const response = await fetch(`/api/projects/${project.hash}/threads`, {
-        credentials: "include",
-      });
-      const newest = response.ok
-        ? ((await response.json()) as { threads: Array<{ id: string; provider?: string | null }> })
-            .threads[0]
-        : undefined;
+      // A session's page names its thread. Otherwise -- a session
+      // workspace's session, which is a project of its own -- the
+      // conversation is the project's newest thread, so a reload continues
+      // where it left off; only create when there is none.
+      let opened: { id: string; provider?: string | null } | undefined;
+      if (sessionId) {
+        opened = { id: sessionId, provider: sessionProvider };
+      } else {
+        const response = await fetch(`/api/projects/${project.hash}/threads`, {
+          credentials: "include",
+        });
+        const listed = response.ok
+          ? ((await response.json()) as {
+              threads: Array<{ id: string; title?: string; provider?: string | null }>
+            }).threads
+          : [];
+        // The newest conversation, passing over the Tasks board's own
+        // threads: those are the pipeline's work, not where the person
+        // left off.
+        opened = listed.find((t) => !isTaskThreadTitle(t.title));
+      }
 
       if (cancelled) return;
-      const id = newest?.id ?? (await createThread(client, project.id));
+      const id = opened?.id ?? (await createThread(client, project));
       if (cancelled || !id) return;
 
       setThreadId(id);
       // A thread that has run is bound to its provider; the picker shows it
       // locked rather than offering a switch the server would refuse.
-      setBoundProvider(isProviderId(newest?.provider) ? newest.provider : null);
+      setBoundProvider(isProviderId(opened?.provider) ? opened.provider : null);
+      // Subscribing on a ready socket waits for the ack, which carries the
+      // replayed history -- on one still opening it would return at once.
+      await client.whenReady();
+      if (cancelled) return;
       await client.subscribe({ name: "thread", threadId: id });
+      if (!cancelled) setHistoryLoaded(true);
     })().catch(() => {
       // The socket closing mid-setup is ordinary: unmount, or a drop the
-      // client will reconnect from on its own.
+      // client will reconnect from on its own. Either way, stop drawing a
+      // skeleton over a conversation that may simply be empty.
+      if (!cancelled) setHistoryLoaded(true);
     });
 
     return () => {
@@ -362,15 +437,18 @@ export function ProjectChat({ project }: { project: Project }) {
       client.close();
       clientRef.current = null;
     };
-  }, [project.id, project.hash]);
+    // The session's provider is read once, with its id: it only matters
+    // until the thread's own events say otherwise.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id, project.hash, sessionId]);
 
   /**
    * "Clear context" in another window starts a new thread; this one follows
    * it when it was showing the newest conversation -- the one the other
    * window just moved on from. A window deliberately left on an older thread
-   * stays there.
+   * stays there. A project session's page does not follow: it is the
+   * conversation its address names, and a new one has an address of its own.
    */
-  const toast = useToast();
   const threadIdRef = useRef<string | null>(null);
   threadIdRef.current = threadId;
   const newestRef = useRef<string | null>(null);
@@ -379,7 +457,7 @@ export function ProjectChat({ project }: { project: Project }) {
   }, [threadId]);
 
   useProjectEvents(project.id, (event) => {
-    if (event.type !== "thread.created" || event.projectId !== project.id) return;
+    if (sessionId || event.type !== "thread.created" || event.projectId !== project.id) return;
     const followed = threadIdRef.current === newestRef.current;
     newestRef.current = event.threadId;
     if (!followed || threadIdRef.current === event.threadId) return;
@@ -408,8 +486,8 @@ export function ProjectChat({ project }: { project: Project }) {
    *
    * What is typed here goes to the server after a short pause and appears in
    * the others as it lands; theirs appears here the same way. Two windows
-   * typing at once is a conflict the server settles: the later one is told,
-   * and its unsent keystrokes are replaced by what the other wrote.
+   * typing at once is a conflict the server settles: the later one's unsent
+   * keystrokes are quietly replaced by what the other wrote.
    */
   const syncRef = useRef<ComposerSync | null>(null);
   useEffect(() => {
@@ -427,36 +505,31 @@ export function ProjectChat({ project }: { project: Project }) {
           ...current.filter((a) => a.status === "uploading"),
         ]);
         setReference(draft.reference);
-        if (draft.research !== undefined) setResearch(draft.research);
+        const synced = draftMode(draft);
+        if (synced !== undefined) setMode(synced);
         if (draft.effort !== undefined) setEffort(draft.effort);
       },
-      onReverted: () =>
-        toast({
-          tone: "error",
-          title: "The prompt was changed in another window",
-          description: "You were both typing; your latest keystrokes were reverted to theirs.",
-        }),
     });
     syncRef.current = sync;
     const off = client.onEvent(({ event }) => {
       if (event.type !== "composer.changed" || event.threadId !== threadId) return;
       const own = isOwnChange(event.origin);
       if (!own && event.origin) setRemoteTypingAt(Date.now());
-      sync.remote({ rev: event.rev, draft: event.draft, own });
+      sync.remote({ rev: event.rev, draft: event.draft, own, typed: !own && !!event.origin });
     });
     return () => {
       off();
       sync.dispose();
       if (syncRef.current === sync) syncRef.current = null;
     };
-  }, [threadId, toast]);
+  }, [threadId]);
 
   // Every local change to the box -- typing, a chip, a toggle -- goes out.
   // A change that came in from elsewhere is the synced draft already, and
   // `local` ignores it.
   useEffect(() => {
-    syncRef.current?.local(composerDraft(draft, attachments, reference, research, effort));
-  }, [draft, attachments, reference, research, effort]);
+    syncRef.current?.local(composerDraft(draft, attachments, reference, mode, effort));
+  }, [draft, attachments, reference, mode, effort]);
 
   /**
    * Whether the thread follows the reply as it streams.
@@ -547,13 +620,61 @@ export function ProjectChat({ project }: { project: Project }) {
     [events, threadId],
   );
 
+  /**
+   * Where a project session's worktree is. Until git has made it nothing can
+   * be sent -- the agent would have no tree to work in -- and if git refused,
+   * the session cannot run at all and says why. Null for a conversation in
+   * the project's main checkout, which has no worktree to wait for.
+   */
+  const worktree = useMemo(() => {
+    if (!session?.branch) return null;
+    let state = session.worktreeState;
+    let failure = session.worktreeError;
+    for (const row of threadEvents) {
+      if (row.event.type === "thread.worktree_ready") {
+        state = "ready";
+        failure = null;
+      } else if (row.event.type === "thread.worktree_failed") {
+        state = "error";
+        failure = row.event.error;
+      }
+    }
+    return { branch: session.branch, state, failure };
+  }, [session, threadEvents]);
+  const worktreeBlocked = worktree !== null && worktree.state !== "ready";
+
   const { messages, running, active, prompts, contextTokens } = useMemo(
     () => toMessages(threadEvents),
     [threadEvents],
   );
 
   /**
-   * Alt+Up / Alt+Down through what was asked before. The entries are the
+   * Leaving a project session nothing was said in removes it, so starting
+   * one and walking away does not leave it in the list. Only a request: the
+   * server removes it only if it is still empty -- no turn, no edit, no
+   * commit -- so a session holding any work stays whatever this thinks.
+   */
+  const leftEmpty = useRef(true);
+  leftEmpty.current = messages.length === 0 && draft.trim() === "" && attachments.length === 0;
+  const sessionHash = session?.hash ?? null;
+  useEffect(() => {
+    if (!sessionHash) return;
+    keepSession(sessionHash);
+    return () => {
+      if (leftEmpty.current) removeWhenLeft(project.hash, sessionHash);
+    };
+  }, [project.hash, sessionHash]);
+
+  // Settled in another window, or from the sidebar: this session is gone,
+  // so go to the project, which opens where it was left off.
+  useProjectEvents(project.id, (event) => {
+    if (event.type !== "thread.removed" || !sessionId || event.threadId !== sessionId) return;
+    if (project.workspaceHash) transitionRouter.replace(projectHref(project.workspaceHash, "project", project.hash));
+  });
+
+  /**
+   * Up / Down (with the caret at the end of the draft, or Alt+Up / Alt+Down
+   * anywhere) through what was asked before. The entries are the
    * thread's own user messages, oldest first; the cursor resets whenever the
    * draft is edited by hand so a recalled prompt that was then changed is
    * treated as new typing, not as a position in the walk.
@@ -581,6 +702,54 @@ export function ProjectChat({ project }: { project: Project }) {
     [draft, promptHistory],
   );
 
+  /**
+   * The menus the composer opens over itself: `@` lists the project's files
+   * and folders, and puts the picked one's path in the draft; `/` at the start
+   * lists the app's own commands. Both are read from the caret rather than
+   * from keys, so a click or arrow back into an `@word` reopens its menu.
+   */
+  const menuListId = useId();
+  const mentionEntries = useMemo(() => flattenEntries(tree), [tree]);
+  const [menu, setMenu] = useState<ComposerMenuState | null>(null);
+  const [menuIndex, setMenuIndex] = useState(0);
+  const mentionResults = useMemo(
+    () => (menu?.kind === "mention" ? rankEntries(mentionEntries, menu.mention.query) : []),
+    [menu, mentionEntries],
+  );
+  // The menu Escape closed. React's `onSelect` fires on keyup too, so without
+  // this the caret, still in the `@word`, would open it straight back.
+  const dismissedMenu = useRef<string | null>(null);
+  const trackMenus = useCallback(() => {
+    const el = draftRef.current;
+    const caret = el && document.activeElement === el && el.selectionStart === el.selectionEnd
+      ? el.selectionStart
+      : null;
+    let next: ComposerMenuState | null = null;
+    if (el && caret !== null) {
+      const slash = slashAt(el.value, caret);
+      const mention = slash ? null : mentionAt(el.value, caret);
+      next = slash ? { kind: "slash", slash } : mention ? { kind: "mention", mention } : null;
+    }
+    const key = next && JSON.stringify(next);
+    if (key && key === dismissedMenu.current) next = null;
+    else dismissedMenu.current = null;
+    // The same menu is kept as the same object, so the selection survives a
+    // caret event that changed nothing.
+    setMenu((current) => (current && JSON.stringify(current) === key ? current : next));
+  }, []);
+  // Every change to the draft -- typed, sent, recalled, or synced from another
+  // window -- is a chance the caret has left the menu's word.
+  useEffect(trackMenus, [draft, trackMenus]);
+  useEffect(() => setMenuIndex(0), [menu]);
+
+  /** The draft as given, the caret at `caret`, and the menu re-read from there. */
+  const replaceDraft = useCallback((text: string, caret: number) => {
+    history.current = idleCursor;
+    setDraft(text);
+    setMenu(null);
+    requestAnimationFrame(() => draftRef.current?.setSelectionRange(caret, caret));
+  }, []);
+
   // Thumbs, per conversation. Read once the thread is known and written
   // through to storage on every click; see lib/chat-feedback.ts for what
   // they are and are not yet.
@@ -595,7 +764,6 @@ export function ProjectChat({ project }: { project: Project }) {
     },
     [threadId],
   );
-  const copyConversation = useCallback(() => copyText(transcript(messages)), [messages]);
 
   /**
    * Posts one message to the thread with the current model and provider.
@@ -617,16 +785,43 @@ export function ProjectChat({ project }: { project: Project }) {
         // A CLI provider names its own models, remembered separately from the
         // OpenRouter one so switching back does not lose either choice.
         ...(cli ? (cliModel ? { model: cliModel } : {}) : model ? { model } : {}),
-        ...(cli ? {} : { effort }),
+        // A hidden select sends nothing: an effort left over from the last
+        // model would otherwise ride along to one that cannot use it.
+        ...(effortLevels ? { effort: sentEffort } : {}),
         provider,
-        ...(research ? { mode: "research" as const } : {}),
+        ...(mode ? { mode } : {}),
       });
       // From here on the thread is bound, whatever the picker said before.
       setBoundProvider(provider);
       // Your own message is the one thing you always want to see land.
       scrollToEnd();
     },
-    [cli, cliModel, effort, model, provider, research, scrollToEnd, threadId],
+    [cli, cliModel, effortLevels, model, mode, provider, scrollToEnd, sentEffort, threadId],
+  );
+
+  /**
+   * A session is called "New session" until its first message, and then
+   * after that message -- the way a thread list titles a conversation. Once
+   * per mount: the prop keeps the old name until the refresh lands, and a
+   * second message in that window must not rename it again.
+   */
+  const plainRouter = useRouter();
+  const sessionNamed = useRef(false);
+  const nameSession = useCallback(
+    (message: string) => {
+      if (sessionNamed.current || project.name !== NEW_SESSION_NAME) return;
+      const title = sessionTitleFrom(message);
+      if (!title) return;
+      sessionNamed.current = true;
+      void renameProject(project.hash, title)
+        .then(() => plainRouter.refresh())
+        // A failed title is cosmetic: the session still works, and the next
+        // message gets another go.
+        .catch(() => {
+          sessionNamed.current = false;
+        });
+    },
+    [project.hash, project.name, plainRouter],
   );
 
   const send = useCallback(async () => {
@@ -637,7 +832,7 @@ export function ProjectChat({ project }: { project: Project }) {
       reference ? (draft.trim() ? codeChatPrompt(reference, draft) : "") : draft,
       attachments,
     );
-    if (!text || !threadId || sending || vision) return;
+    if (!text || !threadId || sending || vision || worktreeBlocked) return;
 
     // The manifest in `text` describes every attachment; this names the ones
     // the model is shown as pictures. Sent alongside rather than instead:
@@ -657,6 +852,7 @@ export function ProjectChat({ project }: { project: Project }) {
     history.current = idleCursor;
     try {
       await dispatchMessage(text, images);
+      nameSession(sent.draft);
     } catch (e) {
       // Put the composer back as it was rather than losing it to a failed
       // send -- including the files, which the user would otherwise have to
@@ -668,7 +864,7 @@ export function ProjectChat({ project }: { project: Project }) {
     } finally {
       setSending(false);
     }
-  }, [attachments, dispatchMessage, draft, reference, sending, threadId, vision]);
+  }, [attachments, dispatchMessage, draft, nameSession, reference, sending, threadId, vision, worktreeBlocked]);
 
   /**
    * `:chat` from the editor: the lines it was typed over become a chip on the
@@ -736,6 +932,18 @@ export function ProjectChat({ project }: { project: Project }) {
     },
     [project.hash],
   );
+
+  /**
+   * Files dragged in from the desktop, anywhere over the panel.
+   *
+   * A depth count rather than a flag: dragenter and dragleave fire for every
+   * child the pointer crosses, so a flag would flicker the overlay off each
+   * time it passed over a message. Only drags carrying files count -- text
+   * or a link dragged within the page is left to its usual handling.
+   */
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const carriesFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files");
 
   /**
    * Drops a chip, and the staged file with it.
@@ -812,6 +1020,10 @@ export function ProjectChat({ project }: { project: Project }) {
    * start somewhere else. The old conversation stays in the log -- it is
    * what the turns and checkpoints hang off -- and simply stops being the
    * one this view is subscribed to.
+   *
+   * In a project session the new thread is a new session, at an address of
+   * its own: forked from this session's branch, so the work on disk carries
+   * over while the conversation starts again.
    */
   const clearContext = useCallback(async () => {
     const client = clientRef.current;
@@ -820,7 +1032,12 @@ export function ProjectChat({ project }: { project: Project }) {
     setClearing(true);
     setError(null);
     try {
-      const id = await createThread(client, project.id);
+      if (session && project.workspaceHash) {
+        const next = await startProjectSession(client, project, { baseBranch: session.branch });
+        transitionRouter.push(projectHref(project.workspaceHash, "project", project.hash, next.hash));
+        return;
+      }
+      const id = await createThread(client, project);
       if (!id) throw new Error("could not start a new conversation");
       await client.subscribe({ name: "thread", threadId: id });
       setThreadId(id);
@@ -831,28 +1048,193 @@ export function ProjectChat({ project }: { project: Project }) {
     } finally {
       setClearing(false);
     }
-  }, [clearing, project.id, running]);
+  }, [clearing, project, running, session, transitionRouter]);
 
+  /**
+   * What the open menu lists, each row with what picking it does.
+   *
+   * A command that takes a value is a step, not an action: picking `/model`
+   * types `/model ` and the same menu lists the models. Everything else runs
+   * and empties the box -- a command is never sent to the agent.
+   */
+  const menuItems: { row: MenuRow; pick: () => void }[] = (() => {
+    if (!menu) return [];
+    if (menu.kind === "mention") {
+      const { mention } = menu;
+      return mentionResults.map((entry) => ({
+        row: {
+          key: entry.path,
+          icon: <FileTypeIcon name={entry.name} kind={entry.kind} />,
+          label: entry.name,
+          detail: dirname(entry.path),
+          detailRtl: true,
+        },
+        pick: () => {
+          const el = draftRef.current;
+          if (!el) return;
+          const next = insertMention(draft, mention, el.selectionStart, entry);
+          replaceDraft(next.text, next.caret);
+        },
+      }));
+    }
+
+    const { slash } = menu;
+    const done = () => replaceDraft("", 0);
+    const icon = (Icon: typeof BotIcon) => <Icon className="text-muted-foreground size-4 shrink-0" />;
+    if (slash.arg === null) {
+      return matchCommands(SLASH_COMMANDS, slash.name)
+        .filter((command) => command.takesArg !== "effort" || effortLevels)
+        .map((command) => {
+          const step = () => replaceDraft(`/${command.name} `, command.name.length + 2);
+          const row = { key: command.name, label: `/${command.name}`, detail: command.description };
+          switch (command.name) {
+            case "clear":
+              return { row: { ...row, icon: icon(EraserIcon) }, pick: () => (done(), void clearContext()) };
+            case "research":
+              return {
+                row: { ...row, icon: icon(TelescopeIcon), detail: `Research is ${research ? "on" : "off"}` },
+                pick: () => (done(), toggleMode("research")),
+              };
+            case "documentation":
+              return {
+                row: {
+                  ...row,
+                  icon: icon(FileTextIcon),
+                  detail: `Documentation is ${documentation ? "on" : "off"}`,
+                },
+                pick: () => (done(), toggleMode("documentation")),
+              };
+            case "attach":
+              return { row: { ...row, icon: icon(PaperclipIcon) }, pick: () => (done(), fileRef.current?.click()) };
+            case "harness":
+              return boundProvider
+                ? {
+                    row: { ...row, icon: icon(BotIcon), disabled: true, detail: "Locked to this thread — /clear to switch" },
+                    pick: () => {},
+                  }
+                : { row: { ...row, icon: icon(BotIcon) }, pick: step };
+            case "effort":
+              return { row: { ...row, icon: icon(GaugeIcon) }, pick: step };
+            default:
+              return { row: { ...row, icon: icon(BrainIcon) }, pick: step };
+          }
+        });
+    }
+
+    switch (SLASH_COMMANDS.find((c) => c.name === slash.name)?.takesArg) {
+      case "model":
+        return matchOptions(catalogue, slash.arg, (m) => `${m.name} ${m.id}`)
+          .slice(0, 50)
+          .map((m) => ({
+            row: { key: m.id, icon: icon(BrainIcon), label: m.name, detail: m.provider, current: m.id === activeModel },
+            pick: () => (done(), chooseModel(m.id)),
+          }));
+      case "effort":
+        return matchOptions(effortLevels ?? [], slash.arg, (e) => describeEffort(e, cli).label).map((e) => {
+          const { label, hint } = describeEffort(e, cli);
+          return {
+            row: { key: e, icon: icon(GaugeIcon), label, detail: hint, current: e === sentEffort },
+            pick: () => (done(), setEffort(e)),
+          };
+        });
+      case "harness":
+        if (boundProvider) return [];
+        return matchOptions(Object.values(providers.cards ?? {}), slash.arg, (card) => card.label).map((card) => {
+          const blocker = providerBlocker(card);
+          return {
+            row: {
+              key: card.id,
+              icon: icon(BotIcon),
+              label: card.label,
+              detail: blocker ?? undefined,
+              disabled: blocker !== null,
+              current: card.id === provider,
+            },
+            pick: () => {
+              if (blocker) return;
+              done();
+              chooseProvider(card.id);
+            },
+          };
+        });
+      default:
+        return [];
+    }
+  })();
+
+  /** A conversation with nothing in it yet: the opening screen. */
+  const empty = historyLoaded && messages.length === 0 && !active && prompts.length === 0;
 
   return (
     // `@container`, not viewport breakpoints: the chat is a panel, not the
     // window. The file tree opens beside it and the sidebar collapses, so it
     // can be phone-narrow on a desktop -- and everything inside sizes against
     // this box rather than against a screen it may only have a third of.
-    <div ref={panelRef} className="@container flex min-h-0 flex-1 flex-col">
+    <div
+      ref={panelRef}
+      className="@container relative flex min-h-0 flex-1 flex-col"
+      onDragEnter={(e) => {
+        if (!carriesFiles(e)) return;
+        e.preventDefault();
+        dragDepth.current += 1;
+        setDragging(true);
+      }}
+      onDragOver={(e) => {
+        if (!carriesFiles(e)) return;
+        // Without this the browser opens the file instead of dropping it here.
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(e) => {
+        if (!carriesFiles(e)) return;
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragging(false);
+      }}
+      onDrop={(e) => {
+        if (!carriesFiles(e)) return;
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragging(false);
+        void addFiles(e.dataTransfer.files);
+      }}
+    >
+      {/* Over everything, and deaf to the pointer so the drag events keep
+          landing on the panel underneath rather than on the overlay. */}
+      {dragging && (
+        <div className="bg-background/80 pointer-events-none absolute inset-0 z-50 flex p-3 backdrop-blur-sm @md:p-4">
+          <div className="border-primary bg-primary/5 text-primary flex flex-1 flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed">
+            <UploadIcon className="size-8" />
+            <p className="text-base font-medium">Upload File Here</p>
+          </div>
+        </div>
+      )}
       {/* `relative` for the button below, which floats over the thread's
           floor rather than taking a row of its own. */}
-      <div className="relative min-h-0 flex-1">
+      {/* A conversation not yet begun has nothing to read, so on a wide
+          panel the greeting and the box gather in the middle instead of
+          leaving the box on the floor under an empty page: auto margins on
+          the two of them, since the panel is the container and its own
+          `@2xl:` classes would never match. */}
+      <div className={cn("relative min-h-0 flex-1", empty && "@2xl:mt-auto @2xl:flex-none")}>
         <div
           ref={listRef}
           onScroll={noteScroll}
-          className="h-full overflow-y-auto p-3 @md:p-4"
+          className={cn("h-full overflow-y-auto p-3 @md:p-4", empty && "@2xl:h-auto")}
         >
           <div className="mx-auto flex max-w-3xl flex-col gap-3 @md:gap-4">
-            {messages.length === 0 ? (
-              <p className="text-muted-foreground py-8 text-center text-sm">
-                Nothing yet. Ask the agent something about this project.
-              </p>
+            {!historyLoaded && messages.length === 0 ? (
+              <ConversationSkeleton />
+            ) : messages.length === 0 ? (
+              <>
+                <p className="text-muted-foreground py-8 text-center text-sm @2xl:hidden">
+                  Nothing yet. Ask the agent something about this project.
+                </p>
+                {empty && (
+                  <div className="hidden pt-4 pb-2 @2xl:block">
+                    <Greeting />
+                  </div>
+                )}
+              </>
             ) : (
               messages.map((message, i) => (
                 <Message
@@ -866,7 +1248,6 @@ export function ProjectChat({ project }: { project: Project }) {
                   onPreview={setPreviewing}
                   rating={message.turnId ? (ratings[message.turnId] ?? null) : null}
                   onRate={rate}
-                  onCopyConversation={copyConversation}
                   neighbours={neighbours.get(i)}
                   onJump={jumpTo}
                 />
@@ -908,11 +1289,23 @@ export function ProjectChat({ project }: { project: Project }) {
           way, so a long conversation can never squeeze the box you type in. */}
       {/* The safe-area inset is what keeps the composer clear of a phone's
           home indicator, which otherwise sits on top of the send button. */}
-      <div className="shrink-0 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] @md:p-4 @md:pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <div
+        className={cn(
+          "shrink-0 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] @md:p-4 @md:pb-[max(1rem,env(safe-area-inset-bottom))]",
+          // Lifted a little above true centre, where a centred block reads as
+          // centred rather than as sinking.
+          empty && "@2xl:mb-auto @2xl:border-t-0 @2xl:pb-[12vh]",
+        )}
+      >
         {/* A fifth wider than the thread it sits under: the composer is one
             box you work inside -- text, files and the controls that act on
             them -- and it needs the room the reading column does not. */}
-        <div className="mx-auto flex w-full max-w-[57.6rem] flex-col gap-2">
+        <div
+          className={cn(
+            "mx-auto flex w-full max-w-[57.6rem] flex-col gap-2",
+            empty && "@2xl:max-w-3xl",
+          )}
+        >
           {/* Above the box rather than inside it: it is about the turn, not
               about what is being typed, and it must not move the composer
               when it appears and goes. */}
@@ -938,18 +1331,35 @@ export function ProjectChat({ project }: { project: Project }) {
               {vision}
             </p>
           )}
-          {/* The whole box is the input now, not just the textarea: the
-              border and focus ring live out here so the plus and the send
-              button read as being inside the field rather than beside it.
-              `focus-within` puts the ring up when the textarea inside takes
-              focus, which is the only thing that ever does. */}
+          {/* The whole box is the input, not just the textarea: the border
+              and focus ring live out here so the send button reads as being
+              inside the field rather than beside it. `focus-within` puts the
+              ring up when the textarea inside takes focus, which is the only
+              thing that ever does. */}
           <form
-            className="border-input bg-background focus-within:ring-ring flex flex-col rounded-xl border focus-within:ring-2"
+            className={cn(
+              "border-border relative bg-background focus-within:ring-ring/50 flex flex-col rounded-2xl border shadow-sm focus-within:ring-2",
+              empty && "@2xl:shadow-md",
+            )}
             onSubmit={(e) => {
               e.preventDefault();
               void send();
             }}
           >
+            {menu && (
+              <ComposerMenu
+                id={menuListId}
+                rows={menuItems.map((item) => item.row)}
+                selected={menuIndex}
+                empty={
+                  menu.kind === "mention"
+                    ? "No matching files"
+                    : "No matching commands — Enter sends this as a message"
+                }
+                onHover={setMenuIndex}
+                onPick={(index) => menuItems[index]?.pick()}
+              />
+            )}
             {(attachments.length > 0 || reference) && (
               // Inside the box and above the text: what you attached is part
               // of the message you are writing, not a separate tray.
@@ -1034,213 +1444,299 @@ export function ProjectChat({ project }: { project: Project }) {
               </div>
             )}
 
-            <textarea
-              ref={draftRef}
-              value={draft}
-              onChange={(e) => {
-                // Typing leaves the history walk: the text is yours again.
-                history.current = idleCursor;
-                setDraft(e.target.value);
-              }}
-              onPaste={(e) => {
-                // A pasted screenshot is the fastest way to show the agent
-                // what you mean, and it arrives here as a file on the
-                // clipboard -- the same thing the file picker hands over, so
-                // it takes the same path: staged on the server, chipped in the
-                // composer, and named in the message as a picture to look at.
-                const files = clipboardFiles(e.clipboardData);
-                if (files.length === 0) return;
-                // Only a paste with nothing to type is swallowed, so pasting
-                // a table that travels with an image of itself still types.
-                if (!pasteCarriesText(e.clipboardData)) e.preventDefault();
-                void addFiles(files);
-              }}
-              onKeyDown={(e) => {
-                // Enter sends; Shift+Enter is a newline. A chat composer that
-                // needs the mouse to send is a chat composer nobody uses.
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void send();
-                }
-                // What the progress line above says it does.
-                if (e.key === "Escape" && running) {
-                  e.preventDefault();
-                  void cancel();
-                }
-                // Alt+Up recalls the previous prompt; Alt+Down comes forward.
-                const direction = historyDirection(e);
-                if (direction) {
-                  e.preventDefault();
-                  recall(direction);
-                }
-              }}
-              rows={MIN_COMPOSER_LINES}
-              disabled={!threadId || sending || running}
-              placeholder={
-                threadId
-                  ? running
-                    ? research
-                      ? "Researching…"
-                      : "The agent is working…"
-                    : research
-                      ? "What should the agent find out?"
-                      : "Ask the agent to change this project…"
-                  : "Opening the thread…"
-              }
-              className="placeholder:text-muted-foreground w-full resize-none border-0 bg-transparent px-3 pt-3 pb-1 text-sm focus:outline-none disabled:opacity-60"
-            />
-
-            {/* The controls, on the floor of the box. Plus on the left where
-                the eye starts, send on the right where the sentence ends. */}
-            <div className="flex items-center gap-1 px-2 pb-2">
-              <AttachMenu
-                disabled={!threadId || sending || running}
-                onAddFiles={() => fileRef.current?.click()}
-                research={research}
-                onResearch={setResearch}
-                researchNote={
-                  cli
-                    ? `Researches on OpenRouter first, then hands ${provider} the brief with your message`
-                    : "Find live information with Perplexity Sonar, read the pages with Crawl4AI, and send a browser agent where the crawler cannot go"
-                }
-              />
-              {/* The mode, shown where it was switched on. A toggle buried
-                  in a menu needs something visible saying it is still on,
-                  and this is also the fastest way to turn it off. */}
-              {research && (
-                <button
-                  type="button"
-                  onClick={() => setResearch(false)}
-                  disabled={sending || running}
-                  title={
-                    cli
-                      ? `Research mode: researched on OpenRouter first, then handed to ${provider}. Click to turn off.`
-                      : "Research mode: search, read, then browse. Click to turn off."
-                  }
-                  className="bg-ucch-active-bg text-foreground hover:text-muted-foreground flex h-7 items-center gap-1 rounded-full py-1 pr-1.5 pl-2 text-xs transition-colors disabled:opacity-60"
-                >
-                  <TelescopeIcon className="size-3.5" />
-                  Research
-                  <XIcon className="size-3 opacity-70" />
-                  <span className="sr-only">Turn research off</span>
-                </button>
-              )}
-              {/* Hidden, and clicked by the menu item: the native control is
-                  the only way to open the file manager, and its own chrome
-                  has no place in a composer. */}
-              <input
-                ref={fileRef}
-                type="file"
-                multiple
-                className="hidden"
+            {/* One line to start, growing as it fills; send stays at the
+                right end of the last line. */}
+            <div className="flex items-end gap-2 py-2 pr-2 pl-4">
+              <textarea
+                ref={draftRef}
+                value={draft}
                 onChange={(e) => {
-                  void addFiles(e.target.files);
-                  e.target.value = "";
+                  // Typing leaves the history walk: the text is yours again.
+                  history.current = idleCursor;
+                  setDraft(e.target.value);
                 }}
-              />
-
-              <div className="ml-auto flex items-center gap-1">
-                {running ? (
-                  // The same button position, so the reader does not have to
-                  // look for it: while a turn runs, Send is Stop. The server
-                  // refuses a second message on a running thread anyway.
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="secondary"
-                    className="size-8 rounded-full"
-                    onClick={() => void cancel()}
-                    disabled={cancelling}
-                    title="Stop the agent"
-                  >
-                    {cancelling ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
-                    <span className="sr-only">Stop</span>
-                  </Button>
-                ) : (
-                  <Button
-                    type="submit"
-                    size="icon"
-                    className="size-8 rounded-full"
-                    // Files on their own are a message too, so an empty
-                    // draft with something attached still sends -- but not
-                    // while one is still uploading, which would reach the
-                    // model as an id it cannot use.
-                    disabled={
-                      (!draft.trim() && attachments.length === 0) ||
-                      // A reference needs an instruction to go with it.
-                      (reference !== null && !draft.trim()) ||
-                      attachments.some((a) => a.status === "uploading") ||
-                      !threadId ||
-                      sending ||
-                      // The warning above says why; sending anyway would
-                      // fail the turn and hand the message back.
-                      vision !== null
+                onPaste={(e) => {
+                  // A pasted screenshot is the fastest way to show the agent
+                  // what you mean, and it arrives here as a file on the
+                  // clipboard -- the same thing the file picker hands over, so
+                  // it takes the same path: staged on the server, chipped in the
+                  // composer, and named in the message as a picture to look at.
+                  const files = clipboardFiles(e.clipboardData);
+                  if (files.length === 0) return;
+                  // Only a paste with nothing to type is swallowed, so pasting
+                  // a table that travels with an image of itself still types.
+                  if (!pasteCarriesText(e.clipboardData)) e.preventDefault();
+                  void addFiles(files);
+                }}
+                onSelect={trackMenus}
+                onBlur={() => setMenu(null)}
+                role="combobox"
+                aria-expanded={!!menu}
+                aria-controls={menu ? menuListId : undefined}
+                aria-activedescendant={
+                  menu && menuItems.length ? `${menuListId}-${menuIndex}` : undefined
+                }
+                aria-autocomplete="list"
+                onKeyDown={(e) => {
+                  // While a menu is open it has the keys that would otherwise
+                  // send, recall history, or stop the agent. With nothing in
+                  // it, Enter falls through and sends: a `/path` is a message.
+                  if (menu) {
+                    const count = menuItems.length;
+                    if (count && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                      e.preventDefault();
+                      const step = e.key === "ArrowDown" ? 1 : -1;
+                      setMenuIndex((i) => (i + step + count) % count);
+                      return;
                     }
-                  >
-                    {sending ? <Loader2Icon className="animate-spin" /> : <ArrowUpIcon />}
-                    <span className="sr-only">Send</span>
-                  </Button>
+                    if (count && ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab")) {
+                      e.preventDefault();
+                      (menuItems[menuIndex] ?? menuItems[0]!).pick();
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      dismissedMenu.current = JSON.stringify(menu);
+                      setMenu(null);
+                      return;
+                    }
+                  }
+                  // Enter sends; Shift+Enter is a newline. A chat composer that
+                  // needs the mouse to send is a chat composer nobody uses.
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                  // What the progress line above says it does.
+                  if (e.key === "Escape" && running) {
+                    e.preventDefault();
+                    void cancel();
+                  }
+                  // Up recalls the previous prompt and Down comes forward, while
+                  // the caret is at the end of the draft; Alt+arrows anywhere.
+                  const el = e.currentTarget;
+                  const direction = historyDirection({
+                    key: e.key,
+                    altKey: e.altKey,
+                    ctrlKey: e.ctrlKey,
+                    metaKey: e.metaKey,
+                    shiftKey: e.shiftKey,
+                    caretAtEnd: el.selectionStart === el.selectionEnd && el.selectionEnd === el.value.length,
+                  });
+                  if (direction) {
+                    e.preventDefault();
+                    recall(direction);
+                  }
+                }}
+                rows={MIN_COMPOSER_LINES}
+                disabled={!threadId || sending || running}
+                placeholder={
+                  threadId
+                    ? running
+                      ? research
+                        ? "Researching…"
+                        : documentation
+                          ? "Documenting…"
+                          : "The agent is working…"
+                      : research
+                        ? "What should the agent find out?"
+                        : documentation
+                          ? "What document should the agent write, edit or read?"
+                          : "Ask Anything, @tag files/folders, $use skills, or / for commands"
+                    : "Opening the thread…"
+                }
+                className={cn(
+                  "placeholder:text-muted-foreground min-w-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 text-sm focus:outline-none disabled:opacity-60",
+                  // Room to start writing before it has to grow.
+                  empty && "@2xl:min-h-16",
                 )}
-              </div>
+                />
+              {running ? (
+                // The same button position, so the reader does not have to
+                // look for it: while a turn runs, Send is Stop. The server
+                // refuses a second message on a running thread anyway.
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="secondary"
+                  className="size-8 shrink-0 rounded-lg"
+                  onClick={() => void cancel()}
+                  disabled={cancelling}
+                  title="Stop the agent"
+                >
+                  {cancelling ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
+                  <span className="sr-only">Stop</span>
+                </Button>
+              ) : (
+                <Button
+                  type="submit"
+                  size="icon"
+                  // On the opening screen it appears once there is something
+                  // to send, rather than sitting greyed out in an empty box.
+                  className={cn(
+                    "size-8 shrink-0 rounded-lg",
+                    empty && !draft.trim() && attachments.length === 0 && "@2xl:hidden",
+                  )}
+                  // Files on their own are a message too, so an empty
+                  // draft with something attached still sends -- but not
+                  // while one is still uploading, which would reach the
+                  // model as an id it cannot use.
+                  disabled={
+                    (!draft.trim() && attachments.length === 0) ||
+                    // A reference needs an instruction to go with it.
+                    (reference !== null && !draft.trim()) ||
+                    attachments.some((a) => a.status === "uploading") ||
+                    !threadId ||
+                    sending ||
+                    // The warning above says why; sending anyway would
+                    // fail the turn and hand the message back.
+                    vision !== null ||
+                    // So does the worktree notice.
+                    worktreeBlocked
+                  }
+                >
+                  {sending ? <Loader2Icon className="animate-spin" /> : <ArrowUpIcon />}
+                  <span className="sr-only">Send</span>
+                </Button>
+              )}
             </div>
           </form>
 
-          {/* Below the composer rather than above it: the box you type in is
-              what the eye goes to, so the settings that qualify a message sit
-              under it instead of pushing it down the panel. */}
-          <div className="flex flex-wrap items-center gap-1.5 @md:gap-2">
-            {/* The harness first, then its model: which one answers decides
-                which models the picker to its right can offer. */}
-            <ProviderSelect
-              providers={providers}
-              value={provider}
-              locked={boundProvider}
-              onChange={chooseProvider}
-              disabled={sending || running}
+          {/* Below the box, plain text rather than more boxes: what you
+              type is what the eye goes to, and the settings that qualify it
+              sit quietly under it. Add on the left, then the model -- the
+              darkest, as the setting that matters most -- with its effort
+              beside it; the harness and the context on the right. One line at
+              any width: on a phone the names truncate rather than wrap. */}
+          <div className="flex min-w-0 items-center gap-x-0.5 px-1">
+            <AttachMenu
+              disabled={!threadId || sending || running}
+              onAddFiles={() => fileRef.current?.click()}
+              mode={mode}
+              onMode={toggleMode}
+              researchNote={
+                cli
+                  ? `Researches on OpenRouter first, then hands ${provider} the brief with your message`
+                  : "Find live information with Perplexity Sonar, read the pages with Crawl4AI, and send a browser agent where the crawler cannot go"
+              }
+              documentationNote={
+                cli
+                  ? `Hands ${provider} the document rules, templates and scripts with your message`
+                  : "Create, edit and read PDF, DOCX and DOC files: fixed templates, diagrams and charts, then a layout check of every page"
+              }
             />
+            {/* The mode, shown where it was switched on. A toggle buried
+                in a menu needs something visible saying it is still on,
+                and this is also the fastest way to turn it off. */}
+            {mode && (
+              <button
+                type="button"
+                onClick={() => setMode(null)}
+                disabled={sending || running}
+                title={
+                  research
+                    ? cli
+                      ? `Research mode: researched on OpenRouter first, then handed to ${provider}. Click to turn off.`
+                      : "Research mode: search, read, then browse. Click to turn off."
+                    : cli
+                      ? `Documentation mode: ${provider} is handed the document rules and scripts. Click to turn off.`
+                      : "Documentation mode: plan, write, render, then check the layout. Click to turn off."
+                }
+                className="bg-ucch-active-bg text-foreground hover:text-muted-foreground flex h-7 items-center gap-1 rounded-full py-1 pr-1.5 pl-2 text-xs transition-colors disabled:opacity-60"
+              >
+                {(() => {
+                  const ModeIcon = MODE_ICON[mode];
+                  return <ModeIcon className="size-3.5" />;
+                })()}
+                {MODE_LABEL[mode]}
+                <XIcon className="size-3 opacity-70" />
+                <span className="sr-only">Turn {MODE_LABEL[mode].toLowerCase()} off</span>
+              </button>
+            )}
+            {/* Hidden, and clicked by the menu item: the native control is
+                the only way to open the file manager, and its own chrome
+                has no place in a composer. */}
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+
             <ModelSelect
               models={catalogue}
               value={activeModel}
               onChange={chooseModel}
+              look="inline"
               disabled={sending || running}
             />
-            {!cli && (
+            {/* Only where it means something: a model that takes effort,
+                under a harness that passes it on. */}
+            {effortLevels && (
               <EffortSelect
-                value={effort}
+                value={sentEffort}
+                levels={effortLevels}
+                offMeansDefault={cli}
                 onChange={setEffort}
+                look="inline"
                 disabled={sending}
-                supported={reasons}
               />
             )}
-            <ContextMeter
-              tokens={contextTokens}
-              limit={models.find((m) => m.id === model)?.contextLength ?? null}
-              onClear={() => void clearContext()}
-              clearing={clearing}
-              // Mid-turn the history is still being written; clearing under
-              // the running loop would leave it appending to a thread nobody
-              // is watching.
-              disabled={running || sending || !threadId}
-            />
-            {error && <span className="text-destructive truncate text-xs">{error}</span>}
-            {!error && othersHere.length > 0 && (
+            <div className="ml-auto flex min-w-0 shrink items-center gap-0.5">
+              <ProviderSelect
+                providers={providers}
+                value={provider}
+                locked={boundProvider}
+                onChange={chooseProvider}
+                look="inline"
+                disabled={sending || running}
+              />
+              <ContextMeter
+                tokens={contextTokens}
+                limit={models.find((m) => m.id === model)?.contextLength ?? null}
+                onClear={() => void clearContext()}
+                clearing={clearing}
+                // Mid-turn the history is still being written; clearing under
+                // the running loop would leave it appending to a thread nobody
+                // is watching.
+                disabled={running || sending || !threadId}
+              />
+            </div>
+          </div>
+          {worktree && worktree.state !== "ready" && (
+            <span
+              className={cn(
+                "truncate px-1.5 text-xs",
+                worktree.state === "error" ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              {worktree.state === "error"
+                ? `The worktree for ${worktree.branch} could not be made: ${worktree.failure ?? "unknown error"}. Start a new session to try again.`
+                : `Preparing a worktree on ${worktree.branch}…`}
+            </span>
+          )}
+          {error && <span className="text-destructive truncate px-1.5 text-xs">{error}</span>}
+          {!error && othersHere.length > 0 && (
+            <span
+              className={cn(
+                "flex items-center gap-1 truncate px-1.5 text-xs",
+                remoteTyping ? "text-warning" : "text-muted-foreground",
+              )}
+              title="This conversation and its prompt are shared live with your other windows."
+            >
               <span
                 className={cn(
-                  "flex items-center gap-1 truncate text-xs",
-                  remoteTyping ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+                  "size-1.5 shrink-0 rounded-full",
+                  remoteTyping ? "animate-pulse bg-warning" : "bg-success",
                 )}
-                title="This conversation and its prompt are shared live with your other windows."
-              >
-                <span
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    remoteTyping ? "animate-pulse bg-amber-500" : "bg-emerald-500",
-                  )}
-                />
-                {remoteTyping ? "Typing in another window…" : "Open in another window"}
-              </span>
-            )}
-          </div>
+              />
+              {remoteTyping ? "Typing in another window…" : "Open in another window"}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -1248,30 +1744,60 @@ export function ProjectChat({ project }: { project: Project }) {
 }
 
 /**
- * The plus inside the composer.
+ * "Good morning, <first name>" over an empty conversation.
  *
- * Two entries work today -- files, and the Research toggle; the rest are
+ * The time of day is the browser's, so it is worked out after mount: the
+ * server's clock and timezone are not the reader's, and rendering one there
+ * would greet them with the wrong part of the day and a hydration mismatch.
+ */
+function Greeting() {
+  const name = useViewerFirstName();
+  const [part, setPart] = useState<string | null>(null);
+  useEffect(() => {
+    const hour = new Date().getHours();
+    setPart(hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening");
+  }, []);
+
+  return (
+    <div className="flex items-center justify-center gap-3">
+      <AsteriskIcon aria-hidden className="text-ucch-active size-10 shrink-0" strokeWidth={1.5} />
+      <h1 className="font-serif text-3xl tracking-tight @4xl:text-4xl">
+        {part ? `Good ${part}` : "Hello"}
+        {name && `, ${name}`}
+      </h1>
+    </div>
+  );
+}
+
+/**
+ * The plus under the composer.
+ *
+ * Three entries work today -- files, and the Research and Documentation
+ * toggles; the rest are
  * named because the menu is the place a user goes looking for them, and a
  * menu that grows an item later teaches nothing about where the first one
  * lives. They are disabled rather than hidden -- "not yet" is information,
  * and an empty menu is not.
  *
- * Research is a checkbox item rather than an action: it is a mode for the
- * messages that follow, not something added to this one.
+ * The modes are checkbox items rather than actions: each is a mode for the
+ * messages that follow, not something added to this one. At most one is on.
  */
 function AttachMenu({
   disabled,
   onAddFiles,
-  research,
-  onResearch,
+  mode,
+  onMode,
   researchNote,
+  documentationNote,
 }: {
   disabled: boolean;
   onAddFiles: () => void;
-  research: boolean;
-  onResearch: (on: boolean) => void;
-  /** What turning it on does under the current provider. */
+  mode: MessageMode | null;
+  /** Flips the named mode, turning any other off. */
+  onMode: (mode: MessageMode) => void;
+  /** What turning each on does under the current provider. */
   researchNote: string;
+  documentationNote: string;
 }) {
   return (
     <DropdownMenu>
@@ -1306,21 +1832,38 @@ function AttachMenu({
           Connectors
         </DropdownMenuItem>
         <DropdownMenuCheckboxItem
-          checked={research}
-          onCheckedChange={(checked) => onResearch(checked)}
+          checked={mode === "research"}
+          onCheckedChange={() => onMode("research")}
           title={researchNote}
         >
           <TelescopeIcon />
           Research
+        </DropdownMenuCheckboxItem>
+        <DropdownMenuCheckboxItem
+          checked={mode === "documentation"}
+          onCheckedChange={() => onMode("documentation")}
+          title={documentationNote}
+        >
+          <FileTextIcon />
+          Documentation
         </DropdownMenuCheckboxItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-/** Creates a thread and returns its id, or null if the command was refused. */
-async function createThread(client: UcchClient, projectId: string): Promise<string | null> {
-  const created = await client.dispatch({ type: "thread.create", projectId });
+/**
+ * Creates a thread and returns its id, or null if the command was refused.
+ * Carries your subscription choice for the workspace; the server ignores it
+ * unless the workspace lets members choose.
+ */
+async function createThread(client: UcchClient, project: Project): Promise<string | null> {
+  const credentialSource = readCredentialChoice(project.workspaceId);
+  const created = await client.dispatch({
+    type: "thread.create",
+    projectId: project.id,
+    ...(credentialSource ? { credentialSource } : {}),
+  });
   const event = created[0]?.event;
   return event?.type === "thread.created" ? event.threadId : null;
 }
@@ -1333,7 +1876,6 @@ function Message({
   onPreview,
   rating,
   onRate,
-  onCopyConversation,
   neighbours,
   onJump,
 }: {
@@ -1343,7 +1885,6 @@ function Message({
   onPreview: (file: PreviewableAttachment) => void;
   rating: Rating | null;
   onRate: (turnId: string, rating: Rating | null) => void;
-  onCopyConversation: () => Promise<boolean>;
   /** The prompts before and after this one; only set on a user message. */
   neighbours: PromptNeighbours | undefined;
   onJump: (index: number) => void;
@@ -1356,12 +1897,16 @@ function Message({
       <div ref={ref} className="flex scroll-mt-3 flex-col items-end gap-1.5">
         {/* Which kind of turn was asked for. Only the one that is not the
             default is labelled: a label on every message says nothing. */}
-        {message.mode === "research" && (
-          <span className="text-muted-foreground flex items-center gap-1 text-[0.7rem] tracking-wide uppercase">
-            <TelescopeIcon className="size-3" />
-            Research
-          </span>
-        )}
+        {message.mode &&
+          (() => {
+            const ModeIcon = MODE_ICON[message.mode];
+            return (
+              <span className="text-muted-foreground flex items-center gap-1 text-[0.7rem] tracking-wide uppercase">
+                <ModeIcon className="size-3" />
+                {MODE_LABEL[message.mode]}
+              </span>
+            );
+          })()}
         {message.text && (
           <p className="bg-ucch-active-bg text-foreground max-w-[92%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap @md:max-w-[85%]">
             {message.text}
@@ -1399,7 +1944,7 @@ function Message({
                     >
                       <PaperclipIcon className="size-3 shrink-0" />
                       <span className="truncate">{file.name}</span>
-                      <span className="shrink-0 opacity-60">{formatBytes(file.size)}</span>
+                      <span className="text-muted-foreground shrink-0">{formatBytes(file.size)}</span>
                     </button>
                     <a
                       href={uploadContentUrl(hash, file.uploadId, { download: true })}
@@ -1415,7 +1960,7 @@ function Message({
                   <>
                     <PaperclipIcon className="size-3 shrink-0" />
                     <span className="truncate">{file.name}</span>
-                    <span className="shrink-0 opacity-60">{formatBytes(file.size)}</span>
+                    <span className="text-muted-foreground shrink-0">{formatBytes(file.size)}</span>
                   </>
                 )}
               </span>
@@ -1433,11 +1978,11 @@ function Message({
               {sent}
             </span>
           )}
-          {/* Up to the previous prompt, down to the next. Faded, so they
+          {/* Up to the previous prompt, down to the next. Muted, so they
               read as a rail beside the conversation rather than part of it;
               disabled rather than hidden at the ends so they stay put. */}
           {neighbours && (
-            <span className="ml-1 flex items-center opacity-40 transition-opacity hover:opacity-100">
+            <span className="text-muted-foreground hover:text-foreground focus-within:text-foreground ml-1 flex items-center">
               <JumpButton
                 target={neighbours.previous}
                 label="Previous prompt"
@@ -1536,7 +2081,7 @@ function Message({
           billing={message.provider ? billingLabel(message.provider) : null}
           rating={rating}
           onRate={onRate}
-          onCopyConversation={onCopyConversation}
+          answer={answers.map((answer) => answer.text.trim()).filter(Boolean).join("\n\n")}
         />
       )}
     </div>
@@ -1619,20 +2164,6 @@ function WorkDropdown({
   );
 }
 
-/**
- * The line under an answer: thumbs, a copy of the whole conversation, and
- * when it was cooked.
- *
- * A thumb pressed again lets go of the rating -- a reaction should be as
- * easy to take back as to give. Copy takes the conversation rather than the
- * one answer because that is what gets pasted into an issue or a colleague's
- * chat: the question is what makes the answer make sense.
- */
-/**
- * One small copy control, with a tick for a moment after it worked. The
- * footer under an answer has its own for the whole conversation; this is
- * the same gesture for one message.
- */
 /** One of the two arrows under a prompt. Disabled at the ends of the thread. */
 function JumpButton({
   target,
@@ -1662,6 +2193,10 @@ function JumpButton({
   );
 }
 
+/**
+ * One small copy control, with a tick for a moment after it worked. Used
+ * under a prompt for the text as typed, and under an answer for its prose.
+ */
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -1689,13 +2224,21 @@ function CopyButton({ text, label }: { text: string; label: string }) {
   );
 }
 
+/**
+ * The line under an answer: thumbs, a copy of that answer, and when it was
+ * cooked.
+ *
+ * A thumb pressed again lets go of the rating -- a reaction should be as
+ * easy to take back as to give. Copy takes this answer's prose only: not the
+ * prompt, not earlier turns, not the thinking or tool calls behind it.
+ */
 function MessageFooter({
   turnId,
   timing,
   billing,
   rating,
   onRate,
-  onCopyConversation,
+  answer,
 }: {
   turnId: string;
   timing: string | null;
@@ -1703,14 +2246,9 @@ function MessageFooter({
   billing: string | null;
   rating: Rating | null;
   onRate: (turnId: string, rating: Rating | null) => void;
-  onCopyConversation: () => Promise<boolean>;
+  /** The answer's prose, as the model wrote it. */
+  answer: string;
 }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(timer);
-  }, [copied]);
 
   const thumb = (value: Rating, Icon: typeof ThumbsUpIcon, label: string) => (
     <button
@@ -1731,17 +2269,7 @@ function MessageFooter({
     <div className="text-muted-foreground flex flex-wrap items-center gap-1 text-xs">
       {thumb("up", ThumbsUpIcon, "Good answer")}
       {thumb("down", ThumbsDownIcon, "Bad answer")}
-      <button
-        type="button"
-        aria-label="Copy conversation"
-        title="Copy the whole conversation"
-        onClick={() => {
-          void onCopyConversation().then((ok) => ok && setCopied(true));
-        }}
-        className="hover:text-foreground flex size-7 items-center justify-center rounded-md transition-colors"
-      >
-        {copied ? <CheckIcon className="text-ucch-active size-3.5" /> : <CopyIcon className="size-3.5" />}
-      </button>
+      {answer && <CopyButton text={answer} label="Copy answer" />}
       {timing && <span className="ml-1 tabular-nums">{timing}</span>}
       {billing && (
         <span className="ml-1" title="Which account this turn was billed to">
@@ -1837,12 +2365,33 @@ function isProviderId(value: unknown): value is ProviderId {
   return value === "native" || value === "claude" || value === "codex";
 }
 
+/** How each mode is named and drawn wherever it is shown. */
+const MODE_LABEL: Record<MessageMode, string> = {
+  research: "Research",
+  documentation: "Documentation",
+};
+const MODE_ICON: Record<MessageMode, typeof TelescopeIcon> = {
+  research: TelescopeIcon,
+  documentation: FileTextIcon,
+};
+
+/**
+ * The mode a shared draft carries: null for none, undefined when the draft
+ * says nothing. A draft from before `mode` existed may still carry the old
+ * `research` flag.
+ */
+export function draftMode(draft: ComposerDraft): MessageMode | null | undefined {
+  if (draft.mode !== undefined) return draft.mode;
+  if (draft.research !== undefined) return draft.research ? "research" : null;
+  return undefined;
+}
+
 /** What the prompt box holds, as it is shared: only files that have reached the server travel. */
 function composerDraft(
   text: string,
   attachments: readonly Attachment[],
   reference: CodeReference | null,
-  research: boolean,
+  mode: MessageMode | null,
   effort: ReasoningEffort,
 ): ComposerDraft {
   return {
@@ -1859,7 +2408,9 @@ function composerDraft(
         status: a.status,
       })),
     reference,
-    research,
+    // Both, so a window still running the old build keeps its toggle right.
+    research: mode === "research",
+    ...(mode ? { mode } : {}),
     effort,
   };
 }

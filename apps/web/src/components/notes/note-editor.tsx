@@ -18,7 +18,7 @@ export const NoteEditor = dynamic<NoteEditorProps>(
   {
     ssr: false,
     loading: () => (
-      <div className="mx-auto w-full max-w-3xl px-8 py-12">
+      <div className="mx-auto w-full max-w-[var(--ucch-doc-width,48rem)] px-8 py-12">
         <Skeleton className="mb-6 h-9 w-2/5" />
         <Skeleton className="mb-3 h-4 w-full" />
         <Skeleton className="h-4 w-3/5" />

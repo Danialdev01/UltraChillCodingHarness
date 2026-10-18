@@ -88,7 +88,7 @@ export function CommitForm({
         <span className="truncate">
           Commit to <span className="font-semibold">{target}</span>
         </span>
-        {staged > 0 && <span className="ml-auto text-xs opacity-70 tabular-nums">{staged}</span>}
+        {staged > 0 && <span className="text-muted-foreground ml-auto text-xs tabular-nums">{staged}</span>}
       </Button>
       {hint && <p className="text-muted-foreground text-xs">{hint}</p>}
     </form>

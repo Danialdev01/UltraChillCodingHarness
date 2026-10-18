@@ -31,14 +31,14 @@ describe("slugify", () => {
 });
 
 describe("publicSlugFor", () => {
-  it("is the name as a slug, then six characters, and matches the address shape", () => {
+  it("is the name as a slug, then twelve characters, and matches the address shape", () => {
     const slug = publicSlugFor("My Project!");
-    expect(slug).toMatch(/^my-project-[a-z0-9]{6}$/);
+    expect(slug).toMatch(/^my-project-[a-z0-9]{12}$/);
     expect(PUBLIC_SLUG.test(slug)).toBe(true);
   });
 
   it("falls back to a word when the name slugifies to nothing", () => {
-    expect(publicSlugFor("!!!")).toMatch(/^(project|workspace)-[a-z0-9]{6}$/);
+    expect(publicSlugFor("!!!")).toMatch(/^(project|workspace)-[a-z0-9]{12}$/);
   });
 
   it("differs between calls", () => {
@@ -52,5 +52,7 @@ describe("PUBLIC_SLUG", () => {
       expect(PUBLIC_SLUG.test(bad)).toBe(false);
     }
     expect(PUBLIC_SLUG.test("timermimer-fk1zf0")).toBe(true);
+    expect(PUBLIC_SLUG.test("timermimer-fk1zf0a9b2c3")).toBe(true);
+    expect(PUBLIC_SLUG.test("timermimer-fk1zf0a9")).toBe(false);
   });
 });

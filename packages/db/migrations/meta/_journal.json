@@ -127,6 +127,55 @@
       "when": 1791031569438,
       "tag": "0017_audit_log",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791449652129,
+      "tag": "0018_project_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1791451685301,
+      "tag": "0019_perf_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791964819327,
+      "tag": "0020_workspace_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791965928069,
+      "tag": "0021_workspace_logo",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791967898490,
+      "tag": "0022_preview_static_dir",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792234686511,
+      "tag": "0023_workspace_members",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792242608931,
+      "tag": "0024_workspace_thread_hash",
+      "breakpoints": true
     }
   ]
 }

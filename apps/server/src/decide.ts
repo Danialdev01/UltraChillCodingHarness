@@ -1,5 +1,14 @@
-import { normalizeWorkspacePath } from "@ucch/protocol";
-import type { Command, ContainerState, DomainEvent, ProviderId } from "@ucch/protocol";
+import { can, normalizeWorkspacePath, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
+import type {
+  Command,
+  ContainerState,
+  CredentialPolicy,
+  CredentialSource,
+  DomainEvent,
+  Membership,
+  ProviderId,
+  WorkspacePermission,
+} from "@ucch/protocol";
 
 /**
  * The decision function: given current state and a command, what actually
@@ -21,16 +30,15 @@ export interface ProjectSnapshot {
   id: string;
   hash: string;
   workspaceId: string;
-  /** The owning workspace's owner, resolved by the engine. Never read from
-   *  the project row's denormalised copy -- see the note in the db schema. */
-  userId: string;
   containerState: ContainerState;
   defaultBranch: string;
 }
 
 export interface WorkspaceSnapshot {
   id: string;
-  ownerUserId: string;
+  credentialPolicy: CredentialPolicy;
+  /** The caller's membership, resolved by the engine; null when they have none. */
+  membership: Membership | null;
 }
 
 export interface ThreadSnapshot {
@@ -39,6 +47,10 @@ export interface ThreadSnapshot {
   status: "idle" | "running" | "cancelling" | "error";
   /** The backend its first turn bound it to; null until one has run. */
   provider: ProviderId | null;
+  /** Whose credentials it was started on; null on threads older than the column. */
+  credentialSource: CredentialSource | null;
+  /** creating | ready | error for a session with its own worktree; null when it shares the project's. */
+  worktreeState?: "creating" | "ready" | "error" | null;
 }
 
 export interface TurnSnapshot {
@@ -87,11 +99,11 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     // -- Projects ------------------------------------------------------------
 
     case "project.create": {
-      // A project must land in a workspace the caller owns, or the workspace
-      // boundary would be advisory rather than enforced.
-      if (!state.workspace) return fail("not_found", "workspace not found");
-      if (state.workspace.ownerUserId !== ctx.userId) {
-        return fail("not_found", "workspace not found");
+      // A project must land in a workspace the caller is a member of, or the
+      // workspace boundary would be advisory rather than enforced.
+      if (!state.workspace?.membership) return fail("not_found", "workspace not found");
+      if (!can(state.workspace.membership, "project.create")) {
+        return fail("forbidden", "your role in this workspace cannot create projects");
       }
 
       // A project with no repository has no URL to fall back on, so the name
@@ -107,6 +119,11 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
         );
       }
 
+      const mode = command.mode ?? "development";
+      if (command.database && mode !== "development") {
+        return fail("invalid", "only a development project can have a database");
+      }
+
       return ok([
         {
           type: "project.created",
@@ -118,12 +135,14 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           // fact the clone reactor reads to start one instead of fetching it.
           repoUrl: command.repoUrl ?? null,
           defaultBranch: command.branch ?? "main",
+          mode,
+          database: command.database ?? null,
         },
       ]);
     }
 
     case "project.start": {
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
 
       // Already where we want to be, or already on the way. Emitting a second
@@ -137,7 +156,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "project.stop": {
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
       if (project.value.containerState === "stopped" || project.value.containerState === "absent") {
         return ok([]);
@@ -148,7 +167,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "project.delete": {
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "workspace.manage");
       if ("error" in project) return project.decision;
       return ok([
         { type: "container.state_changed", projectId: project.value.id, state: "absent" },
@@ -158,29 +177,48 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     // -- Threads -------------------------------------------------------------
 
     case "thread.create": {
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "session.create");
       if ("error" in project) return project.decision;
 
+      const hash = ctx.newHash();
       return ok([
         {
           type: "thread.created",
           threadId: ctx.newId(),
           projectId: project.value.id,
           title: command.title?.trim() || "Untitled",
+          createdByUserId: ctx.userId,
+          credentialSource: resolveCredentialSource(
+            state.workspace!.credentialPolicy,
+            command.credentialSource,
+          ),
+          hash,
+          // A parallel session: its own worktree, on its own branch, so two
+          // sessions forked from the same base never share a checkout.
+          ...(command.baseBranch ? { baseBranch: command.baseBranch, branch: sessionBranch(hash) } : {}),
         },
       ]);
     }
 
     case "thread.send": {
-      const thread = requireThread(state);
+      const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
 
       // One turn at a time per thread. Queueing a second would interleave two
       // agents editing the same working tree.
       if (thread.value.status === "running" || thread.value.status === "cancelling") {
         return fail("conflict", "this thread already has a turn in progress");
+      }
+
+      // A session's turn runs in its worktree. Until that exists the agent
+      // would land in the project's main folder, on somebody else's branch.
+      if (thread.value.worktreeState === "creating") {
+        return fail("conflict", "this session's worktree is still being created");
+      }
+      if (thread.value.worktreeState === "error") {
+        return fail("conflict", "this session's worktree could not be created; start a new session");
       }
 
       // A CLI provider's session belongs to that provider: Claude Code cannot
@@ -207,7 +245,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "thread.cancel": {
-      const thread = requireThread(state);
+      const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
       if (thread.value.status !== "running") {
         return fail("conflict", "no turn is running on this thread");
@@ -220,7 +258,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "thread.permission_reply": {
-      const thread = requireThread(state);
+      const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
       if (thread.value.status !== "running") {
         return fail("conflict", "no turn is waiting on this thread");
@@ -233,7 +271,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "thread.revert": {
-      const thread = requireThread(state);
+      const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
       if (thread.value.status === "running") {
         return fail("conflict", "cannot revert while a turn is running");
@@ -261,7 +299,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "thread.fork": {
-      const thread = requireThread(state);
+      const thread = requireThread(state, ctx, "session.create");
       if ("error" in thread) return thread.decision;
       const turn = state.turn;
       if (!turn || turn.threadId !== thread.value.id) {
@@ -274,6 +312,13 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           threadId: ctx.newId(),
           projectId: thread.value.projectId,
           title: "Fork",
+          hash: ctx.newHash(),
+          createdByUserId: ctx.userId,
+          // A fork carries on the conversation, so it bills where it came from.
+          credentialSource: resolveCredentialSource(
+            state.workspace!.credentialPolicy,
+            thread.value.credentialSource,
+          ),
         },
       ]);
     }
@@ -286,11 +331,24 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
 
     case "terminal.create": {
       // The only one of the four that names a project, and so the only one
-      // that can be checked against its owner. The reactor holds the rest:
+      // that can be checked against its members. The reactor holds the rest:
       // a session remembers who opened it, and refuses input from anyone
       // else.
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
+      if (command.credentialWorkspaceId) {
+        // Signing in the workspace's own subscription writes the login every
+        // member's turns may run on, so it is an admin's to do.
+        if (command.program === "shell" || !command.program) {
+          return fail("invalid", "only a sign-in terminal can target workspace credentials");
+        }
+        if (command.credentialWorkspaceId !== project.value.workspaceId) {
+          return fail("invalid", "workspace credentials can only be signed in from one of its projects");
+        }
+        if (!can(state.workspace?.membership, "credentials.manage")) {
+          return fail("forbidden", "only a workspace admin can sign in its subscription");
+        }
+      }
       return passthrough();
     }
 
@@ -302,7 +360,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     // -- Files, git, previews -------------------------------------------------
 
     case "file.write": {
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
       if (project.value.containerState !== "running") {
         return fail("conflict", "the project container is not running");
@@ -316,7 +374,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "git.commit": {
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
       if (project.value.containerState !== "running") {
         return fail("conflict", "the project container is not running");
@@ -327,7 +385,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "git.push": {
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
       if (project.value.containerState !== "running") {
         return fail("conflict", "the project container is not running");
@@ -336,13 +394,15 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     }
 
     case "preview.publish": {
-      const project = requireProject(state, ctx);
+      const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
       return ok([]);
     }
 
     case "preview.delete":
-      return ok([]);
+      // Names no project, so there is no owner to check it against, and no
+      // reactor deletes anything. Refused until both exist.
+      return fail("invalid", "deleting a preview is not supported");
   }
 }
 
@@ -350,18 +410,52 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
 
 type Required<T> = { value: T } | { error: true; decision: Decision };
 
-function requireProject(state: DecisionState, ctx: DecisionContext): Required<ProjectSnapshot> {
-  if (!state.project) return { error: true, decision: fail("not_found", "project not found") };
-  if (state.project.userId !== ctx.userId) {
-    // Reported as not_found rather than forbidden: whether a project exists is
-    // itself information the caller has no right to.
-    return { error: true, decision: fail("not_found", "project not found") };
+/**
+ * The caller's standing in the project's workspace. A non-member is told
+ * not_found rather than forbidden: whether a project exists is itself
+ * information they have no right to. A member whose role falls short is told
+ * forbidden, since they can already see the project.
+ */
+function membershipFor(
+  state: DecisionState,
+  permission: WorkspacePermission,
+  what: string,
+): Decision | null {
+  const membership =
+    state.workspace && state.project && state.workspace.id === state.project.workspaceId
+      ? state.workspace.membership
+      : null;
+  if (!membership) return fail("not_found", `${what} not found`);
+  if (!can(membership, permission)) {
+    return fail("forbidden", `your role in this workspace does not allow this (${permission})`);
   }
+  return null;
+}
+
+function requireProject(
+  state: DecisionState,
+  _ctx: DecisionContext,
+  permission: WorkspacePermission,
+): Required<ProjectSnapshot> {
+  if (!state.project) return { error: true, decision: fail("not_found", "project not found") };
+  const refused = membershipFor(state, permission, "project");
+  if (refused) return { error: true, decision: refused };
   return { value: state.project };
 }
 
-function requireThread(state: DecisionState): Required<ThreadSnapshot> {
+function requireThread(
+  state: DecisionState,
+  _ctx: DecisionContext,
+  permission: WorkspacePermission,
+): Required<ThreadSnapshot> {
   if (!state.thread) return { error: true, decision: fail("not_found", "thread not found") };
+  // A thread is only as private as its project: without this, anyone holding
+  // a thread id could cancel, revert, fork or answer permission prompts on it.
+  if (!state.project || state.project.id !== state.thread.projectId) {
+    return { error: true, decision: fail("not_found", "thread not found") };
+  }
+  const refused = membershipFor(state, permission, "thread");
+  if (refused) return { error: true, decision: refused };
   return { value: state.thread };
 }
 

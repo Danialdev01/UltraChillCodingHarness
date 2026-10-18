@@ -6,6 +6,7 @@ import { ICON_NAME, iconNameFor, type IconKind, type IconManifest } from "@/lib/
 
 /**
  * `GET /file-icons?kind=file&name=README.md` -- the Material icon for a path.
+ * `kind=icon&name=next` asks for an icon by its id instead.
  *
  * Served from the `material-icon-theme` package in node_modules, which is
  * the VS Code extension's own SVGs and lookup tables. The tree asks by name
@@ -46,7 +47,7 @@ function loadManifest(): Promise<IconManifest> {
   return manifest
 }
 
-const KINDS = new Set<IconKind>(["file", "folder", "folder-open"])
+const KINDS = new Set<IconKind>(["file", "folder", "folder-open", "icon"])
 
 export async function GET(request: NextRequest): Promise<Response> {
   const params = request.nextUrl.searchParams

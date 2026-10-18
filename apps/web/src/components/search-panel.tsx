@@ -166,7 +166,7 @@ export function SearchPanel() {
                     group.path === activeTab ? "text-ucch-active" : "text-muted-foreground",
                   )}
                 >
-                  <span className="opacity-60">{directoryOf(group.path)}</span>
+                  <span>{directoryOf(group.path)}</span>
                   <span className="font-medium">{filenameOf(group.path)}</span>
                 </p>
 

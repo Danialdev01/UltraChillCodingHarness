@@ -44,3 +44,20 @@ describe("directoryBytes", () => {
     expect(await directoryBytes(join(root, "missing"))).toBe(0);
   });
 });
+
+describe("directoryBytes on a wide, deep tree", () => {
+  it("counts every file across many directories", async () => {
+    const wide = join(root, "wide");
+    let expected = 0;
+    for (let d = 0; d < 40; d++) {
+      const sub = join(wide, `d${d}`, "nested", "deeper");
+      await mkdir(sub, { recursive: true });
+      for (let f = 0; f < 5; f++) {
+        const body = "x".repeat(d + f + 1);
+        await writeFile(join(sub, `f${f}.txt`), body);
+        expected += body.length;
+      }
+    }
+    expect(await directoryBytes(wide)).toBe(expected);
+  });
+});

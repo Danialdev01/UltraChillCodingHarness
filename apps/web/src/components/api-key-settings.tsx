@@ -1,11 +1,12 @@
 "use client"
 
 import * as React from "react"
-import { CheckIcon, KeyRoundIcon, Loader2Icon, SendIcon, TrashIcon } from "lucide-react"
+import { AlertTriangleIcon, CheckIcon, KeyRoundIcon, Loader2Icon, SendIcon, TrashIcon } from "lucide-react"
 
 import { GithubMark } from "@/components/github-mark"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 
 interface KeyState {
   configured: boolean
@@ -123,10 +124,13 @@ export function ApiKeySettings() {
       {!settings?.encryptionAvailable && settings && (
         // Said once, above both forms, rather than repeated in each: it is
         // one server-side condition and it disables all of them.
-        <p className="border-amber-500/40 text-amber-600 dark:text-amber-500 rounded-lg border px-4 py-3 text-sm">
-          <code className="font-mono">SECRET_KEY</code> is not configured on the server, so no key
-          can be stored safely and saving is refused. Generate one with{" "}
-          <code className="font-mono">openssl rand -hex 32</code>.
+        <p className="border-warning/40 bg-warning-soft text-warning flex gap-2 rounded-lg border px-4 py-3 text-sm">
+          <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            <code className="font-mono">SECRET_KEY</code> is not configured on the server, so no key
+            can be stored safely and saving is refused. Generate one with{" "}
+            <code className="font-mono">openssl rand -hex 32</code>.
+          </span>
         </p>
       )}
 
@@ -135,6 +139,7 @@ export function ApiKeySettings() {
           key={provider.id}
           provider={provider}
           state={settings?.[provider.id] ?? null}
+          loading={settings === null}
           encryptionAvailable={settings?.encryptionAvailable ?? true}
           onSaved={(next) =>
             // Merged rather than replaced: the save reply carries the hint and
@@ -155,12 +160,15 @@ export function ApiKeySettings() {
 function ApiKeyForm({
   provider,
   state,
+  loading,
   encryptionAvailable,
   onSaved,
 }: {
   provider: Provider
   /** Null until the fetch lands. */
   state: KeyState | null
+  /** The settings have not arrived yet, so `state` says nothing either way. */
+  loading: boolean
   encryptionAvailable: boolean
   onSaved: (next: KeyState) => void
 }) {
@@ -210,7 +218,7 @@ function ApiKeyForm({
           spellCheck={false}
           aria-label={`${provider.name} API key`}
           className="min-w-64 flex-1 font-mono text-sm"
-          disabled={busy || !encryptionAvailable}
+          disabled={busy || loading || !encryptionAvailable}
         />
         <Button
           onClick={() => void save(draft.trim())}
@@ -235,6 +243,8 @@ function ApiKeyForm({
             <CheckIcon className="size-4" />
             Saved.
           </p>
+        ) : loading ? (
+          <Skeleton className="my-0.5 h-3.5 w-3/4 max-w-prose" />
         ) : state?.configured ? (
           <p className="text-muted-foreground">
             A key ending <span className="font-mono">{state.hint}</span> is in use.

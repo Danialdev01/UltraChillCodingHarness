@@ -23,6 +23,24 @@ const config: NextConfig = {
   // Next build rather than pre-built, so client and server can never drift
   // onto different versions of the wire contract.
   transpilePackages: ["@ucch/protocol"],
+  poweredByHeader: false,
+  async headers() {
+    // The same baseline the API sends (apps/server/src/http-guards.ts). The
+    // app is never meant to be framed -- a framed shell with a live session
+    // is a clickjacking target -- and nothing it serves should be sniffed
+    // into another type. HSTS is Traefik's, since only it knows the scheme.
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'; object-src 'none'" },
+        ],
+      },
+    ];
+  },
   webpack(config) {
     // `@ucch/protocol` is NodeNext TypeScript: its internal imports carry
     // explicit `.js` specifiers that resolve to `.ts` files on disk. The

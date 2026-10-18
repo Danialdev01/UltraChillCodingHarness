@@ -10,7 +10,7 @@
  */
 
 /** The composer never collapses below this, however little room there is. */
-export const MIN_COMPOSER_LINES = 2;
+export const MIN_COMPOSER_LINES = 1;
 
 /** And never grows past it, however much there is. */
 export const MAX_COMPOSER_LINES = 10;

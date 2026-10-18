@@ -1,16 +1,23 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import { Loader2Icon, PlayIcon } from "lucide-react"
 import type { StatementResult } from "@ucch/protocol"
 
 import { Flag, selectClass } from "@/components/database/column-form"
 import { errorText, useDb } from "@/components/database/db-context"
 import { ResultsTable } from "@/components/database/results-table"
-import { SqlEditor } from "@/components/database/sql-editor"
 import { Button } from "@/components/ui/button"
 import { runSql } from "@/lib/database-api"
 import { cn } from "@/lib/utils"
+
+// CodeMirror and the SQL grammar arrive with the console, not with every
+// database page that might show one.
+const SqlEditor = dynamic(
+  () => import("@/components/database/sql-editor").then((m) => m.SqlEditor),
+  { ssr: false },
+)
 
 const LIMITS = [100, 1000, 5000] as const
 
@@ -63,7 +70,7 @@ export function SqlTab({ initial = "" }: { initial?: string }) {
           <Button size="sm" onClick={() => void run()} disabled={running}>
             {running ? <Loader2Icon className="animate-spin" /> : <PlayIcon />}
             Run
-            <kbd className="text-primary-foreground/70 ml-1 font-sans text-[10px]">⌘⏎</kbd>
+            <kbd className="text-primary-foreground ml-1 font-sans text-[10px]">⌘⏎</kbd>
           </Button>
           <label className="text-muted-foreground flex items-center gap-1.5">
             Up to

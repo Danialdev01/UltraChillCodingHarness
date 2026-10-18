@@ -77,7 +77,9 @@ export function toDbError(error: unknown, phase: "connect" | "query"): DbConnect
   }
   const code = typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : undefined;
   const raw = error instanceof Error ? error.message : String(error);
-  const line = raw.split("\n")[0]?.trim() || "the server returned an error";
+  // A refused connection to `localhost` is an AggregateError with no message
+  // of its own (one attempt per address); its code is then the useful part.
+  const line = raw.split("\n")[0]?.trim() || code || "the server returned an error";
   const message = line.length > 300 ? `${line.slice(0, 299)}…` : line;
   if (phase === "connect" || (code && CONNECT_CODES.has(code))) return new DbConnectError(message);
   return new DbQueryError(message, code);

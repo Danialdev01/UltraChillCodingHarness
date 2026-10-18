@@ -16,6 +16,9 @@ import type { EventStore } from "./eventstore.js";
 import type { OrchestrationEngine, EngineResult } from "./engine.js";
 import type { PresenceStore } from "./presence.js";
 
+/** Newest events of a thread sent when a client subscribes to it. */
+const REPLAY_LIMIT = 1_000;
+
 const SERVER_VERSION = "0.1.0";
 const HEARTBEAT_MS = 30_000;
 
@@ -75,7 +78,9 @@ export class WebSocketGateway {
     private readonly bus: EventBus,
     private readonly options: GatewayOptions,
   ) {
-    this.#wss = new WebSocketServer({ noServer: true });
+    // Client frames are subscriptions and small commands; the library's
+    // 100 MiB default would let one socket make the server buffer that much.
+    this.#wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 
     const heartbeat = setInterval(() => {
       for (const conn of this.#connections) {
@@ -238,25 +243,24 @@ export class WebSocketGateway {
             });
             return;
           }
-          send(conn.socket, {
-            kind: "push",
-            subscriptionId,
-            seq: publication.seq,
-            at: new Date().toISOString(),
-            event: publication.event,
-          });
+          sendPush(conn.socket, subscriptionId, publication);
         });
 
         conn.subscriptions.set(subscriptionId, unsubscribe);
 
         if (frame.topic.name === "thread") {
-          const history = await this.store.readThread(frame.topic.threadId, frame.sinceSeq ?? -1);
+          // Bounded: the browser keeps the newest 500 events of a thread, so
+          // replaying the whole of a long one is frames it would discard.
+          const history = await this.store.readThread(frame.topic.threadId, frame.sinceSeq ?? -1, {
+            limit: REPLAY_LIMIT,
+          });
           for (const stored of history) {
             send(conn.socket, {
               kind: "push",
               subscriptionId,
               seq: stored.seq,
               at: stored.createdAt,
+              projectId: stored.projectId,
               event: stored.event,
             });
           }
@@ -268,6 +272,7 @@ export class WebSocketGateway {
               subscriptionId,
               seq: stored.seq < 0 ? null : stored.seq,
               at: stored.createdAt,
+              ...(stored.projectId ? { projectId: stored.projectId } : {}),
               event: stored.event,
             });
           }
@@ -432,7 +437,57 @@ function composerEvent(projectId: string, threadId: string, state: ComposerState
   };
 }
 
+/**
+ * Bytes a socket may have queued before it is dropped.
+ *
+ * A client that stops reading -- a backgrounded tab, a dead network that has
+ * not timed out yet -- otherwise makes the server hold every token and every
+ * line of terminal output for it in memory. Closing it is safe: the client
+ * reconnects and resumes from the last `seq` it saw.
+ */
+const MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
+
 function send(socket: WebSocket, frame: ServerFrame): void {
+  sendRaw(socket, JSON.stringify(frame));
+}
+
+function sendRaw(socket: WebSocket, data: string): void {
   if (socket.readyState !== socket.OPEN) return;
-  socket.send(JSON.stringify(frame));
+  if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
+    socket.terminate();
+    return;
+  }
+  socket.send(data);
+}
+
+/**
+ * Each event serialized once, however many subscriptions it reaches.
+ *
+ * One streamed token is published to its thread and its project, and every
+ * open tab has a subscription on each: serializing per subscriber was the
+ * same `JSON.stringify` of the same event, many times a token.
+ */
+const serializedEvents = new WeakMap<object, string>();
+
+function sendPush(
+  socket: WebSocket,
+  subscriptionId: string,
+  publication: { seq?: number | null; projectId?: string | null; event: DomainEvent },
+): void {
+  if (socket.readyState !== socket.OPEN) return;
+  let event = serializedEvents.get(publication.event);
+  if (event === undefined) {
+    event = JSON.stringify(publication.event);
+    serializedEvents.set(publication.event, event);
+  }
+  // Built by hand only around the cached event, and with the same fields in
+  // the same order as the `ServerFrame` push it stands in for.
+  const head = JSON.stringify({
+    kind: "push",
+    subscriptionId,
+    seq: publication.seq,
+    at: new Date().toISOString(),
+    ...(publication.projectId ? { projectId: publication.projectId } : {}),
+  });
+  sendRaw(socket, `${head.slice(0, -1)},"event":${event}}`);
 }

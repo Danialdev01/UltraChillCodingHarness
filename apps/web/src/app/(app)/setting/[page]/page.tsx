@@ -1,19 +1,31 @@
 import { cookies } from "next/headers";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import { SettingsPage } from "@/components/settings-page";
-import { isSettingsPageId } from "@/lib/sections";
-import { getWorkspaceStorage, getWorkspaceUsage, listProjects, listWorkspaces } from "@/lib/session";
+import { isSettingsPageId, workspaceSettingsPageHref } from "@/lib/sections";
+import {
+  getWorkspaceStorage,
+  getWorkspaceUsage,
+  listProjects,
+  listWorkspaces,
+  pickActiveWorkspace,
+} from "@/lib/session";
+import { WORKSPACE_COOKIE_NAME } from "@/lib/workspace-cookie";
 
 /** One page of Settings, at /setting/{page}. */
 export default async function Page({ params }: { params: Promise<{ page: string }> }) {
   const { page } = await params;
-  if (!isSettingsPageId(page)) notFound();
+  if (page !== "default" && !isSettingsPageId(page)) notFound();
 
+  // Outside any workspace's address, so the one these figures are for is
+  // the last one open.
   const workspaces = await listWorkspaces();
   const jar = await cookies();
-  const requested = jar.get("ucch_workspace")?.value;
-  const active = workspaces.find((w) => w.id === requested) ?? workspaces[0];
+  const requested = jar.get(WORKSPACE_COOKIE_NAME)?.value;
+  const active = pickActiveWorkspace(workspaces, requested);
+  // The defaults moved to Workspace Settings; old bookmarks follow them.
+  if (page === "default") redirect(active ? workspaceSettingsPageHref(active.hash, "general") : "/");
+  if (!isSettingsPageId(page)) notFound();
   // Fetched here rather than in the page: it would otherwise have to
   // discover the active workspace for itself, which the route already knows.
   // Storage walks every project directory, so only the page that shows it

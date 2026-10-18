@@ -8,6 +8,24 @@ import { z } from "zod";
  */
 export const ProjectHash = z.string().regex(/^[a-z0-9]{12}$/, "invalid project hash");
 export const PreviewHash = z.string().regex(/^[a-z0-9]{12}$/, "invalid preview hash");
+/** A workspace's and a project session's (thread's) web address use the same grammar. */
+export const WorkspaceHash = z.string().regex(/^[a-z0-9]{12}$/, "invalid workspace hash");
+export const ThreadHash = z.string().regex(/^[a-z0-9]{12}$/, "invalid session hash");
+
+/**
+ * A branch a session may fork from: what git accepts, minus anything that
+ * could be read as an option or walk out of `refs/heads`.
+ */
+export const BranchName = z
+  .string()
+  .min(1)
+  .max(255)
+  .regex(/^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)[A-Za-z0-9._\/-]+(?<![./])$/, "invalid branch name");
+
+/** The branch a project session works on, forked from its base. */
+export function sessionBranch(threadHash: string): string {
+  return `ucch/${threadHash}`;
+}
 
 export const ProjectId = z.string().uuid();
 export const ThreadId = z.string().uuid();

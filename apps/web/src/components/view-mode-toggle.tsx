@@ -1,8 +1,20 @@
 "use client"
 
-import { FolderTreeIcon, GitBranchIcon, MessageSquareIcon, SquareTerminalIcon, Trash2Icon } from "lucide-react"
+import * as React from "react"
+import {
+  ChevronsUpDownIcon,
+  FolderTreeIcon,
+  GitBranchIcon,
+  MessageSquareIcon,
+  SquareTerminalIcon,
+  StickyNoteIcon,
+  Trash2Icon,
+} from "lucide-react"
 
 import { SidebarToggles } from "@/components/file-explorer-toggle"
+import { Button } from "@/components/ui/button"
+import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useFilesPanel, type ViewMode } from "@/components/files-panel"
 import { cn } from "@/lib/utils"
 
@@ -12,12 +24,30 @@ import { cn } from "@/lib/utils"
  */
 const CLOSE_ALL_AT = 10
 
-const MODES: { id: ViewMode; label: string; icon: typeof MessageSquareIcon }[] = [
-  { id: "chat", label: "Chat", icon: MessageSquareIcon },
-  { id: "file", label: "Files", icon: FolderTreeIcon },
-  { id: "terminal", label: "Terminal", icon: SquareTerminalIcon },
-  { id: "git", label: "Git", icon: GitBranchIcon },
-]
+type Mode = { id: ViewMode; label: string; icon: typeof MessageSquareIcon }
+
+const CHAT: Mode = { id: "chat", label: "Chat", icon: MessageSquareIcon }
+const FILES: Mode = { id: "file", label: "Files", icon: FolderTreeIcon }
+const DOCS: Mode = { id: "docs", label: "Knowledge", icon: StickyNoteIcon }
+const TERMINAL: Mode = { id: "terminal", label: "Terminal", icon: SquareTerminalIcon }
+const GIT: Mode = { id: "git", label: "Git", icon: GitBranchIcon }
+
+/**
+ * A project's tabs. No Files tab: the tree toggle beside them opens the
+ * files, and opening one shows the editor -- the tab only repeated that.
+ * Its place goes to the project's documentation, read without leaving the
+ * session.
+ */
+const MODES = [CHAT, DOCS, TERMINAL, GIT]
+
+/**
+ * A session is a chat with a working directory: no Git tab, and no project
+ * whose documentation there would be to read.
+ */
+const SESSION_MODES = [CHAT, FILES, TERMINAL]
+
+/** Every view, for naming the one on screen when it has no tab of its own. */
+const ALL_MODES = [CHAT, FILES, DOCS, TERMINAL, GIT]
 
 /**
  * Which of the project's three views is on screen, and what is beside it.
@@ -33,9 +63,20 @@ const MODES: { id: ViewMode; label: string; icon: typeof MessageSquareIcon }[] =
  * which is what the divider says; but they act on what the three tabs choose,
  * so putting them in the group keeps the header to one cluster of controls
  * instead of two that look alike.
+ *
+ * On a phone the four tabs do not fit beside everything else in the header,
+ * so they fold into a picker shaped like the harness one in the chat.
  */
-export function ViewModeToggle() {
+export function ViewModeToggle({ session = false }: { session?: boolean }) {
   const { mode, setMode, tabs, closeAllTabs, terminals } = useFilesPanel()
+  const modes = session ? SESSION_MODES : MODES
+
+  // The view is remembered across projects, so arriving in a session from a
+  // project's Git or Knowledge view would otherwise show a tab that is
+  // not offered here.
+  React.useEffect(() => {
+    if (session && (mode === "git" || mode === "docs")) setMode("chat")
+  }, [session, mode, setMode])
 
   // The sweep acts on the view you are in: the file tabs when reading files,
   // the shells when in the terminal. Nothing to sweep in the chat.
@@ -48,14 +89,17 @@ export function ViewModeToggle() {
 
   return (
     <div className="flex items-center gap-1">
-      <div className="bg-muted/40 flex items-center gap-0.5 rounded-lg border p-0.5">
+      <ViewModeSelect modes={modes} mode={mode} onChange={setMode} />
+
+      <div className="bg-muted/40 hidden items-center gap-0.5 rounded-lg border p-0.5 md:flex">
         <div role="tablist" aria-label="Project view" className="flex items-center gap-0.5">
-          {MODES.map(({ id, label, icon: Icon }) => (
+          {modes.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
               role="tab"
               aria-selected={mode === id}
+              title={label}
               onClick={() => setMode(id)}
               className={cn(
                 "flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors",
@@ -65,12 +109,14 @@ export function ViewModeToggle() {
               )}
             >
               <Icon className="size-3.5" />
-              {label}
+              {/* Icons only until lg: beside a full sidebar, the labelled
+                  row left the page title a few letters. */}
+              <span className="sr-only lg:not-sr-only">{label}</span>
             </button>
           ))}
         </div>
 
-        <SidebarToggles />
+        <SidebarToggles session={session} />
       </div>
 
       {/* Outside the pill: the pill is where you are and what is beside it,
@@ -88,5 +134,66 @@ export function ViewModeToggle() {
         </button>
       )}
     </div>
+  )
+}
+
+/** The tabs as one picker, for screens too narrow for the row. */
+function ViewModeSelect({
+  modes,
+  mode,
+  onChange,
+}: {
+  modes: readonly Mode[]
+  mode: ViewMode
+  onChange: (mode: ViewMode) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  // Files has no tab in a project, but the tree still opens the editor.
+  const current = ALL_MODES.find((m) => m.id === mode) ?? modes[0]!
+  const CurrentIcon = current.icon
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            aria-label="Project view"
+            className="h-8 w-32 justify-between px-2 text-xs font-normal md:hidden"
+          />
+        }
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          <CurrentIcon className="size-3.5 shrink-0" />
+          <span className="truncate">{current.label}</span>
+        </span>
+        <ChevronsUpDownIcon className="text-muted-foreground size-3.5 shrink-0" />
+      </PopoverTrigger>
+
+      <PopoverContent className="w-44 p-0">
+        <Command>
+          <CommandList>
+            <CommandGroup heading="View">
+              {modes.map(({ id, label, icon: Icon }) => (
+                <CommandItem
+                  key={id}
+                  value={id}
+                  data-checked={id === mode}
+                  onSelect={() => {
+                    onChange(id)
+                    setOpen(false)
+                  }}
+                >
+                  <Icon className="size-3.5" />
+                  {label}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "preview_static_dir" text;

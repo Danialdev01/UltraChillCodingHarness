@@ -4,6 +4,16 @@ import { deleteFile, editFile, listDir, readFile, writeFile } from "./tools/fs.j
 import { glob, grep } from "./tools/search.js";
 import { bash } from "./tools/shell.js";
 import { currentTime, ping } from "./tools/system.js";
+import {
+  docChart,
+  docCheck,
+  docDiagram,
+  docEdit,
+  docInspect,
+  docRead,
+  docRender,
+  docSkill,
+} from "./tools/documents.js";
 import { researchBrowse, researchRead, researchSearch } from "./tools/research.js";
 import { attachUpload } from "./tools/uploads.js";
 import { webFetch, webSearch } from "./tools/web.js";
@@ -41,6 +51,16 @@ export const ALL: readonly AnyTool[] = Object.freeze([
   researchSearch,
   researchRead,
   researchBrowse,
+  // The document pipeline. At the end for the same reason, and offered on
+  // the `documentation` preset alone -- see `DOCUMENTATION_ONLY`.
+  docSkill,
+  docRead,
+  docInspect,
+  docEdit,
+  docRender,
+  docDiagram,
+  docChart,
+  docCheck,
 ]);
 
 /**
@@ -48,8 +68,13 @@ export const ALL: readonly AnyTool[] = Object.freeze([
  * research tools in place of `web_search` and `web_fetch`, every read tool,
  * and enough of the write tools to save what was found. No shell, and
  * nothing that deletes.
+ *
+ * `documentation` is the pipeline behind the composer's Documentation
+ * toggle: the document tools, every read tool, the file writes (the source
+ * of a document is a Markdown file), placing attachments, and the web for
+ * facts. No shell: the brief is typed tools, and the scripts own how.
  */
-export type ToolPreset = "readonly" | "minimal" | "standard" | "ptc" | "research";
+export type ToolPreset = "readonly" | "minimal" | "standard" | "ptc" | "research" | "documentation";
 
 /**
  * How the tool block is put in front of the model.
@@ -150,6 +175,26 @@ const RESEARCH_REPLACES: readonly string[] = ["web_search", "web_fetch"];
 /** The writes a research turn keeps: enough to save findings into the repository. */
 const RESEARCH_WRITES: readonly string[] = ["write_file", "edit_file"];
 
+/**
+ * Tools that exist only on the `documentation` preset. By name, for the
+ * reason `RESEARCH_ONLY` is: three of them are reads, and `readonly` would
+ * otherwise offer a vision model and a LibreOffice to a turn that did not
+ * ask for them.
+ */
+const DOCUMENTATION_ONLY: readonly string[] = [
+  "doc_skill",
+  "doc_read",
+  "doc_inspect",
+  "doc_edit",
+  "doc_render",
+  "doc_diagram",
+  "doc_chart",
+  "doc_check",
+];
+
+/** Everything a documentation turn has beside the read tools and its own. */
+const DOCUMENTATION_WRITES: readonly string[] = ["write_file", "edit_file", "delete_file", "attach_upload"];
+
 export interface RegistryOptions {
   /**
    * Defaults to true, so the registry offers what the preset names unless
@@ -168,7 +213,14 @@ export function selectPreset(
     tools.filter((tool) => {
       if (!allowHostShell && HOST_SHELL.includes(tool.name)) return false;
       if (preset !== "research" && RESEARCH_ONLY.includes(tool.name)) return false;
+      if (preset !== "documentation" && DOCUMENTATION_ONLY.includes(tool.name)) return false;
       switch (preset) {
+        case "documentation":
+          return (
+            DOCUMENTATION_ONLY.includes(tool.name) ||
+            DOCUMENTATION_WRITES.includes(tool.name) ||
+            tool.permission === "read"
+          );
         case "research":
           if (RESEARCH_REPLACES.includes(tool.name)) return false;
           return tool.permission === "read" || RESEARCH_WRITES.includes(tool.name);

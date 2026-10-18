@@ -18,6 +18,8 @@ export interface Script {
 export class FakeProcessHost implements ProcessHost {
   readonly spawned: SpawnSpec[] = [];
   readonly signals: string[] = [];
+  /** Lines written to a held stdin after spawn, across all children. */
+  readonly written: string[] = [];
 
   constructor(private readonly scripts: Script[]) {}
 
@@ -35,6 +37,8 @@ export class FakeProcessHost implements ProcessHost {
       : Promise.resolve();
 
     const signals = this.signals;
+    const written = this.written;
+    let stdinOpen = true;
     const handle: ChildHandle = {
       lines: {
         async *[Symbol.asyncIterator]() {
@@ -46,6 +50,12 @@ export class FakeProcessHost implements ProcessHost {
       signal(sig) {
         signals.push(sig);
         if (script?.waitForSignal === sig) release?.();
+      },
+      write(line) {
+        if (stdinOpen) written.push(line);
+      },
+      endStdin() {
+        stdinOpen = false;
       },
     };
     return handle;

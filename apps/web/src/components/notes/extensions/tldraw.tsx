@@ -7,7 +7,7 @@ import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tip
 import { PenToolIcon } from "lucide-react"
 
 import { useTheme } from "@/components/theme-provider"
-import { deriveTheme } from "@/lib/theme"
+import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
 declare module "@tiptap/core" {
@@ -20,11 +20,7 @@ declare module "@tiptap/core" {
 
 const TldrawFrame = dynamic(() => import("./tldraw-frame").then((m) => m.TldrawFrame), {
   ssr: false,
-  loading: () => (
-    <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
-      Loading whiteboard…
-    </div>
-  ),
+  loading: () => <Skeleton className="size-full rounded-none" />,
 })
 
 /**
@@ -83,8 +79,7 @@ export const TldrawBlock = Node.create({
 })
 
 function TldrawView({ node, updateAttributes, selected }: NodeViewProps) {
-  const { theme } = useTheme()
-  const dark = deriveTheme(theme).dark
+  const dark = useTheme().resolvedMode === "dark"
   const height = node.attrs.height as number
 
   return (

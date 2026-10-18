@@ -1,7 +1,12 @@
 "use client"
 
 import * as React from "react"
+import { BotIcon } from "lucide-react"
 
+import { PickerChevron, pickerTrigger, type PickerLook } from "@/components/model-picker"
+import { Button } from "@/components/ui/button"
+import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   fetchProviders,
   providerBlocker,
@@ -36,18 +41,15 @@ export function useProviders(): ProvidersState {
 
 const ORDER: ProviderId[] = ["native", "claude", "codex"]
 
-// The same shape as the effort select beside it.
-const SELECT =
-  "border-input bg-background focus-visible:ring-ring h-8 max-w-32 truncate rounded-md border px-2 text-xs outline-none focus-visible:ring-2 disabled:opacity-60 @md:max-w-52"
-
 /**
  * Which backend answers the next message.
  *
- * A plain select: three entries, and the interesting part is which ones are
- * greyed out and why -- the option's title says. Once a thread has run it is
- * bound to its provider and the select locks, because the server would
- * refuse a switch and a control that looks live but is not is worse than one
- * that says so.
+ * The same popover as the model and effort pickers beside it, so the row
+ * reads as one set of controls. No search box: there are three entries, and
+ * the interesting part is which ones are greyed out and why -- each row says.
+ * Once a thread has run it is bound to its provider and the trigger locks,
+ * because the server would refuse a switch and a control that looks live but
+ * is not is worse than one that says so.
  */
 export function ProviderSelect({
   providers,
@@ -55,6 +57,7 @@ export function ProviderSelect({
   locked,
   onChange,
   disabled,
+  look = "field",
 }: {
   providers: ProvidersState
   value: ProviderId
@@ -62,34 +65,83 @@ export function ProviderSelect({
   locked: ProviderId | null
   onChange: (id: ProviderId) => void
   disabled?: boolean
+  look?: PickerLook
 }) {
+  const [open, setOpen] = React.useState(false)
   const cards = providers.cards
   const current = cards?.[value]
   const blocker = current ? providerBlocker(current) : null
 
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as ProviderId)}
-      disabled={disabled || locked !== null}
-      aria-label="Harness"
-      title={
-        locked
-          ? `This thread runs on ${cards?.[locked]?.label ?? locked}. Clear the context to switch.`
-          : (blocker ?? "Which harness answers")
-      }
-      className={SELECT}
-    >
-      {ORDER.map((id) => {
-        const card = cards?.[id]
-        const why = card ? providerBlocker(card) : id === "native" ? null : "Checking…"
-        return (
-          <option key={id} value={id} disabled={why !== null && id !== value} title={why ?? undefined}>
-            {card?.label ?? id}
-            {why ? ` (${why})` : ""}
-          </option>
-        )
-      })}
-    </select>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            {...pickerTrigger(look, look === "inline" ? "text-muted-foreground" : "w-36")}
+            role="combobox"
+            aria-expanded={open}
+            aria-label="Harness"
+            disabled={disabled || locked !== null}
+            title={
+              locked
+                ? `This thread runs on ${cards?.[locked]?.label ?? locked}. Clear the context to switch.`
+                : (blocker ?? `Harness: ${current?.label ?? value}`)
+            }
+          />
+        }
+      >
+        {look === "inline" ? (
+          // On the toolbar, a narrow panel shows the robot alone; the name
+          // is in the title and in the list it opens.
+          <>
+            <BotIcon className="size-4 @md:hidden" />
+            <span className="sr-only @md:not-sr-only @md:truncate">{current?.label ?? value}</span>
+            <span className="hidden @md:contents">
+              <PickerChevron look={look} />
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="truncate">{current?.label ?? value}</span>
+            <PickerChevron look={look} />
+          </>
+        )}
+      </PopoverTrigger>
+
+      <PopoverContent className="w-72 p-0">
+        <Command>
+          <CommandList>
+            <CommandGroup heading="Harness">
+              {ORDER.map((id) => {
+                const card = cards?.[id]
+                const why = card ? providerBlocker(card) : id === "native" ? null : "Checking…"
+                return (
+                  <CommandItem
+                    key={id}
+                    value={id}
+                    data-checked={id === value}
+                    // The current one stays selectable even when blocked, so
+                    // the list never hides where you are.
+                    disabled={why !== null && id !== value}
+                    title={why ?? undefined}
+                    onSelect={() => {
+                      onChange(id)
+                      setOpen(false)
+                    }}
+                  >
+                    <span className="shrink-0">{card?.label ?? id}</span>
+                    {why && (
+                      <span className="text-muted-foreground ml-auto min-w-0 truncate text-[10px]">
+                        {why}
+                      </span>
+                    )}
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }

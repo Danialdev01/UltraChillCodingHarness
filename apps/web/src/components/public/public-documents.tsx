@@ -1,15 +1,16 @@
 "use client"
 
 import * as React from "react"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { usePathname, useSearchParams } from "next/navigation"
 import { ChevronRightIcon, FileIcon } from "lucide-react"
 
 import { FileTypeIcon } from "@/components/file-type-icon"
-import { Skeleton } from "@/components/ui/skeleton"
+import { CodeLinesSkeleton, ListRowsSkeleton } from "@/components/page-skeletons"
 import type { FileNode } from "@/lib/files-api"
 import { highlightLines } from "@/lib/highlight-lines"
 import { PublicApiError, fetchPublicFile, fetchPublicTree } from "@/lib/public-api"
 import { cn } from "@/lib/utils"
+import { useTransitionRouter } from "@/lib/view-transitions"
 
 /**
  * The project's files, to look at.
@@ -20,7 +21,7 @@ import { cn } from "@/lib/utils"
  * says so rather than being offered for download.
  */
 export function PublicDocuments({ slug }: { slug: string }) {
-  const router = useRouter()
+  const router = useTransitionRouter()
   const pathname = usePathname()
   const params = useSearchParams()
   const path = params.get("path")
@@ -85,11 +86,7 @@ export function PublicDocuments({ slug }: { slug: string }) {
             {tree.truncated && <p className="text-muted-foreground px-3 pt-2 text-xs">Some files are not listed.</p>}
           </>
         ) : (
-          <div className="flex flex-col gap-2 px-3 py-2">
-            {Array.from({ length: 8 }, (_, i) => (
-              <Skeleton key={i} className="h-3.5" style={{ width: `${40 + ((i * 23) % 45)}%` }} />
-            ))}
-          </div>
+          <ListRowsSkeleton rows={8} className="flex flex-col gap-2 px-3 py-2" />
         )}
       </aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -105,11 +102,7 @@ export function PublicDocuments({ slug }: { slug: string }) {
               ) : file && file.path === path ? (
                 <CodeView content={file.content} path={path} />
               ) : (
-                <div className="flex flex-col gap-1.5 p-3">
-                  {Array.from({ length: 14 }, (_, i) => (
-                    <Skeleton key={i} className="h-3" style={{ width: `${20 + ((i * 37) % 60)}%` }} />
-                  ))}
-                </div>
+                <CodeLinesSkeleton />
               )}
             </div>
           </>
@@ -163,7 +156,7 @@ function Tree({
               aria-current={active ? "page" : undefined}
               className={cn(
                 "flex w-full items-center gap-1.5 py-1 pr-3 text-left text-xs",
-                active ? "bg-ucch-active-bg text-ucch-active" : "text-foreground/80 hover:bg-muted/60",
+                active ? "bg-ucch-active-bg text-ucch-active" : "text-muted-foreground hover:bg-muted/60",
               )}
               style={{ paddingLeft: 8 + depth * 14 }}
             >
@@ -193,7 +186,7 @@ function CodeView({ content, path }: { content: string; path: string }) {
       <tbody>
         {lines.map((tokens, i) => (
           <tr key={i}>
-            <td className="text-muted-foreground/70 w-10 min-w-10 border-r px-2 text-right align-top select-none">{i + 1}</td>
+            <td className="text-text-subtle w-10 min-w-10 border-r px-2 text-right align-top select-none">{i + 1}</td>
             <td className="w-full px-3 whitespace-pre">
               {tokens.map((t, k) => (
                 <span key={k} className={t.cls || undefined}>
