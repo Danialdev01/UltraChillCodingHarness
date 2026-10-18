@@ -53,6 +53,10 @@ const iaWriterMono = localFont({
   ],
   display: "swap",
   variable: "--font-ia-writer-mono",
+  // Inline code and paths only -- nothing on the sign-in page or the first
+  // paint of most pages -- so its four faces (~156 KB) are not preloaded on
+  // every page; they arrive when text first uses them.
+  preload: false,
 });
 
 /**

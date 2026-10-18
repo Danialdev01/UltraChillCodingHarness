@@ -538,7 +538,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** Clicking a project from the dashboard makes no redirect request (check the Network tab).
   - **Verify:** `pnpm test -- warmup sections`, plus the e2e suite
 
-- [ ] **B10 — Fonts and file icons**
+- [x] **B10 — Fonts and file icons** — iA Writer Mono not preloaded at all (per-face preload is not possible with one family); icons verified in the next production build
   - **Depends:** P0.1
   - **Files:** `apps/web/src/app/layout.tsx` (fonts), `apps/web/src/app/file-icons/route.ts`, new `apps/web/src/app/file-icons/resolve/route.ts` and `file-icons/svg/[id]/route.ts`, `apps/web/src/lib/file-icons.ts`, file-tree components
   - **Steps:**

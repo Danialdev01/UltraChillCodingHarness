@@ -1,8 +1,9 @@
-import { access, readFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import path from "node:path"
 import type { NextRequest } from "next/server"
 
-import { ICON_NAME, iconNameFor, type IconKind, type IconManifest } from "@/lib/file-icons"
+import { ICON_NAME, iconNameFor, type IconKind } from "@/lib/file-icons"
+import { findPackageDir, KINDS, loadManifest } from "@/lib/file-icons-server"
 
 /**
  * `GET /file-icons?kind=file&name=README.md` -- the Material icon for a path.
@@ -17,37 +18,6 @@ import { ICON_NAME, iconNameFor, type IconKind, type IconManifest } from "@/lib/
  * a tree of a hundred files. Cached for a day, since an icon for a name only
  * changes when the package does.
  */
-/**
- * Where the package is on disk.
- *
- * Not `require.resolve`: the route is bundled, and the bundler rewrites that
- * into its own module id rather than a path. Walking up from the working
- * directory finds the app's `node_modules` under `next dev` and `next start`
- * alike, and pnpm's symlink there is followed by the reads below.
- */
-let packageDir: Promise<string> | null = null
-function findPackageDir(): Promise<string> {
-  packageDir ??= (async () => {
-    for (let dir = process.cwd(); ; dir = path.dirname(dir)) {
-      const candidate = path.join(dir, "node_modules", "material-icon-theme")
-      if (await access(path.join(candidate, "package.json")).then(() => true, () => false)) {
-        return candidate
-      }
-      if (path.dirname(dir) === dir) throw new Error("material-icon-theme is not installed")
-    }
-  })()
-  return packageDir
-}
-
-let manifest: Promise<IconManifest> | null = null
-function loadManifest(): Promise<IconManifest> {
-  manifest ??= findPackageDir()
-    .then((dir) => readFile(path.join(dir, "dist", "material-icons.json"), "utf8"))
-    .then((text) => JSON.parse(text) as IconManifest)
-  return manifest
-}
-
-const KINDS = new Set<IconKind>(["file", "folder", "folder-open", "icon"])
 
 export async function GET(request: NextRequest): Promise<Response> {
   const params = request.nextUrl.searchParams
