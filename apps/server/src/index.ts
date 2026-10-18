@@ -1853,7 +1853,11 @@ type DiagramJob =
 const diagramJobs = new Map<string, DiagramJob>();
 const DIAGRAM_TIMEOUT_MS = 5 * 60_000;
 
-async function runDiagramJob(project: ProjectSummary, kind: DiagramKind): Promise<DiagramJob> {
+async function runDiagramJob(
+  project: ProjectSummary,
+  tree: TreeTarget,
+  kind: DiagramKind,
+): Promise<DiagramJob> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DIAGRAM_TIMEOUT_MS);
   try {
@@ -1893,7 +1897,7 @@ app.post<{ Params: { hash: string; kind: string } }>(
       return reply.code(409).send({ error: "This diagram is already being generated." });
     }
     diagramJobs.set(key, { state: "running" });
-    void runDiagramJob(project, kind).then((job) => diagramJobs.set(key, job));
+    void runDiagramJob(project, tree, kind).then((job) => diagramJobs.set(key, job));
     return reply.code(202).send({ state: "running" });
   },
 );

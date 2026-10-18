@@ -27,7 +27,7 @@ pnpm --filter @ucch/web build
 
 ## Phase P0: Baseline
 
-- [ ] **P0.1 — Checkpoint the working tree**
+- [x] **P0.1 — Checkpoint the working tree** — aa4d8ee
   - **Depends:** —
   - **Files:** whole repo (`git status`)
   - **Steps:**
@@ -36,7 +36,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** `git status` is clean on the new branch.
   - **Verify:** `git status --short | wc -l` → `0`
 
-- [ ] **P0.2 — Fix `runDiagramJob` undefined `tree`**
+- [x] **P0.2 — Fix `runDiagramJob` undefined `tree`** — fix(server): runDiagramJob
   - **Depends:** P0.1
   - **Files:** `apps/server/src/index.ts` (`runDiagramJob`, around line 1855), `apps/server/src/files.ts`, `apps/server/src/worktrees.ts`, `apps/server/src/diagrams.test.ts`
   - **Steps:**
