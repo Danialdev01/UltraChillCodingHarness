@@ -426,6 +426,8 @@ function topicKey(topic: SubscribeTopic): string {
       return `terminal:${topic.terminalId}`;
     case "user":
       return "user";
+    case "workspace":
+      return `workspace:${topic.workspaceId}`;
   }
 }
 
@@ -433,4 +435,5 @@ export type SubscribeTopic =
   | { name: "thread"; threadId: string }
   | { name: "project"; projectId: string; quiet?: boolean }
   | { name: "terminal"; terminalId: string }
-  | { name: "user" };
+  | { name: "user" }
+  | { name: "workspace"; workspaceId: string };

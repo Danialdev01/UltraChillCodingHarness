@@ -39,6 +39,11 @@ const Subscribe = z.object({
     z.object({ name: z.literal("terminal"), terminalId: z.string() }),
     /** The caller's own account: settings and other things without a project. */
     z.object({ name: z.literal("user") }),
+    /**
+     * A workspace the caller belongs to: its projects, members, invites,
+     * connections and settings -- what every member's sidebar shows.
+     */
+    z.object({ name: z.literal("workspace"), workspaceId: z.string().uuid() }),
   ]),
   /** Replay durable events from this sequence number before streaming live ones. */
   sinceSeq: z.number().int().nonnegative().optional(),

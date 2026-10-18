@@ -11,7 +11,8 @@ export type Topic =
   | { name: "thread"; threadId: string }
   | { name: "project"; projectId: string }
   | { name: "terminal"; terminalId: string }
-  | { name: "user"; userId: string };
+  | { name: "user"; userId: string }
+  | { name: "workspace"; workspaceId: string };
 
 export function topicKey(topic: Topic): string {
   switch (topic.name) {
@@ -23,6 +24,8 @@ export function topicKey(topic: Topic): string {
       return `terminal:${topic.terminalId}`;
     case "user":
       return `user:${topic.userId}`;
+    case "workspace":
+      return `workspace:${topic.workspaceId}`;
   }
 }
 
@@ -82,6 +85,15 @@ export class EventBus {
    */
   publishToUser(userId: string, event: DomainEvent): void {
     this.#deliver([`user:${userId}`], { seq: null, projectId: "", threadId: null, event });
+  }
+
+  /**
+   * To every member of a workspace who has it open: a project created or
+   * deleted, a member added, a connection changed -- what their sidebars and
+   * settings pages show.
+   */
+  publishToWorkspace(workspaceId: string, event: DomainEvent): void {
+    this.#deliver([`workspace:${workspaceId}`], { seq: null, projectId: "", threadId: null, event });
   }
 
   #deliver(keys: readonly string[], publication: Publication): void {

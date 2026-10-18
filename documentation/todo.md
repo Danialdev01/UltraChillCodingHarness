@@ -408,7 +408,7 @@ pnpm --filter @ucch/web build
 
 ## Phase R (core): Everything live
 
-- [ ] **R1 — `workspace:{id}` topic**
+- [x] **R1 — `workspace:{id}` topic**
   - **Depends:** S3
   - **Files:** `packages/protocol/src/rpc.ts`, `packages/protocol/src/events.ts`, `apps/server/src/bus.ts`, `apps/server/src/ws.ts`, `apps/server/src/access.ts`, `apps/web/src/lib/client.ts`, `apps/web/src/lib/realtime.tsx`
   - **Steps:**

@@ -32,6 +32,8 @@ interface Connection {
   subscriptions: Map<string, () => void>;
   /** The project each project or thread subscription belongs to, to re-check on `revalidate`. */
   subscriptionProjects: Map<string, string>;
+  /** The workspace each workspace subscription is for, likewise. */
+  subscriptionWorkspaces: Map<string, string>;
   alive: boolean;
   /**
    * What this socket has already been allowed to open, so the prompt box,
@@ -53,7 +55,8 @@ const STREAMS: ReadonlySet<DomainEvent["type"]> = new Set([
 ]);
 
 export interface GatewayOptions {
-  access: Pick<ProjectAccess, "canAccessProject" | "threadProject" | "projectOfThread">;
+  access: Pick<ProjectAccess, "canAccessProject" | "threadProject" | "projectOfThread"> &
+    Partial<Pick<ProjectAccess, "canAccessWorkspace">>;
   composer: ComposerStore;
   presence: PresenceStore;
   /** Whether a user may watch a terminal's output; see `TerminalReactor.mayWatch`. */
@@ -126,6 +129,7 @@ export class WebSocketGateway {
       clientId,
       subscriptions: new Map(),
       subscriptionProjects: new Map(),
+      subscriptionWorkspaces: new Map(),
       alive: true,
       threads: new Map(),
       projects: new Set(),
@@ -226,6 +230,13 @@ export class WebSocketGateway {
           topic = { name: "thread", threadId: frame.topic.threadId };
         } else if (frame.topic.name === "user") {
           topic = { name: "user", userId: conn.principal.userId };
+        } else if (frame.topic.name === "workspace") {
+          const check = this.options.access.canAccessWorkspace;
+          if (!check || !(await check.call(this.options.access, conn.principal.userId, frame.topic.workspaceId))) {
+            send(conn.socket, { kind: "error", id: frame.id, code: "forbidden", message: "not your workspace" });
+            return;
+          }
+          topic = { name: "workspace", workspaceId: frame.topic.workspaceId };
         } else {
           // A terminal id is minted by the tab that opens it and never
           // listed anywhere -- but a shell is not the place to rely on that:
@@ -263,6 +274,7 @@ export class WebSocketGateway {
         conn.subscriptions.set(subscriptionId, unsubscribe);
         const watched = frame.topic.name === "project" ? frame.topic.projectId : threadProject;
         if (watched) conn.subscriptionProjects.set(subscriptionId, watched);
+        if (frame.topic.name === "workspace") conn.subscriptionWorkspaces.set(subscriptionId, frame.topic.workspaceId);
 
         if (frame.topic.name === "thread") {
           // Bounded: the browser keeps the newest 500 events of a thread, so
@@ -378,6 +390,7 @@ export class WebSocketGateway {
           unsubscribe();
           conn.subscriptions.delete(frame.id);
           conn.subscriptionProjects.delete(frame.id);
+          conn.subscriptionWorkspaces.delete(frame.id);
         }
         send(conn.socket, { kind: "ack", id: frame.id, events: [] });
         return;
@@ -461,6 +474,14 @@ export class WebSocketGateway {
         conn.subscriptions.get(subscriptionId)?.();
         conn.subscriptions.delete(subscriptionId);
         conn.subscriptionProjects.delete(subscriptionId);
+        send(conn.socket, { kind: "revoked", subscriptionId });
+      }
+      if (match.projectId || !this.options.access.canAccessWorkspace) continue;
+      for (const [subscriptionId, workspaceId] of conn.subscriptionWorkspaces) {
+        if (await this.options.access.canAccessWorkspace(conn.principal.userId, workspaceId)) continue;
+        conn.subscriptions.get(subscriptionId)?.();
+        conn.subscriptions.delete(subscriptionId);
+        conn.subscriptionWorkspaces.delete(subscriptionId);
         send(conn.socket, { kind: "revoked", subscriptionId });
       }
     }

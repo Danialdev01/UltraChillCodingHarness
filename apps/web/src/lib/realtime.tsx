@@ -13,6 +13,7 @@ import {
 } from "@/lib/agent-activity"
 import { UcchClient, type ClientEvent } from "@/lib/client"
 import { TAB_ID, installTabHeader } from "@/lib/tab-id"
+import { useActiveWorkspace } from "@/lib/workspace-context"
 
 /**
  * One socket per tab for everything that only needs to hear that something
@@ -60,6 +61,16 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       setClient(null)
     }
   }, [])
+
+  // The open workspace's topic: projects, members, connections and settings
+  // that every member's sidebar shows. A workspace left behind keeps its
+  // subscription until the tab closes -- it is still the person's, and its
+  // events only refresh caches.
+  const workspaceId = useActiveWorkspace()?.id ?? null
+  React.useEffect(() => {
+    if (!client || !workspaceId) return
+    void client.subscribe({ name: "workspace", workspaceId }).catch(() => {})
+  }, [client, workspaceId])
 
   const toast = React.useCallback((input: ToastInput) => {
     const id = next.current++

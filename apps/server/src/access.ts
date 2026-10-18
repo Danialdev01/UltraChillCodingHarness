@@ -25,6 +25,15 @@ export class ProjectAccess {
     return Boolean(row);
   }
 
+  async canAccessWorkspace(userId: string, workspaceId: string): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: workspaceMembers.workspaceId })
+      .from(workspaceMembers)
+      .where(and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, userId)))
+      .limit(1);
+    return Boolean(row);
+  }
+
   /** The thread's project when the caller may see it, else null. */
   async threadProject(userId: string, threadId: string): Promise<string | null> {
     const projectId = await this.projectOfThread(threadId);
