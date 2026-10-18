@@ -51,9 +51,14 @@ export function warmupHrefs(
     // the dashboard put at the top, so the likeliest to be opened next. A
     // project's bare address only redirects to a session, so its pages are
     // what is warmed; a session workspace's session is a page of its own.
-    const hash = projectHashFromPath(pathname) ?? projectHashes[0]
-    if (hash && workspace.kind === "session") hrefs.push(projectHref(ws, "session", hash))
-    if (hash && workspace.kind === "project") hrefs.push(...PROJECT_PAGES.map((p) => projectPageHref(ws, hash, p.id)))
+    // Off a project, the three at the top of the list -- the recently active
+    // ones, so the likeliest next clicks.
+    const inView = projectHashFromPath(pathname)
+    const hashes = inView ? [inView] : projectHashes.slice(0, 3)
+    for (const hash of hashes) {
+      if (workspace.kind === "session") hrefs.push(projectHref(ws, "session", hash))
+      if (workspace.kind === "project") hrefs.push(...PROJECT_PAGES.map((p) => projectPageHref(ws, hash, p.id)))
+    }
   }
   return [...new Set(hrefs)].filter((href) => href !== pathname)
 }

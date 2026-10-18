@@ -33,6 +33,13 @@ describe("warmupHrefs", () => {
     expect(warmupHrefs(`/${WS}/code`, PROJECTS, [OTHER, HASH])).toContain(`/${WS}/p/${OTHER}/tasks`)
   })
 
+  it("off a project, warms the three at the top of the list and no more", () => {
+    const four = [OTHER, HASH, "aaaaaaaaaaaa", "bbbbbbbbbbbb"]
+    const hrefs = warmupHrefs(`/${WS}/code`, PROJECTS, four)
+    for (const hash of four.slice(0, 3)) expect(hrefs).toContain(`/${WS}/p/${hash}/tasks`)
+    expect(hrefs.some((h) => h.includes("bbbbbbbbbbbb"))).toBe(false)
+  })
+
   it("in a session workspace, warms the session rather than project pages", () => {
     const hrefs = warmupHrefs(`/${WS}`, SESSIONS, [HASH])
     expect(hrefs).toContain(`/${WS}/s/${HASH}`)

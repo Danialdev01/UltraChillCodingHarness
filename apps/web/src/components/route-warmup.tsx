@@ -27,6 +27,9 @@ import { SKELETON_ONLY, warmupHrefs } from "@/lib/warmup"
 /** `PrefetchKind.FULL`. The enum is internal to Next, so its value is named here. */
 const FULL = "full" as unknown as PrefetchKind
 
+/** A tab away longer than this has lost its prefetched pages; they are fetched again. */
+const REWARM_AFTER_MS = 4 * 60_000
+
 /** Between two prefetches: enough for the network to breathe, short enough to finish in seconds. */
 const GAP_MS = 150
 
@@ -89,21 +92,34 @@ export function Prefetch({
   React.useEffect(() => {
     if (saveData()) return
     let cancelled = false
-    void (async () => {
+    const warm = async (withChunks: boolean) => {
       await whenIdle()
       for (const href of work.current.hrefs) {
         if (cancelled) return
         router.prefetch(href, SKELETON_ONLY.has(href) ? undefined : { kind: FULL })
         await wait(GAP_MS)
       }
+      if (!withChunks) return
       for (const load of work.current.chunks) {
         if (cancelled) return
         // A chunk that fails to arrive is fetched again when it is needed.
         await load().catch(() => {})
       }
-    })()
+    }
+    void warm(true)
+
+    // The router keeps a prefetched page for a few minutes only. Coming back
+    // to a tab left longer than that warms it again, so the first click
+    // after lunch is as quick as the ones before.
+    let hiddenAt = 0
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") hiddenAt = Date.now()
+      else if (hiddenAt && Date.now() - hiddenAt > REWARM_AFTER_MS) void warm(false)
+    }
+    document.addEventListener("visibilitychange", onVisibility)
     return () => {
       cancelled = true
+      document.removeEventListener("visibilitychange", onVisibility)
     }
   }, [router])
 

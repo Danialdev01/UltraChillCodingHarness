@@ -523,7 +523,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** DevTools shows one `/ws` connection per tab after visiting chat, a terminal and project creation.
   - **Verify:** `pnpm test -- client`, plus manual
 
-- [ ] **B9 — Links to final URLs + router cache + warmup**
+- [x] **B9 — Links to final URLs + router cache + warmup** — project links use the newest cached session; falls back to the bare address when sessions are not cached yet
   - **Depends:** B5.a
   - **Files:** `components/section-panel.tsx` (around line 184), `components/projects-table.tsx` (around lines 141 and 201), `lib/sections.ts`, `lib/warmup.ts` / `warmup.test.ts`, `components/route-warmup.tsx`, `apps/web/next.config.ts`
   - **Steps:**

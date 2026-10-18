@@ -2,10 +2,13 @@
 
 import * as React from "react"
 import { usePathname, useRouter } from "next/navigation"
+import { useQueryClient } from "@tanstack/react-query"
 
 import { projectHref, workspaceHashFromPath } from "@/lib/sections"
 import { WORKSPACE_COOKIE_NAME, WORKSPACE_HASH_COOKIE_NAME } from "@/lib/workspace-cookie"
-import type { Workspace, WorkspaceKind } from "@/lib/session"
+import type { ProjectSession, Workspace, WorkspaceKind } from "@/lib/session"
+import { qk } from "@/lib/query-keys"
+import { isTaskThreadTitle } from "@/lib/tasks-api"
 
 interface ActiveWorkspace {
   id: string
@@ -90,8 +93,17 @@ export function useWorkspaceHash(): string {
 export function useProjectHref(): (projectHash: string, sessionHash?: string | null) => string {
   const ws = useWorkspaceHash()
   const kind = useActiveWorkspace()?.kind ?? "project"
+  const queryClient = useQueryClient()
   return React.useCallback(
-    (projectHash: string, sessionHash?: string | null) => projectHref(ws, kind, projectHash, sessionHash),
-    [ws, kind],
+    (projectHash: string, sessionHash?: string | null) => {
+      // A project's bare address only redirects to its newest session. When
+      // the sessions are cached, link there directly: one round trip, not two.
+      if (!sessionHash && kind === "project") {
+        const sessions = queryClient.getQueryData<ProjectSession[]>(qk.sessions.list(projectHash))
+        sessionHash = sessions?.find((s) => !isTaskThreadTitle(s.title))?.hash ?? null
+      }
+      return projectHref(ws, kind, projectHash, sessionHash)
+    },
+    [ws, kind, queryClient],
   )
 }
