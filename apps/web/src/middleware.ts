@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { needsSession, SESSION_COOKIE } from "@/lib/auth-gate";
 import { WORKSPACE_HASH_COOKIE_NAME } from "@/lib/workspace-cookie";
 import { WORKSPACE_HEADER } from "@/lib/workspace-header";
 
@@ -40,6 +41,16 @@ export function middleware(request: NextRequest) {
     const url = request.nextUrl.clone();
     const rest = url.pathname.startsWith("/dashboard") ? url.pathname.slice("/dashboard".length) : url.pathname;
     url.pathname = ws && /^[a-z0-9]{12}$/.test(ws) ? `/${ws}${rest}` : "/";
+    return NextResponse.redirect(url);
+  }
+
+  // No session cookie at all: straight to sign-in, and back here after,
+  // without rendering a shell that could only redirect.
+  if (needsSession(request.nextUrl.pathname) && !request.cookies.has(SESSION_COOKIE)) {
+    const url = request.nextUrl.clone();
+    const next = `${request.nextUrl.pathname}${request.nextUrl.search}`;
+    url.pathname = "/login";
+    url.search = next === "/" ? "" : `?next=${encodeURIComponent(next)}`;
     return NextResponse.redirect(url);
   }
 

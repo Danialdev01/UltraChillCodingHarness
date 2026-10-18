@@ -288,7 +288,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** One request returns all shell data. p95 is under 50 ms locally with 20 projects.
   - **Verify:** `pnpm test -- bootstrap`
 
-- [ ] **B2 — Middleware cookie gate**
+- [x] **B2 — Middleware cookie gate**
   - **Depends:** P0.1
   - **Files:** `apps/web/src/middleware.ts`
   - **Steps:**
