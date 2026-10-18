@@ -367,6 +367,16 @@ const gateway = new WebSocketGateway(auth, engine, store, bus, {
   mayWatchTerminal: (userId, terminalId) => terminals.mayWatch(terminalId, userId),
   onDispatched: (principal, clientId, command, result) => {
     if (!result.ok) return;
+    // A new project lands on its own topic, which nobody watches yet: tell
+    // the workspace, whose members' sidebars list it.
+    if (command.type === "project.create") {
+      bus.publishToWorkspace(command.workspaceId, {
+        type: "resource.changed",
+        projectId: null,
+        resource: "projects",
+        origin: { userId: principal.userId, clientId },
+      });
+    }
     void auditCommand(principal.userId, clientId, command, result.events).catch((error) =>
       app.log.error({ err: error }, "could not log a command"),
     );
@@ -1394,6 +1404,25 @@ async function originOf(request: {
 }
 
 /**
+ * Which workspace a write belongs to, found before the handler runs: a delete
+ * leaves nothing to look up afterwards, and every member of the workspace
+ * hears about the change (below).
+ */
+const workspaceOfRequest = new WeakMap<object, string>();
+app.addHook("preHandler", async (request) => {
+  if (READ_METHODS.has(request.method)) return;
+  const url = request.routeOptions.url ?? "";
+  const params = request.params as { id?: string; hash?: string };
+  if (!url.startsWith("/api/database-connections/:id") && url !== "/api/projects/:hash") return;
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return;
+  const workspaceId = url.startsWith("/api/database-connections/:id")
+    ? params.id && (await databaseConnections.findForUser(params.id, principal.userId))?.workspaceId
+    : params.hash && (await workspaceService.findByHash(params.hash, principal.userId))?.workspaceId;
+  if (workspaceId) workspaceOfRequest.set(request, workspaceId);
+});
+
+/**
  * Every other write, logged once it has succeeded.
  *
  * The routes with something richer to say log themselves (see
@@ -1438,6 +1467,27 @@ app.addHook("onResponse", async (request, reply) => {
       };
       if (project) bus.publish({ seq: null, projectId: project.id, threadId: null, event });
       bus.publishToUser(principal.userId, event);
+
+      // Everyone else in the workspace: their sidebars list the same
+      // projects and connections, their settings the same members.
+      const url = request.routeOptions.url ?? "";
+      const params = request.params as { id?: string; userId?: string };
+      const workspaceId =
+        workspaceOfRequest.get(request) ??
+        (url.startsWith("/api/workspaces/:id") ? params.id : undefined) ??
+        project?.workspaceId;
+      if (workspaceId) bus.publishToWorkspace(workspaceId, event);
+      // A member added, re-roled or removed hears it on their own topic: it
+      // changes which workspaces they have.
+      if (url.startsWith("/api/workspaces/:id/members/:userId") && params.userId) {
+        bus.publishToUser(params.userId, { ...event, resource: "projects" });
+      }
+      // A new name or picture shows in every workspace's member list and presence.
+      if (change.resource === "account_settings") {
+        for (const workspace of await workspaceService.list(principal.userId)) {
+          bus.publishToWorkspace(workspace.id, { ...event, resource: "workspace_members" });
+        }
+      }
     }
   } catch (error) {
     app.log.error({ err: error }, "could not log a change");

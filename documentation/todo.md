@@ -419,7 +419,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** A test event published to the workspace reaches every member's tab.
   - **Verify:** `pnpm test -- bus ws`
 
-- [ ] **R2 — Route workspace-level changes to the workspace topic**
+- [x] **R2 — Route workspace-level changes to the workspace topic** — done in the audit hook (workspace found per route), not a new route-audit scope
   - **Depends:** R1
   - **Files:** `apps/server/src/route-audit.ts` (new scope `"workspace"`), `apps/server/src/workspaces.ts`, `workspace-members-routes.ts`, `workspace-members.ts`, `database-routes.ts`, `database-connections.ts`, `db-manager/*`, project create and delete in `index.ts` and `decide.ts`, account profile routes
   - **Steps:**
