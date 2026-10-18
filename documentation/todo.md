@@ -126,7 +126,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** `pnpm --filter @ucch/server build` produces the bundle, the server boots from it and `/health` answers. `tsx` is no longer needed at runtime.
   - **Verify:** `pnpm --filter @ucch/server build && node apps/server/dist/server.mjs` (with `.env` loaded), then `curl localhost:3001/health`
 
-- [ ] **D2 — Edge proxy: the server serves the one public port**
+- [x] **D2 — Edge proxy: the server serves the one public port**
   - **Depends:** D1
   - **Files:**
     - new `apps/server/src/web-proxy.ts` and `web-proxy.test.ts`

@@ -79,6 +79,7 @@ import { TaskScheduler } from "./task-scheduler.js";
 import { registerDatabaseRoutes } from "./database-routes.js";
 import { WorkspaceMemberService } from "./workspace-members.js";
 import { registerWorkspaceMemberRoutes } from "./workspace-members-routes.js";
+import { WebProxy } from "./web-proxy.js";
 import { registerDbManagerRoutes } from "./db-manager-routes.js";
 import { adapterFor } from "./db-manager/index.js";
 import { DatabaseConnectionService } from "./database-connections.js";
@@ -500,12 +501,23 @@ const preview = new PreviewGateway({
   log: { error: (obj, msg) => app.log.error(obj, msg) },
 });
 
+/** The web app behind this server's port, in the single container; see web-proxy.ts. */
+const web = config.WEB_UPSTREAM
+  ? new WebProxy({
+      upstream: config.WEB_UPSTREAM,
+      staticDir: config.WEB_STATIC_DIR,
+      log: { error: (obj, msg) => app.log.error(obj, msg) },
+    })
+  : null;
+
 const app = Fastify({
   logger: { level: config.NODE_ENV === "production" ? "info" : "debug" },
   trustProxy: true,
   serverFactory: (handler) =>
     createServer((req, res) => {
-      if (!preview.handleRequest(req, res)) handler(req, res);
+      if (preview.handleRequest(req, res)) return;
+      if (web?.handleRequest(req, res)) return;
+      handler(req, res);
     }),
 });
 
@@ -3138,6 +3150,7 @@ const shutdown = async (signal: string) => {
   terminals.closeAll();
   await agentTurns.killAll();
   await app.close();
+  web?.close();
   process.exit(0);
 };
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

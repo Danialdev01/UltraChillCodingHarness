@@ -37,6 +37,15 @@ const Env = z.object({
    */
   PUBLIC_WEB_ORIGIN: z.string().url().optional(),
 
+  /**
+   * The web app behind this server, in the single container: everything that
+   * is not the API is streamed to it (see web-proxy.ts). Unset in development,
+   * where `next dev` has its own port. `WEB_STATIC_DIR` is its build's
+   * `.next/static`, served from disk.
+   */
+  WEB_UPSTREAM: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
+  WEB_STATIC_DIR: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
+
   /** Host path bind-mounted into project containers as /workspace. */
   WORKSPACE_ROOT: z.string().default("/srv/ucch/workspaces"),
   PREVIEW_ROOT: z.string().default("/srv/ucch/previews"),
