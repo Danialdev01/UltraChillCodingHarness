@@ -458,6 +458,7 @@ pnpm --filter @ucch/web build
   - **Verify:** manual, plus a unit test of the reconnect state machine if extracted
 
 - [ ] **R5 — Fill missing events**
+  > PARTIAL: done -- git remote PUT/DELETE and fetch, diagram jobs (`resource.changed{diagrams}`), files panel takes agent/git writes, task routes in SELF_AUDITED. Open -- preview.published / port.* (no port detection exists to emit from), upload delete, `worktreeId` on `file.changed`.
   - **Depends:** R3
   - **Files:**
     - `apps/server/src/git-routes.ts`

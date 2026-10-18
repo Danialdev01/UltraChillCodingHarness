@@ -604,6 +604,8 @@ export const LiveResource = z.enum([
   "database_data",
   /** A workspace's members, invite links or harness subscription; `id` is the workspace. */
   "workspace_members",
+  /** A diagram's generation started or ended; `id` is the diagram kind. */
+  "diagrams",
 ]);
 export type LiveResource = z.infer<typeof LiveResource>;
 

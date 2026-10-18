@@ -18,7 +18,15 @@ import {
   saveDiagram,
 } from "@/lib/diagrams-api"
 import { FileConflictError } from "@/lib/files-api"
-import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents, useToast } from "@/lib/realtime"
+import {
+  isOwnChange,
+  othersAt,
+  useLiveResource,
+  usePresence,
+  usePresenceLocation,
+  useProjectEvents,
+  useToast,
+} from "@/lib/realtime"
 import type { Project } from "@/lib/session"
 
 /** The project's code editor, fetched when a diagram first opens; see `code-editor.tsx`. */
@@ -228,6 +236,7 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
         setGenerateError(error instanceof Error ? error.message : "Could not generate the diagram.")
       } finally {
         if (!controller.signal.aborted) setGenerating(false)
+        if (waiting.current === controller) waiting.current = null
       }
     },
     [project.hash, kind],
@@ -249,6 +258,21 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
       cancelled = true
     }
   }, [project.hash, kind, follow])
+
+  // Started (or finished) from another tab or by someone else: follow it here too.
+  useLiveResource(
+    "diagrams",
+    (event) => {
+      if (event.id !== kind || waiting.current) return
+      void diagramJob(project.hash, kind).then(
+        (job) => {
+          if (job.state === "running") void follow((signal) => awaitDiagram(project.hash, kind, signal), null)
+        },
+        () => {},
+      )
+    },
+    project.id,
+  )
 
   const updateWithAi = () => {
     if (draft === null) return

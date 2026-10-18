@@ -2060,7 +2060,19 @@ app.post<{ Params: { hash: string; kind: string } }>(
       return reply.code(409).send({ error: "This diagram is already being generated." });
     }
     diagramJobs.set(key, { state: "running" });
-    void runDiagramJob(project, tree, kind).then((job) => diagramJobs.set(key, job));
+    // Every viewer of the diagram, not just this tab, sees it start and end.
+    const announceJob = () =>
+      bus.publish({
+        seq: null,
+        projectId: project.id,
+        threadId: null,
+        event: { type: "resource.changed", projectId: project.id, resource: "diagrams", id: kind },
+      });
+    announceJob();
+    void runDiagramJob(project, tree, kind).then((job) => {
+      diagramJobs.set(key, job);
+      announceJob();
+    });
     return reply.code(202).send({ state: "running" });
   },
 );

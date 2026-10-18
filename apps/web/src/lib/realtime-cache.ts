@@ -28,6 +28,8 @@ const RESOURCES: Record<LiveResource, CacheEffect> = {
   git: { invalidate: [qk.git.all], refreshPage: false },
   account_settings: { invalidate: [qk.bootstrap()], refreshPage: true },
   project_settings: { invalidate: [qk.tasks.all, qk.bootstrap()], refreshPage: true },
+  // The diagram view follows its job itself (diagram-editor.tsx).
+  diagrams: { invalidate: [], refreshPage: false },
 }
 
 const NONE: CacheEffect = { invalidate: [], refreshPage: false }

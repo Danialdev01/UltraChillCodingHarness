@@ -55,6 +55,13 @@ export const SELF_AUDITED = new Set([
   "POST /api/projects/:hash/file",
   "PATCH /api/projects/:hash/file",
   "DELETE /api/projects/:hash/file",
+  // The Tasks board writes its own entries (tasks-routes.ts).
+  "POST /api/projects/:hash/tasks",
+  "PATCH /api/projects/:hash/tasks/:taskId",
+  "POST /api/projects/:hash/tasks/:taskId/move",
+  "POST /api/projects/:hash/tasks/:taskId/feedback",
+  "POST /api/projects/:hash/tasks/:taskId/retry",
+  "DELETE /api/projects/:hash/tasks/:taskId",
   // Logged only when a session was actually removed: `?ifEmpty=1` often keeps it.
   "DELETE /api/projects/:hash/sessions/:sessionHash",
 ]);
@@ -69,8 +76,8 @@ const IGNORED = new Set([
   "POST /api/projects/:hash/uploads",
   "DELETE /api/projects/:hash/uploads/:id",
   "POST /api/projects/:hash/notes/assets",
-  // Reads that are POSTs for the size of their input.
-  "POST /api/projects/:hash/git/fetch",
+  // A diagram generation announces its own start and end (see index.ts).
+  "POST /api/projects/:hash/diagrams/:kind/generate",
 ]);
 
 const TABLE: Record<string, Describe> = {
@@ -265,6 +272,10 @@ const TABLE: Record<string, Describe> = {
   "POST /api/projects/:hash/git/pull": () => ({ action: "git.pull", targetType: "git", summary: "Pulled" }),
   "POST /api/projects/:hash/git/push": () => ({ action: "git.push", targetType: "git", summary: "Pushed" }),
   "POST /api/projects/:hash/git/remote": () => ({ action: "git.remote", targetType: "git", summary: "Changed the remote" }),
+  "PUT /api/projects/:hash/git/remote": () => ({ action: "git.remote", targetType: "git", summary: "Changed the remote" }),
+  "DELETE /api/projects/:hash/git/remote": () => ({ action: "git.remote", targetType: "git", summary: "Removed the remote" }),
+  // Moves the remote-tracking branches, which the Git view shows.
+  "POST /api/projects/:hash/git/fetch": () => ({ action: "git.fetch", targetType: "git", summary: "Fetched from the remote" }),
   "POST /api/projects/:hash/git/resolve": (_p, b) => ({
     action: "git.resolve",
     targetType: "file",

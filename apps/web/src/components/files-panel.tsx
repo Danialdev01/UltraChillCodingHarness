@@ -845,7 +845,8 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   const noteChangedRef = React.useRef(value.noteChanged)
   noteChangedRef.current = value.noteChanged
   useProjectEvents(project?.id, (event) => {
-    if (event.type !== "file.changed" || !event.origin || isOwnChange(event.origin)) return
+    // Any writer but this tab: another person, the agent, a git checkout.
+    if (event.type !== "file.changed" || isOwnChange(event.origin)) return
     noteChangedRef.current(event.path, event.change)
   })
 
