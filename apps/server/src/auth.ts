@@ -97,10 +97,12 @@ export class AuthService {
     return removed.length;
   }
 
-  async revokeSession(token: string): Promise<void> {
+  /** Ends a session; returns its id, which is what its sockets' principals carry. */
+  async revokeSession(token: string): Promise<string> {
     const id = hashToken(token);
     this.#sessionCache.delete(id);
     await this.db.delete(sessions).where(eq(sessions.id, id));
+    return id;
   }
 
   issueTicket(principal: Principal): { ticket: string; expiresInMs: number } {

@@ -270,9 +270,12 @@ export class UcchClient {
         this.#scopes = frame.scopes;
         this.#setState("ready");
         // Re-establish subscriptions from where each one left off, so the
-        // gap created by the disconnect is replayed rather than lost.
-        for (const [, sub] of this.#subscriptions) {
+        // gap created by the disconnect is replayed rather than lost. Each
+        // is re-keyed by its new frame id, which the server's pushes carry.
+        for (const [old, sub] of [...this.#subscriptions]) {
           const id = String(this.#nextId++);
+          this.#subscriptions.delete(old);
+          this.#subscriptions.set(id, sub);
           this.#send({
             kind: "subscribe",
             id,
@@ -314,6 +317,13 @@ export class UcchClient {
         );
         break;
       }
+
+      case "revoked":
+        // Access to it is gone (removed from the workspace, project deleted):
+        // forget it, so a reconnect does not ask again.
+        this.#subscriptions.delete(frame.subscriptionId);
+        this.#emit();
+        break;
 
       case "pong":
         break;

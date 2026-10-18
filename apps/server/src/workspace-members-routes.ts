@@ -25,6 +25,8 @@ export interface WorkspaceMemberRouteDeps {
   >;
   /** A dedicated credential changed: cached provider probes for the workspace are stale. */
   credentialsChanged(workspaceId: string): void;
+  /** A member was removed or their role changed: what their open sockets may watch is re-checked. */
+  accessChanged?(userId: string): void;
 }
 
 const STATUS = { not_found: 404, forbidden: 403, invalid: 400, conflict: 409 } as const;
@@ -102,6 +104,7 @@ export function registerWorkspaceMemberRoutes(app: FastifyInstance, deps: Worksp
     if (!parsed.success) return reply.code(400).send({ error: "a role or permission to change is required" });
     const result = await members.update(request.params.id, principal.userId, request.params.userId, parsed.data);
     if ("error" in result) return reply.code(STATUS[result.error]).send({ error: result.message });
+    deps.accessChanged?.(request.params.userId);
     return { ok: true };
   });
 
@@ -113,6 +116,7 @@ export function registerWorkspaceMemberRoutes(app: FastifyInstance, deps: Worksp
     }
     const result = await members.remove(request.params.id, principal.userId, request.params.userId);
     if ("error" in result) return reply.code(STATUS[result.error]).send({ error: result.message });
+    deps.accessChanged?.(request.params.userId);
     return reply.code(204).send();
   });
 

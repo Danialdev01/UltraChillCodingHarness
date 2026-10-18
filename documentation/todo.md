@@ -86,7 +86,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** Subscribing to another user's terminal id fails.
   - **Verify:** `pnpm test -- ws terminals`
 
-- [ ] **S3 — Revoke cached access and subscriptions**
+- [x] **S3 — Revoke cached access and subscriptions**
   - **Depends:** S1
   - **Files:** `apps/server/src/ws.ts` (cached access, around line 391), `apps/server/src/access.ts`, `apps/server/src/workspace-members-routes.ts`, `apps/server/src/workspaces.ts`, project delete in `index.ts`, `packages/protocol/src/rpc.ts`
   - **Steps:**
@@ -99,7 +99,7 @@ pnpm --filter @ucch/web build
   - **Acceptance:** A removed member stops getting project events immediately, without reconnecting.
   - **Verify:** `pnpm test -- ws workspace-members`
 
-- [ ] **S4 — Security regression tests**
+- [x] **S4 — Security regression tests**
   - **Depends:** S1–S3
   - **Files:** new `apps/server/src/realtime-acl.test.ts`
   - **Steps:** One test file with these scenarios, using the existing `ws` test helpers:

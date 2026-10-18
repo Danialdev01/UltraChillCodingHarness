@@ -139,7 +139,17 @@ const Ready = z.object({
   serverVersion: z.string(),
 });
 
-export const ServerFrame = z.discriminatedUnion("kind", [Ack, Err, Push, Pong, Ready]);
+/**
+ * A subscription the server ended: the caller lost access to what it was
+ * watching -- removed from the workspace, the project deleted. The client
+ * drops it and must not resubscribe.
+ */
+const Revoked = z.object({
+  kind: z.literal("revoked"),
+  subscriptionId: z.string(),
+});
+
+export const ServerFrame = z.discriminatedUnion("kind", [Ack, Err, Push, Pong, Ready, Revoked]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
 
 // -- Authorization -----------------------------------------------------------

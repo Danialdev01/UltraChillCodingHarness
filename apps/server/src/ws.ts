@@ -30,6 +30,8 @@ interface Connection {
   /** The tab's own id, from the upgrade URL; stamped on what it changes. */
   clientId: string;
   subscriptions: Map<string, () => void>;
+  /** The project each project or thread subscription belongs to, to re-check on `revalidate`. */
+  subscriptionProjects: Map<string, string>;
   alive: boolean;
   /**
    * What this socket has already been allowed to open, so the prompt box,
@@ -123,6 +125,7 @@ export class WebSocketGateway {
       principal,
       clientId,
       subscriptions: new Map(),
+      subscriptionProjects: new Map(),
       alive: true,
       threads: new Map(),
       projects: new Set(),
@@ -197,7 +200,11 @@ export class WebSocketGateway {
       }
 
       case "subscribe": {
-        const subscriptionId = randomUUID();
+        // The client's own frame id names the subscription, so the pushes it
+        // carries -- and an `unsubscribe` or `revoked` -- can be matched to
+        // the topic the client asked for. Ids are per-socket counters; a
+        // repeat is a broken client, given a fresh id rather than a clash.
+        const subscriptionId = conn.subscriptions.has(frame.id) ? randomUUID() : frame.id;
 
         // Holding a socket is not permission to watch everything: a project
         // or thread must be one the caller may open, and `user` is always
@@ -254,6 +261,8 @@ export class WebSocketGateway {
         });
 
         conn.subscriptions.set(subscriptionId, unsubscribe);
+        const watched = frame.topic.name === "project" ? frame.topic.projectId : threadProject;
+        if (watched) conn.subscriptionProjects.set(subscriptionId, watched);
 
         if (frame.topic.name === "thread") {
           // Bounded: the browser keeps the newest 500 events of a thread, so
@@ -368,6 +377,7 @@ export class WebSocketGateway {
         if (unsubscribe) {
           unsubscribe();
           conn.subscriptions.delete(frame.id);
+          conn.subscriptionProjects.delete(frame.id);
         }
         send(conn.socket, { kind: "ack", id: frame.id, events: [] });
         return;
@@ -421,6 +431,46 @@ export class WebSocketGateway {
 
   #publishToThread(projectId: string, threadId: string, event: DomainEvent): void {
     this.bus.publish({ seq: null, projectId, threadId, event });
+  }
+
+  /**
+   * Re-checks what open sockets may watch, after access changed: a member
+   * removed or demoted (`userId`), a project deleted (`projectId`). What is
+   * no longer allowed is unsubscribed on the spot and the client told, rather
+   * than left streaming until the next reconnect.
+   */
+  async revalidate(match: { userId?: string; projectId?: string }): Promise<void> {
+    for (const conn of this.#connections) {
+      if (match.userId && conn.principal.userId !== match.userId) continue;
+      if (match.projectId) {
+        conn.projects.delete(match.projectId);
+        for (const [thread, project] of conn.threads) if (project === match.projectId) conn.threads.delete(thread);
+      } else {
+        conn.projects.clear();
+        conn.threads.clear();
+      }
+      const verdicts = new Map<string, Promise<boolean>>();
+      for (const [subscriptionId, projectId] of conn.subscriptionProjects) {
+        if (match.projectId && projectId !== match.projectId) continue;
+        let verdict = verdicts.get(projectId);
+        if (!verdict) {
+          verdict = this.options.access.canAccessProject(conn.principal.userId, projectId);
+          verdicts.set(projectId, verdict);
+        }
+        if (await verdict) continue;
+        conn.subscriptions.get(subscriptionId)?.();
+        conn.subscriptions.delete(subscriptionId);
+        conn.subscriptionProjects.delete(subscriptionId);
+        send(conn.socket, { kind: "revoked", subscriptionId });
+      }
+    }
+  }
+
+  /** Closes every socket a signed-out session opened. */
+  closeSession(sessionId: string): void {
+    for (const conn of this.#connections) {
+      if (conn.principal.sessionId === sessionId) conn.socket.close(4001, "signed out");
+    }
   }
 
   get connectionCount(): number {

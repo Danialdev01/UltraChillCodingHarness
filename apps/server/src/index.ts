@@ -1131,6 +1131,11 @@ app.delete<{ Params: { hash: string } }>("/api/projects/:hash", async (request, 
     return reply.code(404).send({ error: "project not found" });
   }
 
+  // Whoever still has it open stops hearing about it now.
+  void gateway.revalidate({ projectId: result.projectId }).catch((error) =>
+    app.log.error({ err: error }, "could not re-check access"),
+  );
+
   // After the row, not before: a failed delete must not leave a project
   // pointing at a directory that is already gone. The id is a uuid from the
   // database rather than anything the caller supplied, so it cannot climb out
@@ -1587,6 +1592,9 @@ registerWorkspaceMemberRoutes(app, {
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
   members: new WorkspaceMemberService(db, workspaceService, config.SECRET_KEY),
   credentialsChanged: (workspaceId) => providerService.invalidate(workspaceSubject(workspaceId)),
+  accessChanged: (userId) => {
+    void gateway.revalidate({ userId }).catch((error) => app.log.error({ err: error }, "could not re-check access"));
+  },
 });
 
 /**
@@ -3058,7 +3066,7 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
 
 app.post("/api/auth/logout", async (request, reply) => {
   const token = request.cookies[SESSION_COOKIE];
-  if (token) await auth.revokeSession(token);
+  if (token) gateway.closeSession(await auth.revokeSession(token));
   reply.clearCookie(SESSION_COOKIE, { path: "/" });
   return { ok: true };
 });
