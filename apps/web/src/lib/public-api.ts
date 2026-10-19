@@ -8,8 +8,8 @@ import type { Note, NoteSummary } from "./notes-api";
  *
  * Every call is a GET against `/api/public/{slug}` and sends no credentials:
  * the slug is the whole grant. Server components call `fetchPublicProject`
- * with the server origin; the client-side readers call the rest through the
- * same-origin proxy.
+ * (`public-project.ts`, kept apart because it uses the server's connection
+ * pool); the client-side readers here go through the same-origin proxy.
  */
 
 export interface PublicProject {
@@ -34,16 +34,6 @@ async function get<T>(base: string, slug: string, path: string, fallback: string
     throw new PublicApiError(body.error ?? fallback, response.status);
   }
   return (await response.json()) as T;
-}
-
-/** From a server component: null when there is no such site or it is off. */
-export async function fetchPublicProject(slug: string): Promise<PublicProject | null> {
-  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
-  try {
-    return await get<PublicProject>(origin, slug, "", "not found");
-  } catch {
-    return null;
-  }
 }
 
 export const fetchPublicNotes = (slug: string) =>

@@ -576,7 +576,7 @@ pnpm --filter @ucch/web build
     4. Add a budget check script comparing `next build` first-load JS to `e2e/results/baseline.json`. It fails when a route grows by more than 10%.
   - **Acceptance:** Shell-route first-load JS is at least 25% below the baseline.
   - **Verify:** `ANALYZE=1 pnpm --filter @ucch/web build`, plus the budget script
-- [ ] **B12 — SSR → API keep-alive**
+- [X] **B12 — SSR → API keep-alive** — verified with `ss`: the same two sockets serve renders 12 s apart
 
   - **Depends:** P0.1
   - **Files:** `apps/web/src/lib/session.ts`, `apps/web/src/lib/public-api.ts`

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { PublicShell } from "@/components/public/public-shell";
-import { fetchPublicProject } from "@/lib/public-api";
+import { fetchPublicProject } from "@/lib/public-project";
 
 /**
  * A project's public site: what the owner chose to show, read-only, to

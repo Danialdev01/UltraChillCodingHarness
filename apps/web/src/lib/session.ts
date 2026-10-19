@@ -2,6 +2,7 @@ import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { WORKSPACE_COOKIE_NAME } from "./workspace-cookie";
 import { WORKSPACE_HEADER } from "./workspace-header";
+import { apiFetch } from "./api-agent";
 import type {
   CredentialPolicy,
   DatabaseConnectionSummary,
@@ -60,7 +61,7 @@ export const getBootstrap = cache(async function getBootstrap(): Promise<Bootstr
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/bootstrap?${params}`, {
+    const response = await apiFetch(`${origin}/api/bootstrap?${params}`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -197,14 +198,14 @@ export type QuotaResult =
   | { status: "no_key" }
   | { status: "unavailable" };
 
-export async function getOpenRouterQuota(): Promise<QuotaResult> {
+export const getOpenRouterQuota = cache(async function getOpenRouterQuota(): Promise<QuotaResult> {
   const jar = await cookies();
   const token = jar.get("ucch_session");
   if (!token) return { status: "unavailable" };
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/account/openrouter/quota`, {
+    const response = await apiFetch(`${origin}/api/account/openrouter/quota`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -214,7 +215,7 @@ export async function getOpenRouterQuota(): Promise<QuotaResult> {
   } catch {
     return { status: "unavailable" };
   }
-}
+});
 
 /** The Dashboard's headline numbers. Mirrors the server's `WorkspaceStats`. */
 export interface WorkspaceStats {
@@ -233,7 +234,7 @@ export interface WorkspaceStats {
  * Null rather than a zeroed object: a dashboard that shows 0 tokens because
  * the API was unreachable is worse than one that says it could not load.
  */
-export async function getWorkspaceStats(workspaceId: string): Promise<WorkspaceStats | null> {
+export const getWorkspaceStats = cache(async function getWorkspaceStats(workspaceId: string): Promise<WorkspaceStats | null> {
   if (!workspaceId) return null;
   const jar = await cookies();
   const token = jar.get("ucch_session");
@@ -241,7 +242,7 @@ export async function getWorkspaceStats(workspaceId: string): Promise<WorkspaceS
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/stats`, {
+    const response = await apiFetch(`${origin}/api/workspaces/${workspaceId}/stats`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -250,7 +251,7 @@ export async function getWorkspaceStats(workspaceId: string): Promise<WorkspaceS
   } catch {
     return null;
   }
-}
+});
 
 /** One project's bill and footprint, for its manage page. Mirrors the server. */
 export interface ProjectStats {
@@ -268,7 +269,7 @@ export const getProjectStats = cache(async function getProjectStats(hash: string
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/projects/${hash}/stats`, {
+    const response = await apiFetch(`${origin}/api/projects/${hash}/stats`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -300,7 +301,7 @@ export interface WorkspaceUsage {
  * Null rather than an empty breakdown, for the same reason `getWorkspaceStats`
  * is: a spend of $0.00 because the API was down reads as a fact.
  */
-export async function getWorkspaceUsage(workspaceId: string): Promise<WorkspaceUsage | null> {
+export const getWorkspaceUsage = cache(async function getWorkspaceUsage(workspaceId: string): Promise<WorkspaceUsage | null> {
   if (!workspaceId) return null;
   const jar = await cookies();
   const token = jar.get("ucch_session");
@@ -308,7 +309,7 @@ export async function getWorkspaceUsage(workspaceId: string): Promise<WorkspaceU
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/usage`, {
+    const response = await apiFetch(`${origin}/api/workspaces/${workspaceId}/usage`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -317,7 +318,7 @@ export async function getWorkspaceUsage(workspaceId: string): Promise<WorkspaceU
   } catch {
     return null;
   }
-}
+});
 
 /** Projects in a workspace. Empty when the workspace is not the caller's. */
 export const listProjects = cache(async function listProjects(workspaceId: string): Promise<Project[]> {
@@ -331,7 +332,7 @@ export const listProjects = cache(async function listProjects(workspaceId: strin
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/projects`, {
+    const response = await apiFetch(`${origin}/api/workspaces/${workspaceId}/projects`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -353,7 +354,7 @@ export const listDatabaseConnections = cache(async function listDatabaseConnecti
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/database-connections`, {
+    const response = await apiFetch(`${origin}/api/workspaces/${workspaceId}/database-connections`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -365,14 +366,14 @@ export const listDatabaseConnections = cache(async function listDatabaseConnecti
 });
 
 /** One saved database server, or null if it is not the caller's. */
-export async function getDatabaseConnection(id: string): Promise<DatabaseConnectionSummary | null> {
+export const getDatabaseConnection = cache(async function getDatabaseConnection(id: string): Promise<DatabaseConnectionSummary | null> {
   const jar = await cookies();
   const token = jar.get("ucch_session");
   if (!token) return null;
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/database-connections/${encodeURIComponent(id)}`, {
+    const response = await apiFetch(`${origin}/api/database-connections/${encodeURIComponent(id)}`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -381,7 +382,7 @@ export async function getDatabaseConnection(id: string): Promise<DatabaseConnect
   } catch {
     return null;
   }
-}
+});
 
 /** A single project by public hash, or null if it is not the caller's. */
 export const getProjectByHash = cache(async function getProjectByHash(hash: string): Promise<Project | null> {
@@ -391,7 +392,7 @@ export const getProjectByHash = cache(async function getProjectByHash(hash: stri
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/projects/${hash}`, {
+    const response = await apiFetch(`${origin}/api/projects/${hash}`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -438,7 +439,7 @@ export const listProjectSessions = cache(async function listProjectSessions(
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/projects/${projectHash}/threads`, {
+    const response = await apiFetch(`${origin}/api/projects/${projectHash}/threads`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -458,7 +459,7 @@ export interface WorkspaceStorage {
 }
 
 /** Disk and database sizes behind the Usage tab, or null when they failed. */
-export async function getWorkspaceStorage(workspaceId: string): Promise<WorkspaceStorage | null> {
+export const getWorkspaceStorage = cache(async function getWorkspaceStorage(workspaceId: string): Promise<WorkspaceStorage | null> {
   if (!workspaceId) return null;
   const jar = await cookies();
   const token = jar.get("ucch_session");
@@ -466,7 +467,7 @@ export async function getWorkspaceStorage(workspaceId: string): Promise<Workspac
 
   const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
   try {
-    const response = await fetch(`${origin}/api/workspaces/${workspaceId}/storage`, {
+    const response = await apiFetch(`${origin}/api/workspaces/${workspaceId}/storage`, {
       headers: { cookie: `ucch_session=${token.value}` },
       cache: "no-store",
     });
@@ -475,4 +476,4 @@ export async function getWorkspaceStorage(workspaceId: string): Promise<Workspac
   } catch {
     return null;
   }
-}
+});
