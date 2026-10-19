@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { EyeIcon, EyeOffIcon, TerminalIcon } from "lucide-react";
 
-import { BootScreen } from "@/components/boot-screen";
+import { BootFrame } from "@/components/boot-frame";
 import { GithubMark } from "@/components/github-mark";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,12 +18,25 @@ import {
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
+// The boot screen brings the client cache and the warmup list with it -- the
+// shell's business, not the sign-in form's. It is fetched while the form is
+// being filled in, and drawn as a bare frame on the rare submit that beats it.
+const loadBootScreen = () => import("@/components/boot-screen");
+const BootScreen = dynamic(() => loadBootScreen().then((m) => m.BootScreen), {
+  ssr: false,
+  loading: () => <BootFrame progress={0.08} />,
+});
+
 export function LoginForm({ className, ...props }: React.ComponentProps<"div">) {
   const next = useSearchParams().get("next");
   const [signedIn, setSignedIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    void loadBootScreen().catch(() => {});
+  }, []);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();

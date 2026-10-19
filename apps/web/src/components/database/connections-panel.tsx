@@ -15,9 +15,7 @@ import {
 import { DATABASE_ENGINE_LABELS, type DatabaseConnectionSummary } from "@ucch/protocol"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
-import { ConnectionSettingsDialog } from "@/components/database/connection-settings-dialog"
-import { CreateDatabaseDialog } from "@/components/database/create-database-dialog"
-import { NewDatabaseDialog } from "@/components/new-database-dialog"
+import { ConnectionSettingsDialog, CreateDatabaseDialog, NewDatabaseDialog } from "@/components/on-demand"
 import {
   Collapsible,
   CollapsibleContent,

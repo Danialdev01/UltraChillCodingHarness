@@ -14,8 +14,7 @@ import {
 } from "lucide-react";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { ManageWorkspaceDialog } from "@/components/manage-workspace-dialog";
-import { NewWorkspaceDialog } from "@/components/new-workspace-dialog";
+import { ManageWorkspaceDialog, NewWorkspaceDialog } from "@/components/on-demand";
 import {
   DropdownMenu,
   DropdownMenuContent,

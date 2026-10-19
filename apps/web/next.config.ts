@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { NextConfig } from "next";
+import bundleAnalyzer from "@next/bundle-analyzer";
 
 /**
  * Next reads `.env` only from its own directory, but UCCH keeps one `.env` at
@@ -89,4 +90,7 @@ const config: NextConfig = {
   },
 };
 
-export default config;
+// `ANALYZE=1 next build` writes treemaps of every bundle to `<distDir>/analyze`.
+const withBundleAnalyzer = bundleAnalyzer({ enabled: process.env.ANALYZE === "1", openAnalyzer: false });
+
+export default withBundleAnalyzer(config);

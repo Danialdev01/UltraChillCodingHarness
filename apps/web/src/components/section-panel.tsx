@@ -48,7 +48,8 @@ import { countLabel } from "@/lib/workspace-api"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
 import { useProjectHref, useWorkspaceHash } from "@/lib/workspace-context"
-import { NewSessionDialog, ProjectSessionRows } from "@/components/project-sessions-nav"
+import { NewSessionDialog } from "@/components/on-demand"
+import { ProjectSessionRows } from "@/components/project-sessions-nav"
 import { ProjectStackIcon } from "@/components/project-stack-icon"
 
 /**

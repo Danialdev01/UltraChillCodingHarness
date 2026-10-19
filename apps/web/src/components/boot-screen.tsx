@@ -4,7 +4,7 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 import type { PrefetchKind } from "next/dist/client/components/router-reducer/router-reducer-types"
 
-import { LogoMark } from "@/components/app-logo"
+import { BootFrame } from "@/components/boot-frame"
 import { fetchBootstrap } from "@/lib/queries/bootstrap"
 import { getQueryClient } from "@/lib/query-client"
 import { qk } from "@/lib/query-keys"
@@ -79,20 +79,5 @@ export function BootScreen({ next }: { next: string | null }) {
     })()
   }, [go, next, router])
 
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="bg-background fixed inset-0 z-50 flex flex-col items-center justify-center gap-6"
-    >
-      <LogoMark className="text-foreground size-12" />
-      <div className="bg-muted h-1 w-48 overflow-hidden rounded-full">
-        <div
-          className="bg-primary h-full rounded-full transition-[width] duration-300 ease-out"
-          style={{ width: `${Math.round(progress * 100)}%` }}
-        />
-      </div>
-      <p className="text-muted-foreground text-sm">Opening your workspace…</p>
-    </div>
-  )
+  return <BootFrame progress={progress} />
 }

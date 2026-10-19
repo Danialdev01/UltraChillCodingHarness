@@ -11,9 +11,8 @@ import {
   Trash2Icon,
 } from "lucide-react"
 
-import { DeleteProjectDialog } from "@/components/delete-project-dialog"
 import { useFilesPanel } from "@/components/files-panel"
-import { RenameSessionDialog } from "@/components/session-list"
+import { DeleteProjectDialog, RenameSessionDialog } from "@/components/on-demand"
 import {
   DropdownMenu,
   DropdownMenuContent,

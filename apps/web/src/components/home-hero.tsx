@@ -1,4 +1,4 @@
-import { LogoMark } from "@/components/app-logo"
+import { LogoMark } from "@/components/logo-mark"
 
 /**
  * The root page's whole content: the mark and the line under it. The

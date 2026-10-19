@@ -4,8 +4,7 @@ import { Fragment, Suspense, useEffect, useState } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
 import { GlobeIcon, SettingsIcon } from "lucide-react"
 
-import { ConnectionSettingsDialog } from "@/components/database/connection-settings-dialog"
-import { PreviewDialog } from "@/components/preview-dialog"
+import { ConnectionSettingsDialog, PreviewDialog } from "@/components/on-demand"
 import { ViewModeToggle } from "@/components/view-mode-toggle"
 import {
   Breadcrumb,

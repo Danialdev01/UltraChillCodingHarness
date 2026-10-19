@@ -17,6 +17,7 @@ Source of truth for *why*: [`plan.md`](./plan.md). This file is *what to do*, in
 7. **If blocked:** leave the task unchecked and add a `> BLOCKED:` line under it saying why. Then move to another task with no dependency on it.
 
 Standard verification, for any task that touches code:
+
 ```bash
 pnpm typecheck && pnpm test
 # web tasks also need a production build — next dev does not prefetch
@@ -27,7 +28,8 @@ pnpm --filter @ucch/web build
 
 ## Phase P0: Baseline
 
-- [x] **P0.1 — Checkpoint the working tree** — aa4d8ee
+- [X] **P0.1 — Checkpoint the working tree** — aa4d8ee
+
   - **Depends:** —
   - **Files:** whole repo (`git status`)
   - **Steps:**
@@ -35,8 +37,8 @@ pnpm --filter @ucch/web build
     2. With approval, create branch `perf/single-container`, then commit the current state as `chore: checkpoint before perf/realtime work`.
   - **Acceptance:** `git status` is clean on the new branch.
   - **Verify:** `git status --short | wc -l` → `0`
+- [X] **P0.2 — Fix `runDiagramJob` undefined `tree`** — fix(server): runDiagramJob
 
-- [x] **P0.2 — Fix `runDiagramJob` undefined `tree`** — fix(server): runDiagramJob
   - **Depends:** P0.1
   - **Files:** `apps/server/src/index.ts` (`runDiagramJob`, around line 1855), `apps/server/src/files.ts`, `apps/server/src/worktrees.ts`, `apps/server/src/diagrams.test.ts`
   - **Steps:**
@@ -45,8 +47,8 @@ pnpm --filter @ucch/web build
     3. Add a regression test if the function can be reached from a test; otherwise rely on typecheck.
   - **Acceptance:** `pnpm typecheck` has no error about `tree`. Generating a diagram writes the file.
   - **Verify:** `pnpm typecheck && pnpm test`
+- [X] **P0.3 — Playwright harness + perf baseline** — baseline in apps/web/e2e/results/{baseline,bundle-baseline}.json
 
-- [x] **P0.3 — Playwright harness + perf baseline** — baseline in apps/web/e2e/results/{baseline,bundle-baseline}.json
   - **Depends:** P0.1
   - **Files:**
     - new `apps/web/e2e/` and `apps/web/playwright.config.ts`
@@ -67,7 +69,8 @@ pnpm --filter @ucch/web build
 
 ## Phase S: Realtime security (before any new broadcast)
 
-- [x] **S1 — Terminal output only on the terminal topic**
+- [X] **S1 — Terminal output only on the terminal topic**
+
   - **Depends:** P0.1
   - **Files:** `apps/server/src/bus.ts` (`publish`), `apps/server/src/index.ts` (terminal output publisher, around line 340), `apps/server/src/terminals.ts`, `apps/web/src/components/terminal-view.tsx`, `apps/web/src/components/login-terminal-dialog.tsx`
   - **Steps:**
@@ -76,8 +79,8 @@ pnpm --filter @ucch/web build
     3. Add a test in `bus` or `ws` tests: a project subscriber does not receive `terminal.output`.
   - **Acceptance:** A second member viewing the project receives no terminal bytes. Terminals still work for their owner.
   - **Verify:** `pnpm test -- bus ws terminals`
+- [X] **S2 — ACL on `subscribe(terminal)`**
 
-- [x] **S2 — ACL on `subscribe(terminal)`**
   - **Depends:** S1
   - **Files:** `apps/server/src/ws.ts` (subscribe handler, around line 220), `apps/server/src/terminals.ts` (owner lookup, `#mine`)
   - **Steps:**
@@ -85,8 +88,8 @@ pnpm --filter @ucch/web build
     2. Test both allow and deny.
   - **Acceptance:** Subscribing to another user's terminal id fails.
   - **Verify:** `pnpm test -- ws terminals`
+- [X] **S3 — Revoke cached access and subscriptions**
 
-- [x] **S3 — Revoke cached access and subscriptions**
   - **Depends:** S1
   - **Files:** `apps/server/src/ws.ts` (cached access, around line 391), `apps/server/src/access.ts`, `apps/server/src/workspace-members-routes.ts`, `apps/server/src/workspaces.ts`, project delete in `index.ts`, `packages/protocol/src/rpc.ts`
   - **Steps:**
@@ -98,8 +101,8 @@ pnpm --filter @ucch/web build
     6. Test it.
   - **Acceptance:** A removed member stops getting project events immediately, without reconnecting.
   - **Verify:** `pnpm test -- ws workspace-members`
+- [X] **S4 — Security regression tests**
 
-- [x] **S4 — Security regression tests**
   - **Depends:** S1–S3
   - **Files:** new `apps/server/src/realtime-acl.test.ts`
   - **Steps:** One test file with these scenarios, using the existing `ws` test helpers:
@@ -114,7 +117,8 @@ pnpm --filter @ucch/web build
 
 ## Phase D: Single container
 
-- [x] **D1 — Precompile the server**
+- [X] **D1 — Precompile the server**
+
   - **Depends:** P0.1
   - **Files:** new `apps/server/build.mjs`, `apps/server/package.json` (`build` script, `esbuild` devDependency), `packages/db/src/bootstrap.ts` (migrations path)
   - **Steps:**
@@ -125,8 +129,8 @@ pnpm --filter @ucch/web build
     5. `node apps/server/dist/server.mjs` must boot locally against the dev Postgres.
   - **Acceptance:** `pnpm --filter @ucch/server build` produces the bundle, the server boots from it and `/health` answers. `tsx` is no longer needed at runtime.
   - **Verify:** `pnpm --filter @ucch/server build && node apps/server/dist/server.mjs` (with `.env` loaded), then `curl localhost:3001/health`
+- [X] **D2 — Edge proxy: the server serves the one public port**
 
-- [x] **D2 — Edge proxy: the server serves the one public port**
   - **Depends:** D1
   - **Files:**
     - new `apps/server/src/web-proxy.ts` and `web-proxy.test.ts`
@@ -152,15 +156,15 @@ pnpm --filter @ucch/web build
        - `/api` never proxied
   - **Acceptance:** With `next start -p 3100` and the server on 3000, the whole app works through `http://localhost:3000`: login, navigation, chat streaming, terminals, previews. Suspense fallbacks still stream.
   - **Verify:** `pnpm test -- web-proxy`, plus a manual run as above
+- [X] **D3 — Extend `/health`**
 
-- [x] **D3 — Extend `/health`**
   - **Depends:** D2
   - **Files:** `apps/server/src/index.ts` (`/health`, around line 607)
   - **Steps:** Add `db` (`select 1`, 1 s timeout) and `web` (`HEAD ${WEB_UPSTREAM}/healthz`, 1 s timeout, only when the upstream is set). Return HTTP `503` when either fails. Keep the existing fields.
   - **Acceptance:** Stopping Next makes `/health` return 503 with `web: "error"`.
   - **Verify:** manual curl
+- [X] **D4 — s6-overlay service tree**
 
-- [x] **D4 — s6-overlay service tree**
   - **Depends:** D1
   - **Files:** new `deploy/s6/s6-rc.d/{init-dirs,init-secrets,postgres,mysql,web,server,user}/…`, new `deploy/s6/scripts/*.sh`; reuse the logic of `deploy/secrets.sh`, `deploy/server-entrypoint.sh`, `deploy/postgres-init.sh`, `deploy/mysql-init.sql`
   - **Steps:**
@@ -186,8 +190,8 @@ pnpm --filter @ucch/web build
     7. Set `S6_KILL_GRACETIME=60000`, `S6_BEHAVIOUR_IF_STAGE2_FAILS=2`, `S6_CMD_WAIT_FOR_SERVICES_MAXTIME=120000`.
   - **Acceptance:** In the container (D5), the services start in order and `docker stop` drains the server within 60 s. With `DATABASE_URL` set, no postgres process runs.
   - **Verify:** covered by D9
+- [X] **D5 — Dockerfile `app` stage** — image 2.66 GB
 
-- [x] **D5 — Dockerfile `app` stage** — image 2.66 GB
   - **Depends:** D1, D4
   - **Files:** `Dockerfile`, `.dockerignore`
   - **Steps:**
@@ -206,8 +210,8 @@ pnpm --filter @ucch/web build
     6. Build args stay: `NEXT_PUBLIC_TLDRAW_LICENSE_KEY`. Set `SERVER_ORIGIN=http://127.0.0.1:3000` and `NEXT_PUBLIC_WS_ORIGIN=""` for the web build.
   - **Acceptance:** `docker build --target app -t ucch .` succeeds. The image size is recorded in the PR.
   - **Verify:** `docker build --target app -t ucch . && docker image ls ucch`
+- [X] **D6 — Container isolation check** — verified in the smoke test
 
-- [x] **D6 — Container isolation check** — verified in the smoke test
   - **Depends:** D5
   - **Files:** `deploy/s6/scripts/*`, `apps/server/src/terminals.ts`, the agent bash executor in `packages/agent/src/executors/`
   - **Steps:** Inside a running container, as `node`:
@@ -216,8 +220,8 @@ pnpm --filter @ucch/web build
     3. Confirm that `psql -h 127.0.0.1 -U dev ucch` is refused.
   - **Acceptance:** All checks hold. Add them as assertions in the D9 smoke script.
   - **Verify:** D9
+- [X] **D7 — Single-service `docker-compose.yml` + env docs**
 
-- [x] **D7 — Single-service `docker-compose.yml` + env docs**
   - **Depends:** D5
   - **Files:** `docker-compose.yml`, `.env.example`, `.env.development.example`
   - **Steps:**
@@ -226,8 +230,8 @@ pnpm --filter @ucch/web build
     3. In `.env.example`, document `ENABLE_MYSQL`, `PG_*` tuning, external `DATABASE_URL`/`DEV_*_URL`, and `CRAWL4AI_URL`. Remove `WEB_REPLICAS` and `COMPOSE_PROFILES`.
   - **Acceptance:** `docker compose up` brings the app up on :3000.
   - **Verify:** `docker compose up -d && curl -fsS localhost:3000/health`
+- [X] **D8 — Backup / restore scripts**
 
-- [x] **D8 — Backup / restore scripts**
   - **Depends:** D5
   - **Files:** new `deploy/bin/ucch-backup`, `deploy/bin/ucch-restore` (installed to `/usr/local/bin`)
   - **Steps:**
@@ -235,8 +239,8 @@ pnpm --filter @ucch/web build
     2. `ucch-restore <dir>`: stop the server through `s6-svc -d`, then `pg_restore --clean`, then start the server again.
   - **Acceptance:** A backup restored into a fresh container keeps users, projects and decrypted keys.
   - **Verify:** manual round trip, documented in the PR
+- [X] **D9 — Container smoke test** — all checks pass
 
-- [x] **D9 — Container smoke test** — all checks pass
   - **Depends:** D2–D8
   - **Files:** new `scripts/smoke-container.sh`
   - **Steps:** The script does the following and exits non-zero on any failure:
@@ -250,8 +254,8 @@ pnpm --filter @ucch/web build
     8. Repeats with `ENABLE_MYSQL=true` and checks that `mariadb-admin ping` succeeds.
   - **Acceptance:** The script passes locally. It's referenced from the README.
   - **Verify:** `bash scripts/smoke-container.sh`
+- [X] **D10 — README: deploying on Dokploy (single container) + migration guide**
 
-- [x] **D10 — README: deploying on Dokploy (single container) + migration guide**
   - **Depends:** D7, D8
   - **Files:** `README.md` ("Deploying on Dokploy" section, layout table, status table; fix the `/login` versus `/healthz` mismatch)
   - **Steps:**
@@ -266,7 +270,8 @@ pnpm --filter @ucch/web build
 
 ## Phase B (core): Instant navigation
 
-- [x] **B1 — `GET /api/bootstrap` + hash-addressed reads** — by-hash read already existed; verified by curl (shape, 304, ~15 ms). No unit test: index.ts routes have no harness
+- [X] **B1 — `GET /api/bootstrap` + hash-addressed reads** — by-hash read already existed; verified by curl (shape, 304, ~15 ms). No unit test: index.ts routes have no harness
+
   - **Depends:** P0.1
   - **Files:**
     - `apps/server/src/index.ts`, or new `apps/server/src/bootstrap-routes.ts` registered from it
@@ -287,8 +292,8 @@ pnpm --filter @ucch/web build
     5. Tests: shape, 401, 304, active-workspace fallback.
   - **Acceptance:** One request returns all shell data. p95 is under 50 ms locally with 20 projects.
   - **Verify:** `pnpm test -- bootstrap`
+- [X] **B2 — Middleware cookie gate**
 
-- [x] **B2 — Middleware cookie gate**
   - **Depends:** P0.1
   - **Files:** `apps/web/src/middleware.ts`
   - **Steps:**
@@ -297,8 +302,8 @@ pnpm --filter @ucch/web build
     3. Add a unit test for the matcher logic if it's extracted into a pure function.
   - **Acceptance:** A signed-out visit to `/abc…/code` lands on `/login?next=…` without an API call.
   - **Verify:** `pnpm test`, plus manual
+- [X] **B3 — TanStack Query provider + IndexedDB persistence**
 
-- [x] **B3 — TanStack Query provider + IndexedDB persistence**
   - **Depends:** B1
   - **Files:**
     - new `apps/web/src/lib/query-client.tsx`, new `apps/web/src/lib/query-keys.ts`
@@ -316,8 +321,8 @@ pnpm --filter @ucch/web build
     5. Provide `clearUserCache()`. Call it from logout (`nav-user.tsx`) and when bootstrap returns a different user id.
   - **Acceptance:** Reloading an app page shows cached data before the network answers (check with DevTools throttling). Logging out empties the IndexedDB store.
   - **Verify:** `pnpm typecheck && pnpm --filter @ucch/web build`
+- [X] **B4 — Streaming, non-blocking `AppShell`** — hard loads stream ShellSkeleton under Suspense; one /api/bootstrap shared by layout and page
 
-- [x] **B4 — Streaming, non-blocking `AppShell`** — hard loads stream ShellSkeleton under Suspense; one /api/bootstrap shared by layout and page
   - **Depends:** B1, B3
   - **Files:**
     - `apps/web/src/components/app-shell.tsx`, `app-sidebar.tsx`, `app-header.tsx`
@@ -334,8 +339,8 @@ pnpm --filter @ucch/web build
     7. Add a `navigation.test.ts` assertion that `app-shell.tsx` does not `await` anything at the top level.
   - **Acceptance:** With the API artificially delayed by 1 s, the shell frame and the page skeleton paint immediately and the sidebar fills in afterwards. Dashboard and code pages make one serial hop, not two.
   - **Verify:** `pnpm test -- navigation && pnpm --filter @ucch/web build`, plus a manual check with a delay
+- [X] **B5 — Migrate client data to query hooks (one task per domain)** — via lib/queries/cached-state.ts
 
-- [x] **B5 — Migrate client data to query hooks (one task per domain)** — via lib/queries/cached-state.ts
   - **Depends:** B3
   - **Pattern for every sub-task:**
     1. Keep the fetchers in `lib/<domain>-api.ts`.
@@ -343,18 +348,18 @@ pnpm --filter @ucch/web build
     3. Replace `useEffect`+`useState` loading in the components, keeping the "loaded vs empty" distinction (`isPending` shows the skeleton).
     4. Remove `router.refresh()` calls the domain no longer needs.
   - **Sub-tasks:**
-    - [x] **B5.a — projects + sessions:** `lib/project-sessions.ts`, `app-sidebar.tsx`, `section-panel.tsx`, `projects-table.tsx`, `session-list.tsx`
-    - [x] **B5.b — tasks:** `lib/tasks-api.ts`, `components/tasks/tasks-board.tsx`
-    - [x] **B5.c — timeline:** `lib/timeline-api.ts`, `components/timeline/timeline-workspace.tsx`
-    - [x] **B5.d — notes tree + note meta:** `lib/notes-api.ts`, `components/notes/notes-context.tsx`, `notes-workspace.tsx`, `note-tree-sidebar.tsx`. Leave note *content* alone; R8 replaces it.
-    - [x] **B5.e — files tree:** `lib/files-api.ts`, `components/files-panel.tsx`. Persist the tree, not file contents.
-    - [x] **B5.f — git state:** `components/git/use-git-state.ts`. Keep the poll as `refetchInterval` (later 60 s, after R6).
-    - [x] **B5.g — database:** `lib/database-api.ts`, `components/database/db-context.tsx`, `connection-home.tsx`, `connections-panel.tsx`
-    - [x] **B5.h — keys, activity, quotas, account, workspace members:** `keys-api.ts`, `activity-api.ts`, `quota-rail.tsx`, `account-api.ts`, `workspace-api.ts`, `workspace-members-settings.tsx` — keys, quotas, members done; activity feed (paginated) still fetches on mount
+    - [X] **B5.a — projects + sessions:** `lib/project-sessions.ts`, `app-sidebar.tsx`, `section-panel.tsx`, `projects-table.tsx`, `session-list.tsx`
+    - [X] **B5.b — tasks:** `lib/tasks-api.ts`, `components/tasks/tasks-board.tsx`
+    - [X] **B5.c — timeline:** `lib/timeline-api.ts`, `components/timeline/timeline-workspace.tsx`
+    - [X] **B5.d — notes tree + note meta:** `lib/notes-api.ts`, `components/notes/notes-context.tsx`, `notes-workspace.tsx`, `note-tree-sidebar.tsx`. Leave note *content* alone; R8 replaces it.
+    - [X] **B5.e — files tree:** `lib/files-api.ts`, `components/files-panel.tsx`. Persist the tree, not file contents.
+    - [X] **B5.f — git state:** `components/git/use-git-state.ts`. Keep the poll as `refetchInterval` (later 60 s, after R6).
+    - [X] **B5.g — database:** `lib/database-api.ts`, `components/database/db-context.tsx`, `connection-home.tsx`, `connections-panel.tsx`
+    - [X] **B5.h — keys, activity, quotas, account, workspace members:** `keys-api.ts`, `activity-api.ts`, `quota-rail.tsx`, `account-api.ts`, `workspace-api.ts`, `workspace-members-settings.tsx` — keys, quotas, members done; activity feed (paginated) still fetches on mount
   - **Acceptance (each):** Revisiting the domain's page paints from cache instantly, then revalidates. No empty-state flash. The domain's `router.refresh()` calls are gone.
   - **Verify (each):** `pnpm typecheck && pnpm test && pnpm --filter @ucch/web build`
+- [X] **B6 — Leaf `loading.tsx` for sibling navigation + stricter test**
 
-- [x] **B6 — Leaf `loading.tsx` for sibling navigation + stricter test**
   - **Depends:** P0.1
   - **Files:**
     - new `loading.tsx` in:
@@ -374,8 +379,8 @@ pnpm --filter @ucch/web build
     3. Fix `shared/[slug]/layout.tsx` so it awaits nothing: move `fetchPublicProject` into a child under `Suspense`.
   - **Acceptance:** Session A → B, note A → B, settings page → page and table → table all paint the skeleton in the same frame (P0.3 suite).
   - **Verify:** `pnpm test -- navigation && pnpm --filter @ucch/web e2e`
+- [X] **B7 — Boot screen at sign-in** — BootScreen after password sign-in; cold hard loads get ShellSkeleton instead of an overlay
 
-- [x] **B7 — Boot screen at sign-in** — BootScreen after password sign-in; cold hard loads get ShellSkeleton instead of an overlay
   - **Depends:** B3, B4
   - **Files:**
     - new `apps/web/src/components/boot-screen.tsx`
@@ -408,7 +413,8 @@ pnpm --filter @ucch/web build
 
 ## Phase R (core): Everything live
 
-- [x] **R1 — `workspace:{id}` topic**
+- [X] **R1 — `workspace:{id}` topic**
+
   - **Depends:** S3
   - **Files:** `packages/protocol/src/rpc.ts`, `packages/protocol/src/events.ts`, `apps/server/src/bus.ts`, `apps/server/src/ws.ts`, `apps/server/src/access.ts`, `apps/web/src/lib/client.ts`, `apps/web/src/lib/realtime.tsx`
   - **Steps:**
@@ -418,8 +424,8 @@ pnpm --filter @ucch/web build
     4. Tests: a member receives the event, a non-member is refused, switching workspaces moves the subscription.
   - **Acceptance:** A test event published to the workspace reaches every member's tab.
   - **Verify:** `pnpm test -- bus ws`
+- [X] **R2 — Route workspace-level changes to the workspace topic** — done in the audit hook (workspace found per route), not a new route-audit scope
 
-- [x] **R2 — Route workspace-level changes to the workspace topic** — done in the audit hook (workspace found per route), not a new route-audit scope
   - **Depends:** R1
   - **Files:** `apps/server/src/route-audit.ts` (new scope `"workspace"`), `apps/server/src/workspaces.ts`, `workspace-members-routes.ts`, `workspace-members.ts`, `database-routes.ts`, `database-connections.ts`, `db-manager/*`, project create and delete in `index.ts` and `decide.ts`, account profile routes
   - **Steps:**
@@ -436,8 +442,8 @@ pnpm --filter @ucch/web build
     4. Extend the tests in `route-audit` for the new scope mapping.
   - **Acceptance:** Two browsers as two members: everything listed above appears in the other browser without a refresh (after R3 wires the cache).
   - **Verify:** `pnpm test -- route-audit workspace-members`
+- [X] **R3 — Realtime → cache bridge** — sidebar/header read the live bootstrap
 
-- [x] **R3 — Realtime → cache bridge** — sidebar/header read the live bootstrap
   - **Depends:** B3, R1
   - **Files:** new `apps/web/src/lib/realtime-cache.ts` and `realtime-cache.test.ts`, `apps/web/src/lib/realtime.tsx` (replace `AccountRefresher`), `apps/web/src/lib/query-keys.ts`
   - **Steps:**
@@ -447,8 +453,8 @@ pnpm --filter @ucch/web build
     4. Unit-test every mapping.
   - **Acceptance:** `router.refresh()` is not called on realtime events. Shell lists update live.
   - **Verify:** `pnpm test -- realtime-cache navigation`
+- [X] **R4 — Resync after reconnect** — kill-the-server check pending manual verification
 
-- [x] **R4 — Resync after reconnect** — kill-the-server check pending manual verification
   - **Depends:** R3
   - **Files:** `apps/web/src/lib/client.ts` (`ready` handling, reconnect around lines 369–383), `apps/web/src/lib/realtime.tsx`
   - **Steps:**
@@ -456,9 +462,11 @@ pnpm --filter @ucch/web build
     2. Replace "give up after 10 attempts" with a capped backoff that keeps trying while the tab is visible, plus an "Offline — reconnecting" banner (no spinner).
   - **Acceptance:** Kill the server for 20 s and restart it. Changes made by others during the gap appear without a reload.
   - **Verify:** manual, plus a unit test of the reconnect state machine if extracted
-
 - [ ] **R5 — Fill missing events**
+
   > PARTIAL: done -- git remote PUT/DELETE and fetch, diagram jobs (`resource.changed{diagrams}`), files panel takes agent/git writes, task routes in SELF_AUDITED. Open -- preview.published / port.* (no port detection exists to emit from), upload delete, `worktreeId` on `file.changed`.
+  >
+
   - **Depends:** R3
   - **Files:**
     - `apps/server/src/git-routes.ts`
@@ -477,8 +485,8 @@ pnpm --filter @ucch/web build
     7. Add the bridge mappings (R3) for every new event.
   - **Acceptance:** Every row of plan.md §C.5 is visible live in a second browser.
   - **Verify:** `pnpm test`, plus a manual two-browser check
+- [X] **R6 — File watcher** — verified live: a file written by hand reached a project subscriber; project checkout only, session worktrees not yet watched
 
-- [x] **R6 — File watcher** — verified live: a file written by hand reached a project subscriber; project checkout only, session worktrees not yet watched
   - **Depends:** R5
   - **Files:** new `apps/server/src/file-watcher.ts` and `.test.ts`, `apps/server/src/ws.ts` (subscriber counts per project), `apps/server/src/files.ts` (versions the server wrote), `apps/server/package.json` (`@parcel/watcher`)
   - **Steps:**
@@ -491,8 +499,8 @@ pnpm --filter @ucch/web build
     7. Tests use a temp dir.
   - **Acceptance:** `echo x > foo.txt` in a terminal shows `foo.txt` in another user's tree within 1 s.
   - **Verify:** `pnpm test -- file-watcher`
+- [X] **R7 — Presence with real people** — badge shown in notes and diagrams; code/tasks/timeline/git report locations; DB manager is workspace-level, not project presence
 
-- [x] **R7 — Presence with real people** — badge shown in notes and diagrams; code/tasks/timeline/git report locations; DB manager is workspace-level, not project presence
   - **Depends:** R1
   - **Files:**
     - `apps/server/src/presence.ts`, `apps/server/src/ws.ts` (presence handling, around lines 335–357)
@@ -513,7 +521,10 @@ pnpm --filter @ucch/web build
 ## Phase B (rest): Polish and budgets
 
 - [ ] **B8 — One WebSocket per tab**
+
   > PARTIAL: done -- quiet subscriptions upgrade instead of being silently kept quiet, `client.unsubscribe()`, terminal view and login terminal on the shared socket. Open -- project-chat still opens its own socket: it renders from its client's 500-event history, which a shared client would mix with every other topic; needs a per-thread history store first. create-project keeps a one-off socket per creation by design.
+  >
+
   - **Depends:** R3
   - **Files:** `apps/web/src/lib/client.ts` (subscription dedupe, around line 236), `apps/web/src/lib/realtime.tsx`, `components/project-chat.tsx` (around line 381), `components/terminal-view.tsx`, `components/login-terminal-dialog.tsx`, `lib/create-project.ts`
   - **Steps:**
@@ -522,8 +533,8 @@ pnpm --filter @ucch/web build
     3. Port the four components to the shared client and delete their `new UcchClient(...)`.
   - **Acceptance:** DevTools shows one `/ws` connection per tab after visiting chat, a terminal and project creation.
   - **Verify:** `pnpm test -- client`, plus manual
+- [X] **B9 — Links to final URLs + router cache + warmup** — project links use the newest cached session; falls back to the bare address when sessions are not cached yet
 
-- [x] **B9 — Links to final URLs + router cache + warmup** — project links use the newest cached session; falls back to the bare address when sessions are not cached yet
   - **Depends:** B5.a
   - **Files:** `components/section-panel.tsx` (around line 184), `components/projects-table.tsx` (around lines 141 and 201), `lib/sections.ts`, `lib/warmup.ts` / `warmup.test.ts`, `components/route-warmup.tsx`, `apps/web/next.config.ts`
   - **Steps:**
@@ -537,20 +548,25 @@ pnpm --filter @ucch/web build
        - update `warmup.test.ts`
   - **Acceptance:** Clicking a project from the dashboard makes no redirect request (check the Network tab).
   - **Verify:** `pnpm test -- warmup sections`, plus the e2e suite
+- [X] **B10 — Fonts and file icons** — iA Writer Mono not preloaded at all (per-face preload is not possible with one family); icons verified in the next production build
 
-- [x] **B10 — Fonts and file icons** — iA Writer Mono not preloaded at all (per-face preload is not possible with one family); icons verified in the next production build
   - **Depends:** P0.1
   - **Files:** `apps/web/src/app/layout.tsx` (fonts), `apps/web/src/app/file-icons/route.ts`, new `apps/web/src/app/file-icons/resolve/route.ts` and `file-icons/svg/[id]/route.ts`, `apps/web/src/lib/file-icons.ts`, file-tree components
   - **Steps:**
-    1. Split iA Writer Mono so only Regular is preloaded. Italic and bold use `preload: false`. **Keep the one-child `<body>` and the unauthored `<head>` rules documented in `layout.tsx`.**
+    1. Split iA Writer Mono s o only Regular is preloaded. Italic and bold use `preload: false`. **Keep the one-child `<body>` and the unauthored `<head>` rules documented in `layout.tsx`.**
     2. `resolve?names=` returns `{name: iconId}` with `Cache-Control: max-age=86400`.
     3. `svg/[id]` serves the SVG with `immutable`, one year.
     4. The tree batches the names it hasn't seen into a resolve call and renders `<img src="/file-icons/svg/<id>.svg">`.
     5. Keep the old route for compatibility.
   - **Acceptance:** Opening a 200-file tree costs ≤ 1 resolve plus one SVG request per distinct icon. The login page preloads one mono font file.
   - **Verify:** `pnpm test -- file-icons`, plus the Network tab
-
 - [ ] **B11 — Bundle splitting + budgets**
+
+  > PARTIAL: done -- analyzer behind `ANALYZE=1`, `optimizePackageImports`, `scripts/bundle-budget.mjs --check` passes (every route within 10% of `bundle-baseline.json`). Shell dialogs, search panel, rename/delete session dialogs behind `dynamic()` via `components/on-demand.tsx`, warmed on idle. Login boot screen lazy (it pulled the query client in: 206 → 174 kB). Shell routes 329 → 308 kB (baseline 315: −2%, not −25%).
+  > Top shell modules left (analyzer, gzip, per module): `@base-ui/react` ~82 kB (floating-ui 21, menu 15, internals 11, tooltip 6, tabs 5, popover 5), zod 12.5 (client validates every socket frame with `ServerFrame.parse`), lucide 11, query-core 9, tailwind-merge 8, cmdk + its Radix dialog ~13 (palette, workspace switcher, view toggle), files-panel 6. Framework alone is ~103 kB.
+  > Open -- −25% needs a decision: drop zod from the client (trust the socket), move cmdk popovers behind `dynamic()`, split `FilesTree` out of `files-panel.tsx`. Even all three land near ~285 kB (−10%).
+  >
+
   - **Depends:** P0.3
   - **Files:** `apps/web/next.config.ts` (`@next/bundle-analyzer` behind `ANALYZE=1`, `optimizePackageImports`), `components/app-shell.tsx` / `right-sidebar.tsx` (files panel), `QuickActions`, `TaskDialog`, `NewProjectDialog`, `components/markdown.tsx`, `lib/highlight-lines.ts` consumers, `lib/warmup.ts` (add the new chunks)
   - **Steps:**
@@ -560,15 +576,15 @@ pnpm --filter @ucch/web build
     4. Add a budget check script comparing `next build` first-load JS to `e2e/results/baseline.json`. It fails when a route grows by more than 10%.
   - **Acceptance:** Shell-route first-load JS is at least 25% below the baseline.
   - **Verify:** `ANALYZE=1 pnpm --filter @ucch/web build`, plus the budget script
-
 - [ ] **B12 — SSR → API keep-alive**
+
   - **Depends:** P0.1
   - **Files:** `apps/web/src/lib/session.ts`, `apps/web/src/lib/public-api.ts`
   - **Steps:** Create one module-level undici `Agent({ keepAliveTimeout: 30_000, connections: 32 })`, pass it as `dispatcher` on every server-side fetch, and wrap the readers in React `cache()` where they aren't already.
   - **Acceptance:** SSR→API calls reuse connections (check `ss -tn` or Agent stats).
   - **Verify:** `pnpm typecheck && pnpm --filter @ucch/web build`
-
 - [ ] **B13 — Real-user web vitals**
+
   - **Depends:** B1
   - **Files:** new `apps/web/src/components/vitals-reporter.tsx` (`web-vitals`), new server route `POST /api/metrics/vitals` (+ migration `perf_vitals`), `lib/view-transitions.tsx` (nav marks)
   - **Steps:**
@@ -583,6 +599,7 @@ pnpm --filter @ucch/web build
 ## Phase R (collab): Real-time co-editing
 
 - [ ] **R8 — Hocuspocus server on `/collab`**
+
   - **Depends:** R1, D2 (upgrade routing), S3
   - **Files:** new `apps/server/src/collab.ts` and `collab.test.ts`, `apps/server/src/index.ts` (upgrade handler, shutdown), `packages/db/src/schema.ts` + new migration `note_ydocs`, `apps/server/src/notes.ts`, `apps/server/package.json` (`@hocuspocus/server`, `yjs`, `y-prosemirror`, `@tiptap/*` for server-side schema conversion; pin exact versions matching the web's Tiptap 3.31.3)
   - **Steps:**
@@ -600,8 +617,8 @@ pnpm --filter @ucch/web build
        - a server-side write reaches connected clients
   - **Acceptance:** Two headless Yjs clients editing the same note converge, and `notes.content` reflects the merge within 10 s.
   - **Verify:** `pnpm test -- collab`
-
 - [ ] **R9 — Notes editor co-editing**
+
   - **Depends:** R8, R7
   - **Files:** `apps/web/src/components/notes/note-editor-impl.tsx`, `note-editor.tsx`, `notes-workspace.tsx`, `apps/web/src/lib/note-autosave.ts`, `apps/web/package.json` (`@hocuspocus/provider`, `@tiptap/extension-collaboration`, `@tiptap/extension-collaboration-caret`, `yjs`; exact versions matching Tiptap 3.31.3)
   - **Steps:**
@@ -613,8 +630,8 @@ pnpm --filter @ucch/web build
     6. Offline: Yjs keeps local edits and they sync on reconnect. Show the R4 banner.
   - **Acceptance:** Two browsers type in the same paragraph at once with live carets, and nothing is lost or reverted.
   - **Verify:** `pnpm --filter @ucch/web build`, plus a manual two-browser check, plus an e2e test with two contexts
-
 - [ ] **R10 — Code + diagram co-editing**
+
   - **Depends:** R9, R6
   - **Files:** `apps/server/src/collab.ts` (file docs), `apps/server/src/files.ts`, `apps/server/src/file-watcher.ts`, `apps/web/src/lib/doc-sync.ts` (move `replacement()` into `packages/protocol` and re-export), `apps/web/src/components/code-editor.tsx`, `components/diagrams/diagram-editor.tsx`, `y-codemirror.next`
   - **Steps:**
@@ -625,8 +642,8 @@ pnpm --filter @ucch/web build
     5. Client: a `yCollab` extension in CodeMirror, with the vim mode still working. Remove `ifVersion` save conflicts for co-edited files.
   - **Acceptance:** Two users edit the same file live. An agent edit to that file merges into both editors without moving cursors.
   - **Verify:** `pnpm test -- collab`, plus manual
-
 - [ ] **R11 — Optimistic, per-field mutations for tasks and timeline**
+
   - **Depends:** B5.b, B5.c, R3
   - **Files:** `apps/server/src/tasks-routes.ts`, `apps/server/src/tasks.ts`, `apps/server/src/timeline-routes.ts`, `lib/queries/tasks.ts`, `lib/queries/timeline.ts`
   - **Steps:**
@@ -635,8 +652,8 @@ pnpm --filter @ucch/web build
     3. Mutation hooks update optimistically.
   - **Acceptance:** Two users dragging different tasks, or editing different fields of one task, never overwrite each other.
   - **Verify:** `pnpm test -- tasks timeline`
-
 - [ ] **R12 — DB-manager row conflict detection**
+
   - **Depends:** R2
   - **Files:** `apps/server/src/db-manager/adapter.ts`, `apps/server/src/database-routes.ts`, `components/database/browse-tab.tsx`
   - **Steps:**
@@ -652,13 +669,14 @@ pnpm --filter @ucch/web build
 ## Phase W: PWA groundwork
 
 - [ ] **W1 — Manifest, icons, theme colour**
+
   - **Depends:** P0.1
   - **Files:** new `apps/web/src/app/manifest.ts`, new icons in `apps/web/src/app/` (`icon-192.png`, `icon-512.png`, `icon-maskable-512.png`), `apple-icon.png` replaced with 180×180, `apps/web/src/app/layout.tsx` (`export const viewport = { themeColor }`), `apps/web/src/middleware.ts` matcher (exclude `manifest.webmanifest`)
   - **Steps:** Generate the icons from `icon.svg` or `components/app-logo.tsx`. Manifest values: `display: "standalone"`, `start_url: "/"`, `scope: "/"`, and colours from theme tokens.
   - **Acceptance:** Chrome DevTools → Application → Manifest shows no errors.
   - **Verify:** `pnpm --filter @ucch/web build`, plus DevTools
-
 - [ ] **W2 — Static root layout**
+
   - **Depends:** W1
   - **Files:** `apps/web/src/app/layout.tsx`, `apps/web/src/lib/theme.ts`, `apps/web/src/components/theme-provider.tsx`, `apps/web/src/middleware.ts`
   - **Steps:**
@@ -669,8 +687,8 @@ pnpm --filter @ucch/web build
     2. **Don't break the hydration rules documented in `layout.tsx`.**
   - **Acceptance:** The `next build` output marks `/login` as static (○). No theme flash on a forced-dark reload.
   - **Verify:** `pnpm --filter @ucch/web build`
-
 - [ ] **W3 — Serwist service worker behind a flag**
+
   - **Depends:** W2, B3
   - **Files:** `apps/web/next.config.ts` (`withSerwist`, enabled only when `NEXT_PUBLIC_PWA=1`), new `apps/web/src/app/sw.ts`, `apps/web/package.json` (`@serwist/next`, `serwist`)
   - **Steps:**
@@ -685,15 +703,15 @@ pnpm --filter @ucch/web build
     5. Make sure the edge (D2) serves `sw.js` with `Cache-Control: no-cache` and `Service-Worker-Allowed: /`.
   - **Acceptance:** With the flag on, Lighthouse's PWA "installable" check passes. Turning the flag off and redeploying unregisters the service worker (ship a kill-switch `sw.js`).
   - **Verify:** `NEXT_PUBLIC_PWA=1 pnpm --filter @ucch/web build && start`, plus Lighthouse
-
 - [ ] **W4 — Offline page**
+
   - **Depends:** W3
   - **Files:** new `apps/web/src/app/offline/page.tsx` (static)
   - **Steps:** Show the app logo, "You're offline", a retry button, and a list of cached recent projects from the persisted query cache (read-only).
   - **Acceptance:** In DevTools offline mode, a navigation shows this page.
   - **Verify:** manual
-
 - [ ] **W5 — Update prompt + install entry**
+
   - **Depends:** W3, B1
   - **Files:** new `apps/web/src/components/update-toast.tsx`, `apps/web/src/components/nav-user.tsx`
   - **Steps:**
@@ -708,14 +726,14 @@ pnpm --filter @ucch/web build
 
 All boxes above are checked, and these hold on the production container (`scripts/smoke-container.sh` plus `pnpm --filter @ucch/web e2e` pointed at it):
 
-| Metric | Baseline (P0.3) | Target |
-|---|---|---|
-| Click → skeleton or new page (p95) | 46 ms | ≤ 100 ms |
-| Click → content, cached data | 52–85 ms (warm sections) | ≤ 150 ms |
-| Click → content, cold data | 400 ms p95 (documentation, dashboard) | ≤ 600 ms |
-| Login submit → interactive shell | not measured yet (B7 adds the login step) | ≤ 2.0 s |
-| Hard reload → sidebar painted | 582 ms (whole first page, no skeleton) | ≤ 300 ms |
-| Shell-route first-load JS | 315 kB gz (`/(app)/…` minimum); session page 415 kB | ≤ baseline × 0.75 |
-| `/ws` connections per tab | 2+ on a chat page (shared + per-mount) | 1 (+1 per co-edited doc) |
-| Changes visible to another member | partial | every row in plan.md §C.2 and §C.5, without a refresh |
-| Deploy | 6 compose services | 1 Dokploy Dockerfile application, 1 port, 1 volume |
+| Metric                              | Baseline (P0.3)                                        | Target                                                  |
+| ----------------------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
+| Click → skeleton or new page (p95) | 46 ms                                                  | ≤ 100 ms                                               |
+| Click → content, cached data       | 52–85 ms (warm sections)                              | ≤ 150 ms                                               |
+| Click → content, cold data         | 400 ms p95 (documentation, dashboard)                  | ≤ 600 ms                                               |
+| Login submit → interactive shell   | not measured yet (B7 adds the login step)              | ≤ 2.0 s                                                |
+| Hard reload → sidebar painted      | 582 ms (whole first page, no skeleton)                 | ≤ 300 ms                                               |
+| Shell-route first-load JS           | 315 kB gz (`/(app)/…` minimum); session page 415 kB | ≤ baseline × 0.75                                     |
+| `/ws` connections per tab         | 2+ on a chat page (shared + per-mount)                 | 1 (+1 per co-edited doc)                                |
+| Changes visible to another member   | partial                                                | every row in plan.md §C.2 and §C.5, without a refresh |
+| Deploy                              | 6 compose services                                     | 1 Dokploy Dockerfile application, 1 port, 1 volume      |

@@ -14,10 +14,8 @@ import {
   MessageSquarePlusIcon,
 } from "lucide-react";
 
-import { NewDatabaseDialog } from "@/components/new-database-dialog";
-import { NewProjectDialog } from "@/components/new-project-dialog";
+import { NewDatabaseDialog, NewProjectDialog, NewWorkspaceDialog } from "@/components/on-demand";
 import { ProjectStackIcon } from "@/components/project-stack-icon";
-import { NewWorkspaceDialog } from "@/components/new-workspace-dialog";
 import {
   CommandDialog,
   CommandEmpty,

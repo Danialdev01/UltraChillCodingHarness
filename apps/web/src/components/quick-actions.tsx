@@ -9,9 +9,8 @@ import {
   StickyNoteIcon,
 } from "lucide-react";
 
-import { NewDatabaseDialog } from "@/components/new-database-dialog";
-import { NewProjectDialog } from "@/components/new-project-dialog";
-import { TaskDialog, type TaskDialogState } from "@/components/tasks/task-dialog";
+import { NewDatabaseDialog, NewProjectDialog, TaskDialog } from "@/components/on-demand";
+import type { TaskDialogState } from "@/components/tasks/task-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Project, Workspace } from "@/lib/session";
 import { createTask, type TaskInput } from "@/lib/tasks-api";

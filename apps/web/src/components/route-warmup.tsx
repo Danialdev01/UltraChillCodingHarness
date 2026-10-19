@@ -4,6 +4,7 @@ import * as React from "react"
 import { usePathname, useRouter } from "next/navigation"
 import type { PrefetchKind } from "next/dist/client/components/router-reducer/router-reducer-types"
 
+import { ON_DEMAND } from "@/components/on-demand"
 import type { ProjectKind } from "@/lib/sections"
 import { SKELETON_ONLY, warmupHrefs } from "@/lib/warmup"
 
@@ -15,7 +16,7 @@ import { SKELETON_ONLY, warmupHrefs } from "@/lib/warmup"
  * for its JavaScript. This fetches every section, every Settings page and
  * every page of the project in view *in full* -- the RSC payload, and with it
  * the client chunks that payload names -- plus the editors that are
- * code-split out of their pages. A later click then finds it all in the
+ * code-split out of their pages and the shell's on-demand dialogs. A later click then finds it all in the
  * browser already.
  *
  * Runs once per tab, after `load` and an idle callback so the page being
@@ -40,6 +41,9 @@ const GAP_MS = 150
  * screen. (tldraw is left out on purpose: it brings global CSS with it.)
  */
 const EDITORS = [() => import("@/components/vim-editor"), () => import("@/components/notes/note-editor-impl")]
+
+/** The dialogs first, being small; then the editors. */
+const CHUNKS = [...ON_DEMAND, ...EDITORS]
 
 function saveData(): boolean {
   const { connection } = navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }
@@ -71,7 +75,7 @@ export function RouteWarmup({
   const pathname = usePathname()
   // The first page decides what is warmed; moving on does not start again.
   const [hrefs] = React.useState(() => warmupHrefs(pathname, workspace, projectHashes))
-  return <Prefetch hrefs={hrefs} chunks={EDITORS} />
+  return <Prefetch hrefs={hrefs} chunks={CHUNKS} />
 }
 
 /**
