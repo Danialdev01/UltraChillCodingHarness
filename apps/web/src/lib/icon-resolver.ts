@@ -48,7 +48,11 @@ async function flush(): Promise<void> {
     const chunk = batch.slice(i, i + 200)
     let resolved: Record<string, string> = {}
     try {
-      const response = await fetch(`/file-icons/resolve?q=${chunk.map(([key]) => key).join(",")}`)
+      // Encoded again as a whole: the server's query parsing decodes once, and
+      // the keys must arrive still encoded -- a comma in a name stays `%2C`
+      // rather than splitting it, and the answer comes back under our key.
+      const q = encodeURIComponent(chunk.map(([key]) => key).join(","))
+      const response = await fetch(`/file-icons/resolve?q=${q}`)
       if (response.ok) resolved = (await response.json()) as Record<string, string>
     } catch {
       // Unanswered rows fall back to asking by name.
