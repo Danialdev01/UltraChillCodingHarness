@@ -2,82 +2,82 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
-import type { PrefetchKind } from "next/dist/client/components/router-reducer/router-reducer-types"
 
 import { BootFrame } from "@/components/boot-frame"
+import { GATE_MS } from "@/components/route-warmup"
+import { safeNext } from "@/lib/auth-gate"
+import { markWarm } from "@/lib/boot-cookie"
+import { publishBoot, resetBoot, useBootProgress } from "@/lib/boot-progress"
+import { readLastLocation } from "@/lib/last-location"
+import { preload } from "@/lib/preload"
 import { fetchBootstrap } from "@/lib/queries/bootstrap"
 import { getQueryClient } from "@/lib/query-client"
 import { qk } from "@/lib/query-keys"
-import { readLastLocation } from "@/lib/last-location"
-import { safeNext } from "@/lib/auth-gate"
-import { warmupHrefs } from "@/lib/warmup"
+import { workspaceHashFromPath } from "@/lib/sections"
 import { useTransitionRouter } from "@/lib/view-transitions"
 
-/** `PrefetchKind.FULL`; the enum is internal to Next. */
-const FULL = "full" as unknown as PrefetchKind
-
-/** However much is still loading, the app opens after this long. */
-const CAP_MS = 2000
-
 /**
- * The moment between signing in and the app: what every page needs is loaded
- * here, once, so the first page opens complete rather than as a skeleton.
+ * The moment between signing in and the app: the whole app is loaded here,
+ * once, so nothing after it waits on the server.
  *
  *   1. who you are, your workspaces and the open one's projects (one request,
  *      straight into the client cache the shell reads)
- *   2. the page you are going to, rendered in full ahead of time
- *   3. the pages you are likeliest to open next -- the workspace's sections,
- *      its first project -- the way the shell's warmup would after its idle
+ *   2. the page you are going to, every other page of the workspace -- each
+ *      project's conversation and pages included -- and the lists they open
+ *      on (`lib/preload.ts`, within `lib/warmup.ts`'s budget)
  *
  * It goes to the page you asked for before signing in, else the last one you
  * were on, else the workspace's dashboard; never via `/`, and with no
- * `refresh()`, so nothing renders twice. Whatever is not done by the cap
- * carries on in the background.
+ * `refresh()`, so nothing renders twice. The app opens when all of it is
+ * loaded or after `GATE_MS`, whichever is first, and whatever is left carries
+ * on behind it. The session is then marked as booted, so the app layout does
+ * not draw the boot screen a second time (`lib/boot-cookie.ts`).
  */
 export function BootScreen({ next }: { next: string | null }) {
   const router = useRouter()
   const go = useTransitionRouter()
-  const [progress, setProgress] = React.useState(0.08)
+  const { progress, label } = useBootProgress()
 
   React.useEffect(() => {
+    resetBoot()
+    // Before anything is prefetched: the pages warmed below render the app
+    // layout, which must already know not to draw a second boot screen.
+    markWarm()
     let done = false
-    const finish = (target: string) => {
+    let target = safeNext(next) ?? readLastLocation()
+    const finish = () => {
       if (done) return
       done = true
-      setProgress(1)
-      go.replace(target)
+      markWarm()
+      publishBoot({ progress: 1, done: true })
+      go.replace(target ?? "/")
     }
+    const cap = setTimeout(finish, GATE_MS)
 
     void (async () => {
-      const client = getQueryClient()
-      let target = safeNext(next) ?? readLastLocation()
-      const cap = setTimeout(() => finish(target ?? "/"), CAP_MS)
       try {
-        const boot = await fetchBootstrap(target ? (/^\/([a-z0-9]{12})(?:\/|$)/.exec(target)?.[1] ?? null) : null)
+        const client = getQueryClient()
+        const boot = await fetchBootstrap(target ? workspaceHashFromPath(target) : null)
         const active = boot.workspaces.find((w) => w.id === boot.activeWorkspaceId)
         client.setQueryData(qk.bootstrap(active?.hash ?? null), boot)
         target ??= active ? `/${active.hash}` : "/"
-        setProgress(0.5)
-
-        // The page itself first, then what is likely next. A prefetch says
-        // nothing when it lands, so it is given a moment rather than awaited:
-        // the navigation below reuses one still in flight.
-        router.prefetch(target, { kind: FULL })
-        const likely = warmupHrefs(
-          target,
-          active ? { hash: active.hash, kind: active.kind } : null,
-          boot.projects.map((p) => p.hash),
-        )
-        for (const href of likely.slice(0, 8)) router.prefetch(href, { kind: FULL })
-        await new Promise((resolve) => setTimeout(resolve, 300))
-        setProgress(0.9)
+        await preload({
+          router,
+          client,
+          pathname: target,
+          includeCurrent: true,
+          workspace: active ? { hash: active.hash, kind: active.kind } : null,
+          projectHashes: boot.projects.map((p) => p.hash),
+          report: true,
+        })
       } catch {
         // Signed in but the API stumbled: the shell will ask again itself.
       }
       clearTimeout(cap)
-      finish(target ?? "/")
+      finish()
     })()
+    return () => clearTimeout(cap)
   }, [go, next, router])
 
-  return <BootFrame progress={progress} />
+  return <BootFrame progress={progress} label={label} />
 }

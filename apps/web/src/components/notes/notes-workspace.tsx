@@ -19,7 +19,6 @@ import {
   createNote,
   deleteNote,
   fetchNote,
-  listNotes,
   moveNote,
   type Note,
   type NoteSummary,
@@ -35,7 +34,7 @@ import {
 import { DEFAULT_DOC_WIDTH, docMaxWidth, readDocWidth, watchDocWidth } from "@/lib/doc-width"
 import { docViewFromParam, noteHref, noteIdFromPath, type DocView } from "@/lib/sections"
 import { useCachedState } from "@/lib/queries/cached-state"
-import { qk } from "@/lib/query-keys"
+import { projectQueries } from "@/lib/queries/project-data"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 import type { Project } from "@/lib/session"
 import { useTransitionRouter } from "@/lib/view-transitions"
@@ -76,11 +75,10 @@ export function NotesWorkspace({
   const noteId = location ? location.noteId : pathNoteId
   const view = location ? location.view : paramView
   // The page tree, cached: coming back to the documentation shows it at once.
-  const [tree, setTree, reloadTree, treeState] = useCachedState(
-    qk.notes.tree(project.hash),
-    () => listNotes(project.hash),
-    { persist: true },
-  )
+  const treeQuery = projectQueries.notesTree(project.hash)
+  const [tree, setTree, reloadTree, treeState] = useCachedState(treeQuery.queryKey, treeQuery.queryFn, {
+    persist: treeQuery.persist,
+  })
   const notes = React.useMemo(() => tree?.notes ?? [], [tree])
   const rootId = tree?.rootId || null
   const setNotes = React.useCallback(

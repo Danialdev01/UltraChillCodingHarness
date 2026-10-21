@@ -6,18 +6,13 @@ import type { DomainEvent } from "@ucch/protocol"
 import type { UcchClient } from "@/lib/client"
 import { readCredentialChoice } from "@/lib/credential-choice"
 import { useCachedState } from "@/lib/queries/cached-state"
-import { qk } from "@/lib/query-keys"
+import { projectQueries } from "@/lib/queries/project-data"
 import { useRealtime } from "@/lib/realtime"
 import type { ProjectSession } from "@/lib/session"
 
 export type { ProjectSession }
 
-/** A project's sessions, newest first. */
-export async function fetchProjectSessions(projectHash: string): Promise<ProjectSession[]> {
-  const response = await fetch(`/api/projects/${projectHash}/threads`, { credentials: "include" })
-  if (!response.ok) throw new Error("Could not list the project's sessions.")
-  return ((await response.json()) as { threads: ProjectSession[] }).threads
-}
+export { fetchProjectSessions } from "@/lib/queries/project-data"
 
 /**
  * Starts a session in a project and answers with its address.
@@ -124,11 +119,11 @@ export function useProjectSessions(
   const projectId = project?.id ?? null
   // Cached and shared: the sidebar's row and the project's own page read one
   // copy, and a project opened before shows its sessions at once.
-  const [listed, , reload, state] = useCachedState(
-    qk.sessions.list(projectHash ?? ""),
-    () => fetchProjectSessions(projectHash!),
-    { persist: true, enabled: projectHash !== null },
-  )
+  const query = projectQueries.sessions(projectHash ?? "")
+  const [listed, , reload, state] = useCachedState(query.queryKey, query.queryFn, {
+    persist: query.persist,
+    enabled: projectHash !== null,
+  })
   const refresh = React.useCallback(() => {
     if (projectHash) void reload()
   }, [projectHash, reload])

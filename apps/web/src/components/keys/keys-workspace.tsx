@@ -30,7 +30,6 @@ import { copyText } from "@/lib/clipboard"
 import {
   createProjectKey,
   deleteProjectKey,
-  listProjectKeys,
   revealProjectKey,
   updateProjectKey,
   type ProjectKey,
@@ -39,7 +38,7 @@ import {
 import { useLiveResource } from "@/lib/realtime"
 import type { Project } from "@/lib/session"
 import { useCachedState } from "@/lib/queries/cached-state"
-import { qk } from "@/lib/query-keys"
+import { projectQueries } from "@/lib/queries/project-data"
 
 /** A shown value hides itself again after this long, in case the tab is left open. */
 const REVEAL_MS = 30_000
@@ -53,11 +52,10 @@ const REVEAL_MS = 30_000
  */
 export function KeysWorkspace({ project }: { project: Project }) {
   // Cached: the keys show at once on a return visit, then revalidate.
-  const [keys, setKeys, reloadKeys, loadState] = useCachedState(
-    qk.keys.list(project.hash),
-    () => listProjectKeys(project.hash),
-    { persist: true },
-  )
+  const query = projectQueries.keys(project.hash)
+  const [keys, setKeys, reloadKeys, loadState] = useCachedState(query.queryKey, query.queryFn, {
+    persist: query.persist,
+  })
   const [error, setError] = React.useState<string | null>(null)
   const [dialog, setDialog] = React.useState<KeyDialogState>(null)
   const [deleting, setDeleting] = React.useState<ProjectKey | null>(null)

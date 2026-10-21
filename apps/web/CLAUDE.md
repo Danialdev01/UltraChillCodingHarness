@@ -31,11 +31,20 @@ enforces the mechanical parts.
   component's own pending state should draw the same skeleton.
 - **Spinners are for actions in flight only:** save/submit buttons, a search
   query running, refreshing data that is already on screen, the agent's turn.
-- **The first visit loads the rest of the app in the background.** Once the first
-  page is idle, `components/route-warmup.tsx` fully prefetches every section,
-  Settings page and page of the open project, plus the code-split editors. The list
-  comes from `lib/warmup.ts`, built from `lib/sections.ts`, so pages registered there
-  are covered automatically. A new top-level page outside `sections.ts`, or a new
-  large `dynamic()` import, should be added there. Do not warm modules that import
+  The one exception is the boot screen (`components/boot-frame.tsx`).
+- **The whole app loads at boot.** After sign-in (`components/boot-screen.tsx`),
+  and on the first page of a browser session (`components/boot-gate.tsx`, gated
+  by the `ucch_warm` cookie in `lib/boot-cookie.ts`), a boot screen covers the app
+  for up to 6 s while `lib/preload.ts` fully prefetches every section, Settings
+  page and page of every project (its open session included), fetches the lists
+  those pages open on into the client cache, and loads the code-split editors.
+  Whatever is left carries on behind the opened app. Later loads in the session
+  do the same quietly, and `components/route-warmup.tsx` re-warms pages as the
+  router expires them. What is loaded, and the memory budget that caps it, is
+  `lib/warmup.ts`, built from `lib/sections.ts`, so pages registered there are
+  covered automatically. A new top-level page outside `sections.ts`, a new
+  per-project list (add it to `lib/queries/project-data.ts` and read it through
+  that in the view), or a new large `dynamic()` import (`CHUNKS` in
+  `lib/preload.ts`) should be added there. Do not warm modules that import
   global CSS.
 - `next dev` does not prefetch, so judge speed on `npm run build && npm start`.

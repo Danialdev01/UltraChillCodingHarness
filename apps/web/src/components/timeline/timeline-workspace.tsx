@@ -8,14 +8,13 @@ import { GanttChart, HEADER_HEIGHT, ROW_HEIGHT } from "@/components/timeline/gan
 import { TaskDialog, type TaskDialogState } from "@/components/timeline/task-dialog"
 import { Button } from "@/components/ui/button"
 import { useCachedState } from "@/lib/queries/cached-state"
-import { qk } from "@/lib/query-keys"
+import { projectQueries } from "@/lib/queries/project-data"
 import { useProjectEvents, usePresenceLocation } from "@/lib/realtime"
 import { computeRange, durationDays, localToday, PX_PER_DAY, type Zoom } from "@/lib/gantt"
 import type { Project } from "@/lib/session"
 import {
   createTimelineTask,
   deleteTimelineTask,
-  listTimelineTasks,
   updateTimelineTask,
   type TimelineTask,
   type TimelineTaskInput,
@@ -41,11 +40,10 @@ const ZOOMS: { id: Zoom; label: string }[] = [
  */
 export function TimelineWorkspace({ project }: { project: Project }) {
   // Cached: coming back to the chart paints it at once, then revalidates.
-  const [tasks, setTasks, reload, loadState] = useCachedState(
-    qk.timeline.list(project.hash),
-    () => listTimelineTasks(project.hash),
-    { persist: true },
-  )
+  const query = projectQueries.timeline(project.hash)
+  const [tasks, setTasks, reload, loadState] = useCachedState(query.queryKey, query.queryFn, {
+    persist: query.persist,
+  })
   const [error, setError] = React.useState<string | null>(null)
   usePresenceLocation(project.id, "timeline")
   const [zoom, setZoom] = React.useState<Zoom>("week")

@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { usePathname, useRouter } from "next/navigation"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQueryClient, type QueryClient } from "@tanstack/react-query"
 
 import { projectHref, workspaceHashFromPath } from "@/lib/sections"
 import { WORKSPACE_COOKIE_NAME, WORKSPACE_HASH_COOKIE_NAME } from "@/lib/workspace-cookie"
@@ -94,6 +94,7 @@ export function useProjectHref(): (projectHash: string, sessionHash?: string | n
   const ws = useWorkspaceHash()
   const kind = useActiveWorkspace()?.kind ?? "project"
   const queryClient = useQueryClient()
+  const sessionsLanded = useSessionListsVersion(queryClient)
   return React.useCallback(
     (projectHash: string, sessionHash?: string | null) => {
       // A project's bare address only redirects to its newest session. When
@@ -104,6 +105,31 @@ export function useProjectHref(): (projectHash: string, sessionHash?: string | n
       }
       return projectHref(ws, kind, projectHash, sessionHash)
     },
-    [ws, kind, queryClient],
+    // `sessionsLanded` is not read: it is what makes links drawn before a
+    // project's sessions arrived -- before the boot preload filled them in --
+    // be drawn again, now pointing at the session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ws, kind, queryClient, sessionsLanded],
   )
+}
+
+/** Counts sessions lists arriving in the cache, at most once a frame. */
+function useSessionListsVersion(queryClient: QueryClient): number {
+  const [version, setVersion] = React.useState(0)
+  React.useEffect(() => {
+    let frame = 0
+    const off = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "success") return
+      if (event.query.queryKey[0] !== qk.sessions.all[0] || frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        setVersion((v) => v + 1)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(frame)
+      off()
+    }
+  }, [queryClient])
+  return version
 }

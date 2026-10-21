@@ -49,18 +49,13 @@ import {
   type FileNode,
 } from "@/lib/files-api"
 import { targetOf, type ProjectTarget } from "@/lib/project-target"
-import { qk } from "@/lib/query-keys"
+import { projectQueries, treeKey } from "@/lib/queries/project-data"
 import { movableInto } from "@/lib/file-drop"
 import { isPreviewable } from "@ucch/protocol"
 import type { Project } from "@/lib/session"
 import { isOwnChange, useProjectEvents, useToast } from "@/lib/realtime"
 import { codeReference, type CodeReference } from "@/lib/code-chat"
 
-
-/** The client-cache key of a project's (or session's) file tree. */
-function treeKey(target: ProjectTarget) {
-  return typeof target === "string" ? qk.files.tree(target) : qk.files.tree(target.hash, target.session ?? null)
-}
 
 export type { FileNode as Node }
 
@@ -363,10 +358,11 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     setTreeLoading(true)
     // Through the client cache, which keeps (and persists) the last tree of
     // every project, so opening one again starts from it -- see below.
+    const { queryKey, queryFn } = projectQueries.filesTree(target)
     void queryClient
       .fetchQuery({
-        queryKey: treeKey(target),
-        queryFn: () => fetchTree(target),
+        queryKey,
+        queryFn,
         staleTime: 0,
         meta: { persist: true },
       })

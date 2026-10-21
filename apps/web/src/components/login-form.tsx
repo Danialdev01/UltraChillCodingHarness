@@ -24,7 +24,8 @@ import { cn } from "@/lib/utils";
 const loadBootScreen = () => import("@/components/boot-screen");
 const BootScreen = dynamic(() => loadBootScreen().then((m) => m.BootScreen), {
   ssr: false,
-  loading: () => <BootFrame progress={0.08} />,
+  // Where the boot screen's own bar starts (`lib/boot-progress.ts`), so it never steps back.
+  loading: () => <BootFrame progress={0.04} />,
 });
 
 export function LoginForm({ className, ...props }: React.ComponentProps<"div">) {

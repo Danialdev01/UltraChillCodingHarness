@@ -32,7 +32,7 @@ import { ActiveWorkspaceProvider } from "@/lib/workspace-context"
  * Gated here so an unauthenticated visitor never receives the shell at all,
  * rather than receiving it and having it blank itself out on the client.
  */
-export async function AppShell({ children }: { children: React.ReactNode }) {
+export async function AppShell({ booted, children }: { booted: boolean; children: React.ReactNode }) {
   const jar = await cookies()
 
   // One request for everything below: the session, the workspaces, which is
@@ -63,13 +63,14 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
       style={{ "--sidebar-width": "var(--ucch-sidebar-width)" } as React.CSSProperties}
     >
       <SkipLink />
-      {/* Once the first page is idle, fetches the rest of the app so later clicks find it loaded. */}
+      <QueryProvider userId={session.userId} buildId={boot.buildId}>
+      <BootstrapSeed data={boot} />
+      {/* Loads the rest of the app -- behind the boot screen on a session's first page -- so later clicks find it loaded. */}
       <RouteWarmup
         workspace={active ? { hash: active.hash, kind: active.kind } : null}
         projectHashes={projects.map((p) => p.hash)}
+        gate={!booted}
       />
-      <QueryProvider userId={session.userId} buildId={boot.buildId}>
-      <BootstrapSeed data={boot} />
       <LastLocation />
       <ActiveWorkspaceProvider workspace={active} workspaces={workspaces}>
         <RealtimeProvider>

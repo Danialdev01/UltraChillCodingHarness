@@ -2,20 +2,18 @@
 
 import * as React from "react"
 import { PlusIcon, SquareKanbanIcon } from "lucide-react"
-import { TASK_STAGES, type ProjectTask, type TaskSettings, type TaskStage } from "@ucch/protocol"
+import { TASK_STAGES, type ProjectTask, type TaskStage } from "@ucch/protocol"
 
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useCachedState } from "@/lib/queries/cached-state"
-import { qk } from "@/lib/query-keys"
+import { projectQueries } from "@/lib/queries/project-data"
 import { useProjectEvents, usePresenceLocation } from "@/lib/realtime"
 import type { Project } from "@/lib/session"
 import {
   answerTask,
   createTask,
   deleteTask,
-  fetchTaskSettings,
-  listTasks,
   moveTask,
   retryTask,
   updateTask,
@@ -53,14 +51,12 @@ export function TasksBoard({ project, projects }: { project: Project; projects: 
   const router = useTransitionRouter()
   const ws = useWorkspaceHash()
   // Cached: coming back to the board paints it at once, then revalidates.
-  const [tasks, setTasks, reloadTasks, tasksState] = useCachedState(
-    qk.tasks.list(project.hash),
-    () => listTasks(project.hash),
-    { persist: true },
-  )
-  const [settings, , reloadSettings] = useCachedState<TaskSettings>(qk.tasks.settings(project.hash), () =>
-    fetchTaskSettings(project.hash),
-  )
+  const tasksQuery = projectQueries.tasks(project.hash)
+  const [tasks, setTasks, reloadTasks, tasksState] = useCachedState(tasksQuery.queryKey, tasksQuery.queryFn, {
+    persist: tasksQuery.persist,
+  })
+  const settingsQuery = projectQueries.taskSettings(project.hash)
+  const [settings, , reloadSettings] = useCachedState(settingsQuery.queryKey, settingsQuery.queryFn)
   usePresenceLocation(project.id, "tasks")
   const [error, setError] = React.useState<string | null>(null)
   const [dialog, setDialog] = React.useState<TaskDialogState>(null)

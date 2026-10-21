@@ -2,130 +2,117 @@
 
 import * as React from "react"
 import { usePathname, useRouter } from "next/navigation"
-import type { PrefetchKind } from "next/dist/client/components/router-reducer/router-reducer-types"
+import { useQueryClient } from "@tanstack/react-query"
 
-import { ON_DEMAND } from "@/components/on-demand"
+import { whenIdle } from "@/components/prefetch"
+import { markWarm } from "@/lib/boot-cookie"
+import { publishBoot } from "@/lib/boot-progress"
+import { ROUTER_KEEPS_MS, onForgotten, preload, type PreloadOptions } from "@/lib/preload"
 import type { ProjectKind } from "@/lib/sections"
-import { SKELETON_ONLY, warmupHrefs } from "@/lib/warmup"
 
 /**
- * Loads the rest of the app while the first page sits idle.
+ * Loads the rest of the app (`lib/preload.ts`) from inside the shell, and
+ * keeps it loaded while the tab is in use.
  *
- * A `<Link>` only prefetches what is on screen, and for a dynamic route only
- * down to its loading skeleton, so the first visit to each page still pays
- * for its JavaScript. This fetches every section, every Settings page and
- * every page of the project in view *in full* -- the RSC payload, and with it
- * the client chunks that payload names -- plus the editors that are
- * code-split out of their pages and the shell's on-demand dialogs. A later click then finds it all in the
- * browser already.
+ * With `gate`, this is the first page of a browser session: the app layout
+ * has drawn the boot screen over it (`BootGate`), and the load starts at once
+ * and reports its progress there. The app opens when everything is loaded,
+ * or after `GATE_MS` at the most, with the rest carrying on behind it.
+ * Without `gate` -- a reload later in the session, or the first page after
+ * the sign-in boot screen already did this -- it waits for the page to be
+ * idle and loads quietly; a run the boot screen left going is joined.
  *
- * Runs once per tab, after `load` and an idle callback so the page being
- * looked at is never competing with it, one request at a time, and not at
- * all for a visitor who asked to save data. Prefetching is a production
- * feature of the router; under `next dev` the route half does nothing.
+ * The router lets a prefetched page go after `ROUTER_KEEPS_MS`. While the
+ * tab is in use, the likeliest pages are prefetched again as they expire;
+ * coming back to a tab left longer than that, everything is.
  */
 
-/** `PrefetchKind.FULL`. The enum is internal to Next, so its value is named here. */
-const FULL = "full" as unknown as PrefetchKind
+/** However much is still loading, the app opens after this long. */
+export const GATE_MS = 6000
 
-/** A tab away longer than this has lost its prefetched pages; they are fetched again. */
-const REWARM_AFTER_MS = 4 * 60_000
+/** A tab counts as in use if someone touched it this recently. */
+const ACTIVE_MS = 10 * 60_000
 
-/** Between two prefetches: enough for the network to breathe, short enough to finish in seconds. */
-const GAP_MS = 150
-
-/**
- * The editors each page loads only when it first shows one -- CodeMirror for
- * a file, Tiptap for a note. Both are a large share of the app's JavaScript.
- * Neither imports a stylesheet, so loading them early changes nothing on
- * screen. (tldraw is left out on purpose: it brings global CSS with it.)
- */
-const EDITORS = [() => import("@/components/vim-editor"), () => import("@/components/notes/note-editor-impl")]
-
-/** The dialogs first, being small; then the editors. */
-const CHUNKS = [...ON_DEMAND, ...EDITORS]
-
-function saveData(): boolean {
-  const { connection } = navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }
-  return Boolean(connection?.saveData) || /(^|-)2g$/.test(connection?.effectiveType ?? "")
-}
-
-/** After the page's `load`, at the browser's next idle moment. */
-function whenIdle(): Promise<void> {
-  return new Promise((resolve) => {
-    const idle = () => {
-      if ("requestIdleCallback" in window) window.requestIdleCallback(() => resolve(), { timeout: 3000 })
-      else setTimeout(resolve, 1)
-    }
-    if (document.readyState === "complete") idle()
-    else window.addEventListener("load", idle, { once: true })
-  })
-}
-
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-/** In the app shell: every section and Settings page, the project in view, and the editors. */
 export function RouteWarmup({
   workspace,
   projectHashes,
+  gate,
 }: {
   workspace: { hash: string; kind: ProjectKind } | null
   projectHashes: readonly string[]
-}) {
-  const pathname = usePathname()
-  // The first page decides what is warmed; moving on does not start again.
-  const [hrefs] = React.useState(() => warmupHrefs(pathname, workspace, projectHashes))
-  return <Prefetch hrefs={hrefs} chunks={CHUNKS} />
-}
-
-/**
- * Prefetches `hrefs` in full, then loads `chunks`, once the page is idle.
- * Also used by the public site's shell for its other tabs.
- */
-export function Prefetch({
-  hrefs,
-  chunks = [],
-}: {
-  hrefs: readonly string[]
-  chunks?: ReadonlyArray<() => Promise<unknown>>
+  gate: boolean
 }) {
   const router = useRouter()
-  // Fixed at mount: a re-render with a new array must not start over.
-  const work = React.useRef({ hrefs, chunks })
+  const client = useQueryClient()
+  const pathname = usePathname()
+  // The latest of each, for the timers below without restarting them.
+  const live = React.useRef({ pathname, projectHashes })
+  live.current = { pathname, projectHashes }
+  const wsHash = workspace?.hash ?? null
+  const wsKind = workspace?.kind ?? null
 
   React.useEffect(() => {
-    if (saveData()) return
     let cancelled = false
-    const warm = async (withChunks: boolean) => {
-      await whenIdle()
-      for (const href of work.current.hrefs) {
-        if (cancelled) return
-        router.prefetch(href, SKELETON_ONLY.has(href) ? undefined : { kind: FULL })
-        await wait(GAP_MS)
-      }
-      if (!withChunks) return
-      for (const load of work.current.chunks) {
-        if (cancelled) return
-        // A chunk that fails to arrive is fetched again when it is needed.
-        await load().catch(() => {})
-      }
-    }
-    void warm(true)
+    const options = (extra: Partial<PreloadOptions> = {}): PreloadOptions => ({
+      router,
+      client,
+      pathname: live.current.pathname,
+      includeCurrent: false,
+      workspace: wsHash && wsKind ? { hash: wsHash, kind: wsKind } : null,
+      projectHashes: live.current.projectHashes,
+      ...extra,
+    })
 
-    // The router keeps a prefetched page for a few minutes only. Coming back
-    // to a tab left longer than that warms it again, so the first click
-    // after lunch is as quick as the ones before.
+    if (gate) {
+      const open = () => {
+        if (cancelled) return
+        markWarm()
+        publishBoot({ done: true })
+      }
+      void Promise.race([preload(options({ report: true })), wait(GATE_MS)]).then(open, open)
+    } else {
+      void whenIdle().then(() => {
+        if (!cancelled) void preload(options())
+      })
+    }
+
+    let lastActive = Date.now()
+    const onActivity = () => {
+      lastActive = Date.now()
+    }
     let hiddenAt = 0
     const onVisibility = () => {
       if (document.visibilityState === "hidden") hiddenAt = Date.now()
-      else if (hiddenAt && Date.now() - hiddenAt > REWARM_AFTER_MS) void warm(false)
+      else if (hiddenAt && Date.now() - hiddenAt > ROUTER_KEEPS_MS - 60_000) void preload(options())
     }
+    // Just after the router lets the last round go: the likeliest pages again.
+    const hot = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || Date.now() - lastActive > ACTIVE_MS) return
+      void preload(options({ hotOnly: true }))
+    }, ROUTER_KEEPS_MS + 5000)
+
+    // The page was rendered again and the router let everything go with it.
+    let refetch: number | undefined
+    const offForgotten = onForgotten(() => {
+      window.clearTimeout(refetch)
+      refetch = window.setTimeout(() => void preload(options()), 2000)
+    })
+
     document.addEventListener("visibilitychange", onVisibility)
+    window.addEventListener("pointerdown", onActivity, { passive: true })
+    window.addEventListener("keydown", onActivity, { passive: true })
     return () => {
       cancelled = true
+      window.clearInterval(hot)
+      window.clearTimeout(refetch)
+      offForgotten()
       document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("pointerdown", onActivity)
+      window.removeEventListener("keydown", onActivity)
     }
-  }, [router])
+  }, [router, client, gate, wsHash, wsKind])
 
   return null
 }
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))

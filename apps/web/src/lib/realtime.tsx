@@ -13,6 +13,7 @@ import {
   type AgentStatus,
 } from "@/lib/agent-activity"
 import { UcchClient, type ClientEvent } from "@/lib/client"
+import { forgetPrefetched } from "@/lib/preload"
 import { cacheEffect, prefixOf } from "@/lib/realtime-cache"
 import { TAB_ID, installTabHeader } from "@/lib/tab-id"
 import { useActiveWorkspace } from "@/lib/workspace-context"
@@ -281,7 +282,10 @@ function CacheBridge({ client }: { client: UcchClient | null }) {
     const flush = () => {
       for (const key of keys.values()) void queryClient.invalidateQueries({ queryKey: key })
       keys.clear()
-      if (refresh) router.refresh()
+      if (refresh) {
+        router.refresh()
+        forgetPrefetched()
+      }
       refresh = false
     }
     // Back from a drop: nothing that happened meanwhile was pushed here, so

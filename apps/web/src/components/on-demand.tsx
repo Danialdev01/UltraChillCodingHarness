@@ -14,13 +14,10 @@ import { Skeleton } from "@/components/ui/skeleton"
  * of it. Imported from here instead, each becomes a chunk of its own that
  * arrives after the page is interactive. A dialog renders nothing while
  * shut, so it needs no placeholder; the search panel shows result rows.
- * `RouteWarmup` loads them all once the page is idle (`ON_DEMAND`), so the
+ * The boot preload (`lib/preload.ts`) loads them all (`ON_DEMAND`), so the
  * first click finds them there.
  *
- * `ssr: false` because none of them is open in a server render. The public
- * site's shell imports this file too (through `route-warmup.tsx`), so it
- * stays free of anything heavier than `next/dynamic` -- `page-skeletons`
- * would bring the whole wire protocol with it.
+ * `ssr: false` because none of them is open in a server render.
  */
 
 const loaders = {

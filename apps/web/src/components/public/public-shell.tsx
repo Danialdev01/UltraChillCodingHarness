@@ -3,7 +3,7 @@
 import { usePathname } from "next/navigation"
 import { ClockIcon, FileTextIcon, FolderIcon, LockIcon } from "lucide-react"
 
-import { Prefetch } from "@/components/route-warmup"
+import { Prefetch } from "@/components/prefetch"
 import { MAIN_CONTENT_ID, SkipLink } from "@/components/skip-link"
 import { publicHref, type PublicProject } from "@/lib/public-api"
 import { cn } from "@/lib/utils"
