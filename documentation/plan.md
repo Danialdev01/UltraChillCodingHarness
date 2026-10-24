@@ -1,551 +1,405 @@
-# UCCH: single container, instant navigation, everything live
+# Rewriting UCCH in Rust: is it worth it?
 
-**Status:** proposed · **Date:** 2026-10-18 · **Agent task list:** [`todo.md`](./todo.md)
+**Status:** recommendation · **Date:** 2026-10-24 · **Target:** one Dokploy VPS, 4 vCPU / 8 GB RAM, 50+ concurrent users
 
-This plan covers four connected goals:
+The detailed design for every fix below is in [`solution.md`](./solution.md), and the ordered tasks are in [`todo.md`](./todo.md).
 
-1. **One container.** Deploy UCCH as a single Docker image: a Dokploy *Application → Dockerfile*, one click, one port, one volume.
-2. **Instant navigation.** Every click paints the next page in the same frame, showing a skeleton for whatever is still loading. A boot screen at sign-in preloads and caches the data and media every page needs.
-3. **Everything live.** A change one user makes appears for every other user who can see it, without a refresh. Documentation notes support real-time co-editing.
-4. **PWA-ready.** Build the groundwork now: a persisted client cache, a static shell, a manifest and a service worker behind a flag. The app can later be installed and load only the parts it needs.
-
-Each section first states what exists today, with file references, and then what changes. `todo.md` turns this into ordered tasks an agent can execute.
+The previous plan in this file (single container, instant navigation, realtime) is in git: `git show HEAD:documentation/plan.md`.
 
 ---
 
-## 0. Decisions already made
+## TL;DR
 
-| Topic | Decision |
-|---|---|
-| Databases | **Embedded by default, external optional.** PostgreSQL 16 runs inside the container. If `DATABASE_URL` is set, the embedded Postgres is not started. |
-| MySQL dev databases | **Optional.** A MySQL-compatible server (MariaDB) is installed in the image but starts only when `ENABLE_MYSQL=true` and `DEV_MYSQL_URL` is unset. |
-| Notes collaboration | **Real-time co-editing** with Yjs (CRDT): several people type in the same note at once and see each other's cursors. |
-| Process model | One container. Inside it, one API/edge process, one Next.js process and the databases, all managed by a supervisor. |
-| Client data | One client cache (TanStack Query) persisted to IndexedDB. WebSocket events update the cache instead of calling `router.refresh()`. |
+**Do not rewrite UCCH in Rust now.** It would cost months and fix the smallest part of the problem.
 
-Non-goals for this plan:
-- Running more than one server replica.
-- Moving user projects into their own containers. `packages/runtime` is still an empty placeholder.
-- Offline editing. The PWA work makes the app installable and fast to start, not usable without a network.
+The lag and memory use come from **how the system is put together**, not from Node.js being slow:
+
+| # | Cause | Where | Would Rust fix it? |
+|---|---|---|---|
+| 1 | Each browser tab pre-renders ~117 pages at sign-in and re-renders them on a timer and after every `router.refresh()` | `apps/web/src/lib/warmup.ts`, `lib/preload.ts`, `components/route-warmup.tsx` | **No.** That is Next.js, which stays Node |
+| 2 | Every page render runs an aggregate SQL query over every turn of every project | `apps/server/src/workspaces.ts:374` | **No.** The time is spent in Postgres |
+| 3 | Every command from every user, **including each terminal keystroke**, waits in one global queue | `apps/server/src/engine.ts:39` | **No.** It is a design choice: keystrokes wait behind other users' DB-bound commands |
+| 4 | Every streamed token is its own WebSocket frame, and the browser re-renders the whole chat per token | `packages/agent/src/loop.ts:263`, `apps/web/src/components/project-chat.tsx` | **No.** The browser work is the same |
+| 5 | One Claude Code CLI process per agent turn (**372 MB RSS, measured**), up to 2 per user and **no global cap** | `apps/server/src/agent.ts:653` | **No.** The CLI is its own program |
+| 6 | Shells, git, ripgrep, LibreOffice, Chromium and users' dev servers share the same 8 GB with no limits | `deploy/s6`, `Dockerfile` | **No** |
+| 7 | The API process is single-threaded, runs zod on every inbound frame, and replays up to 1,000 events per subscribe | `apps/server/src/ws.ts` | **Yes**, partly |
+
+Only row 7 is about the language. A Rust API would save about **0.2–0.5 GB of RAM** and could use all four cores. **One heavy user** (a Claude Code turn plus a Vite dev server) costs about **0.6 GB**. A full rewrite is ~33,000 lines of TypeScript, roughly **4–8 months** for one developer, during which the product stands still.
+
+**Recommendation:**
+
+1. **Measure** (2–3 days).
+2. **Fix rows 1–6 in TypeScript** (1–2 weeks). Each fix is local, and together they should remove most of the lag.
+3. **Add global limits and build images off the VPS** (2–3 days).
+4. **Measure again.** Bring in Rust only if the API process is then the top consumer, and then only as a narrow "edge" daemon (public port, WebSocket fan-out, terminals, preview proxy) placed in front of the Node server, ported route by route.
+
+Hosting 50 *heavy* users at once (each with an agent turn and a dev server) does not fit in 8 GB in **any** language; see [Capacity](#2-what-50-concurrent-users-costs). That needs global queues and caps, more RAM, or per-project containers spread over more machines.
+
+> Numbers marked *est.* are estimates from general experience with these runtimes. They are not measured on this deployment. Phase 0 below replaces them with real numbers. The two measured figures are the Claude Code CLI's RSS (372 MB, a running `claude` process on the development machine) and the frontend baselines in `apps/web/e2e/results/`.
 
 ---
 
-## 1. Current state
+## 1. What runs on the box today
 
-### 1.1 Deployment
+One container (`Dockerfile`, target `app`), supervised by s6-overlay (`deploy/s6/s6-rc.d/`):
 
-`docker-compose.yml` runs six services behind Traefik labels:
-
-| Service | What it is | Notes |
+| Process | Language | Notes |
 |---|---|---|
-| `secrets` | alpine one-shot running `deploy/secrets.sh` | Generates `SECRET_KEY`, the DB passwords, the default user password and the crawl4ai token into a volume. An env value always wins. |
-| `postgres` | `postgres:16-alpine` | DB `ucch` holds the harness data. `deploy/postgres-init.sh` creates the `dev` role and db and revokes PUBLIC on `ucch`. |
-| `mysql` | `mysql:8.4` | Dev databases only. `deploy/mysql-init.sql` grants to `dev`. |
-| `server` | `Dockerfile` target `server` on :3001 | Fastify API, `/ws`, terminals, agents, preview proxy. Runs TypeScript through `tsx`, with devDependencies installed. `deploy/server-entrypoint.sh` builds the DB URLs from the compose hostnames `postgres`/`mysql`, then drops to `node` via `setpriv`. |
-| `web` | `Dockerfile` target `web` on :3000, ×`WEB_REPLICAS` | Next.js 15.5 standalone. |
-| `crawl4ai` | optional `research` profile | Research crawler. |
+| `server`: API, WebSocket, terminals, agent turns, preview proxy, and the public port :3000 | Node 22 (esbuild bundle) | Fastify 5, `ws`, drizzle + postgres.js (pool 10), `@lydell/node-pty`, `@parcel/watcher`, zod. No heap limit. |
+| `web`: Next.js 15.5 standalone on 127.0.0.1:3100 | Node 22 | Every HTML and RSC request passes through `server` (`apps/server/src/web-proxy.ts`). No heap limit. |
+| `postgres` 16 | C | `shared_buffers=256MB`, `work_mem=8MB` (overridable). |
+| `mysql` (MariaDB) | C++ | Off unless `ENABLE_MYSQL=true`. |
+| Children per user action | mixed | `claude` / `codex` CLIs (one per turn), login-shell PTYs, `git`, `rg`, Python doc-kit → pandoc, typst, LibreOffice, mermaid-cli → Chromium, and users' own dev servers (`php artisan serve`, Vite, `next dev`). |
 
-Traefik routes `/api` and `/ws` to `server`, `p{port}-{hash}.ROOT_DOMAIN` to `server` (live previews, wildcard certificate via DNS-01), and everything else to `web`.
+Beside the container on the same VPS: Dokploy itself (its Node app, Postgres, Redis), Traefik, Docker, the OS, and **the image build** when you press Deploy.
 
-Facts that constrain the redesign:
-- **The server must be a single process.** All of the following live in memory:
-  - `EventBus` (`apps/server/src/bus.ts`)
-  - the WebSocket gateway (`ws.ts`)
-  - terminals (`terminals.ts`)
-  - agent turns (`agent.ts`)
-  - the task pipeline
-  - ws and preview tickets (`auth.ts`, `preview.ts`)
-  - presence
-  - the composer
-- **Migrations run on every boot** (`packages/db/src/bootstrap.ts`), so the image must ship `packages/db/migrations`.
-- **Preview subdomains need the original `Host` header** at the server. `serverFactory` sends every request to `preview.handleRequest` first, and upgrades go to `preview.handleUpgrade` (`apps/server/src/index.ts`, around lines 505 and 3065).
-- **Next does not proxy WebSocket upgrades.** Its `/api` rewrite in `apps/web/next.config.ts` is only for development.
-- **SSR calls the API at `SERVER_ORIGIN`** and forwards the `ucch_session` cookie by hand (`apps/web/src/lib/session.ts`).
-- **Only Postgres is required.** `DEV_POSTGRES_URL` and `DEV_MYSQL_URL` are optional: `dev-database.ts` skips an engine that isn't configured, and `clone.ts` reports that it was skipped.
-- `apps/gateway`, `packages/runtime` and `packages/vcs` are empty placeholders.
+### Code size
 
-### 1.2 Navigation and loading
-
-What already works well:
-- Every route has a `loading.tsx` at or above it.
-- Skeletons live in `components/page-skeletons.tsx`.
-- `TransitionLink` and `useTransitionRouter` (`lib/view-transitions.tsx`) wrap navigation in view transitions.
-- `components/route-warmup.tsx` prefetches sections after the first idle.
-- `navigation.test.ts` enforces the rules above.
-- Heavy editors (CodeMirror, Tiptap, xterm, tldraw, mermaid) are already code-split.
-
-What's slow, most important first:
-
-1. **The `(app)` layout blocks.**
-   - `components/app-shell.tsx` (around line 53) awaits `/api/me`, `/api/workspaces`, `projects` and `database-connections` before anything paints.
-   - Nothing above it has a boundary.
-   - A stale workspace cookie adds a second serial round trip.
-2. **Login preloads nothing and renders twice.**
-   - `components/login-form.tsx` (around line 60) calls `router.replace("/")` and then `router.refresh()`.
-   - The login page stays frozen inside the view transition while the shell's four calls run.
-   - Warmup only starts after the first app page is idle.
-3. **Moving between siblings freezes the old page.** These routes have no leaf `loading.tsx`, so going from session A to session B (and similar) waits on the server:
-   - `setting/[page]`
-   - `[workspaceHash]/workspace-settings/[page]`
-   - `database/[connectionId]/[db]/[table]`
-   - `p/[projectHash]/documentation/[noteId]`
-   - `p/[projectHash]/(chat)/[sessionHash]`
-   - `shared/[slug]/notes/[[...noteId]]`
-4. **There is no client data cache.**
-   - Every component fetches in `useEffect` again on each mount.
-   - The shell's lists only update through `router.refresh()`, which is called from about 24 places, including `AccountRefresher` in `lib/realtime.tsx`.
-   - Each refresh re-runs `AppShell` and throws away the router's prefetch cache.
-5. **Server pages have waterfalls.**
-   - `requireWorkspace` in `lib/workspace-route.ts` calls `listWorkspaces` before each page's own data.
-   - Affected pages: dashboard, code, tasks and workspace-settings.
-6. **Extra sockets and redirect hops.**
-   - `components/project-chat.tsx` (around line 381) opens a new WebSocket on every mount: a ticket, a handshake, then a replay.
-   - `section-panel.tsx` and `projects-table.tsx` link to the bare project URL, which redirects to the newest session.
-7. **Warmup is short-lived.**
-   - It runs once per tab and covers a single project, skipping chat and session pages.
-   - Next's default 5-minute stale time expires it, and any `refresh()` wipes it.
-8. **Assets.**
-   - All four iA Writer Mono faces (about 156 KB) are preloaded on every page, including login.
-   - `/file-icons` is keyed by file name, so a tree of N names costs N requests.
-   - The root layout reads `cookies()` for the theme, which makes every route dynamic, including `/login`.
-9. **PWA.** There's no manifest, no service worker and no `public/` directory, and `apple-icon.png` is only 662 B.
-
-### 1.3 Realtime
-
-What already works:
-- **Transport.** One `UcchClient` per tab (`lib/realtime.tsx`, `lib/client.ts`), authenticated with a ws ticket. Topics are `project`, `thread`, `terminal` and `user`. Agent threads are event-sourced (`eventstore.ts`) and replayed by sequence number.
-- **Live features.** Agent chat, the shared composer draft, sessions, tasks and timeline (as "refetch" nudges), notes (whole-document pushes), keys, the activity feed and git (live plus a 10-second poll).
-
-Gaps:
-
-| Gap | Effect |
-|---|---|
-| No `workspace` topic | Workspace, member, invite, project create/delete, DB-connection, DB-data and profile changes only reach the acting user's own tabs (`route-audit.ts`, which uses account scope). |
-| Only thread topics replay | After a reconnect, project-level events are lost, and nothing refetches. |
-| No file watcher | Edits made in a terminal, by a dev server or by hand never reach the file tree. |
-| Missing events | git remote PUT/DELETE and git fetch, diagram generate jobs (polled in memory), `preview.published` / `port.*` (defined but never emitted), and upload delete. `file.changed` without an origin is ignored by `files-panel.tsx`. |
-| Last-write-wins editing | Notes, code and diagrams use `ifUpdatedAt`/`ifVersion` with a 409 revert. |
-| Presence is anonymous | `presence-badge.tsx` says "another window". There's no presence in code, tasks, timeline, the DB manager or git. |
-| **Security** | `terminal.output` is also published to the **project** topic (`bus.ts`, `index.ts` around line 340), so every member receives every member's terminal bytes. The `terminal` topic has no ACL (`ws.ts` around line 220). Cached access in `ws.ts` (around line 391) is never revoked. |
-
-There's also an existing bug in the uncommitted work: `runDiagramJob` (`apps/server/src/index.ts`, around line 1867) passes an undefined `tree` to `workspaceFiles.write`.
-
----
-
-## 2. Target architecture
-
-```
-                         Dokploy (Traefik) ── one domain ── :3000
-                                         │   (+ optional *.ROOT_DOMAIN for previews)
-┌────────────────────────────────────────▼──────────────────────────────────────────┐
-│ ucch container                     PID 1: s6-overlay v3                           │
-│                                                                                   │
-│  oneshot  init-dirs ─► init-secrets                                               │
-│                                                                                   │
-│  longrun  postgres  127.0.0.1:5432   (skipped if DATABASE_URL is set)             │
-│  longrun  mysql     127.0.0.1:3306   (only if ENABLE_MYSQL=true, no DEV_MYSQL_URL)│
-│  longrun  web       127.0.0.1:3100   node apps/web/server.js  (Next standalone)   │
-│  longrun  server    0.0.0.0:3000     node apps/server/dist/server.mjs  ◄── EDGE   │
-│                                                                                   │
-│  EDGE routing (Fastify serverFactory, in order):                                  │
-│   1. Host = p{port}-{hash}.ROOT_DOMAIN  → preview gateway (HTTP + upgrades)       │
-│   2. /ws (upgrade)                      → WebSocket gateway                       │
-│   3. /collab (upgrade)                  → Hocuspocus (Yjs)                        │
-│   4. /api/*, /health                    → Fastify routes                          │
-│   5. /_next/static/*                    → disk, Cache-Control: immutable          │
-│   6. everything else                    → stream-proxy to Next :3100              │
-│                                                                                   │
-│  /data (one volume): postgres/ mysql/ workspaces/ creds/ secrets/                 │
-└───────────────────────────────────────────────────────────────────────────────────┘
-```
-
-Client side:
-
-```
-login ─► BootScreen ──► GET /api/bootstrap ─► QueryClient (persisted: IndexedDB)
-                   ├──► open shared WebSocket (RealtimeProvider)
-                   ├──► router.prefetch(final URL, last project/session, sections)
-                   └──► preload fonts / icon sprite / core chunks
-        ─► router.replace(final URL)   (no "/" hop, no refresh)
-
-any page:  cached data paints instantly ─► background revalidate
-           WS event ─► realtime-cache bridge ─► setQueryData / invalidate
-           click ─► skeleton in the same frame (leaf loading.tsx) ─► data
-```
-
----
-
-## 3. Part A: one container
-
-### A.1 Image
-
-The Dockerfile keeps its build stages (`deps`, `web-build`) and adds:
-
-- **`server-build`.** Bundles `apps/server/src/index.ts` and the workspace packages with **esbuild** into `apps/server/dist/server.mjs`, targeting node22 ESM.
-  - Native and dynamic dependencies stay external: `@lydell/node-pty`, `postgres`, `mysql2`, `fastify` plugins if needed.
-  - Only production dependencies are installed (`pnpm deploy --prod` for `@ucch/server`).
-  - This removes `tsx` and the devDependencies from runtime, which shortens cold start and shrinks the image.
-- **`app` (final).**
-  - Starts from `node:22-bookworm-slim` with the same toolchain as today's `server` stage: git, ripgrep, php+composer, DB clients, the doc-kit (pandoc, typst, LibreOffice, chromium, mermaid-cli, python venv) and fonts.
-  - Adds:
-    - **PostgreSQL 16** from the PGDG apt repository, which keeps the on-disk format of today's `postgres:16` volumes.
-    - **MariaDB server** from Debian (MySQL-compatible). It's installed but not started unless enabled. *Alternative:* MySQL 8.4 from Oracle's apt repo, if strict MySQL parity matters more than size.
-    - **s6-overlay v3** (pinned tarballs) as `ENTRYPOINT ["/init"]`, replacing tini.
-  - Copies in:
-    - the Next standalone output (`.next/standalone` + `.next/static`)
-    - the server bundle and its production `node_modules`
-    - `packages/db/migrations`
-    - `packages/agent/doc-kit`
-    - the s6 service tree (`deploy/s6/`)
-- **Targets.** The old `server` and `web` targets can stay for one release, then go.
-
-### A.2 Supervision (s6-overlay)
-
-Services live in `deploy/s6/s6-rc.d/` and are started in dependency order. s6 stops them in reverse order. `S6_KILL_GRACETIME=60000` matches today's `stop_grace_period: 60s`, so the server can still drain its workers. `S6_BEHAVIOUR_IF_STAGE2_FAILS=2` makes a broken boot stop the container instead of running half-up.
-
-| Service | Type | Runs as | Depends on | Does |
-|---|---|---|---|---|
-| `init-dirs` | oneshot | root | — | Creates `/data/{postgres,mysql,workspaces,creds,secrets}`. Sets owners: `postgres`, `mysql`, `node`, `node`, root. Modes: `0700` for postgres, mysql and secrets. |
-| `init-secrets` | oneshot | root | init-dirs | Ports `deploy/secrets.sh` to write `/data/secrets/*`. An env value always wins; a file is only generated when missing. |
-| `postgres` | longrun | postgres | init-secrets | If `DATABASE_URL` is set, it stays down (it doesn't exit in a loop). Otherwise it runs `initdb --auth=scram-sha-256` on first boot and starts the postgres from `postgres-init.sh` once (role and db `ucch`, `dev` role and db, `REVOKE CONNECT ON DATABASE ucch FROM PUBLIC`). It listens on `127.0.0.1` only. `PG_SHARED_BUFFERS`, `PG_EFFECTIVE_CACHE_SIZE` and `PG_WORK_MEM` are tunable, with today's defaults of 256MB, 768MB and 8MB. Readiness comes from `pg_isready` through an s6 notification-fd. |
-| `mysql` | longrun | mysql | init-secrets | Starts only when `ENABLE_MYSQL=true` and `DEV_MYSQL_URL` is unset. Listens on `127.0.0.1` and applies `mysql-init.sql` once. |
-| `web` | longrun | node | init-dirs | `HOSTNAME=127.0.0.1 PORT=3100 node apps/web/server.js`. |
-| `server` | longrun | node (via `setpriv`) | postgres, mysql (when enabled), web | Ports the env assembly from `server-entrypoint.sh`. Hosts become `127.0.0.1` and secrets are read from `/data/secrets`. Then `exec setpriv … node apps/server/dist/server.mjs`. `PORT=3000`, `WEB_UPSTREAM=http://127.0.0.1:3100`. |
-
-### A.3 The edge: Fastify serves the one public port
-
-New module `apps/server/src/web-proxy.ts`, wired into the existing `serverFactory` after the preview check:
-
-- **Ordering.** Preview Host comes first (as today). Then `/ws`, `/collab`, `/api` and `/health` are handled in-process. Then `/_next/static/*` and `/file-icons/svg/*` are served from disk with `Cache-Control: public, max-age=31536000, immutable`. Everything else is proxied to `WEB_UPSTREAM`.
-- **The proxy:**
-  - Uses an `undici` Pool with keep-alive.
-  - Streams the response body: RSC and Suspense streaming must not be buffered.
-  - Passes `Host`, `X-Forwarded-*` and cookies through, and copies response headers except hop-by-hop ones.
-  - Returns a `502` page if Next is down, which is cheap and never caches.
-- **Compression.** Today's `@fastify/compress` must skip proxied streaming responses (`text/x-component`, `text/html` with `Transfer-Encoding: chunked`). Next already compresses those itself (`compress: true`).
-- **Why the server is the edge**, rather than Caddy or Next-in-Fastify:
-  - The preview Host routing already lives here.
-  - There's no extra binary or config language.
-  - Next keeps its own event loop, so SSR CPU never stalls terminals or agent streams.
-- **Development stays as it is.** `next dev` on :3000 with its `/api` rewrite, and the server on :3001. The edge proxy is only enabled when `WEB_UPSTREAM` is set.
-- **Runtime env for Next.**
-  - `SERVER_ORIGIN=http://127.0.0.1:3000` (the edge, on loopback). Requests on the loopback origin are exempt from the unsafe-method Origin check only outside production. SSR does only `GET`s, so nothing changes.
-  - `NEXT_PUBLIC_WS_ORIGIN=""` so the browser uses its own host.
-
-### A.4 Health, logs, shutdown
-
-- `GET /health` gains `{ db: ok|error, web: ok|error }`. It checks Postgres with `select 1` and Next by fetching `HEAD /healthz` upstream, with short timeouts. The Docker `HEALTHCHECK` uses it.
-- Every service logs to stdout through s6, prefixed with `[postgres]`, `[web]`, `[server]` and so on. Dokploy's log view shows them all together.
-- On SIGTERM, s6 stops `server` first, which drains as today (`index.ts`, around lines 3116–3131), then `web`, then the databases with a fast-shutdown `pg_ctl stop -m fast`.
-
-### A.5 Security inside one container
-
-- Terminals, agents and dev servers run as `node`. That user **must not** be able to read `/data/postgres`, `/data/mysql` or `/data/secrets` (0700, owned by other users), and must not see `DATABASE_URL`. The `server` service already strips secrets from what it passes to children; verify this in `terminals.ts` and the agent bash executor.
-- Databases bind to `127.0.0.1`. The `ucch` database is revoked from PUBLIC, so the `dev` role (which projects use) can't connect to it.
-- `setpriv --no-new-privs --bounding-set=-all` is kept for the server and everything it spawns.
-
-### A.6 Dokploy setup
-
-1. Create an **Application** with Source = this repo, Build Type = **Dockerfile**, Dockerfile path `Dockerfile` and target `app`.
-2. **Environment:** `ROOT_DOMAIN` is required. Everything else is optional; see `.env.example`.
-3. **Domains:** `ROOT_DOMAIN` → container port **3000**, HTTPS on.
-4. **Previews (optional):** add `*.ROOT_DOMAIN` → port 3000 with a DNS-01 certificate resolver. If the Dokploy version can't do wildcard domains, add the Traefik file-provider router documented in the README.
-5. **Volumes:** one named volume mounted at `/data`.
-6. **Advanced → Swarm → Update config: `Order: stop-first`.** This is mandatory. A start-first rollout would run two Postgres servers on the same data directory.
-7. Back up the `/data` volume. For a consistent database copy, use `docker exec <ctr> ucch-backup`, a script that runs `pg_dump` into `/data/backups`.
-
-`docker-compose.yml` shrinks to one `ucch` service built from target `app`, with the same volume and env, for local production testing and for anyone who prefers Compose. Crawl4AI stays outside the container and is turned on by setting `CRAWL4AI_URL`.
-
-### A.7 Moving from the current Compose stack
-
-1. `pg_dump -Fc` the old `ucch` database (and `dev`, if projects use it).
-2. **Copy `secret_key` from the old `secrets` volume into the new environment as `SECRET_KEY`.** Without it, stored API keys and DB connections can't be decrypted.
-3. Copy the `workspaces` and `creds` volumes into `/data/workspaces` and `/data/creds`.
-4. Start the new container, run `ucch-restore <dump>`, and check sign-in, projects and keys.
-5. In project `.env` files, change dev DB hosts from `postgres` and `mysql` to `127.0.0.1`.
-6. **Rollback:** the old stack's volumes are untouched, so redeploy the old Compose service.
-
----
-
-## 4. Part B: performance and instant navigation
-
-### Principles
-
-- **Paint from cache, then revalidate.** Any data seen before shows instantly, and the network only confirms or updates it.
-- **No blocking at the top.** Layouts await nothing. Data streams under `Suspense` with skeletons shaped like the real UI.
-- **One round trip for what every page needs.**
-- **Events update data; `router.refresh()` is not a data mechanism.**
-- Follow `apps/web/CLAUDE.md` and extend `navigation.test.ts` so the rules are enforced, not just documented.
-
-### B.1 `GET /api/bootstrap`
-
-One authenticated request returns everything the shell needs:
-
-```ts
-{
-  buildId, user: { id, name, email, avatarUrl }, preferences,
-  workspaces: WorkspaceSummary[], activeWorkspaceId,
-  projects: ProjectSummary[], connections: ConnectionSummary[],
-  quotas?: QuotaSummary, lastLocation?: string
-}
-```
-
-- It replaces the four calls in `AppShell`, and `QuotaRail`'s first fetch.
-- It sends `ETag` and answers `If-None-Match` with `304`.
-- **Hash-addressed reads** (`GET /api/workspaces/by-hash/:hash`, `GET /api/projects/:hash`) replace "list everything, then find one" in `lib/workspace-route.ts`. That removes the per-page `listWorkspaces` waterfall.
-- Check that the queries are covered by `0019_perf_indexes.sql`, and add indexes where `EXPLAIN` shows a sequential scan.
-
-### B.2 A shell that doesn't block
-
-- **`src/middleware.ts`** redirects to `/login?next=…` when the `ucch_session` cookie is *missing*. This is cheap and needs no network. Real validation stays on the API: a `401` anywhere sends the client to `/login`.
-- **`AppShell`** renders the sidebar and header frame immediately. Data comes from the client cache, seeded by a server-side `bootstrap` under `<Suspense fallback={<SidebarSkeleton/>}>`. `SidebarSkeleton` and `HeaderSkeleton` are new, in `page-skeletons.tsx`.
-- On a hard reload, the persisted cache paints the sidebar before the network answers.
-
-### B.3 One client cache: TanStack Query v5
-
-- **`QueryClientProvider`** sits in the root of the `(app)` layout. Defaults: `staleTime: 30s`, `gcTime: 24h`, `refetchOnWindowFocus: true`, and `retry: 1` for queries, `0` for mutations.
-- **Persistence:**
-  - `PersistQueryClientProvider` with `@tanstack/query-async-storage-persister` on IndexedDB (`idb-keyval`).
-  - Keyed by user id. `buster` is the `buildId`. Only queries marked `meta.persist` are saved: shell lists, recent projects, sessions, and tree and list views, not file contents.
-  - The cache is cleared on logout or a user switch.
-- **`lib/query-keys.ts`** is a key factory, `qk.workspaces()`, `qk.projects(wsId)`, `qk.tasks(projectId)` and so on. Every hook and the realtime bridge use it.
-- **Migration path.** Each `lib/*-api.ts` keeps its plain fetchers. `lib/queries/<domain>.ts` adds `use<Thing>()` and `use<Action>Mutation()` hooks. Components move from `useEffect`+`useState` to these hooks one domain at a time. Mutations use optimistic updates with rollback on error.
-- **Remove `router.refresh()`** as a data path: shell lists come from queries, and `AccountRefresher` becomes the realtime bridge (Part C). `navigation.test.ts` gets an allowlist for the few legitimate uses (logout, theme cookie).
-
-### B.4 Boot screen at sign-in
-
-New component `components/boot-screen.tsx`, shown by `login-form.tsx` once the login `POST` succeeds. GitHub OAuth goes through a callback, so its first app page shows the same screen when the cache is empty.
-
-1. It shows the app logo and a thin progress bar, using the colours of the theme already applied.
-2. It runs these in parallel:
-   - `GET /api/bootstrap`, then `queryClient.setQueryData` for each part
-   - opening the shared WebSocket
-   - `router.prefetch(target, { kind: FULL })`
-   - prefetching the active workspace's sections, its most recent project and session, and the settings index
-   - `<link rel=preload>` for the shell font and the icon sprite
-   - `import()` of the core chunks: files panel and composer
-3. When the bootstrap is done and the target is prefetched, or after a **2-second cap**, it calls `router.replace(target)` and fades out. Anything still running continues in the background.
-4. **The target is the final URL**: `?next=` if it's safe, otherwise the `lastLocation` cookie (written on each navigation), otherwise the workspace home. There's no hop through `/` and no `refresh()`.
-
-### B.5 Navigation guarantees
-
-- Add a leaf `loading.tsx` to the six routes listed in §1.2. Each renders the page's skeleton from `page-skeletons.tsx`; add `NotePageSkeleton`, `ConversationSkeleton`, `SettingsSkeleton` or `TableRowsSkeleton` where missing.
-- `navigation.test.ts` adds two checks:
-  - every **dynamic leaf segment** has its own `loading.tsx` (not just an ancestor)
-  - no `router.refresh()` outside the allowlist
-- `shared/[slug]/layout.tsx` stops awaiting `fetchPublicProject`, and moves the lookup under `Suspense`.
-- **Links go to final URLs.** Project links resolve the newest session from the cached session list (`lib/project-sessions.ts`) and link straight to it. The bare-URL redirect page stays only for bookmarks.
-- **Router cache.** `experimental.staleTimes: { dynamic: 30, static: 300 }` in `next.config.ts`.
-- **Warmup** (`components/route-warmup.tsx`, `lib/warmup.ts`):
-  - re-arms after a refresh and when the tab becomes visible after more than 4 minutes
-  - covers the 3 most recently used projects and their latest session/chat pages
-  - runs in `requestIdleCallback` batches, and still respects Save-Data and 2G connections
-
-### B.6 One WebSocket per tab
-
-- `project-chat.tsx`, `terminal-view.tsx`, `login-terminal-dialog.tsx` and `lib/create-project.ts` use the `RealtimeProvider` client through `useRealtime().subscribe(topic, opts)`, instead of creating a new `UcchClient`.
-- Fix the subscription dedupe in `lib/client.ts` (around line 236): it keys only on the topic, so the first subscription's `quiet` flag wins. Key on topic plus options, or upgrade to the less quiet option and downgrade when that subscription is released.
-
-### B.7 Assets
-
-- **Fonts.** Preload only iA Writer Mono Regular. Italic and bold load on use (`preload: false` on a second `localFont` call, or split the declaration). Keep `display: swap` with metric-matched fallbacks.
-- **File icons.**
-  - `GET /file-icons/resolve?names=a.ts,b.json` returns `{ name: iconId }` (cacheable).
-  - Icons are served at `/file-icons/svg/<iconId>.svg` with an immutable cache.
-  - The tree asks for each icon id once, so N files sharing an icon cost one request.
-  - Alternatively, build a sprite of the about 60 most common icons at build time.
-- **Images.** Avatars and uploads use `<img>` with explicit `width`/`height`, `loading="lazy"` and `decoding="async"`.
-- **Compression.** Brotli at the edge for non-streamed responses (JSON, static files). Next compresses its own HTML and RSC.
-
-### B.8 Bundle
-
-- Add `@next/bundle-analyzer` (`ANALYZE=1`). Record the first-load JS of the main app routes as a baseline, then set budgets.
-- Lazy-load (`dynamic()` + warmup) the pieces that aren't on the first paint:
-  - `files-panel.tsx` (about 1,500 lines)
-  - `QuickActions`, `TaskDialog`, `NewProjectDialog`
-  - `react-markdown`, `remark-gfm` and `cmdk` (when not visible)
-  - the `@codemirror/language` highlighter used by diff and public documents
-- `experimental.optimizePackageImports` for `lucide-react` and `@base-ui/react`.
-
-### B.9 Server-side
-
-- **SSR to API.**
-  - `lib/session.ts` fetchers use one shared `undici` `Agent` with keep-alive (`fetch(url, { dispatcher })`).
-  - React `cache()` dedupes reads within a request.
-  - In the single container this traffic stays on loopback.
-- **Precompiled server bundle** (A.1).
-- **Database.** Run `EXPLAIN ANALYZE` on bootstrap, the session list, tasks and notes, and add indexes as needed.
-
-### B.10 Measurement
-
-- **Real-user metrics.** `web-vitals` sends LCP, INP, CLS, TTFB and a custom "nav→skeleton" and "nav→content" to `POST /api/metrics/vitals`. These are stored in a small table and shown in an admin view later.
-- **Lab tests.** A Playwright suite (`apps/web/e2e/perf.spec.ts`) runs against `next build && next start` with `DEV_AUTH_BYPASS`:
-  - login → shell
-  - home → project → session → session B → tasks → documentation → note B → settings pages
-- **Budgets** (definition of done):
-
-| Metric | Target |
-|---|---|
-| Click → skeleton or new page painted | ≤ 100 ms (p95, lab) |
-| Click → content, data already cached | ≤ 150 ms |
-| Click → content, cold data | ≤ 600 ms on loopback |
-| Login submit → interactive shell | ≤ 2.0 s (hard cap on the boot screen) |
-| Hard reload of an app page → sidebar painted | ≤ 300 ms (from persisted cache) |
-| First-load JS on the app shell route | baseline −25% |
-| WebSocket connections per tab | 1, plus 1 per open co-edited document |
-
----
-
-## 5. Part C: everything live
-
-### Principles
-
-- **Security first:** no event reaches someone who couldn't fetch the same data.
-- Events are **small facts with the changed entity**, so clients patch their cache. A refetch nudge is the fallback for large payloads.
-- **One bridge** maps events to the cache; components don't each register their own listeners for data.
-- **Reconnects are not data loss:** after a reconnect, clients resync.
-
-### C.1 Security fixes (before new broadcasts)
-
-1. Stop publishing `terminal.output` to the project topic (`bus.ts`, around line 65, and its caller in `index.ts`). Only the `terminal:{id}` topic gets terminal bytes.
-2. ACL on `subscribe(terminal)`: only the terminal's owner, or a workspace member when the terminal is explicitly shared (`ws.ts`, around line 220).
-3. Revoke access:
-   - On member removal, project delete, workspace delete or logout, the server drops the cached access entry (`ws.ts`, around line 391) and force-unsubscribes affected connections, sending a `subscription.revoked` push.
-   - Logout closes the user's sockets.
-4. Tests for each of the above in `ws` and `bus` tests.
-
-### C.2 A `workspace:{id}` topic
-
-- Add `workspace` to the protocol's `Topic` union (`packages/protocol`), to `EventBus.publishToWorkspace` and to the gateway's subscribe ACL (any member).
-- `RealtimeProvider` auto-subscribes to the active workspace and switches the subscription when the workspace changes.
-- `route-audit.ts` gains scope `"workspace"`, which these move to:
-  - project create, delete and rename
-  - workspace update, archive and delete
-  - members and invites
-  - credential policy
-  - database connections and database-manager data changes
-- A user's profile change (name, avatar) fans out to each workspace they're in.
-- An added or removed member is told on `user:{id}`, so their workspace list updates.
-- `project.created` is also published to the workspace topic (today it only lands on the new project's own topic).
-
-### C.3 The realtime → cache bridge
-
-- `lib/realtime-cache.ts` is one switch over event types that calls `queryClient.setQueryData` (when the event carries the entity) or `invalidateQueries` (when it doesn't), using `lib/query-keys.ts`.
-- Events gain small payloads where they're cheap: `task.changed` carries the task, `timeline.changed` the item, `member.changed` the member. `note.changed` keeps its up-to-256 KB rule.
-- Unit-test the mapping table.
-
-### C.4 Resync after reconnect
-
-- **Phase 1.** On `ready` after a drop, invalidate every active query (TanStack refetches only what's mounted) and re-send presence.
-- **Phase 2.** Durable project-level events get a per-project sequence, and the gateway replays `sinceSeq` for `project` topics as it already does for threads (`ws.ts`, around line 251).
-
-### C.5 Fill in the missing events
-
-| Where | Add |
-|---|---|
-| `git-routes.ts` remote PUT/DELETE, fetch | `resource.changed{git}` / `git.fetched` to the project topic |
-| Diagram generation (`index.ts` `runDiagramJob`) | Job state goes into a store and is published as `diagram.job{kind,state}`; GET polling becomes the fallback |
-| Preview publish and port detection (`preview.ts`, `decide.ts`) | Emit the already-defined `preview.published`, `port.opened` and `port.closed` |
-| Upload delete and attach | `upload.changed`; `file.changed` with origin `"system"` |
-| `file.changed` | Add `worktreeId`/`sessionId`. `files-panel.tsx` handles events with no origin |
-| `route-audit.ts` | Add the task routes to `SELF_AUDITED` (they're currently logged twice) |
-
-### C.6 File watcher
-
-- New `apps/server/src/file-watcher.ts` using `@parcel/watcher`, which is native, recursive and efficient.
-- It runs one watcher per project (and per worktree) **while that project has at least one subscriber**, and stops 60 seconds after the last one leaves.
-- It ignores `.git`, `node_modules`, `vendor`, `.next`, `dist` and `.ucch/cache`.
-- Changes are coalesced over 150 ms and sent as `file.changed{origin: "fs"}`. Writes the server made itself (REST, agent) are recognised by version and not echoed again.
-- The git status view refreshes on these events, which makes the 10-second poll a 60-second safety net.
-
-### C.7 Real-time co-editing (Yjs)
-
-**Server**
-- **Hocuspocus v3** (`@hocuspocus/server`) is embedded in the Fastify process on the `/collab` upgrade path. It doesn't open its own port: it uses `hocuspocus.handleConnection(ws, req)`.
-- **Auth.** `onAuthenticate` takes the same single-use ws-ticket plus a `ProjectAccess.canAccessProject` check. The document name is `note:{noteId}` (later `file:{projectId}:{path}`).
-- **Persistence.**
-  - New table `note_ydocs(note_id uuid pk references notes on delete cascade, state bytea, updated_at)`.
-  - `onLoadDocument` reads the stored state. When there's none, it builds the doc from the note's existing `content` (markdown → ProseMirror JSON → Y.XmlFragment) the first time.
-  - `onStoreDocument` (debounced 2 s, max 10 s) saves the state **and projects it back to `notes.content`** as markdown. Search, the agent's documentation tools, public pages and exports keep reading `content` unchanged.
-- **Server-side writers.** The agent and REST `PATCH /notes/:id` content updates apply as a Yjs transaction on the live doc (`openDirectConnection`), so open editors merge the change instead of being overwritten.
-- **Memory.** Documents unload after 30 seconds with no connections. Log the number of open docs in `/health`.
-
-**Client**
-- In `note-editor-impl.tsx`, use `@tiptap/extension-collaboration` and `@tiptap/extension-collaboration-caret`, with `@hocuspocus/provider` connected to `/collab`. StarterKit's history is turned off (Yjs undo replaces it).
-- Name and colour come from presence (C.8).
-- Remove the whole-document `note.changed` content swap, `lib/note-autosave.ts` saves and `ifUpdatedAt` 409 handling for content. Title, icon and cover stay REST plus events.
-
-**Phase 2: code files and diagrams**
-- `y-codemirror.next` in the CodeMirror editor (`code-editor.tsx`, `diagram-editor.tsx`), with doc `file:{projectId}:{worktree}:{path}`.
-- The disk stays the source of truth. The server writes the doc back to disk (debounced 1 s, using `workspaceFiles.write`). Watcher changes from outside (agent, terminal, git checkout) are applied into the doc as the smallest edit, reusing the prefix/suffix diff idea in `apps/web/src/lib/doc-sync.ts`, moved to `packages/protocol` so both sides share it.
-
-### C.8 Presence with real people
-
-- Presence entries carry `{ userId, name, avatarUrl, color }`. The colour is stable per user (`lib/selection-color.ts`).
-- `presence-badge.tsx` shows a stack of avatars with names on hover, instead of "another window". One's own other tabs are folded into a single entry.
-- Presence locations are added to code (file path), tasks (board/task id), timeline, DB manager (table) and git.
-- Editors show remote cursors and selections through Yjs awareness (C.7).
-
-### C.9 Concurrency and optimistic UI
-
-- Every mutation hook (B.3) updates the cache optimistically, rolls back on error and reconciles with the server's response or event.
-- **Tasks and timeline:** per-field patches (`PATCH` with only the changed fields), so two people editing different fields don't overwrite each other.
-- **DB-manager row edits:** send the row's original values as a precondition (`WHERE` on primary key plus the changed columns' old values). If 0 rows are affected, return `409` and show a conflict toast with "reload row".
-
-### C.10 The bus stays in-process
-
-The container runs one server process, so `EventBus` stays in memory. Its interface (`subscribe`, `publish`, `publishToUser`, plus `publishToWorkspace`) is the seam if Postgres `LISTEN/NOTIFY` is ever needed.
-
----
-
-## 6. Part D: PWA groundwork
-
-- **Manifest.** `app/manifest.ts` with name, short name, `start_url: "/"`, `display: "standalone"` and theme and background colours. Icons at 192, 512 and 512-maskable, plus `apple-icon` at 180×180 (replacing the 662 B file). The root layout exports a `viewport` with `themeColor`.
-- **Static shell.**
-  - Move the theme from a server `cookies()` read in `app/layout.tsx` to a static default plus a client-applied theme. Keep honouring the cookie with a tiny inline `<style>` that the middleware emits through a header, or accept a one-frame theme apply.
-  - This makes `/login` and the offline page static and precacheable.
-  - `app/layout.tsx` carries detailed hydration warnings (one `<body>` child, no authored `<head>`); keep to them.
-- **Service worker: Serwist** (`@serwist/next`, webpack build), enabled when `NEXT_PUBLIC_PWA=1`.
-  - **Precache:** the app shell route, core chunks, fonts, the icon sprite and `/offline`.
-  - **Runtime:**
-    - `/_next/static/*` is cache-first (immutable).
-    - `/file-icons/svg/*` is stale-while-revalidate.
-    - Navigations are network-first with a 3-second timeout, falling back to the cached shell and then `/offline`.
-    - RSC requests are network-only.
-  - **Never cached:** `/api/*`, `/ws`, `/collab` and preview hosts. Data comes from the IndexedDB query cache (B.3), which is what makes an installed app open instantly.
-  - **"Load only the important part":** editors and heavy chunks are precached lazily, on first use or by warmup, not at install.
-- **Updates.** The service worker activates on the next load. When a new `buildId` arrives (from bootstrap), show a "New version available — Reload" toast.
-- **Install prompt.** Capture `beforeinstallprompt` and show an "Install app" entry in the user menu.
-
----
-
-## 7. Rollout order
-
-| Phase | Contents | Why this order |
+| Package | Lines (excl. tests) | Role |
 |---|---|---|
-| **P0** | Checkpoint commit of the current work, fix the `runDiagramJob` bug, baseline metrics, Playwright harness | Measure before optimising; start from a clean tree |
-| **S** | Realtime security fixes (C.1) | Must land before more data is broadcast |
-| **D** | Single container (Part A) | Independent of the UI work; unblocks the simple deploy |
-| **B-core** | Bootstrap endpoint, middleware gate, streaming shell, TanStack Query and persister, leaf loading boundaries, boot screen | Gives instant navigation, and is the base for live cache updates |
-| **R-core** | Workspace topic, realtime bridge, reconnect resync, missing events, file watcher, presence | "Everything live" on top of the cache |
-| **B-rest** | One socket, warmup, fonts and icons, bundle splitting, SSR keep-alive, web-vitals | Polish and budgets |
-| **R-collab** | Hocuspocus and notes co-editing, then code and diagram co-editing | Largest change; needs the bridge and presence |
-| **W** | Manifest, static shell, Serwist behind a flag, offline page, update prompt | Builds on the persisted cache and static shell |
+| `apps/server/src` | 21,867 | API, WS, engine, reactors, git, terminals, previews, DB manager |
+| `packages/agent/src` | 5,705 (+1.5k Python doc-kit) | native agent loop, tool registry |
+| `packages/providers/src` | 1,752 | Claude Code / Codex CLI drivers |
+| `packages/protocol/src` | 2,755 | zod wire schemas, shared with the web app |
+| `packages/db/src` | 838 + 26 SQL migrations | drizzle schema, migrator |
+| **Backend total** | **~32,900** | plus ~12,500 lines of tests |
+| `apps/web/src` | 54,857 | Next.js UI; stays TypeScript in every option |
 
-Every phase ends green on `pnpm typecheck`, `pnpm test`, a production web build and (from phase D on) the container smoke test.
+`apps/gateway`, `packages/runtime`, `packages/vcs` and `images/` are empty.
 
 ---
 
-## 8. Risks and mitigations
+## 2. What "50 concurrent users" costs
 
-| Risk | Mitigation |
+"50 users at the same time" can mean very different loads. The model below separates three profiles.
+
+### Fixed costs (*est.*)
+
+| Item | Node today | With a Rust API |
+|---|---|---|
+| OS, Docker, Dokploy (app + Postgres + Redis), Traefik | ~0.8 GB | ~0.8 GB |
+| PostgreSQL (256 MB buffers + ~10 backends) | ~0.4–0.5 GB | ~0.4–0.5 GB |
+| Next.js server under load | ~0.3–0.8 GB | ~0.3–0.8 GB (unchanged) |
+| API server | ~0.2–0.5 GB | ~0.03–0.1 GB |
+| **Total fixed** | **~1.7–2.6 GB** | **~1.5–2.2 GB** |
+
+That leaves **~5.5–6.3 GB** for users either way. The difference between the two columns is about 0.2–0.4 GB.
+
+### Per-user costs
+
+| Profile | What they are doing | RAM per user | 50 of them |
+|---|---|---|---|
+| **Light**: connected | sidebar open, reading, navigating | Node ~1–5 MB, Rust <1 MB (*est.*) | ~0.05–0.25 GB |
+| **Medium**: working | chatting with the **native** agent (OpenRouter, in-process) + 1 terminal | ~20–40 MB (shell + state) (*est.*) | ~1–2 GB |
+| **Heavy**: building | a **Claude Code** turn + a dev server | 372 MB (measured) + 150–300 MB Vite / 30–60 MB artisan / 0.5–1.5 GB `next dev` ≈ **~0.6 GB typical** | **~30 GB** |
+
+**Reading the table:**
+
+- 50 light or medium users fit comfortably once the fixes in §6 are in, in either language.
+- About 8–9 heavy users at once fill the box. Rust's saving buys roughly one more.
+- A realistic mix of 50 connected users, 15 using the native agent and 8 in heavy turns comes to ~0.25 + 0.5 + 4.8 ≈ **5.5 GB**. That fits, **but only with a global cap on concurrent CLI turns** (today there is none) so the 9th to 50th heavy turns queue instead of pushing the box into swap or the OOM killer.
+
+### CPU
+
+The four vCPUs are spent on (*est.*):
+
+- **Next.js renders.** A full RSC render with its API calls costs on the order of 20–80 ms of CPU. At sign-in each tab warms ~117 routes (finding 1), so 50 users signing in within a few minutes is ~5,800 renders ≈ 2–8 CPU-minutes, concentrated in one Node process that can use only one core. This is the most likely source of "the whole thing is laggy" right after a deploy or in the morning.
+- **Postgres** running the per-project aggregate (finding 2) for each of those renders.
+- **Dev servers and CLIs.** Vite and `next dev` rebuilds, and Claude Code processing its stream.
+- **The API process.** JSON, zod, fan-out. Single-threaded, so it saturates at one core, which is 25% of the box.
+
+---
+
+## 3. Where the time and memory go: findings
+
+### Finding 1: the boot pre-render storm (web)
+
+`lib/warmup.ts:58` sets `BUDGET = { projects: 20, sessionLists: 60, fileTrees: 5, hot: 5 }`. For each of the 20 most recent projects, `warmupPlan` prefetches the chat page plus 4 project pages, along with 5 data lists. Add the sections, workspace settings, home and settings pages, and it comes to **~117 full RSC renders and ~160 data requests per tab**, run 4 at a time (`lib/preload.ts:45`).
+
+They are re-triggered:
+
+- every ~5 min while the tab is active: the "hot" set, ~19 routes (`components/route-warmup.tsx:89`);
+- when a tab returns after ~4 min hidden: everything (`route-warmup.tsx:86`);
+- **2 s after any `router.refresh()`: everything** (`route-warmup.tsx:95`).
+
+`lib/realtime.tsx:285` calls `router.refresh()` and `forgetPrefetched()` on settings events, so **one member saving project settings makes every other member's open tab re-render ~117 pages.** At 50 users that is a thundering herd of ~5,800 renders, each one hitting finding 2. `router.refresh()` is also called from about 20 other places in the UI.
+
+**Rust:** no effect. These are Next.js renders.
+
+### Finding 2: the bootstrap query on every render (server + SQL)
+
+Every page render calls `GET /api/bootstrap` (`apps/web/src/lib/session.ts`, `components/app-shell.tsx`). That calls `workspaceService.listProjects` (`apps/server/src/workspaces.ts:374`), which selects every project in the workspace with **five correlated subqueries per project**: running?, last turn failed?, thread count, and two `SUM`s over **every turn's** JSONB `usage` and `cost_usd`. There is no limit and no cache. It grows with total history, not with activity.
+
+**Rust:** no effect. The cost is in Postgres.
+
+### Finding 3: one global command queue (server)
+
+`OrchestrationEngine` (`apps/server/src/engine.ts:39–75`) runs **every** command from **every** user through one `DrainableWorker` that handles one item at a time (`worker.ts`). The comment explains why: no decision should run on stale state, which is "unambiguously the right way round" for a personal harness. With 50 people it is the wrong way round:
+
+- `terminal.input` and `terminal.resize` are commands too. They carry only a `terminalId`, so `#loadState` makes no DB reads for them (`engine.ts:129–220`), and `decide()` passes them straight through (`decide.ts:355`).
+- They still go through the global queue. So **each keystroke of each user waits behind every other user's commands**, including slow ones such as `thread.send`, which loads the thread, project and workspace and then appends events and updates projections in a transaction.
+- Each keystroke also pays for a zod parse (`ws.ts:177`), the `onDispatched` audit hook, its own `ack` frame (`ws.ts:193–210`), and a pending-promise entry in the browser.
+- 50 people typing ~5 characters/s is ~250 queued commands per second sharing one serial pipe with every chat send. The tail latency, keystrokes stuck behind a burst of sends, is what users feel as a laggy terminal.
+
+`CloneReactor` and `WorktreeReactor` are also single global queues (`clone.ts:110`, `worktrees.ts:40`): one user's large clone delays everyone's.
+
+**Rust:** a little. Rust shortens the CPU part of each item, but most of a command's time is spent waiting on DB round trips, and the serialization stays.
+
+### Finding 4: one frame per token (server + browser)
+
+- Every streamed token is an `agent.text_delta` event (`packages/agent/src/loop.ts:263`, `packages/providers/src/claude.ts:357`), published to both the `project:` and `thread:` topics (`bus.ts:90`). Each goes out as its own WebSocket frame. The body is serialized once per event (`ws.ts:574`), and a header is built per subscriber.
+- In the browser, every frame is `JSON.parse`d and **zod-validated** (`apps/web/src/lib/client.ts:297`). The event array (up to 500) is copied, and `project-chat.tsx` re-derives all messages (`:384`, `:646`) and re-parses the streaming answer's Markdown. Cost grows with the square of the answer length. There is no `requestAnimationFrame` or transition batching and no list virtualization anywhere.
+- Inbound, `ClientFrame.parse` (zod) runs on every frame (`apps/server/src/ws.ts:177`), including keystrokes.
+
+**Rust:** server side, partly (serde is faster than JSON + zod). Browser side, no, and that is where the stutter is.
+
+### Finding 5: CLI processes, uncapped globally
+
+Each Claude Code turn starts `claude -p --output-format stream-json …` as a new process (`packages/providers/src/claude.ts:73`). Claude Code is itself a Node application: **372 MB RSS** measured. Each Codex turn starts `codex exec` (a native binary, lighter; ~30–100 MB *est.*). The only limit is `AGENT_MAX_CONCURRENT_PER_USER` (default 2, `apps/server/src/config.ts:140`, `agent.ts:653`), so 50 users can start ~100 CLI processes, ~37 GB worth of Claude Code. There is no global limit and no queue.
+
+Also uncapped globally:
+
+- **PTYs.** Each is a login shell (`fish -l` or `bash` with the user's rc), 10 per project, 15 min idle timeout, no per-user or global cap (`terminals.ts:35,49`).
+- **Git.** One `status()` is 4 git processes (`git.ts:97`). The Git view in every visible tab polls status + branches + log every 60 s and after every burst of file changes (`apps/web/src/components/git/use-git-state.ts:28`), ~6 processes per refresh per tab, repeated by every viewer of the same project.
+- **Document pipeline.** LibreOffice (~200–500 MB *est.*) and Chromium for Mermaid (~150–300 MB *est.*) on demand.
+
+**Rust:** no effect. These are separate programs.
+
+### Finding 6: one box, no limits, builds on the same box
+
+- No `--max-old-space-size` on either Node process (`deploy/s6/s6-rc.d/{server,web}/run`), no container memory or CPU limit, no per-child limit. One runaway dev server or document conversion can push the API and Postgres into swap.
+- No metrics: `/health` reports status and connection count only. There is no event-loop delay, RSS per service or `pg_stat_statements`, so the current "laggy" diagnosis rests on feel.
+- Dokploy builds the image **on the VPS** (~10 minutes, compiling Next.js) while users are on it. A Rust release build would add ~5–15 minutes and 2–4 GB of peak RAM (*est.*).
+
+**Rust:** no effect, and it makes the build problem worse.
+
+### Finding 7: the API process itself
+
+What Rust would actually improve:
+
+- Node runs the JavaScript on **one thread**: one of four cores. Tokio would use all four.
+- zod on every inbound frame and ~137 other parse sites; serde with derived types is several times cheaper.
+- Thread subscribe replays up to 1,000 events, one frame and one `JSON.stringify` each (`ws.ts:20`, `ws.ts:292`).
+- `threadHistory` caches the **entire** history of the 32 most recent threads with no per-thread size bound (`eventstore.ts:137`, `:168`).
+- GC pauses add tail latency under allocation-heavy fan-out.
+
+These are real, but each one also has a cheap TypeScript fix (§6), and the process is only one of several large consumers.
+
+---
+
+## 4. Node vs Rust for this workload
+
+| Dimension | Node 22 (today) | Rust (axum + tokio) | Matters here? |
+|---|---|---|---|
+| Idle RSS of the API | ~120–250 MB (*est.*) | ~10–40 MB (*est.*) | A little: ~0.2 GB |
+| Memory per WebSocket | ~20–50 KB + JS objects (*est.*) | ~5–15 KB (*est.*) | No: 50 users × 2 sockets is a few MB either way |
+| CPU cores used | 1 for JS (libuv pool for fs/crypto) | all 4 | **Yes**, if the API is CPU-bound |
+| JSON + validation | `JSON.parse` + zod: zod v3 is often several times slower than the parse itself | serde, typed | Some: frames per token |
+| Tail latency | GC pauses | none | Some |
+| Next.js SSR | Node | **still Node** | Biggest CPU cost; unchanged |
+| CLIs, shells, git, LibreOffice, dev servers | separate processes | **the same processes** | Biggest RAM cost; unchanged |
+| Postgres queries | same | same | Finding 2 unchanged |
+| Build time / RAM | esbuild, seconds | cold release build ~5–15 min, 2–4 GB (*est.*) | **Worse** on a 4 vCPU box |
+| Image size | 2.66 GB (mostly LibreOffice, Chromium) | about the same: Node stays for Next.js, Claude Code, mermaid-cli | No change |
+| Shared types with the UI | zod schemas compiled into both sides; cannot drift | needs codegen (`ts-rs` / `specta`, or JSON Schema) | Ongoing cost |
+| Developer velocity | one language across 88k lines | two languages; Rust compile times | **Yes**, for a small team |
+
+### Library mapping
+
+| Today | Rust equivalent | Fit |
+|---|---|---|
+| Fastify 5, @fastify/cookie, compress, rate-limit | `axum`, `tower-http`, `tower_governor` | Good |
+| `ws` | `axum` WebSocket / `tokio-tungstenite` | Good |
+| postgres.js + drizzle | `sqlx` (compile-checked SQL) | Good; the TS schema types are lost |
+| drizzle migrator (`packages/db/src/bootstrap.ts`) | `sqlx migrate` / `refinery` over the same SQL files | Needs a one-time baseline of drizzle's migrations table |
+| `mysql2` (DB manager) | `sqlx` (MySQL) / `mysql_async` | Good |
+| `@lydell/node-pty` | `portable-pty` | Good |
+| `@parcel/watcher` | `notify` | Good |
+| `node:http` proxy (`web-proxy.ts`, `preview.ts`) | `hyper` / `hyper-util` | Good, and faster |
+| scrypt (`password.ts`, `scrypt$N$r$p$salt$key`) | RustCrypto `scrypt` | Compatible |
+| AES-256-GCM (`crypto.ts`) | RustCrypto `aes-gcm` | Compatible, same `SECRET_KEY` |
+| fetch + hand-rolled SSE to OpenRouter (`openrouter.ts`) | `reqwest` + `eventsource-stream` | Good; no SDK is used today |
+| CLI stdio JSONL drivers (`packages/providers`) | `tokio::process` + serde | Good |
+| zod (`packages/protocol`, agent tool schemas) | serde + `validator` / `garde`, `schemars` for tool JSON Schemas | Works; duplicated contract |
+| Planned Yjs / Hocuspocus co-editing (todo R8) | `yrs` for the CRDT | **Gap:** y-prosemirror / Tiptap Markdown conversion exists only in JS, so it would need a Node sidecar |
+
+---
+
+## 5. What a full rewrite costs
+
+**Scope:** ~33k lines of backend TypeScript and ~12.5k lines of tests. Rust ports usually come out 1.2–1.5× longer.
+
+**Estimate:** **4–8 months** for one developer, at the upper end if Rust is new to them (*est.*). Either features freeze or both versions are maintained at once.
+
+**What must stay compatible** so the existing `/data` volume and browser sessions keep working:
+
+| Contract | Where it lives today |
 |---|---|
-| Embedded Postgres plus a rolling deploy corrupts data | `stop-first` update order (documented in A.6, checked in the README); Postgres's `postmaster.pid` lock |
-| Losing the database with the container | One `/data` volume; `ucch-backup` script; README backup section |
-| Larger image (Postgres and MariaDB added to an already large doc-kit image) | MariaDB is optional; the precompiled server drops devDependencies; consider a `DOC_KIT=0` build arg later |
-| Single point of failure (one container) | Accepted by design. The server was already a single replica, so web replicas added little |
-| Next behind the edge proxy breaks streaming | Streaming proxy with no compression on proxied responses; a Playwright check that Suspense boundaries stream |
-| Hocuspocus memory with many open docs | Unload after 30 s with no connections; open-doc count in `/health` |
-| Persisted cache shows stale or other-user data | Keyed by user id, `buster = buildId`, cleared on logout; revalidates on mount |
-| Serwist and App Router edge cases | Behind `NEXT_PUBLIC_PWA`; never caches RSC or `/api` |
-| Large uncommitted working tree | P0 checkpoint commit before any task starts |
+| Database schema, event log, and drizzle's migration history | `packages/db/src/schema.ts`, `packages/db/migrations/` |
+| Password hash format | `apps/server/src/password.ts` |
+| Encrypted secrets (API keys, DB connections) with the existing `SECRET_KEY` | `apps/server/src/crypto.ts`, `/data/secrets/secret_key` |
+| Session cookie, WS ticket and preview ticket semantics | `apps/server/src/auth.ts`, `preview.ts` |
+| WebSocket frame protocol and every event type | `packages/protocol/src/{events,commands}.ts` |
+| Preview hostname grammar `p{port}-{hash}` | `packages/protocol` (16 tests against hostile input) |
+| Event-sourcing semantics: pure `decide()`, projections in the append transaction, reactors after commit | `decide.ts`, `engine.ts`, `eventstore.ts` |
+| Claude Code / Codex stream parsing, permission prompts, resume | `packages/providers/src/{claude,codex}.ts` |
+
+**Risk:** high. The parts most likely to break, such as the CLI stream parsers, permission-prompt flow, preview proxying with HMR, and event replay, are exactly the parts users touch most. Findings 1–6 would still be there afterwards.
+
+---
+
+## 6. Recommended plan
+
+### Phase 0: measure (2–3 days)
+
+The lag is currently judged by feel. Make it a number before changing anything.
+
+- **API process:** `perf_hooks.monitorEventLoopDelay()` (p50/p99), `process.memoryUsage()`, queue depth of the orchestration worker, frames/s and bytes/s per topic. Expose them at `GET /metrics` (bearer token, or loopback only).
+- **Per service:** RSS and CPU of each s6 service and of spawned children (`/proc/<pid>/status`, or `ps` grouped by parent), logged every 30 s.
+- **Postgres:** enable `pg_stat_statements` and record the top queries by total time.
+- **Load script:** a k6 (WebSocket) or Playwright script for 50 simulated users: sign in, navigate, stream a chat turn, type in a terminal, open the Git view. Run it against the production image (`docker compose up`) with `--cpus=4 --memory=8g` to mimic the VPS. Save results in `documentation/perf/`.
+
+**Exit:** a table of who uses the CPU and RAM under 50 users, plus p95 keystroke-echo and token-to-paint latency.
+
+### Phase 1: fix the architecture in TypeScript (1–2 weeks)
+
+Ordered by expected impact (*est.*):
+
+| Fix | Files | Expected effect |
+|---|---|---|
+| **Shrink the warmup.** Prefetch on intent (hover/viewport) plus ~3 recent projects, not 20; no full re-warm after `router.refresh()`; replace `router.refresh()` on realtime events with TanStack Query invalidation of the affected keys | `lib/warmup.ts`, `lib/preload.ts`, `components/route-warmup.tsx`, `lib/realtime.tsx`, `lib/realtime-cache.ts` | ~10–30× fewer Next renders at sign-in; removes the settings thundering herd |
+| **Make `listProjects` cheap.** Keep `thread_count`, `tokens`, `cost_usd`, `running`, `last_failed` in a `project_stats` projection updated in `applyProjection`; read it in one join | `apps/server/src/workspaces.ts`, `engine.ts`, new migration | Bootstrap goes from "scan all turns" to an index lookup |
+| **Take terminals off the global queue.** New ack-less `terminal_input` / `terminal_resize` frames go straight to the terminal reactor after a claim check. Split the engine queue per project, after making event sequence numbers and the one-turn-per-thread rule safe without it (`solution.md` §2, §6) | `apps/server/src/{engine,worker,eventstore,ws,terminals}.ts` | Keystroke latency independent of other users |
+| **Coalesce tokens.** Server: buffer `text_delta` per turn and flush every 33–50 ms. Client: batch frames per `requestAnimationFrame`, memoize finished messages, re-parse only the streaming tail, and drop the zod parse for hot frame types | `apps/server/src/agent.ts` (the `append` closure every turn type passes through), `apps/web/src/lib/client.ts`, `components/project-chat.tsx` | ~3–5× fewer frames; smooth streaming |
+| **Global caps with queues.** `AGENT_MAX_CONCURRENT_TOTAL` (start at ~6 Claude Code turns) with a visible "queued" state; a global PTY cap; one document job at a time | `apps/server/src/agent.ts`, `config.ts`, `terminals.ts` | No OOM from bursts; predictable memory ceiling |
+| **Shared git status.** One server-side status per project, recomputed on watcher events (debounced) and pushed to all viewers; drop the 60 s client poll | `apps/server/src/git.ts`, `file-watcher.ts`, `apps/web/src/components/git/use-git-state.ts` | Git processes per change: per project, not per tab |
+| **Bound the caches and replays.** Size-bound `threadHistory`; send replays as one batched frame | `apps/server/src/eventstore.ts`, `ws.ts` | Lower, flatter API memory |
+| **Runtime limits.** `--max-old-space-size` on both Node services; raise the DB pool to ~20 and tune `work_mem` after Phase 0 | `deploy/s6/s6-rc.d/{server,web}/run`, `packages/db/src/index.ts` | Node gives memory back instead of growing until swap |
+
+Then finish the open items in `todo.md` that overlap: **B8** (one WebSocket per tab) and **B11** (bundle budgets: −2% of a −25% target so far).
+
+### Phase 2: operations (2–3 days)
+
+- **Build off the VPS.** A GitHub Actions workflow builds the `app` target and pushes it to GHCR. In Dokploy, switch the application's provider from *Git + Dockerfile* to *Docker image* and redeploy via webhook. The VPS then never compiles, which matters even more if Rust is ever added. (Same Dockerfile, so `docker build .` keeps working locally.)
+- **Resource limits.** In Dokploy → *Advanced → Resources*, cap the container at ~7 GB so the host and Dokploy survive. Start heavy children (`claude`, `soffice`, `mmdc`, dev servers) under `prlimit --as=…` or a cgroup slice so one of them can't take the server with it.
+- **Alerts** on RSS and event-loop p99 from `/metrics`.
+
+### Phase 3: measure again and decide
+
+Re-run the Phase 0 script. Consider Rust only if **all** of these hold **after** Phase 1:
+
+- [ ] the API process is the top CPU consumer in the container (>50% of total), **or** its event-loop p99 is >50 ms under the 50-user script;
+- [ ] its RSS is >1 GB, or its GC is visible in latency traces;
+- [ ] the remaining cost is in the edge layer (WebSocket fan-out, PTYs, proxying), not in Postgres, Next.js or child processes.
+
+If it qualifies, **don't rewrite; put a Rust edge in front** (strangler pattern, the same shape as today's `web-proxy.ts`):
+
+```
+browser ──► :3000  ucch-edge (Rust: axum + tokio)
+                    ├─ /ws            WebSocket fan-out (events pushed from Node over a Unix socket)
+                    ├─ terminal I/O   PTYs owned here (portable-pty), authorized via Node once
+                    ├─ p{port}-{hash} preview proxy (hyper)
+                    ├─ /_next/static  served from disk
+                    └─ everything else ──► Node server (127.0.0.1:3001) ──► Next.js (127.0.0.1:3100)
+```
+
+Move routes into the edge one at a time, verified by the same smoke tests (`scripts/smoke-phase1.mjs`, `scripts/smoke-container.sh`). The domain logic (`decide`, projections, agent loop, CLI drivers) stays in TypeScript unless measurements say otherwise. A full rewrite then becomes an option, not a requirement. *Est.* 4–8 weeks for the edge.
+
+### Longer term: isolation beats language
+
+The biggest lever for "50 users on one box" is **per-project containers with cgroup memory and CPU limits**: the planned `packages/runtime` and `images/base`, currently empty. They make each user's dev server and agent tools bounded and killable, close the shared-`node`-user isolation gap the README warns about, and are the step that later allows spreading projects over a second machine.
+
+---
+
+## 7. Deployment and compatibility with Dokploy
+
+**A Rust server is fully compatible with the current deployment.** It is one more stage in the same multi-stage `Dockerfile`, and Dokploy's *Dockerfile* build type, the single port 3000, the `/data` volume and `stop-first` updates all stay the same.
+
+```dockerfile
+# --- rust build (sketch) ------------------------------------------------------
+# Debian bookworm like every other stage, so the binary links against the same
+# glibc as the runtime image. Pin the toolchain to an exact version.
+FROM rust:1-bookworm AS chef
+RUN cargo install cargo-chef --locked
+WORKDIR /src
+
+FROM chef AS rust-plan
+COPY crates/ ./crates/
+COPY Cargo.toml Cargo.lock ./
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Dependencies first, in their own layer: a code change recompiles only our crates.
+FROM chef AS rust-build
+COPY --from=rust-plan /src/recipe.json .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo chef cook --release --recipe-path recipe.json
+COPY crates/ ./crates/
+COPY Cargo.toml Cargo.lock ./
+COPY packages/db/migrations ./migrations
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release --locked --bin ucch-edge \
+  && strip target/release/ucch-edge
+
+# --- app: unchanged except for one COPY and one s6 service --------------------
+FROM toolchain AS app
+# ...existing s6 / postgres / web / server steps...
+COPY --from=rust-build /src/target/release/ucch-edge /usr/local/bin/ucch-edge
+```
+
+| Concern | Answer |
+|---|---|
+| Dokploy build type | Unchanged: *Dockerfile*, last stage `app`. |
+| Base image / libc | `rust:1-bookworm` → copied into the bookworm `toolchain` stage. Same glibc; no musl needed. |
+| Node still needed in the image? | **Yes.** Next.js, the Claude Code CLI and mermaid-cli are Node programs. The image does not shrink much (2.66 GB, mostly LibreOffice and Chromium). |
+| Process supervision | A new `deploy/s6/s6-rc.d/edge/` service; `server` moves to 127.0.0.1:3001. Graceful drain on `SIGTERM` (tokio signal handler) within `S6_KILL_GRACETIME`. |
+| Ports, volume, health check | Same: :3000, `/data`, `GET /health` (the edge answers and checks Node behind it). |
+| Secrets | Read from `/data/secrets` as today, before dropping to `node` (`setpriv`, as in `s6-rc.d/server/run`). |
+| Migrations | Keep running them from Node during the transition. A full port switches to `sqlx migrate` with a one-time baseline of drizzle's `__drizzle_migrations` table. |
+| Build cost | Cold release build ~5–15 min and 2–4 GB RAM on 4 vCPU (*est.*); warm (deps cached by cargo-chef) ~1–3 min. **Build in CI (Phase 2)** so this never runs next to live users. |
+| Rollback | The edge forwards anything it doesn't handle to Node, so removing it is one s6 service and one `PORT` change. |
+| Local dev | `cargo watch -x run` beside `pnpm dev`; `scripts/dev.sh` would start both. |
+| Type sharing with the UI | Generate TypeScript from Rust types (`ts-rs` or `specta`) into `packages/protocol`, checked in CI so the two sides cannot drift. |
+
+---
+
+## 8. Decision summary
+
+| Question | Answer |
+|---|---|
+| Will Rust fix the lag? | Mostly **no**. The lag comes from the pre-render storm, the per-render SQL, the global command queue and per-token rendering. All four are fixable in TypeScript. |
+| Will Rust fix the memory use? | Mostly **no**. The memory is in Claude Code processes, dev servers, shells, Next.js and Postgres. Rust saves ~0.2–0.5 GB of the API's share. |
+| Can 4 vCPU / 8 GB host 50 users? | **Yes for 50 connected or native-agent users** after Phase 1 and 2. **No for 50 simultaneous Claude Code turns with dev servers** in any language: cap and queue them (~6–8 at once), or add RAM or machines. |
+| Is Rust compatible with Dokploy + Dockerfile? | **Yes.** It is one extra build stage and one s6 service. Build in CI to keep compiles off the VPS. |
+| Is a full rewrite worth it? | **Not now.** ~33k lines, 4–8 months, high risk, small gain for this workload. |
+| When would Rust be worth it? | When Phase 3's checklist is met. Then as a narrow edge daemon, not a rewrite. |
+
+---
+
+## Appendix A: measurements already in the repo
+
+From `apps/web/e2e/results/` (Playwright, production build, 2026-10-18):
+
+| Metric | Baseline | After B-series |
+|---|---|---|
+| First load (ms) | 582 | 435 |
+| p95 paint per navigation (ms) | 46 | 66 |
+| p95 content per navigation (ms) | 400 | 394 |
+| First-load JS per app route (kB) | 315–415 | – |
+
+These are single-user client timings. They show navigation is already fast for one user, which points at **load under concurrency**, not raw code speed, as the problem, and that is what Phase 0's script measures.
+
+## Appendix B: file reference index
+
+| Topic | Files |
+|---|---|
+| Warmup / prefetch | `apps/web/src/lib/warmup.ts`, `lib/preload.ts`, `components/route-warmup.tsx`, `components/boot-gate.tsx` |
+| Realtime → refresh | `apps/web/src/lib/realtime.tsx`, `lib/realtime-cache.ts`, `lib/client.ts` |
+| Chat rendering | `apps/web/src/components/project-chat.tsx`, `components/markdown.tsx` |
+| Bootstrap query | `apps/server/src/index.ts` (`/api/bootstrap`), `apps/server/src/workspaces.ts` (`listProjects`) |
+| Command queue | `apps/server/src/engine.ts`, `worker.ts`, `decide.ts` |
+| WebSocket / bus | `apps/server/src/ws.ts`, `bus.ts`, `eventstore.ts` |
+| Agent / CLIs | `apps/server/src/agent.ts`, `config.ts`, `packages/agent/src/loop.ts`, `packages/providers/src/{claude,codex,process}.ts` |
+| Terminals / git | `apps/server/src/terminals.ts`, `git.ts`, `git-exec.ts`, `apps/web/src/components/git/use-git-state.ts` |
+| Proxying | `apps/server/src/web-proxy.ts`, `preview.ts` |
+| Deployment | `Dockerfile`, `docker-compose.yml`, `deploy/s6/s6-rc.d/*/run` |
+| Crypto contracts | `apps/server/src/password.ts`, `crypto.ts` |
