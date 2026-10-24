@@ -150,7 +150,7 @@ Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution
   - **Acceptance:** histograms fill after navigating around, and nothing is written to the database.
   - **Verify:** `pnpm test`, plus a curl of `/metrics`
 
-- [ ] **PF0.9 — Baseline and `plan.md` corrections**
+- [x] **PF0.9 — Baseline and `plan.md` corrections** — c4247c5
 
   - **Depends:** PF0.2, PF0.3, PF0.4, PF0.7, PF0.8
   - **Files:** new `documentation/perf/baseline-<date>.json` and `documentation/perf/README.md`, `documentation/plan.md`
