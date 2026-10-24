@@ -235,7 +235,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Settings save: 1 RSC per other tab, the bridge's `router.refresh()`, which PF1.5 removes.
     - Nav-skeleton p95: 74 ms under load.
 
-- [ ] **PF1.4 — Remove the boot gate and rewrite the CLAUDE.md rule**
+- [x] **PF1.4 — Remove the boot gate and rewrite the CLAUDE.md rule** — 4d4357f
 
   - **Depends:** PF1.3
   - **Files:** `apps/web/src/components/boot-gate.tsx` (delete), `apps/web/src/lib/boot-cookie.ts` (delete), `apps/web/src/lib/boot-progress.ts` (delete if unused), `apps/web/src/app/(app)/layout.tsx` (line 27), `apps/web/src/components/app-shell.tsx` (`booted` prop), `apps/web/src/components/boot-screen.tsx`, `apps/web/src/components/boot-frame.tsx` (keep if `login-form.tsx` still uses it), `apps/web/src/components/nav-user.tsx` (`forgetWarm`), `apps/web/CLAUDE.md` (the "whole app loads at boot" section)
