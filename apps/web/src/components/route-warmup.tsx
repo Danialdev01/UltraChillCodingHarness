@@ -7,12 +7,11 @@ import { useQueryClient } from "@tanstack/react-query"
 import { whenIdle } from "@/components/prefetch"
 import { markWarm } from "@/lib/boot-cookie"
 import { publishBoot } from "@/lib/boot-progress"
-import { ROUTER_KEEPS_MS, onForgotten, preload, type PreloadOptions } from "@/lib/preload"
+import { preload, type PreloadOptions } from "@/lib/preload"
 import type { ProjectKind } from "@/lib/sections"
 
 /**
- * Loads the rest of the app (`lib/preload.ts`) from inside the shell, and
- * keeps it loaded while the tab is in use.
+ * Loads the app's data (`lib/preload.ts`) from inside the shell, once.
  *
  * With `gate`, this is the first page of a browser session: the app layout
  * has drawn the boot screen over it (`BootGate`), and the load starts at once
@@ -22,16 +21,13 @@ import type { ProjectKind } from "@/lib/sections"
  * the sign-in boot screen already did this -- it waits for the page to be
  * idle and loads quietly; a run the boot screen left going is joined.
  *
- * The router lets a prefetched page go after `ROUTER_KEEPS_MS`. While the
- * tab is in use, the likeliest pages are prefetched again as they expire;
- * coming back to a tab left longer than that, everything is.
+ * Nothing is loaded again later -- not on a timer, not when the tab comes
+ * back, not after a refresh. The lists stay fresh through the realtime
+ * cache, and a page is rendered when it is opened.
  */
 
 /** However much is still loading, the app opens after this long. */
 export const GATE_MS = 6000
-
-/** A tab counts as in use if someone touched it this recently. */
-const ACTIVE_MS = 10 * 60_000
 
 export function RouteWarmup({
   workspace,
@@ -45,7 +41,7 @@ export function RouteWarmup({
   const router = useRouter()
   const client = useQueryClient()
   const pathname = usePathname()
-  // The latest of each, for the timers below without restarting them.
+  // The latest of each, for the run below without restarting it.
   const live = React.useRef({ pathname, projectHashes })
   live.current = { pathname, projectHashes }
   const wsHash = workspace?.hash ?? null
@@ -76,39 +72,8 @@ export function RouteWarmup({
       })
     }
 
-    let lastActive = Date.now()
-    const onActivity = () => {
-      lastActive = Date.now()
-    }
-    let hiddenAt = 0
-    const onVisibility = () => {
-      if (document.visibilityState === "hidden") hiddenAt = Date.now()
-      else if (hiddenAt && Date.now() - hiddenAt > ROUTER_KEEPS_MS - 60_000) void preload(options())
-    }
-    // Just after the router lets the last round go: the likeliest pages again.
-    const hot = window.setInterval(() => {
-      if (document.visibilityState !== "visible" || Date.now() - lastActive > ACTIVE_MS) return
-      void preload(options({ hotOnly: true }))
-    }, ROUTER_KEEPS_MS + 5000)
-
-    // The page was rendered again and the router let everything go with it.
-    let refetch: number | undefined
-    const offForgotten = onForgotten(() => {
-      window.clearTimeout(refetch)
-      refetch = window.setTimeout(() => void preload(options()), 2000)
-    })
-
-    document.addEventListener("visibilitychange", onVisibility)
-    window.addEventListener("pointerdown", onActivity, { passive: true })
-    window.addEventListener("keydown", onActivity, { passive: true })
     return () => {
       cancelled = true
-      window.clearInterval(hot)
-      window.clearTimeout(refetch)
-      offForgotten()
-      document.removeEventListener("visibilitychange", onVisibility)
-      window.removeEventListener("pointerdown", onActivity)
-      window.removeEventListener("keydown", onActivity)
     }
   }, [router, client, gate, wsHash, wsKind])
 

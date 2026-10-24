@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import { PROJECT_PAGES, SECTIONS, SETTINGS_PAGES, sectionHref, settingsPageHref } from "./sections"
 import type { ProjectSession } from "./session"
-import { BUDGET, SKELETON_ONLY, budgetFor, openSession, sessionListHashes, warmupPlan, type WarmupInput } from "./warmup"
+import { BUDGET, budgetFor, openSession, projectLists, sessionListHashes, warmupPlan, type WarmupInput } from "./warmup"
 
 const HASH = "rdhm15c4hl8o"
 const OTHER = "abcdefghijkl"
@@ -18,99 +17,27 @@ const hashes = (n: number) => Array.from({ length: n }, (_, i) => `p${String(i).
 const plan = (input: Partial<WarmupInput> & Pick<WarmupInput, "pathname">) =>
   warmupPlan({ includeCurrent: false, workspace: PROJECTS, projectHashes: [], ...input })
 
-describe("warmupPlan routes", () => {
-  it("covers every section and every Settings page", () => {
-    const { routes } = plan({ pathname: `/${WS}` })
-    for (const s of SECTIONS.slice(1)) expect(routes).toContain(sectionHref(s, WS))
-    for (const p of SETTINGS_PAGES) expect(routes).toContain(settingsPageHref(p.id))
-  })
-
-  it("leaves out the page in view and the /setting redirect stub", () => {
-    const { routes } = plan({ pathname: `/${WS}` })
-    expect(routes).not.toContain(`/${WS}`)
-    expect(routes).not.toContain("/setting")
-  })
-
-  it("puts the page about to open first when asked to", () => {
-    const { routes } = plan({ pathname: `/${WS}/p/${HASH}/tasks`, includeCurrent: true })
-    expect(routes[0]).toBe(`/${WS}/p/${HASH}/tasks`)
-  })
-
-  it("warms every page of every project, the one in view first", () => {
-    const { routes } = plan({ pathname: `/${WS}/p/${HASH}/tasks`, projectHashes: [OTHER, HASH] })
-    for (const p of PROJECT_PAGES) {
-      if (p.id !== "tasks") expect(routes).toContain(`/${WS}/p/${HASH}/${p.id}`)
-      expect(routes).toContain(`/${WS}/p/${OTHER}/${p.id}`)
-    }
-    expect(routes).not.toContain(`/${WS}/p/${HASH}/tasks`)
-    expect(routes.indexOf(`/${WS}/p/${HASH}/timeline`)).toBeLessThan(routes.indexOf(`/${WS}/p/${OTHER}/tasks`))
-  })
-
-  it("puts the rail's sections before the projects and Settings last", () => {
-    const { routes } = plan({ pathname: `/${WS}`, projectHashes: [HASH] })
-    const section = routes.indexOf(sectionHref(SECTIONS[1], WS))
-    expect(section).toBeLessThan(routes.indexOf(`/${WS}/p/${HASH}/tasks`))
-    expect(routes.indexOf(`/${WS}/p/${HASH}/tasks`)).toBeLessThan(routes.indexOf(settingsPageHref("account")))
-  })
-
-  it("warms a project's open session, passing over Tasks-board threads", () => {
-    const sessions = { [HASH]: [session("taskthread01", "Task: build it"), session("chatsession1")] }
-    const { routes } = plan({ pathname: `/${WS}`, projectHashes: [HASH], sessions: (h) => sessions[h as typeof HASH] })
-    expect(routes).toContain(`/${WS}/p/${HASH}/chatsession1`)
-    expect(routes.some((r) => r.includes("taskthread01"))).toBe(false)
-    // The bare address only redirects there; it is not warmed as well.
-    expect(routes).not.toContain(`/${WS}/p/${HASH}`)
-  })
-
-  it("warms a project's bare address when it has no session to open", () => {
-    const sessions = { [HASH]: [session("taskthread01", "Task: build it")] }
-    const { routes, hot } = plan({ pathname: `/${WS}`, projectHashes: [HASH], sessions: (h) => sessions[h as typeof HASH] })
-    expect(routes).toContain(`/${WS}/p/${HASH}`)
-    expect(hot).toContain(`/${WS}/p/${HASH}`)
-  })
-
-  it("warms every project up to the budget and none past it", () => {
-    const all = hashes(BUDGET.projects + 3)
-    const { routes } = plan({ pathname: `/${WS}`, projectHashes: all })
-    for (const hash of all.slice(0, BUDGET.projects)) expect(routes).toContain(`/${WS}/p/${hash}/tasks`)
-    for (const hash of all.slice(BUDGET.projects)) expect(routes.some((r) => r.includes(hash))).toBe(false)
-  })
-
-  it("in a session workspace, warms the sessions rather than project pages", () => {
-    const { routes, data } = plan({ pathname: `/${WS}`, workspace: SESSIONS, projectHashes: [HASH] })
-    expect(routes).toContain(`/${WS}/s/${HASH}`)
-    expect(routes.some((h) => h.includes("/p/"))).toBe(false)
-    expect(data).toEqual([])
-  })
-
-  it("without a workspace, warms only the global pages", () => {
-    const { routes } = plan({ pathname: "/", workspace: null, projectHashes: [HASH] })
-    expect(routes.every((h) => h === "/" || h.startsWith("/setting"))).toBe(true)
-  })
-
-  it("has no duplicates", () => {
-    const { routes, hot } = plan({ pathname: `/${WS}/code`, projectHashes: [HASH, HASH] })
-    expect(new Set(routes).size).toBe(routes.length)
-    expect(new Set(hot).size).toBe(hot.length)
-  })
-
-  it("only skeleton-prefetches pages that are listed", () => {
-    for (const href of SKELETON_ONLY) expect(plan({ pathname: `/${WS}` }).routes).toContain(href)
+describe("BUDGET", () => {
+  it("loads three projects' lists, twenty sessions lists and one file tree", () => {
+    expect(BUDGET).toEqual({ projects: 3, sessionLists: 20, fileTrees: 1 })
   })
 })
 
-describe("warmupPlan hot set", () => {
-  it("is the sections and the first projects' session and board, inside the routes", () => {
-    const all = hashes(BUDGET.hot + 2)
+describe("warmupPlan routes", () => {
+  it("renders no page ahead once the page is on screen", () => {
     const sessions = (h: string) => [session(`s${h.slice(1)}`)]
-    const { routes, hot } = plan({ pathname: `/${WS}`, projectHashes: all, sessions })
-    for (const href of hot) expect(routes).toContain(href)
-    expect(hot).toContain(sectionHref(SECTIONS[1], WS))
-    for (const hash of all.slice(0, BUDGET.hot)) {
-      expect(hot).toContain(`/${WS}/p/${hash}/s${hash.slice(1)}`)
-      expect(hot).toContain(`/${WS}/p/${hash}/tasks`)
-    }
-    for (const hash of all.slice(BUDGET.hot)) expect(hot.some((r) => r.includes(hash))).toBe(false)
+    const { routes } = plan({ pathname: `/${WS}/p/${HASH}/tasks`, projectHashes: hashes(30), sessions })
+    expect(routes).toEqual([])
+  })
+
+  it("renders only the page about to open when asked to", () => {
+    const { routes } = plan({ pathname: `/${WS}/p/${HASH}/tasks`, includeCurrent: true, projectHashes: [HASH, OTHER] })
+    expect(routes).toEqual([`/${WS}/p/${HASH}/tasks`])
+  })
+
+  it("does the same without a workspace and in a session workspace", () => {
+    expect(plan({ pathname: "/", workspace: null, includeCurrent: true }).routes).toEqual(["/"])
+    expect(plan({ pathname: `/${WS}`, workspace: SESSIONS, projectHashes: [HASH] }).routes).toEqual([])
   })
 })
 
@@ -121,21 +48,33 @@ describe("warmupPlan data", () => {
     for (const family of ["tasks", "notes", "timeline", "keys"]) {
       expect(keys.some((k) => k.startsWith(`["${family}"`) && k.includes(HASH))).toBe(true)
     }
+    expect(data.map((q) => q.queryKey)).toEqual(projectLists(HASH).map((q) => q.queryKey))
   })
 
-  it("loads file trees for the first few projects only, the session's worktree when it has one", () => {
+  it("loads the lists of the budget's projects, the one in view first, and none past them", () => {
+    const all = hashes(BUDGET.projects + 3)
+    const { data } = plan({ pathname: `/${WS}/p/${OTHER}/tasks`, projectHashes: all })
+    const listed = [...new Set(data.map((q) => q.queryKey[2]))]
+    expect(listed).toEqual([OTHER, ...all.slice(0, BUDGET.projects - 1)])
+  })
+
+  it("loads the first project's file tree only, the session's worktree when it has one", () => {
     const all = hashes(BUDGET.fileTrees + 2)
     const sessions = (h: string) => [session(`s${h.slice(1)}`, "Chat", h === all[0] ? "ucch/x" : null)]
     const { data } = plan({ pathname: `/${WS}`, projectHashes: all, sessions })
     const trees = data.filter((q) => q.queryKey[0] === "files")
     expect(trees).toHaveLength(BUDGET.fileTrees)
     expect(trees[0]!.queryKey).toEqual(["files", "tree", all[0], `s${all[0]!.slice(1)}`])
-    expect(trees[1]!.queryKey).toEqual(["files", "tree", all[1], null])
   })
 
   it("loads no file tree for a project whose session is not known", () => {
     const { data } = plan({ pathname: `/${WS}`, projectHashes: [HASH] })
     expect(data.some((q) => q.queryKey[0] === "files")).toBe(false)
+  })
+
+  it("loads nothing in a session workspace or without a workspace", () => {
+    expect(plan({ pathname: `/${WS}`, workspace: SESSIONS, projectHashes: [HASH] }).data).toEqual([])
+    expect(plan({ pathname: "/", workspace: null, projectHashes: [HASH] }).data).toEqual([])
   })
 })
 
@@ -156,8 +95,9 @@ describe("budgetFor", () => {
   it("halves everything on a device with 4 GB or less", () => {
     expect(budgetFor(8)).toBe(BUDGET)
     expect(budgetFor(undefined)).toBe(BUDGET)
-    expect(budgetFor(4).projects).toBe(BUDGET.projects / 2)
-    expect(budgetFor(2).fileTrees).toBe(Math.ceil(BUDGET.fileTrees / 2))
+    expect(budgetFor(4).projects).toBe(Math.ceil(BUDGET.projects / 2))
+    expect(budgetFor(2).sessionLists).toBe(BUDGET.sessionLists / 2)
+    expect(budgetFor(2).fileTrees).toBe(1)
   })
 })
 

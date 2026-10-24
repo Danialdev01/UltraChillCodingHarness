@@ -9,28 +9,23 @@ import { publishBoot } from "@/lib/boot-progress"
 import { projectQueries, type ProjectQuery } from "@/lib/queries/project-data"
 import type { ProjectKind } from "@/lib/sections"
 import type { ProjectSession } from "@/lib/session"
-import { SKELETON_ONLY, budgetFor, sessionListHashes, warmupPlan } from "@/lib/warmup"
+import { SKELETON_ONLY, budgetFor, projectLists, sessionListHashes, warmupPlan } from "@/lib/warmup"
 
 /**
- * Loads the app ahead of the person using it: every page of the open
- * workspace rendered in full, the lists those pages open on, and the
- * code-split editors -- so that no click after the boot screen waits on the
- * server for anything but what changed since.
+ * Loads the app's data ahead of the person using it: the lists the recent
+ * projects' pages open on, and the code-split editors -- so that a click on
+ * one of those projects shows its content at once, not only its skeleton.
+ * No page is rendered ahead but the one about to open.
  *
  * What is loaded, and how much, is `lib/warmup.ts`'s plan and budget. This
- * file runs it: the sessions lists first (the plan's project links depend on
- * them), then pages, lists and chunks side by side, a few at a time each.
+ * file runs it: the sessions lists first (which session's file tree to load
+ * depends on them), then the page, lists and chunks side by side, a few at a
+ * time each. It runs once per shell: nothing loads it again on a timer or
+ * after a refresh, since the lists stay fresh through the realtime cache.
  *
  * One run at a time per tab. The sign-in boot screen starts one; the shell
  * mounting while it is still going joins it rather than starting another.
  */
-
-/**
- * How long the router keeps a page prefetched in full: `staleTimes.static`
- * in `next.config.ts`. A page warmed more recently than this is not asked
- * for again; after it, it is gone from the router and is.
- */
-export const ROUTER_KEEPS_MS = 300_000
 
 /**
  * A list loaded ahead that nothing has shown for this long is dropped from
@@ -76,34 +71,13 @@ export interface PreloadOptions {
   workspace: { hash: string; kind: ProjectKind } | null
   /** The workspace's projects, most recently active first. */
   projectHashes: readonly string[]
-  /** Only the pages kept warm while the tab is in use, and no lists or chunks. */
-  hotOnly?: boolean
   /** Show this run's progress on the boot screen. */
   report?: boolean
 }
 
-/** When each page was last prefetched in full, this tab. */
-const warmedAt = new Map<string, number>()
 let chunksLoaded = false
 let running: { key: string; done: Promise<void> } | null = null
 let reporting = false
-
-const forgetListeners = new Set<() => void>()
-
-/**
- * The router has dropped every prefetched page -- `router.refresh()` empties
- * its prefetch cache -- so they are fetched again: by the next run, which
- * the shell's warmup starts on hearing this (`onForgotten`).
- */
-export function forgetPrefetched(): void {
-  warmedAt.clear()
-  for (const listener of forgetListeners) listener()
-}
-
-export function onForgotten(listener: () => void): () => void {
-  forgetListeners.add(listener)
-  return () => forgetListeners.delete(listener)
-}
 
 /**
  * Loads what `options` describes; resolves when all of it is loaded. A run
@@ -111,7 +85,7 @@ export function onForgotten(listener: () => void): () => void {
  */
 export function preload(options: PreloadOptions): Promise<void> {
   if (options.report) reporting = true
-  const key = `${options.workspace?.hash ?? ""}:${options.hotOnly ? "hot" : "all"}`
+  const key = options.workspace?.hash ?? ""
   if (running?.key === key) return running.done
   const previous = running?.done ?? Promise.resolve()
   const done = previous.then(() => run(options)).finally(() => {
@@ -138,9 +112,9 @@ async function run(options: PreloadOptions): Promise<void> {
     return
   }
 
-  // 1. Which session each project opens on, so its links and its warmed
-  //    page are the conversation itself rather than a redirect to it.
-  const listed = options.hotOnly ? [] : sessionListHashes({ pathname, workspace, projectHashes, budget })
+  // 1. Which session each project opens on, so its links are the
+  //    conversation itself rather than a redirect to it.
+  const listed = sessionListHashes({ pathname, workspace, projectHashes, budget })
   let listsDone = 0
   if (listed.length) report({ progress: 0.08, label: "Finding your projects" })
   await inLanes(listed, DATA_LANES, async (hash) => {
@@ -157,15 +131,11 @@ async function run(options: PreloadOptions): Promise<void> {
     sessions: (hash) => client.getQueryData<ProjectSession[]>(projectQueries.sessions(hash).queryKey),
     budget,
   })
-  const now = Date.now()
-  const routes = (options.hotOnly ? plan.hot : plan.routes).filter(
-    (href) => now - (warmedAt.get(href) ?? 0) > ROUTER_KEEPS_MS,
-  )
-  const data = options.hotOnly ? [] : plan.data
-  const chunks = options.hotOnly || chunksLoaded ? [] : CHUNKS
+  const { routes, data } = plan
+  const chunks = chunksLoaded ? [] : CHUNKS
   chunksLoaded = true
 
-  // 2. Pages, lists and chunks side by side.
+  // 2. The page, lists and chunks side by side.
   const total = routes.length + data.length + chunks.length
   let done = 0
   let pagesDone = 0
@@ -190,6 +160,17 @@ async function run(options: PreloadOptions): Promise<void> {
     }),
   ])
   report({ progress: 1, label: "Ready" })
+}
+
+/**
+ * A project's lists, on the pointer coming over its row in the sidebar: the
+ * click that likely follows then shows content rather than a skeleton, for
+ * a few small API requests and no page render. A list fetched recently is
+ * not fetched again.
+ */
+export function prefetchProject(client: QueryClient, hash: string): void {
+  if (saveData()) return
+  for (const query of [projectQueries.sessions(hash), ...projectLists(hash)]) void prefetchData(client, query)
 }
 
 function prefetchData(client: QueryClient, query: ProjectQuery<unknown>): Promise<void> {
@@ -226,7 +207,6 @@ async function prefetchRoutes(router: Router, hrefs: readonly string[], onEach: 
   await inLanes(hrefs, ROUTE_LANES, async (href) => {
     const landed = watched ? responseFor(href) : Promise.resolve()
     router.prefetch(href, SKELETON_ONLY.has(href) ? undefined : { kind: FULL })
-    warmedAt.set(href, Date.now())
     await landed
     onEach()
   })

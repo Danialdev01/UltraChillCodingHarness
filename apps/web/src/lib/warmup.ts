@@ -1,34 +1,25 @@
 import { projectQueries, type ProjectQuery } from "./queries/project-data"
 import type { ProjectSession } from "./session"
-import {
-  HOME,
-  PROJECT_PAGES,
-  SECTIONS,
-  SETTINGS,
-  SETTINGS_PAGES,
-  WORKSPACE_SETTINGS,
-  WORKSPACE_SETTINGS_PAGES,
-  projectHashFromPath,
-  projectHref,
-  projectPageHref,
-  sectionEntry,
-  sectionHref,
-  settingsPageHref,
-  workspaceSettingsPageHref,
-  type ProjectKind,
-} from "./sections"
+import { projectHashFromPath, settingsPageHref, type ProjectKind } from "./sections"
 import { isTaskThreadTitle } from "./tasks-api"
 
 /**
- * What the app loads ahead of time (see `lib/preload.ts`): every page a click
- * on the rail, the Settings list or a project in the sidebar can lead to, and
- * the lists those pages open on.
+ * What the app loads ahead of time (see `lib/preload.ts`): data, not pages.
+ *
+ * A click paints the next page's skeleton in the same frame without any of
+ * this -- `TransitionLink` leaves Next's viewport prefetch on, which loads
+ * each visible link down to its `loading.tsx` -- and the content is instant
+ * wherever the client cache already holds the lists the page opens on. That
+ * cache is persisted, so what is loaded here outlives a reload without
+ * asking the server again. No page is rendered ahead in full but the one
+ * about to open: a speculative render costs the server far more than the
+ * lists it would show.
  */
 
 /**
- * Pages whose server render is expensive enough that a speculative full
- * render is not worth it: only their skeleton is prefetched. Usage walks
- * every project directory on disk.
+ * Pages whose server render is expensive enough that even as the page about
+ * to open only their skeleton is prefetched. Usage walks every project
+ * directory on disk.
  */
 export const SKELETON_ONLY: ReadonlySet<string> = new Set([settingsPageHref("usage")])
 
@@ -36,26 +27,23 @@ export const SKELETON_ONLY: ReadonlySet<string> = new Set([settingsPageHref("usa
  * How much is loaded ahead, so that a large workspace costs a bounded amount
  * of memory and of server time.
  *
- * Each project in the plan is about seven page renders (a few tens of KB of
- * RSC payload each) and five short lists. Past `projects`, a project gets
+ * Each project in `projects` is five short lists. Past them, a project gets
  * only its sessions list -- a few hundred bytes, and what lets its sidebar
  * link go straight to the conversation rather than through a redirect.
- * File trees can run to thousands of rows, so only the first few are loaded.
+ * File trees can run to thousands of rows, so only the first is loaded.
  * Never loaded ahead: file contents, note bodies, git state, database rows,
  * or anything of another workspace.
  */
 export interface WarmupBudget {
-  /** Projects whose every page and list is loaded. */
+  /** Projects whose every list is loaded. */
   projects: number
   /** Projects whose sessions list is loaded. */
   sessionLists: number
   /** Projects whose open session's file tree is loaded. */
   fileTrees: number
-  /** Projects kept warm while the tab is in use, past the router's expiry. */
-  hot: number
 }
 
-export const BUDGET: WarmupBudget = { projects: 20, sessionLists: 60, fileTrees: 5, hot: 5 }
+export const BUDGET: WarmupBudget = { projects: 3, sessionLists: 20, fileTrees: 1 }
 
 /** Half of everything on a device that reports 4 GB of memory or less. */
 export function budgetFor(deviceMemory: number | undefined): WarmupBudget {
@@ -64,7 +52,6 @@ export function budgetFor(deviceMemory: number | undefined): WarmupBudget {
     projects: Math.ceil(BUDGET.projects / 2),
     sessionLists: Math.ceil(BUDGET.sessionLists / 2),
     fileTrees: Math.ceil(BUDGET.fileTrees / 2),
-    hot: Math.ceil(BUDGET.hot / 2),
   }
 }
 
@@ -73,12 +60,23 @@ export function openSession(sessions: readonly ProjectSession[] | undefined): Pr
   return sessions?.find((s) => !isTaskThreadTitle(s.title))
 }
 
+/** The lists a project's pages open on, as its row in the sidebar leads to them. */
+export function projectLists(hash: string): ProjectQuery<unknown>[] {
+  return [
+    projectQueries.tasks(hash),
+    projectQueries.taskSettings(hash),
+    projectQueries.notesTree(hash),
+    projectQueries.timeline(hash),
+    projectQueries.keys(hash),
+  ]
+}
+
 export interface WarmupInput {
   /** The page in view, or the one about to be opened. */
   pathname: string
   /** Whether `pathname` itself is to be loaded: yes before it opens, no once it is on screen. */
   includeCurrent: boolean
-  /** The workspace the shell has open; without one only the global pages are warmed. */
+  /** The workspace the shell has open; without one there are no lists to load. */
   workspace: { hash: string; kind: ProjectKind } | null
   /** The workspace's projects, most recently active first. */
   projectHashes: readonly string[]
@@ -93,80 +91,38 @@ function rankedProjects(pathname: string, projectHashes: readonly string[]): str
   return inView ? [inView, ...projectHashes.filter((h) => h !== inView)] : [...projectHashes]
 }
 
-/** Whose sessions lists are loaded before anything else: the plan's links depend on them. */
+/** Whose sessions lists are loaded before anything else: the plan's file trees depend on them. */
 export function sessionListHashes(input: Pick<WarmupInput, "pathname" | "workspace" | "projectHashes" | "budget">): string[] {
   if (input.workspace?.kind !== "project") return []
   return rankedProjects(input.pathname, input.projectHashes).slice(0, (input.budget ?? BUDGET).sessionLists)
 }
 
 export interface WarmupPlan {
-  /** Every page to prefetch, likeliest first. */
+  /** The pages to prefetch in full: the page about to open, if asked for, and no other. */
   routes: string[]
-  /** The part of `routes` kept warm while the tab is in use. */
-  hot: string[]
-  /** The lists those pages open on. */
+  /** The lists the likeliest pages open on. */
   data: ProjectQuery<unknown>[]
 }
 
 export function warmupPlan(input: WarmupInput): WarmupPlan {
   const budget = input.budget ?? BUDGET
   const { workspace, pathname } = input
-  const first: string[] = input.includeCurrent ? [pathname] : []
-  const sections: string[] = []
-  const projectRoutes: string[] = []
-  const hotProjects: string[] = []
   const data: ProjectQuery<unknown>[] = []
 
-  if (workspace) {
-    const ws = workspace.hash
-    sections.push(
-      ...SECTIONS.map((s) => sectionHref(s, ws)),
-      sectionEntry(WORKSPACE_SETTINGS, ws),
-      ...WORKSPACE_SETTINGS_PAGES.map((p) => workspaceSettingsPageHref(ws, p.id)),
-    )
+  // A session workspace's projects are conversations: nothing to list ahead.
+  if (workspace?.kind === "project") {
     rankedProjects(pathname, input.projectHashes)
       .slice(0, budget.projects)
       .forEach((hash, rank) => {
-        if (workspace.kind === "session") {
-          const href = projectHref(ws, "session", hash)
-          projectRoutes.push(href)
-          if (rank < budget.hot) hotProjects.push(href)
-          return
-        }
-        // A project's bare address redirects to its newest session, so the
-        // session itself is what is warmed once its list says which. Without
-        // one, the bare address is the page: it starts the first session.
-        const open = openSession(input.sessions?.(hash))
-        const pages = [
-          projectHref(ws, "project", hash, open?.hash),
-          ...PROJECT_PAGES.map((p) => projectPageHref(ws, hash, p.id)),
-        ]
-        projectRoutes.push(...pages)
-        if (rank < budget.hot) hotProjects.push(...pages.slice(0, 2))
-
-        data.push(
-          projectQueries.tasks(hash),
-          projectQueries.taskSettings(hash),
-          projectQueries.notesTree(hash),
-          projectQueries.timeline(hash),
-          projectQueries.keys(hash),
-        )
+        data.push(...projectLists(hash))
         // The tree the session's file panel opens on: its worktree's when it
         // has a branch of its own, else the project's checkout.
+        const open = openSession(input.sessions?.(hash))
         if (open && rank < budget.fileTrees) {
           data.push(projectQueries.filesTree(open.branch ? { hash, session: open.hash } : hash))
         }
       })
   }
 
-  const global = [HOME.href, SETTINGS.entry, ...SETTINGS_PAGES.map((p) => settingsPageHref(p.id))]
-  const keep = (hrefs: string[]) =>
-    [...new Set(hrefs)].filter((href) => input.includeCurrent || href !== pathname)
-  return {
-    // The project in view comes first in `projectRoutes`, but after the
-    // rail: a section is one click away from anywhere.
-    routes: keep([...first, ...sections, ...projectRoutes, ...global]),
-    hot: keep([...first, ...sections, ...hotProjects]),
-    data,
-  }
+  return { routes: input.includeCurrent ? [pathname] : [], data }
 }

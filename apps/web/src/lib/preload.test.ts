@@ -76,21 +76,35 @@ afterEach(() => {
 })
 
 describe("preload", () => {
-  it("lists each project's sessions first, then warms its conversation and pages", async () => {
+  it("lists each project's sessions first, then loads the lists its pages open on", async () => {
     const { preload } = await load()
-    const { prefetched, client, options } = setup()
+    const { client, options } = setup()
     await preload(options)
 
     const firstOther = requests.findIndex((url) => !url.endsWith("/threads"))
     expect(requests.slice(0, firstOther).sort()).toEqual([`/api/projects/${A}/threads`, `/api/projects/${B}/threads`])
-    const hrefs = prefetched.map((p) => p.href)
-    expect(hrefs).toContain(`/${WS}/p/${A}/aaaaaachat01`)
-    expect(hrefs).toContain(`/${WS}/p/${B}/tasks`)
-    expect(prefetched.find((p) => p.href === "/setting/usage")?.kind).toBeUndefined()
-    expect(prefetched.find((p) => p.href === `/${WS}/p/${A}/tasks`)?.kind).toBe("full")
     // The lists the pages open on are in the cache under the views' keys.
     expect(client.getQueryData(["tasks", "list", A])).toEqual([])
     expect(client.getQueryData(["notes", "tree", B])).toEqual({ notes: [], rootId: "" })
+  })
+
+  it("renders no page ahead but the one about to open", async () => {
+    const { preload } = await load()
+    const { prefetched, options } = setup()
+    await preload(options)
+    expect(prefetched).toEqual([])
+
+    const { preload: again } = await load()
+    const next = setup({ pathname: `/${WS}/p/${A}/tasks`, includeCurrent: true })
+    await again(next.options)
+    expect(next.prefetched).toEqual([{ href: `/${WS}/p/${A}/tasks`, kind: "full" }])
+  })
+
+  it("prefetches only the skeleton of a page too expensive to render ahead", async () => {
+    const { preload } = await load()
+    const { prefetched, options } = setup({ pathname: "/setting/usage", includeCurrent: true })
+    await preload(options)
+    expect(prefetched).toEqual([{ href: "/setting/usage", kind: undefined }])
   })
 
   it("fetches lists a few at a time", async () => {
@@ -103,48 +117,27 @@ describe("preload", () => {
 
   it("joins a run already going rather than starting another", async () => {
     const { preload } = await load()
-    const { prefetched, options } = setup()
+    const { prefetched, options } = setup({ pathname: `/${WS}/p/${A}/tasks`, includeCurrent: true })
     await Promise.all([preload(options), preload(options)])
-    const hrefs = prefetched.map((p) => p.href)
-    expect(new Set(hrefs).size).toBe(hrefs.length)
+    expect(prefetched).toHaveLength(1)
+    expect(requests.filter((url) => url.endsWith("/threads"))).toHaveLength(2)
   })
 
-  it("does not prefetch again what the router still holds, and does once it has let it go", async () => {
-    const { preload, ROUTER_KEEPS_MS } = await load()
-    const { prefetched, options } = setup()
-    await preload(options)
-    const first = prefetched.length
-
-    await preload(options)
-    expect(prefetched.length).toBe(first)
-
-    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + ROUTER_KEEPS_MS + 1000 })
-    await preload(options)
-    expect(prefetched.length).toBe(first * 2)
+  it("has nothing to re-warm with: no forgetting, no hot set", async () => {
+    const preload = await load()
+    expect(Object.keys(preload).sort()).toEqual(["prefetchProject", "preload"])
   })
 
-  it("prefetches everything again after the router was refreshed", async () => {
-    const { preload, forgetPrefetched, onForgotten } = await load()
-    const { prefetched, options } = setup()
-    const heard = vi.fn()
-    onForgotten(heard)
-    await preload(options)
-    const first = prefetched.length
-    forgetPrefetched()
-    expect(heard).toHaveBeenCalledOnce()
-    await preload(options)
-    expect(prefetched.length).toBe(first * 2)
-  })
-
-  it("keeps only the hot set warm on a hot run, with no lists", async () => {
-    const { preload } = await load()
-    const { prefetched, options } = setup()
-    await preload({ ...options, hotOnly: true })
-    const hrefs = prefetched.map((p) => p.href)
-    expect(hrefs).toContain(`/${WS}/database`)
-    expect(hrefs.some((h) => h.startsWith("/setting"))).toBe(false)
-    expect(hrefs.some((h) => h.endsWith("/timeline"))).toBe(false)
-    expect(requests).toEqual([])
+  it("loads a hovered project's sessions and lists, once while they are fresh", async () => {
+    const { prefetchProject } = await load()
+    const { client } = setup()
+    prefetchProject(client, B)
+    await vi.waitFor(() => expect(client.getQueryData(["tasks", "list", B])).toEqual([]))
+    const first = requests.length
+    expect(requests).toContain(`/api/projects/${B}/threads`)
+    prefetchProject(client, B)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(requests.length).toBe(first)
   })
 
   it("reports progress only when asked, never going back, ending at 1", async () => {

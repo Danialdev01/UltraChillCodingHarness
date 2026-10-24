@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { usePathname } from "next/navigation"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   ChevronRightIcon,
   LayersIcon,
@@ -42,6 +43,7 @@ import {
   settingsPageHref,
   type Section,
 } from "@/lib/sections"
+import { prefetchProject } from "@/lib/preload"
 import { useAgentActivity } from "@/lib/realtime"
 import type { Project, Workspace } from "@/lib/session"
 import { countLabel } from "@/lib/workspace-api"
@@ -106,6 +108,7 @@ export function SectionPanel({
   onNavigate?: () => void
 }) {
   const router = useTransitionRouter()
+  const queryClient = useQueryClient()
   // A stack detected afresh is a new icon for the row, and the list the
   // server rendered still has the old one.
   const agentStatusOf = useAgentActivity(LISTS_PROJECTS.has(section.id) ? projects : [], () =>
@@ -182,6 +185,10 @@ export function SectionPanel({
                         setFolded(project.hash, true)
                         onNavigate?.()
                       }}
+                      // Only the first few projects' lists are loaded at
+                      // boot; the rest are fetched on the way to a click.
+                      // A session workspace's rows have no lists.
+                      onPointerEnter={sessionWorkspace ? undefined : () => prefetchProject(queryClient, project.hash)}
                       render={<TransitionLink href={hrefOf(project.hash)} />}
                     >
                       <ProjectStackIcon stack={project.stack} />
