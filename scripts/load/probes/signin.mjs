@@ -7,8 +7,8 @@
  *   node scripts/load/probes/signin.mjs --base http://127.0.0.1:3397 \
  *     --email load-049@load.test [--password load-password-123] [--settle 30]
  *
- * Interactive: off /login, the boot screen gone (components/boot-frame.tsx)
- * and <main> on screen. The requests are the tab's own, counted from the
+ * Interactive: off /login, no busy status on screen (the boot screen this
+ * was written against had one) and <main> visible. The requests are the tab's own, counted from the
  * browser, so other traffic on the server does not muddy them: RSC renders
  * (`rsc: 1`) split into prefetches and the rest, and API calls.
  * Needs Chrome: E2E_CHROME (default /opt/google/chrome/chrome).

@@ -1,15 +1,12 @@
 import { QueryClient } from "@tanstack/react-query"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const published: Array<{ progress?: number; label?: string }> = []
-
 vi.mock("@/components/on-demand", () => ({ ON_DEMAND: [] }))
-vi.mock("@/components/prefetch", () => ({ FULL: "full", saveData: () => false }))
+vi.mock("@/components/prefetch", () => ({ saveData: () => false }))
 vi.mock("@/components/vim-editor", () => ({}))
 vi.mock("@/components/notes/note-editor-impl", () => ({}))
 vi.mock("@/components/git/git-view", () => ({}))
 vi.mock("@/components/database/sql-editor", () => ({}))
-vi.mock("@/lib/boot-progress", () => ({ publishBoot: (patch: object) => published.push(patch) }))
 
 const WS = "wkspc0hash00"
 const A = "aaaaaaaaaaaa"
@@ -47,23 +44,18 @@ async function load() {
 }
 
 function setup(extra: Record<string, unknown> = {}) {
-  const prefetched: Array<{ href: string; kind: unknown }> = []
-  const router = { prefetch: (href: string, options?: { kind: unknown }) => void prefetched.push({ href, kind: options?.kind }) }
   const client = new QueryClient()
   const options = {
-    router,
     client,
     pathname: `/${WS}`,
-    includeCurrent: false,
     workspace: { hash: WS, kind: "project" as const },
     projectHashes: [A, B],
     ...extra,
   }
-  return { prefetched, client, options }
+  return { client, options }
 }
 
 beforeEach(() => {
-  published.length = 0
   requests.length = 0
   inFlight = 0
   peak = 0
@@ -88,24 +80,6 @@ describe("preload", () => {
     expect(client.getQueryData(["notes", "tree", B])).toEqual({ notes: [], rootId: "" })
   })
 
-  it("renders no page ahead but the one about to open", async () => {
-    const { preload } = await load()
-    const { prefetched, options } = setup()
-    await preload(options)
-    expect(prefetched).toEqual([])
-
-    const { preload: again } = await load()
-    const next = setup({ pathname: `/${WS}/p/${A}/tasks`, includeCurrent: true })
-    await again(next.options)
-    expect(next.prefetched).toEqual([{ href: `/${WS}/p/${A}/tasks`, kind: "full" }])
-  })
-
-  it("prefetches only the skeleton of a page too expensive to render ahead", async () => {
-    const { preload } = await load()
-    const { prefetched, options } = setup({ pathname: "/setting/usage", includeCurrent: true })
-    await preload(options)
-    expect(prefetched).toEqual([{ href: "/setting/usage", kind: undefined }])
-  })
 
   it("fetches lists a few at a time", async () => {
     const { preload } = await load()
@@ -117,9 +91,8 @@ describe("preload", () => {
 
   it("joins a run already going rather than starting another", async () => {
     const { preload } = await load()
-    const { prefetched, options } = setup({ pathname: `/${WS}/p/${A}/tasks`, includeCurrent: true })
+    const { options } = setup()
     await Promise.all([preload(options), preload(options)])
-    expect(prefetched).toHaveLength(1)
     expect(requests.filter((url) => url.endsWith("/threads"))).toHaveLength(2)
   })
 
@@ -138,19 +111,5 @@ describe("preload", () => {
     prefetchProject(client, B)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(requests.length).toBe(first)
-  })
-
-  it("reports progress only when asked, never going back, ending at 1", async () => {
-    const { preload } = await load()
-    const { options } = setup()
-    await preload(options)
-    expect(published).toEqual([])
-
-    const { preload: again } = await load()
-    await again({ ...setup().options, report: true })
-    const values = published.map((p) => p.progress!)
-    expect(values.length).toBeGreaterThan(3)
-    expect(values.at(-1)).toBe(1)
-    for (let i = 1; i < values.length; i++) expect(values[i]).toBeGreaterThanOrEqual(values[i - 1]!)
   })
 })

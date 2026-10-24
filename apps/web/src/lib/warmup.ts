@@ -1,6 +1,6 @@
 import { projectQueries, type ProjectQuery } from "./queries/project-data"
 import type { ProjectSession } from "./session"
-import { projectHashFromPath, settingsPageHref, type ProjectKind } from "./sections"
+import { projectHashFromPath, type ProjectKind } from "./sections"
 import { isTaskThreadTitle } from "./tasks-api"
 
 /**
@@ -11,17 +11,9 @@ import { isTaskThreadTitle } from "./tasks-api"
  * each visible link down to its `loading.tsx` -- and the content is instant
  * wherever the client cache already holds the lists the page opens on. That
  * cache is persisted, so what is loaded here outlives a reload without
- * asking the server again. No page is rendered ahead in full but the one
- * about to open: a speculative render costs the server far more than the
- * lists it would show.
+ * asking the server again. No page is rendered ahead: a speculative render
+ * costs the server far more than the lists it would show.
  */
-
-/**
- * Pages whose server render is expensive enough that even as the page about
- * to open only their skeleton is prefetched. Usage walks every project
- * directory on disk.
- */
-export const SKELETON_ONLY: ReadonlySet<string> = new Set([settingsPageHref("usage")])
 
 /**
  * How much is loaded ahead, so that a large workspace costs a bounded amount
@@ -72,10 +64,8 @@ export function projectLists(hash: string): ProjectQuery<unknown>[] {
 }
 
 export interface WarmupInput {
-  /** The page in view, or the one about to be opened. */
+  /** The page in view. */
   pathname: string
-  /** Whether `pathname` itself is to be loaded: yes before it opens, no once it is on screen. */
-  includeCurrent: boolean
   /** The workspace the shell has open; without one there are no lists to load. */
   workspace: { hash: string; kind: ProjectKind } | null
   /** The workspace's projects, most recently active first. */
@@ -98,8 +88,6 @@ export function sessionListHashes(input: Pick<WarmupInput, "pathname" | "workspa
 }
 
 export interface WarmupPlan {
-  /** The pages to prefetch in full: the page about to open, if asked for, and no other. */
-  routes: string[]
   /** The lists the likeliest pages open on. */
   data: ProjectQuery<unknown>[]
 }
@@ -124,5 +112,5 @@ export function warmupPlan(input: WarmupInput): WarmupPlan {
       })
   }
 
-  return { routes: input.includeCurrent ? [pathname] : [], data }
+  return { data }
 }

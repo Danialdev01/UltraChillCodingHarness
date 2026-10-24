@@ -15,7 +15,7 @@ const session = (hash: string, title = "Chat", branch: string | null = null) =>
 const hashes = (n: number) => Array.from({ length: n }, (_, i) => `p${String(i).padStart(11, "0")}`)
 
 const plan = (input: Partial<WarmupInput> & Pick<WarmupInput, "pathname">) =>
-  warmupPlan({ includeCurrent: false, workspace: PROJECTS, projectHashes: [], ...input })
+  warmupPlan({ workspace: PROJECTS, projectHashes: [], ...input })
 
 describe("BUDGET", () => {
   it("loads three projects' lists, twenty sessions lists and one file tree", () => {
@@ -23,21 +23,11 @@ describe("BUDGET", () => {
   })
 })
 
-describe("warmupPlan routes", () => {
-  it("renders no page ahead once the page is on screen", () => {
+describe("warmupPlan", () => {
+  it("renders no page ahead: the plan is lists only", () => {
     const sessions = (h: string) => [session(`s${h.slice(1)}`)]
-    const { routes } = plan({ pathname: `/${WS}/p/${HASH}/tasks`, projectHashes: hashes(30), sessions })
-    expect(routes).toEqual([])
-  })
-
-  it("renders only the page about to open when asked to", () => {
-    const { routes } = plan({ pathname: `/${WS}/p/${HASH}/tasks`, includeCurrent: true, projectHashes: [HASH, OTHER] })
-    expect(routes).toEqual([`/${WS}/p/${HASH}/tasks`])
-  })
-
-  it("does the same without a workspace and in a session workspace", () => {
-    expect(plan({ pathname: "/", workspace: null, includeCurrent: true }).routes).toEqual(["/"])
-    expect(plan({ pathname: `/${WS}`, workspace: SESSIONS, projectHashes: [HASH] }).routes).toEqual([])
+    const warm = plan({ pathname: `/${WS}/p/${HASH}/tasks`, projectHashes: hashes(30), sessions })
+    expect(Object.keys(warm)).toEqual(["data"])
   })
 })
 

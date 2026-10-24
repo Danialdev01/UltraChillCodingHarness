@@ -5,7 +5,6 @@ import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { EyeIcon, EyeOffIcon, TerminalIcon } from "lucide-react";
 
-import { BootFrame } from "@/components/boot-frame";
 import { GithubMark } from "@/components/github-mark";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,14 +17,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-// The boot screen brings the client cache and the warmup list with it -- the
-// shell's business, not the sign-in form's. It is fetched while the form is
-// being filled in, and drawn as a bare frame on the rare submit that beats it.
+// The boot screen brings the client cache and the shell's skeleton with it --
+// the shell's business, not the sign-in form's. It is fetched while the form
+// is being filled in, and drawn as a bare background on the rare submit that
+// beats it.
 const loadBootScreen = () => import("@/components/boot-screen");
 const BootScreen = dynamic(() => loadBootScreen().then((m) => m.BootScreen), {
   ssr: false,
-  // Where the boot screen's own bar starts (`lib/boot-progress.ts`), so it never steps back.
-  loading: () => <BootFrame progress={0.04} />,
+  loading: () => <div className="bg-background fixed inset-0 z-50" aria-busy="true" />,
 });
 
 export function LoginForm({ className, ...props }: React.ComponentProps<"div">) {
@@ -71,7 +70,7 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
         return;
       }
 
-      // The boot screen loads what the first page needs, then opens it.
+      // The boot screen opens the first page.
       setSignedIn(true);
     } catch {
       setError("Could not reach the server. Is it running?");

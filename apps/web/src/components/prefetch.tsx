@@ -6,7 +6,7 @@ import type { PrefetchKind } from "next/dist/client/components/router-reducer/ro
 
 /**
  * Background prefetching for a small, fixed set of pages: the public site's
- * other tabs. The app's own shell loads far more, behind its boot screen
+ * other tabs. The app's own shell loads data rather than pages
  * (`route-warmup.tsx`, `lib/preload.ts`); this file stays free of all that so
  * the public site's bundle does not carry it.
  */

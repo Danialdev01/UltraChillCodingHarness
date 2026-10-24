@@ -22,7 +22,6 @@ import {
 } from "@/components/ui/sidebar"
 import { ChevronsUpDownIcon, LogOutIcon, UserRoundCogIcon } from "lucide-react"
 
-import { forgetWarm } from "@/lib/boot-cookie"
 import { clearUserCache } from "@/lib/query-client"
 import { SETTINGS } from "@/lib/sections"
 import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics"
@@ -52,8 +51,6 @@ export function NavUser({
     // The session cookie is HttpOnly, so it can only be cleared by the server.
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" })
     await clearUserCache()
-    // The next person to sign in here boots from the start.
-    forgetWarm()
     router.replace("/login")
     router.refresh()
   }
