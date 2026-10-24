@@ -3,6 +3,7 @@ import { and, asc, eq, getTableName, inArray, sql, type Column, type SQL } from 
 import {
   previews,
   projects,
+  projectStats,
   threads,
   turns,
   users,
@@ -14,7 +15,6 @@ import {
   can,
   CredentialPolicy,
   generateHash,
-  LIMIT_STOP_REASONS,
   permissionsOf,
   WorkspaceRole,
   type Membership,
@@ -364,9 +364,10 @@ export class WorkspaceService {
    * Projects in a workspace, for the sidebar and the project tables.
    * Ownership is checked first.
    *
-   * The thread counts come from correlated sub-selects rather than a join and
-   * a group-by: a project with no threads still has to appear, and a left
-   * join here would need the aggregate anyway to avoid multiplying the row.
+   * The counts and sums are `project_stats`, kept by the projection as
+   * threads and turns come and go, so this reads one row per project rather
+   * than summing every turn the project ever had. `running` stays a live
+   * EXISTS on the partial `threads_running_idx`: exact, and nothing to keep.
    *
    * Ordered by name, which is what the sidebar reads; the tables re-sort in
    * the browser, where the reader can change their mind.
@@ -394,39 +395,15 @@ export class WorkspaceService {
           select 1 from ${threads}
           where ${threads.projectId} = ${qualified(projects.id)} and ${threads.status} = 'running'
         )`,
-        failed: sql<boolean>`coalesce((
-          select ${qualified(turns.error)} is not null
-            or ${qualified(turns.stopReason)} in (${sql.join([...LIMIT_STOP_REASONS].map((r) => sql`${r}`), sql`, `)})
-            or ${qualified(turns.stopReason)} like 'error%'
-          from ${turns} join ${threads} on ${turns.threadId} = ${qualified(threads.id)}
-          where ${threads.projectId} = ${qualified(projects.id)}
-          order by ${qualified(turns.createdAt)} desc
-          limit 1
-        ), false)`,
-        threadCount: sql<number>`(
-          select count(*)::int from ${threads} where ${threads.projectId} = ${qualified(projects.id)}
-        )`,
-        // The same sums `stats` makes for the workspace, per project. The
-        // cast to double precision is for the same reason: a bigint arrives
-        // as a string, and the table would sort those as text.
-        tokens: sql<number>`(
-          select coalesce(sum(
-            (${turns.usage} ->> 'inputTokens')::double precision
-            + (${turns.usage} ->> 'outputTokens')::double precision
-            + (${turns.usage} ->> 'cacheReadInputTokens')::double precision
-            + (${turns.usage} ->> 'cacheCreationInputTokens')::double precision
-          ), 0)
-          from ${turns} join ${threads} on ${turns.threadId} = ${qualified(threads.id)}
-          where ${threads.projectId} = ${qualified(projects.id)}
-        )`,
-        costUsd: sql<number>`(
-          select coalesce(sum(${turns.costUsd})::double precision, 0)
-          from ${turns} join ${threads} on ${turns.threadId} = ${qualified(threads.id)}
-          where ${threads.projectId} = ${qualified(projects.id)}
-        )`,
+        // A project with no row yet reads as one with nothing in it.
+        failed: sql<boolean>`coalesce(${qualified(projectStats.lastTurnFailed)}, false)`,
+        threadCount: sql<number>`coalesce(${qualified(projectStats.threadCount)}, 0)`,
+        tokens: sql<number>`coalesce(${qualified(projectStats.tokens)}, 0)`,
+        costUsd: sql<number>`coalesce(${qualified(projectStats.costUsd)}, 0)`,
       })
       .from(projects)
       .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .leftJoin(projectStats, eq(projectStats.projectId, projects.id))
       .where(eq(projects.workspaceId, workspaceId))
       .orderBy(asc(projects.name))
       .then((rows) =>

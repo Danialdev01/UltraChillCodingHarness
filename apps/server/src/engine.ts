@@ -13,6 +13,7 @@ import {
 import {
   previews,
   projects,
+  projectStats,
   threads,
   turns,
   workspaceMembers,
@@ -24,6 +25,7 @@ import type { EventStore } from "./eventstore.js";
 import type { Principal } from "./auth.js";
 import { decide, type DecisionContext, type DecisionState } from "./decide.js";
 import { LATENCY_BUCKETS, registry } from "./metrics.js";
+import { turnFailed } from "./project-stats.js";
 import { DrainableWorker } from "./worker.js";
 import { toMembership, toPolicy } from "./workspaces.js";
 
@@ -284,6 +286,7 @@ export async function applyProjection(
           repoUrl: event.repoUrl,
           defaultBranch: event.defaultBranch,
         });
+        await tx.insert(projectStats).values({ projectId: event.projectId });
         break;
 
       case "project.cloned":
@@ -332,6 +335,11 @@ export async function applyProjection(
             .set({ provider: sql`coalesce(${threads.provider}, ${event.provider})` })
             .where(eq(threads.id, event.threadId));
         }
+        // The project's latest turn now, and not failed (yet).
+        await tx
+          .update(projectStats)
+          .set({ lastTurnId: event.turnId, lastTurnFailed: false, updatedAt: sql`now()` })
+          .where(eq(projectStats.projectId, projectOfThread(event.threadId)));
         break;
 
       case "agent.session_started":
@@ -367,6 +375,14 @@ export async function applyProjection(
           branch: event.branch ?? null,
           worktreeState: event.branch ? "creating" : null,
         });
+        // An upsert, so a project without a row yet still counts.
+        await tx
+          .insert(projectStats)
+          .values({ projectId: event.projectId, threadCount: 1 })
+          .onConflictDoUpdate({
+            target: projectStats.projectId,
+            set: { threadCount: sql`${projectStats.threadCount} + 1`, updatedAt: sql`now()` },
+          });
         break;
 
       case "thread.worktree_ready":
@@ -383,17 +399,31 @@ export async function applyProjection(
           .where(eq(threads.id, event.threadId));
         break;
 
-      case "agent.turn_completed":
+      case "agent.turn_completed": {
         await tx
           .update(turns)
           .set({ usage: event.usage, costUsd: event.costUsd, stopReason: event.stopReason })
           .where(eq(turns.id, event.turnId));
         await tx.update(threads).set({ status: "idle" }).where(eq(threads.id, event.threadId));
+        // Added to, never read and written back: the agent reactor appends
+        // alongside the engine, and a read-modify-write would lose one.
+        const { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens } = event.usage;
+        await tx
+          .update(projectStats)
+          .set({
+            tokens: sql`${projectStats.tokens} + ${inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens}`,
+            costUsd: sql`${projectStats.costUsd} + ${event.costUsd}`,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(projectStats.projectId, projectOfThread(event.threadId)));
+        await markLastTurnFailed(tx, event.turnId);
         break;
+      }
 
       case "agent.turn_failed":
         await tx.update(turns).set({ error: event.error }).where(eq(turns.id, event.turnId));
         await tx.update(threads).set({ status: "error" }).where(eq(threads.id, event.threadId));
+        await markLastTurnFailed(tx, event.turnId);
         break;
 
       case "checkpoint.captured":
@@ -430,6 +460,27 @@ export async function applyProjection(
         break;
     }
   }
+}
+
+/** The project a thread belongs to, as a sub-select: turn events carry only the thread. */
+function projectOfThread(threadId: string) {
+  return sql`(select ${threads.projectId} from ${threads} where ${threads.id} = ${threadId})`;
+}
+
+/**
+ * Whether the turn that just ended failed, on its project's row -- if it is
+ * still the project's latest turn. An older turn ending late leaves the
+ * newer one's flag alone. Reads the turns row the same transaction has just
+ * updated.
+ */
+async function markLastTurnFailed(tx: Transaction, turnId: string): Promise<void> {
+  await tx
+    .update(projectStats)
+    .set({
+      lastTurnFailed: sql`coalesce((select ${turnFailed("t")} from ${turns} t where t.id = ${turnId}), false)`,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(projectStats.lastTurnId, turnId));
 }
 
 function resolveProjectId(

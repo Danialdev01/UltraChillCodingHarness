@@ -3,6 +3,7 @@ import {
   bigserial,
   boolean,
   date,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -350,6 +351,11 @@ export const threads = pgTable(
     index("threads_project_idx").on(t.projectId),
     // The sidebar's thread list: one project's, newest first.
     index("threads_project_created_idx").on(t.projectId, t.createdAt),
+    // `listProjects`' "is anything running" -- an EXISTS that touches only
+    // the few running threads rather than every thread of the project.
+    index("threads_running_idx")
+      .on(t.projectId)
+      .where(sql`${t.status} = 'running'`),
   ],
 );
 
@@ -414,6 +420,33 @@ export const turns = pgTable(
   },
   (t) => [uniqueIndex("turns_thread_seq_idx").on(t.threadId, t.seq)],
 );
+
+/**
+ * Each project's running totals, for the sidebar and the project tables:
+ * what `listProjects` would otherwise sum over every turn the project ever
+ * had, on every bootstrap.
+ *
+ * A projection like the others (`applyProjection` in the server's
+ * engine.ts), kept with relative updates -- `+ 1`, `+ cost` -- because the
+ * engine and the agent reactor append at the same time. A table of its own
+ * rather than columns on `projects`, which every command reads and every
+ * container change writes: the counters' churn stays off that row. Deleting
+ * a thread recomputes its project's row (`recomputeProjectStats`).
+ */
+export const projectStats = pgTable("project_stats", {
+  projectId: uuid("project_id")
+    .primaryKey()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  threadCount: integer("thread_count").notNull().default(0),
+  /** Every token the project's turns were billed for: input, output and both cache kinds. */
+  tokens: doublePrecision("tokens").notNull().default(0),
+  costUsd: doublePrecision("cost_usd").notNull().default(0),
+  /** The project's latest turn, so its end can say whether it failed. */
+  lastTurnId: uuid("last_turn_id"),
+  /** The latest turn failed or stopped short: the sidebar's red dot. */
+  lastTurnFailed: boolean("last_turn_failed").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 /**
  * A named agent configuration scoped to one project -- a reviewer, a

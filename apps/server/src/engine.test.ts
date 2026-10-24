@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { threads, turns, type Transaction } from "@ucch/db";
-import type { DomainEvent } from "@ucch/protocol";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { projectStats, threads, turns, type Transaction } from "@ucch/db";
+import { LIMIT_STOP_REASONS, type DomainEvent } from "@ucch/protocol";
 import { applyProjection } from "./engine.js";
 import { decide, type DecisionContext } from "./decide.js";
 
@@ -18,32 +20,46 @@ const TURN = "55555555-5555-5555-5555-555555555555";
  * event, and that is exactly what this records.
  */
 function recorder() {
-  const statements: { op: "insert" | "update"; table: string; values: Record<string, unknown> }[] =
-    [];
+  const statements: Statement[] = [];
 
   const name = (table: unknown): string =>
-    table === turns ? "turns" : table === threads ? "threads" : "other";
+    table === turns
+      ? "turns"
+      : table === threads
+        ? "threads"
+        : table === projectStats
+          ? "project_stats"
+          : "other";
 
-  // `.values()` and `.where()` are awaited at the call site, and previews
-  // chain `.onConflictDoNothing()` onto the promise, so the double returns a
-  // thenable that carries the same method.
-  const settled = () => {
-    const promise = Promise.resolve([]) as Promise<never[]> & { onConflictDoNothing(): unknown };
+  // `.values()` and `.where()` are awaited at the call site, and inserts
+  // chain `.onConflictDoNothing()` or `.onConflictDoUpdate()` onto the
+  // promise, so the double returns a thenable that carries those methods.
+  const settled = (statement?: Statement) => {
+    const promise = Promise.resolve([]) as Promise<never[]> & {
+      onConflictDoNothing(): unknown;
+      onConflictDoUpdate(config: { set: Record<string, unknown> }): unknown;
+    };
     promise.onConflictDoNothing = () => promise;
+    promise.onConflictDoUpdate = (config) => {
+      if (statement) statement.onConflict = config.set;
+      return promise;
+    };
     return promise;
   };
 
   const tx = {
     insert: (table: unknown) => ({
       values: (values: Record<string, unknown>) => {
-        statements.push({ op: "insert", table: name(table), values });
-        return settled();
+        const statement: Statement = { op: "insert", table: name(table), values };
+        statements.push(statement);
+        return settled(statement);
       },
     }),
     update: (table: unknown) => ({
       set: (values: Record<string, unknown>) => ({
-        where: () => {
+        where: (where: unknown) => {
           statements.push({ op: "update", table: name(table), values });
+          wheres.set(statements.at(-1)!, where as SQL);
           return settled();
         },
       }),
@@ -52,6 +68,24 @@ function recorder() {
 
   return { statements, tx: tx as unknown as Transaction };
 }
+
+interface Statement {
+  op: "insert" | "update";
+  table: string;
+  values: Record<string, unknown>;
+  /** What an upsert sets on conflict. */
+  onConflict?: Record<string, unknown>;
+}
+
+/** Each update's `where`, kept off the statement so the tests' `toEqual`s stay as they are. */
+const wheres = new WeakMap<Statement, SQL>();
+
+/** A SQL value as Postgres would receive it: text and parameters. */
+const dialect = new PgDialect();
+const rendered = (value: unknown) => {
+  const { sql, params } = dialect.sqlToQuery(value as SQL);
+  return { sql, params };
+};
 
 const apply = async (batch: DomainEvent[]) => {
   const { statements, tx } = recorder();
@@ -168,7 +202,7 @@ describe("thread status", () => {
 
     // A cancellation is not a failure: the thread goes back to idle, so the
     // next message is accepted rather than blocked behind an error state.
-    expect(statements).toEqual([
+    expect(statements.filter((s) => s.table !== "project_stats")).toEqual([
       { op: "update", table: "turns", values: expect.objectContaining({ stopReason: "cancelled" }) },
       { op: "update", table: "threads", values: { status: "idle" } },
     ]);
@@ -208,7 +242,7 @@ describe("thread status", () => {
     const statements = await apply([
       { type: "agent.turn_failed", threadId: THREAD, turnId: TURN, error: "boom" },
     ]);
-    expect(statements.at(-1)).toEqual({
+    expect(statements.filter((s) => s.table !== "project_stats").at(-1)).toEqual({
       op: "update",
       table: "threads",
       values: { status: "error" },
@@ -242,5 +276,70 @@ describe("applyProjection", () => {
     expect(
       await apply([{ type: "agent.text_delta", threadId: THREAD, turnId: TURN, text: "hi" }]),
     ).toEqual([]);
+  });
+});
+
+describe("project_stats", () => {
+  const completed: DomainEvent = {
+    type: "agent.turn_completed",
+    threadId: THREAD,
+    turnId: TURN,
+    stopReason: "end_turn",
+    usage: { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4 },
+    costUsd: 0.25,
+  };
+  const stats = (statements: Statement[]) => statements.filter((s) => s.table === "project_stats");
+  const whereOf = (statement: Statement) => rendered(wheres.get(statement));
+
+  it("starts a project's row at zero", async () => {
+    const statements = await apply([
+      {
+        type: "project.created",
+        projectId: PROJECT,
+        workspaceId: "77777777-7777-7777-7777-777777777777",
+        hash: "abcdef123456",
+        name: "x",
+        repoUrl: null,
+        defaultBranch: "main",
+      },
+    ]);
+    expect(stats(statements)).toEqual([{ op: "insert", table: "project_stats", values: { projectId: PROJECT } }]);
+  });
+
+  it("counts a new thread with an upsert that adds one", async () => {
+    const [upsert] = stats(await apply([{ type: "thread.created", threadId: THREAD, projectId: PROJECT, title: "t" }]));
+    expect(upsert!.values).toEqual({ projectId: PROJECT, threadCount: 1 });
+    expect(rendered(upsert!.onConflict!.threadCount).sql).toBe('"project_stats"."thread_count" + 1');
+  });
+
+  it("makes a started turn the project's latest, not failed", async () => {
+    const [update] = stats(await apply([{ type: "turn.started", threadId: THREAD, turnId: TURN }]));
+    expect(update!.values).toMatchObject({ lastTurnId: TURN, lastTurnFailed: false });
+    // The project is the thread's, looked up in the same statement.
+    expect(whereOf(update!).sql).toContain('select "threads"."project_id" from "threads"');
+    expect(whereOf(update!).params).toEqual([THREAD]);
+  });
+
+  it("adds a completed turn's tokens and cost, then sets the failed flag if it is still the latest", async () => {
+    const statements = await apply([completed]);
+    const [sums, flag] = stats(statements);
+
+    // Relative: added in SQL, never read and written back.
+    expect(rendered(sums!.values.tokens)).toEqual({ sql: '"project_stats"."tokens" + $1', params: [10] });
+    expect(rendered(sums!.values.costUsd)).toEqual({ sql: '"project_stats"."cost_usd" + $1', params: [0.25] });
+
+    // After the turns row has its stop reason, which the flag reads.
+    expect(statements.indexOf(flag!)).toBeGreaterThan(statements.findIndex((s) => s.table === "turns"));
+    expect(whereOf(flag!).params).toEqual([TURN]);
+    const failed = rendered(flag!.values.lastTurnFailed);
+    expect(failed.params).toEqual([...LIMIT_STOP_REASONS, TURN]);
+    expect(failed.sql).toContain(`"t".stop_reason like 'error%'`);
+  });
+
+  it("sets the failed flag when a turn fails", async () => {
+    const statements = await apply([{ type: "agent.turn_failed", threadId: THREAD, turnId: TURN, error: "boom" }]);
+    const [flag] = stats(statements);
+    expect(Object.keys(flag!.values).sort()).toEqual(["lastTurnFailed", "updatedAt"]);
+    expect(whereOf(flag!).params).toEqual([TURN]);
   });
 });

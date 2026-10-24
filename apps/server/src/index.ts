@@ -105,6 +105,7 @@ import {
 } from "./session-lifecycle.js";
 import { cachedCatalogue, catalogue, keyQuota, setOpenRouterBase, type KeyQuota } from "./openrouter.js";
 import { isLoopback, LATENCY_BUCKETS, metricsAccess, recordVitals, registry, startRuntimeMetrics } from "./metrics.js";
+import { recomputeProjectStats } from "./project-stats.js";
 import { ResourceSampler } from "./resource-sampler.js";
 import {
   fetchClaudeUsage,
@@ -1710,8 +1711,16 @@ const sessionLifecycle = new SessionLifecycle({
       .where(eq(turns.threadId, threadId));
     return row?.count ?? 0;
   },
+  // The thread's turns go with it, and so does their spend: its project's
+  // totals are summed again in the same transaction.
   deleteThread: async (threadId) => {
-    await db.delete(threads).where(eq(threads.id, threadId));
+    await db.transaction(async (tx) => {
+      const [gone] = await tx
+        .delete(threads)
+        .where(eq(threads.id, threadId))
+        .returning({ projectId: threads.projectId });
+      if (gone) await recomputeProjectStats(tx, gone.projectId);
+    });
   },
   // The same token the push route uses: the owner's, and only for a host it
   // belongs to.
