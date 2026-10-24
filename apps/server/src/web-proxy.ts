@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Agent, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, sep } from "node:path";
+import { LATENCY_BUCKETS, registry } from "./metrics.js";
 
 /**
  * The single-container edge: this server owns the one public port, and what
@@ -67,6 +68,36 @@ const TYPES: Record<string, string> = {
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
+/**
+ * What a request to the web app is, for the counters: a page load, a router
+ * fetch of a page's server components (`rsc: 1`) -- `rsc_prefetch` when the
+ * router fetched it ahead of a click -- a static asset, or anything else (a
+ * server action, a route handler). The RSC counts are the ones that show
+ * pages being rendered nobody asked to see.
+ */
+export type RequestClass = "document" | "rsc" | "rsc_prefetch" | "static" | "other";
+
+export function classifyRequest(
+  pathname: string,
+  method: string | undefined,
+  headers: IncomingMessage["headers"],
+): RequestClass {
+  if (headers.rsc === "1") return headers["next-router-prefetch"] === "1" ? "rsc_prefetch" : "rsc";
+  if (pathname.startsWith("/_next/static/") || pathname.startsWith("/_next/image") || extname(pathname) !== "") {
+    return "static";
+  }
+  const page = headers["sec-fetch-dest"] === "document" || (headers.accept ?? "").includes("text/html");
+  return (method === "GET" || method === "HEAD") && page ? "document" : "other";
+}
+
+const proxied = registry.counter("web_requests_total", "Requests to the web app, by class", ["class"]);
+const upstreamSeconds = registry.histogram(
+  "web_upstream_seconds",
+  "Time from forwarding a request to Next until its response headers, by class",
+  LATENCY_BUCKETS,
+  ["class"],
+);
+
 /** Paths that are the API's, never the web app's. */
 export function isApiPath(pathname: string): boolean {
   return pathname === "/health" || pathname === "/metrics" || pathname === "/api" || pathname.startsWith("/api/");
@@ -88,11 +119,13 @@ export class WebProxy {
   handleRequest(req: IncomingMessage, res: ServerResponse): boolean {
     const pathname = (req.url ?? "/").split("?")[0]!;
     if (isApiPath(pathname)) return false;
+    const kind = classifyRequest(pathname, req.method, req.headers);
+    proxied.inc({ class: kind });
     if (this.#staticDir && pathname.startsWith("/_next/static/") && (req.method === "GET" || req.method === "HEAD")) {
       void this.#serveStatic(pathname.slice("/_next/static/".length), req, res);
       return true;
     }
-    this.#proxy(req, res);
+    this.#proxy(req, res, kind);
     return true;
   }
 
@@ -124,7 +157,8 @@ export class WebProxy {
     }
   }
 
-  #proxy(req: IncomingMessage, res: ServerResponse): void {
+  #proxy(req: IncomingMessage, res: ServerResponse, kind: RequestClass): void {
+    const started = performance.now();
     const headers: Record<string, string | string[]> = {};
     for (const [name, value] of Object.entries(req.headers)) {
       if (value === undefined || HOP_BY_HOP.has(name)) continue;
@@ -146,6 +180,7 @@ export class WebProxy {
         agent: this.#agent,
       },
       (answer) => {
+        upstreamSeconds.observe({ class: kind }, (performance.now() - started) / 1000);
         const raw: string[] = [];
         for (let i = 0; i < answer.rawHeaders.length; i += 2) {
           if (HOP_BY_HOP.has(answer.rawHeaders[i]!.toLowerCase())) continue;

@@ -104,7 +104,7 @@ import {
   type SessionRecord,
 } from "./session-lifecycle.js";
 import { cachedCatalogue, catalogue, keyQuota, type KeyQuota } from "./openrouter.js";
-import { LATENCY_BUCKETS, metricsAccess, registry, startRuntimeMetrics } from "./metrics.js";
+import { isLoopback, LATENCY_BUCKETS, metricsAccess, registry, startRuntimeMetrics } from "./metrics.js";
 import { ResourceSampler } from "./resource-sampler.js";
 import {
   fetchClaudeUsage,
@@ -801,7 +801,12 @@ app.get("/health", async (_request, reply) => {
  * client revalidating its cached copy pays for headers only.
  */
 const BUILD_ID = process.env.BUILD_ID ?? "dev";
+// Who asks: the web app rendering a page on the server (loopback, and not
+// forwarded by anything) or a browser revalidating its cached copy.
+const bootstrapCalls = registry.counter("bootstrap_requests_total", "GET /api/bootstrap, by caller", ["caller"]);
 app.get<{ Querystring: { ws?: string; hint?: string } }>("/api/bootstrap", async (request, reply) => {
+  const ssr = isLoopback(request.socket.remoteAddress) && !request.headers["x-forwarded-for"];
+  bootstrapCalls.inc({ caller: ssr ? "ssr" : "browser" });
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
 

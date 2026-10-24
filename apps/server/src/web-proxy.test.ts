@@ -4,7 +4,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { WebProxy } from "./web-proxy.js";
+import { classifyRequest, WebProxy } from "./web-proxy.js";
+import { registry } from "./metrics.js";
 
 let upstream: Server;
 let edge: Server;
@@ -121,5 +122,28 @@ describe("WebProxy", () => {
     expect(response.status).toBe(502);
     expect(response.headers.get("cache-control")).toBe("no-store");
     upstream.listen(0); // so afterEach can close it
+  });
+});
+
+describe("request classes", () => {
+  it("tells page loads, router fetches, prefetches and assets apart", () => {
+    expect(classifyRequest("/abc/project", "GET", { accept: "text/html,application/xhtml+xml" })).toBe("document");
+    expect(classifyRequest("/abc/project", "GET", { "sec-fetch-dest": "document" })).toBe("document");
+    expect(classifyRequest("/abc/project", "GET", { rsc: "1" })).toBe("rsc");
+    expect(classifyRequest("/abc/project", "GET", { rsc: "1", "next-router-prefetch": "1" })).toBe("rsc_prefetch");
+    expect(classifyRequest("/_next/static/chunks/app.js", "GET", {})).toBe("static");
+    expect(classifyRequest("/file-icons/svg/ts.svg", "GET", { accept: "image/*" })).toBe("static");
+    expect(classifyRequest("/abc/project", "POST", { "next-action": "x", accept: "text/x-component" })).toBe("other");
+  });
+
+  it("counts proxied requests by class and times the upstream", async () => {
+    const count = async (kind: string) => {
+      const match = (await registry.render()).match(new RegExp(`web_requests_total\\{class="${kind}"\\} (\\d+)`));
+      return match ? Number(match[1]) : 0;
+    };
+    const before = await count("rsc_prefetch");
+    await (await get("/x", { rsc: "1", "next-router-prefetch": "1" })).text();
+    expect(await count("rsc_prefetch")).toBe(before + 1);
+    expect(await registry.render()).toMatch(/web_upstream_seconds_count\{class="rsc_prefetch"\} [1-9]/);
   });
 });
