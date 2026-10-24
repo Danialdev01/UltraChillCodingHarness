@@ -59,6 +59,14 @@ describe("provider configuration", () => {
     expect(() => load({ AGENT_MAX_CONCURRENT_PER_USER: "0" })).toThrow(/CONCURRENT/);
   });
 
+  it("talks to OpenRouter unless pointed at a mock", () => {
+    expect(load().OPENROUTER_BASE_URL).toBe("https://openrouter.ai/api/v1");
+    expect(load({ OPENROUTER_BASE_URL: "http://127.0.0.1:4010/api/v1/" }).OPENROUTER_BASE_URL).toBe(
+      "http://127.0.0.1:4010/api/v1",
+    );
+    expect(() => load({ OPENROUTER_BASE_URL: "not a url" })).toThrow(/OPENROUTER_BASE_URL/);
+  });
+
   it("resolves the CLIs through PATH unless pinned", () => {
     expect(load().CLAUDE_BIN).toBe("claude");
     expect(load({ CODEX_BIN: "/opt/codex/bin/codex" }).CODEX_BIN).toBe("/opt/codex/bin/codex");

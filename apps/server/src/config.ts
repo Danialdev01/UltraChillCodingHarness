@@ -63,6 +63,17 @@ const Env = z.object({
   DEFAULT_MODEL: z.string().default("anthropic/claude-sonnet-4.5"),
 
   /**
+   * Where OpenRouter is. Only a load test changes it, to point the native
+   * loop at `scripts/load/mock-openrouter.mjs`; nothing else speaks
+   * OpenRouter's API.
+   */
+  OPENROUTER_BASE_URL: z
+    .string()
+    .url()
+    .default("https://openrouter.ai/api/v1")
+    .transform((url) => url.replace(/\/+$/, "")),
+
+  /**
    * The model that summarises rather than works: `web_search`'s reading of
    * result pages, and the compaction pass that folds a long thread down.
    *

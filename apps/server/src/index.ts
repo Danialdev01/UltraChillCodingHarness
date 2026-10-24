@@ -103,7 +103,7 @@ import {
   SessionUnsavedError,
   type SessionRecord,
 } from "./session-lifecycle.js";
-import { cachedCatalogue, catalogue, keyQuota, type KeyQuota } from "./openrouter.js";
+import { cachedCatalogue, catalogue, keyQuota, setOpenRouterBase, type KeyQuota } from "./openrouter.js";
 import { isLoopback, LATENCY_BUCKETS, metricsAccess, registry, startRuntimeMetrics } from "./metrics.js";
 import { ResourceSampler } from "./resource-sampler.js";
 import {
@@ -117,6 +117,7 @@ import {
 } from "./quotas.js";
 
 const config = loadConfig();
+setOpenRouterBase(config.OPENROUTER_BASE_URL);
 
 // Before anything else touches the database. Idempotent, so it runs on every
 // boot and a fresh deployment needs no separate migration step.

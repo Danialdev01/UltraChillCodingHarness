@@ -15,7 +15,12 @@ import type { TokenUsage } from "@ucch/protocol";
  * touches the database or the event log; the reactor decides what to record.
  */
 
-const BASE = "https://openrouter.ai/api/v1";
+/** `OPENROUTER_BASE_URL`, set once at boot; a load test points it at a mock. */
+let base = "https://openrouter.ai/api/v1";
+
+export function setOpenRouterBase(url: string): void {
+  base = url.replace(/\/+$/, "");
+}
 
 export interface ModelChoice {
   id: string;
@@ -70,13 +75,13 @@ export interface KeyQuota {
 export async function keyQuota(apiKey: string, signal?: AbortSignal): Promise<KeyQuota> {
   const headers = { authorization: `Bearer ${apiKey}` };
 
-  const keyResponse = await fetch(`${BASE}/auth/key`, { headers, signal });
+  const keyResponse = await fetch(`${base}/auth/key`, { headers, signal });
   if (!keyResponse.ok) throw new Error(`key lookup failed: ${keyResponse.status}`);
   const key = ((await keyResponse.json()) as { data?: KeyBody }).data ?? {};
 
   let credits: KeyQuota["credits"] = null;
   try {
-    const creditsResponse = await fetch(`${BASE}/credits`, { headers, signal });
+    const creditsResponse = await fetch(`${base}/credits`, { headers, signal });
     if (creditsResponse.ok) {
       const body = ((await creditsResponse.json()) as { data?: CreditsBody }).data;
       if (body && typeof body.total_credits === "number" && typeof body.total_usage === "number") {
@@ -124,7 +129,7 @@ interface CreditsBody {
  * the settings page can offer a real list rather than a guess.
  */
 export async function listModels(signal?: AbortSignal): Promise<ModelChoice[]> {
-  const response = await fetch(`${BASE}/models`, { signal });
+  const response = await fetch(`${base}/models`, { signal });
   if (!response.ok) throw new Error(`model list failed: ${response.status}`);
 
   const body = (await response.json()) as {
@@ -386,7 +391,7 @@ export async function streamCompletion(
   const tools = request.tools ?? [];
   const plugins = request.plugins ?? [];
 
-  const response = await fetch(`${BASE}/chat/completions`, {
+  const response = await fetch(`${base}/chat/completions`, {
     method: "POST",
     signal: request.signal,
     headers: {
