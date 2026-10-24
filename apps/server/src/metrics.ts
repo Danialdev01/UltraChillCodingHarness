@@ -343,3 +343,120 @@ function delayStats(histogram: IntervalHistogram): { p50: number; p99: number; m
     max: histogram.max / 1e9,
   };
 }
+
+// -- Real-user timings ----------------------------------------------------------
+
+/**
+ * The web app's pages, as templates. A browser reports the path it measured
+ * on; this is what keeps that from becoming a label value per project, per
+ * session, per note: a path is only ever recorded as one of these, or as
+ * `other`. Kept in step with `apps/web/src/app` (route groups dropped).
+ */
+const ROUTE_TEMPLATES: readonly string[] = [
+  "/",
+  "/login",
+  "/invite/[token]",
+  "/setting",
+  "/setting/[page]",
+  "/dev/themes",
+  "/shared/[slug]",
+  "/shared/[slug]/documents",
+  "/shared/[slug]/notes",
+  "/shared/[slug]/notes/[note]",
+  "/shared/[slug]/timeline",
+  "/[workspace]",
+  "/[workspace]/code",
+  "/[workspace]/database",
+  "/[workspace]/database/[connection]",
+  "/[workspace]/database/[connection]/[db]",
+  "/[workspace]/database/[connection]/[db]/[table]",
+  "/[workspace]/publish",
+  "/[workspace]/s/[session]",
+  "/[workspace]/todo",
+  "/[workspace]/workspace-settings",
+  "/[workspace]/workspace-settings/[page]",
+  "/[workspace]/p/[project]",
+  "/[workspace]/p/[project]/[session]",
+  "/[workspace]/p/[project]/activity",
+  "/[workspace]/p/[project]/documentation",
+  "/[workspace]/p/[project]/documentation/[note]",
+  "/[workspace]/p/[project]/keys",
+  "/[workspace]/p/[project]/manage",
+  "/[workspace]/p/[project]/tasks",
+  "/[workspace]/p/[project]/timeline",
+];
+
+const TEMPLATE_SEGMENTS = ROUTE_TEMPLATES.map((template) => ({
+  template,
+  segments: template.split("/").filter(Boolean),
+}));
+
+/**
+ * The template a path belongs to: of those with as many segments whose
+ * literal segments all match, the one matching the most literally, so
+ * `/x/p/y/tasks` is the tasks page rather than a session called "tasks".
+ */
+export function routeTemplate(path: string): string {
+  if (typeof path !== "string" || path.length > 512 || !path.startsWith("/")) return "other";
+  const segments = path.split("?")[0]!.split("/").filter(Boolean);
+  let best: { template: string; literal: number } | null = null;
+  for (const { template, segments: pattern } of TEMPLATE_SEGMENTS) {
+    if (pattern.length !== segments.length) continue;
+    let literal = 0;
+    let matches = true;
+    for (let i = 0; i < pattern.length; i++) {
+      if (pattern[i]!.startsWith("[")) continue;
+      if (pattern[i] !== segments[i]) {
+        matches = false;
+        break;
+      }
+      literal++;
+    }
+    if (matches && (!best || literal > best.literal)) best = { template, literal };
+  }
+  return best?.template ?? "other";
+}
+
+/** Timings the browser reports, in milliseconds; CLS is a unitless score. */
+const TIMED_VITALS = new Set(["LCP", "INP", "TTFB", "nav-skeleton", "nav-content", "frame-to-paint", "keystroke-to-echo"]);
+
+/** From a frame to a slow page load, in seconds. */
+const VITAL_BUCKETS: readonly number[] = [
+  0.005, 0.01, 0.016, 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2, 2, 2.5, 4, 6, 10, 20,
+];
+const CLS_BUCKETS: readonly number[] = [0.01, 0.05, 0.1, 0.15, 0.25, 0.5, 1];
+
+/** The most entries one report may carry; the web app sends at most this. */
+export const MAX_VITALS_PER_REPORT = 50;
+
+/**
+ * Folds one `POST /api/metrics/vitals` body into the histograms, and returns
+ * how many entries it kept -- or null when the body is not a report at all.
+ * Unknown names, values out of range and anything past the cap are dropped:
+ * the sender is a browser, so nothing it says is trusted to be well formed.
+ */
+export function recordVitals(body: unknown, target: Registry = registry): number | null {
+  const vitals = (body as { vitals?: unknown } | null)?.vitals;
+  if (!Array.isArray(vitals)) return null;
+  const timed = target.histogram("web_vital_seconds", "Real-user timings from the web app, by name and route template", VITAL_BUCKETS, [
+    "name",
+    "route",
+  ]);
+  const cls = target.histogram("web_vital_cls", "Real-user cumulative layout shift, by route template", CLS_BUCKETS, ["route"]);
+  let kept = 0;
+  for (const entry of vitals.slice(0, MAX_VITALS_PER_REPORT)) {
+    const { name, value, path } = (entry ?? {}) as { name?: unknown; value?: unknown; path?: unknown };
+    if (typeof name !== "string" || typeof value !== "number" || !Number.isFinite(value) || value < 0) continue;
+    const route = routeTemplate(typeof path === "string" ? path : "");
+    if (name === "CLS") {
+      if (value > 100) continue;
+      cls.observe({ route }, value);
+    } else if (TIMED_VITALS.has(name)) {
+      // A tab that slept mid-measurement reports hours; nothing real is.
+      if (value > 120_000) continue;
+      timed.observe({ name, route }, value / 1000);
+    } else continue;
+    kept++;
+  }
+  return kept;
+}

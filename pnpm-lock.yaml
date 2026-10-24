@@ -252,6 +252,9 @@ importers:
       undici:
         specifier: 7.24.4
         version: 7.24.4
+      web-vitals:
+        specifier: ^6.2.3
+        version: 6.2.3
     devDependencies:
       '@next/bundle-analyzer':
         specifier: 15.5.4
@@ -5578,6 +5581,9 @@ packages:
 
   w3c-keyname@2.2.8:
     resolution: {integrity: sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ==}
+
+  web-vitals@6.2.3:
+    resolution: {integrity: sha512-Dmy+vdO1UPMqXiAtZSNayhl4f794Bxfd94W4HIj2HlYtczEQfEOon969memlcpcHrTuOKLa5baFjX7WbgmOq+A==}
 
   webpack-bundle-analyzer@4.10.1:
     resolution: {integrity: sha512-s3P7pgexgT/HTUSYgxJyn28A+99mmLq4HsJepMPzu0R8ImJc52QNqaFYW1Z2z2uIb1/J3eYgaAWVpaC+v/1aAQ==}
@@ -11088,6 +11094,8 @@ snapshots:
       - terser
 
   w3c-keyname@2.2.8: {}
+
+  web-vitals@6.2.3: {}
 
   webpack-bundle-analyzer@4.10.1:
     dependencies:

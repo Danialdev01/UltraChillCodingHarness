@@ -4,6 +4,8 @@ import * as React from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 
+import { markNavigationCommit, markNavigationStart } from "@/lib/vitals"
+
 /**
  * Page changes as view transitions.
  *
@@ -54,6 +56,7 @@ export function ViewTransitionsProvider({ children }: { children: React.ReactNod
   React.useLayoutEffect(() => {
     release.current?.()
     release.current = null
+    markNavigationCommit(pathname)
   }, [pathname])
 
   const value = React.useMemo<Navigator>(
@@ -168,6 +171,8 @@ export function TransitionLink({
         // object is rare enough here to be left to `next/link` as well.
         if (typeof href !== "string" || href.startsWith("#")) return
         event.preventDefault()
+        // nav-skeleton and nav-content (lib/vitals.ts) are timed from here.
+        markNavigationStart(href)
         transition(() => {
           if (replace) router.replace(href, { scroll })
           else router.push(href, { scroll })

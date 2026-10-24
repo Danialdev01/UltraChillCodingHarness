@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode, type Ref } from "react";
 import {
   AlertCircleIcon,
   ArrowDownIcon,
@@ -123,6 +123,7 @@ import { useRouter } from "next/navigation";
 import { keepSession, removeWhenLeft, startProjectSession } from "@/lib/project-sessions";
 import { projectHref } from "@/lib/sections";
 import { useTransitionRouter } from "@/lib/view-transitions";
+import { afterNextPaint, reportVital } from "@/lib/vitals";
 import { useViewerFirstName } from "@/components/viewer";
 
 /** Which menu the composer has open, and the word it was opened by. */
@@ -647,6 +648,32 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     () => toMessages(threadEvents),
     [threadEvents],
   );
+
+  /**
+   * frame-to-paint (lib/vitals.ts): a streamed delta's arrival to the paint
+   * of the commit that shows it. One delta at a time -- the oldest still
+   * waiting -- and at most two a second, so a stream of sixty tokens a second
+   * is sampled rather than reported token by token. The effect runs after
+   * the one above that makes the client, so it taps the current one.
+   */
+  const deltaAt = useRef<number | null>(null);
+  const lastDeltaSample = useRef(0);
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client) return;
+    return client.onEvent(({ event }) => {
+      if (event.type !== "agent.text_delta" || event.threadId !== threadIdRef.current) return;
+      const now = performance.now();
+      if (deltaAt.current === null && now - lastDeltaSample.current >= 500) deltaAt.current = now;
+    });
+  }, [project.id, project.hash, sessionId]);
+  useLayoutEffect(() => {
+    const at = deltaAt.current;
+    if (at === null) return;
+    deltaAt.current = null;
+    lastDeltaSample.current = performance.now();
+    afterNextPaint(() => reportVital("frame-to-paint", performance.now() - at));
+  }, [messages]);
 
   /**
    * Leaving a project session nothing was said in removes it, so starting

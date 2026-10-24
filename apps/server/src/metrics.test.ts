@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { metricsAccess, Registry, startRuntimeMetrics } from "./metrics.js";
+import { MAX_VITALS_PER_REPORT, metricsAccess, recordVitals, Registry, routeTemplate, startRuntimeMetrics } from "./metrics.js";
 
 describe("Registry", () => {
   it("renders counters and gauges in the Prometheus text format", async () => {
@@ -104,5 +104,82 @@ describe("metricsAccess", () => {
     for (const remoteAddress of ["172.17.0.1", "10.0.0.5", "::ffff:10.0.0.5", undefined]) {
       expect(metricsAccess({ authorization: undefined, remoteAddress, token: undefined })).toBe(false);
     }
+  });
+});
+
+describe("routeTemplate", () => {
+  it("names a page by its template, never by its hashes", () => {
+    expect(routeTemplate("/")).toBe("/");
+    expect(routeTemplate("/login")).toBe("/login");
+    expect(routeTemplate("/setting/account")).toBe("/setting/[page]");
+    expect(routeTemplate("/k3j2h1")).toBe("/[workspace]");
+    expect(routeTemplate("/k3j2h1/p/9x8y7z")).toBe("/[workspace]/p/[project]");
+    expect(routeTemplate("/k3j2h1/p/9x8y7z/a1b2c3")).toBe("/[workspace]/p/[project]/[session]");
+    expect(routeTemplate("/k3j2h1/p/9x8y7z/documentation/42")).toBe("/[workspace]/p/[project]/documentation/[note]");
+    expect(routeTemplate("/shared/some-slug/notes")).toBe("/shared/[slug]/notes");
+  });
+
+  it("prefers a literal segment to a parameter", () => {
+    // A session hash could be anything, but "tasks" is the tasks page.
+    expect(routeTemplate("/k3j2h1/p/9x8y7z/tasks")).toBe("/[workspace]/p/[project]/tasks");
+    expect(routeTemplate("/k3j2h1/workspace-settings/members")).toBe("/[workspace]/workspace-settings/[page]");
+  });
+
+  it("puts everything else under one label", () => {
+    expect(routeTemplate("/a/b/c/d/e/f/g")).toBe("other");
+    expect(routeTemplate("/k3j2h1/nowhere")).toBe("other");
+    expect(routeTemplate("relative")).toBe("other");
+    expect(routeTemplate(`/${"x".repeat(600)}`)).toBe("other");
+  });
+});
+
+describe("recordVitals", () => {
+  it("files timings in seconds and CLS as a score, by route template", async () => {
+    const registry = new Registry();
+    const kept = recordVitals(
+      {
+        vitals: [
+          { name: "LCP", value: 1200, path: "/k3j2h1" },
+          { name: "nav-skeleton", value: 40, path: "/k3j2h1/p/9x8y7z/tasks" },
+          { name: "CLS", value: 0.02, path: "/login" },
+        ],
+      },
+      registry,
+    );
+    expect(kept).toBe(3);
+    const text = await registry.render();
+    expect(text).toContain('web_vital_seconds_sum{name="LCP",route="/[workspace]"} 1.2');
+    expect(text).toContain('web_vital_seconds_count{name="nav-skeleton",route="/[workspace]/p/[project]/tasks"} 1');
+    expect(text).toContain('web_vital_cls_sum{route="/login"} 0.02');
+    // Nothing of the path itself survives.
+    expect(text).not.toContain("k3j2h1");
+  });
+
+  it("drops what is not a timing it knows, and stops at the cap", () => {
+    const registry = new Registry();
+    expect(
+      recordVitals(
+        {
+          vitals: [
+            { name: "made-up", value: 5, path: "/" },
+            { name: "INP", value: -1, path: "/" },
+            { name: "INP", value: Number.NaN, path: "/" },
+            { name: "INP", value: "fast", path: "/" },
+            { name: "TTFB", value: 10 * 60_000, path: "/" },
+            null,
+            { name: "INP", value: 80, path: "/" },
+          ],
+        },
+        registry,
+      ),
+    ).toBe(1);
+    const many = Array.from({ length: MAX_VITALS_PER_REPORT + 10 }, () => ({ name: "INP", value: 10, path: "/" }));
+    expect(recordVitals({ vitals: many }, registry)).toBe(MAX_VITALS_PER_REPORT);
+  });
+
+  it("refuses a body that is not a report", () => {
+    expect(recordVitals(null, new Registry())).toBeNull();
+    expect(recordVitals({ vitals: "LCP" }, new Registry())).toBeNull();
+    expect(recordVitals("text", new Registry())).toBeNull();
   });
 });

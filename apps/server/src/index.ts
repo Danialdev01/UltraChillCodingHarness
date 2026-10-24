@@ -104,7 +104,7 @@ import {
   type SessionRecord,
 } from "./session-lifecycle.js";
 import { cachedCatalogue, catalogue, keyQuota, setOpenRouterBase, type KeyQuota } from "./openrouter.js";
-import { isLoopback, LATENCY_BUCKETS, metricsAccess, registry, startRuntimeMetrics } from "./metrics.js";
+import { isLoopback, LATENCY_BUCKETS, metricsAccess, recordVitals, registry, startRuntimeMetrics } from "./metrics.js";
 import { ResourceSampler } from "./resource-sampler.js";
 import {
   fetchClaudeUsage,
@@ -764,6 +764,22 @@ app.get("/metrics", async (request, reply) => {
     .type("text/plain; version=0.0.4; charset=utf-8")
     .header("cache-control", "no-store")
     .send(await registry.render());
+});
+
+/**
+ * Timings from people's browsers (apps/web/src/lib/vitals.ts), folded into
+ * the `web_vital_*` histograms (metrics.ts) and nothing else: no table, no
+ * log line, nothing about who sent them, so there is nothing to keep or
+ * grow. Open to the login page too, hence per-address throttling rather
+ * than a session; a tab sends a batch every ten seconds at most while busy.
+ */
+app.post("/api/metrics/vitals", {
+  bodyLimit: 32 * 1024,
+  config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+}, async (request, reply) => {
+  const kept = recordVitals(request.body);
+  if (kept === null) return reply.code(400).send({ error: "expected { vitals: [...] }" });
+  return reply.code(204).send();
 });
 
 /**

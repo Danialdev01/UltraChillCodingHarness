@@ -9,6 +9,7 @@ import { useFilesPanel } from "@/components/files-panel"
 import { XtermPane } from "@/components/xterm-pane"
 import { EMPTY_OUTPUT, appendOutput, frameBatcher, type TerminalOutput } from "@/lib/terminal-output"
 import { cn } from "@/lib/utils"
+import { afterNextPaint, reportVital } from "@/lib/vitals"
 import type { Project } from "@/lib/session"
 
 /**
@@ -50,6 +51,12 @@ export function TerminalView({ project, active }: { project: Project; active: bo
   const tabsRef = React.useRef(tabs)
   tabsRef.current = tabs
   const { registerTerminals } = useFilesPanel()
+  /**
+   * keystroke-to-echo (lib/vitals.ts): a printable key sent to a shell, to
+   * the paint after the output that follows it. One key at a time; a key
+   * nothing answered (a password prompt) gives way after a few seconds.
+   */
+  const echoRef = React.useRef<{ terminalId: string; at: number; answered: boolean } | null>(null)
 
   /**
    * The socket opens the first time the terminal is looked at, not when the
@@ -86,10 +93,18 @@ export function TerminalView({ project, active }: { project: Project; active: bo
         }
         return merged
       })
+      // xterm draws what this commit hands it on the next animation frame.
+      const echo = echoRef.current
+      if (echo?.answered) {
+        echoRef.current = null
+        afterNextPaint(() => reportVital("keystroke-to-echo", performance.now() - echo.at))
+      }
     })
     const offState = client.subscribeToChanges(() => setReady(client.state === "ready"))
     const offEvents = client.onEvent(({ event }) => {
-      if (event.type === "terminal.output") batch.push({ terminalId: event.terminalId, data: event.data })
+      if (event.type !== "terminal.output") return
+      if (echoRef.current?.terminalId === event.terminalId) echoRef.current.answered = true
+      batch.push({ terminalId: event.terminalId, data: event.data })
     })
     unsubscribeRef.current = () => {
       offState()
@@ -195,6 +210,11 @@ export function TerminalView({ project, active }: { project: Project; active: bo
   )
 
   function send(id: string, data: string) {
+    const now = performance.now()
+    const waiting = echoRef.current
+    if (data.length === 1 && data >= " " && data !== "\x7f" && (!waiting || now - waiting.at > 5_000)) {
+      echoRef.current = { terminalId: id, at: now, answered: false }
+    }
     void clientRef.current
       ?.dispatch({ type: "terminal.input", terminalId: id, data })
       .catch(() => {})

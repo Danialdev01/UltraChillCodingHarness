@@ -4,6 +4,7 @@ import { Inter, JetBrains_Mono, Source_Serif_4 } from "next/font/google";
 import localFont from "next/font/local";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { VitalsReporter } from "@/components/vitals-reporter";
 import { ViewTransitionsProvider } from "@/lib/view-transitions";
 import {
   DEFAULT_SETTINGS,
@@ -150,6 +151,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <ViewTransitionsProvider>{children}</ViewTransitionsProvider>
           </TooltipProvider>
         </ThemeProvider>
+        {/* Real-user timings for /metrics; see lib/vitals.ts. */}
+        <VitalsReporter />
       </body>
     </html>
   );
