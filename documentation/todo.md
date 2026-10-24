@@ -204,7 +204,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - On a copy of the development database with 3 duplicates planted, the migration renumbered those 3 streams and left the rest alone.
     - 200 concurrent appends to one project: 0 failures and 0 duplicates with the lock; 178 unique-index failures without it.
 
-- [ ] **PF1.2 — A send claims the thread (`queued`), and `turn.dequeued`**
+- [x] **PF1.2 — A send claims the thread (`queued`), and `turn.dequeued`** — abc4ddd
 
   - **Depends:** —
   - **Files:** `apps/server/src/engine.ts` (`applyProjection`, the `user.message` case), `apps/server/src/decide.ts` (`thread.send`, `thread.cancel`), `apps/server/src/agent.ts` (`#run` early returns, lines 340–355), `apps/server/src/index.ts` (boot reset, line 130), `packages/protocol/src/events.ts` (`turn.dequeued`), `packages/protocol` `ThreadSnapshot.status`, `apps/web/src/components/project-sessions-nav.tsx` (lines 78, 126), `apps/web/src/lib/chat-messages.ts`
@@ -216,6 +216,9 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     5. Web: `queued` counts as working. `toMessages` renders a dequeued turn as "Stopped before it started".
   - **Acceptance:** two `thread.send` frames 1 ms apart start exactly one turn, and the second gets `conflict`. No thread stays `queued` after a restart.
   - **Verify:** `pnpm test -- engine decide chat-messages`
+  - **Measured:**
+    - Two sends 1 ms apart on the load target: 2 turns before, 1 turn and a `conflict` after.
+    - A thread left `queued` is `idle` after a restart, with `turn.dequeued { reason: "restart" }` in its log.
 
 ### Warmup, boot and refresh (`solution.md` §3–§4)
 
