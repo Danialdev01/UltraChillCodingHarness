@@ -374,7 +374,7 @@ export function OptionPanel({
   children: React.ReactNode;
 }) {
   return (
-    <TabsPrimitive.Panel value={value} className={cn("flex flex-col gap-3 pt-1 outline-none", className)}>
+    <TabsPrimitive.Panel value={value} className={cn("flex flex-col gap-3 rounded-md pt-1 outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}>
       {children}
     </TabsPrimitive.Panel>
   );

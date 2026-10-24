@@ -67,7 +67,13 @@ describe("components use semantic colour tokens", () => {
   it("has no raw hex, rgb, hsl or oklch colours", () => {
     // In a class, a style or a string: anything the theme cannot reach.
     const pattern = /["'`(\s:[]#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|oklch)\(/
-    expect(hits(pattern)).toEqual([])
+    expect(
+      hits(pattern, [
+        // The mark's teal dot is the brand, fixed on purpose; its navy
+        // follows the theme through `currentColor`.
+        ["logo-mark.tsx", 'fill="#377876"'],
+      ]),
+    ).toEqual([])
   })
 })
 
