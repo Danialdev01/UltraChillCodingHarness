@@ -215,7 +215,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
 
 ### Warmup, boot and refresh (`solution.md` §3–§4)
 
-- [ ] **PF1.3 — Shrink the warmup and remove re-warm triggers**
+- [x] **PF1.3 — Shrink the warmup and remove re-warm triggers** — 21cb70b
 
   - **Depends:** PF0.9
   - **Files:** `apps/web/src/lib/warmup.ts` (`BUDGET` line 58, `warmupPlan` line 111), `apps/web/src/lib/preload.ts` (FULL prefetch line 228, `forgetPrefetched`/`onForgotten`/`warmedAt`), `apps/web/src/components/route-warmup.tsx` (triggers at lines 84–99), `apps/web/src/lib/realtime.tsx` (line 287), `apps/web/src/lib/warmup.test.ts`, `apps/web/src/lib/preload.test.ts`
@@ -230,6 +230,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - 0 RSC requests in other tabs when a member saves settings.
     - `perf.spec.ts` nav-skeleton p95 is unchanged (≤ 100 ms).
   - **Verify:** standard, plus `pnpm --filter @ucch/web e2e`
+  - **Measured:**
+    - Sign-in: 1 RSC render, plus 18 viewport prefetches to `loading.tsx`, which call no bootstrap. That is 19 counting both, against the ≤ 15 target.
+    - Settings save: 1 RSC per other tab, the bridge's `router.refresh()`, which PF1.5 removes.
+    - Nav-skeleton p95: 74 ms under load.
 
 - [ ] **PF1.4 — Remove the boot gate and rewrite the CLAUDE.md rule**
 
