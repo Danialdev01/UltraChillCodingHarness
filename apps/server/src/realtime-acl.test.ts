@@ -9,6 +9,7 @@ import type { AuthService, Principal } from "./auth.js";
 import type { ComposerStore } from "./composer.js";
 import type { EventStore } from "./eventstore.js";
 import type { OrchestrationEngine } from "./engine.js";
+import { registry } from "./metrics.js";
 import { PresenceStore } from "./presence.js";
 
 /**
@@ -200,5 +201,34 @@ describe("realtime access", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(laptop.frames.length).toBeGreaterThan(0);
     expect(sockets[1]!.readyState).toBe(WebSocket.OPEN);
+  });
+});
+
+describe("socket metrics", () => {
+  it("counts subscriptions by topic kind, and frames in and out", async () => {
+    const alice = await connect(ALICE);
+    alice.send({ kind: "subscribe", id: "1", topic: { name: "project", projectId: PROJECT } });
+    alice.send({ kind: "subscribe", id: "2", topic: { name: "terminal", terminalId: TERMINAL } });
+    await alice.next(ackOf("1"));
+    await alice.next(ackOf("2"));
+    expect(Object.fromEntries(gateway.subscriptionCounts())).toEqual({ project: 1, terminal: 1 });
+
+    // The unsubscribe is acked under the subscription's own id, so it is the second ack for "2".
+    const acksOf2 = () => alice.frames.filter((f) => f.kind === "ack" && f.id === "2").length;
+    alice.send({ kind: "unsubscribe", id: "2" });
+    await alice.next(() => acksOf2() === 2);
+    expect(Object.fromEntries(gateway.subscriptionCounts())).toEqual({ project: 1 });
+
+    alice.send({ not: "a frame" });
+    await alice.next((f) => f.kind === "error" && f.code === "invalid");
+    const presence: DomainEvent = { type: "presence.changed", projectId: PROJECT, viewers: [] };
+    bus.publish({ seq: null, projectId: PROJECT, threadId: null, event: presence });
+    await alice.next((f) => f.kind === "push" && f.event.type === "presence.changed");
+
+    const text = await registry.render();
+    expect(text).toMatch(/ws_frames_in_total\{kind="subscribe"\} \d+/);
+    expect(text).toMatch(/ws_frames_in_total\{kind="invalid"\} \d+/);
+    expect(text).toMatch(/ws_frames_out_total\{kind="push",event="presence.changed"\} \d+/);
+    expect(text).toMatch(/ws_bytes_out_total\{kind="push"\} \d+/);
   });
 });

@@ -65,6 +65,7 @@ describe("WebProxy", () => {
   it("leaves the API to Fastify", async () => {
     expect(await (await get("/api/me")).text()).toBe("fastify");
     expect(await (await get("/health")).text()).toBe("fastify");
+    expect(await (await get("/metrics")).text()).toBe("fastify");
   });
 
   it("proxies the web app with the original host and a forwarded-for", async () => {

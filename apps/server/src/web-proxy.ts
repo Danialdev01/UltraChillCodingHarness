@@ -10,7 +10,8 @@ import { extname, join, normalize, sep } from "node:path";
  * In order, for a request that is not a preview host's (preview.ts runs
  * first):
  *
- *   /api/*, /health        Fastify, as before -- `handleRequest` says no
+ *   /api/*, /health,       Fastify, as before -- `handleRequest` says no
+ *   /metrics
  *   /_next/static/*        the build's hashed files, straight from disk and
  *                          cached forever: their names change with their bytes
  *   everything else        streamed to Next on loopback
@@ -68,7 +69,7 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 
 /** Paths that are the API's, never the web app's. */
 export function isApiPath(pathname: string): boolean {
-  return pathname === "/health" || pathname === "/api" || pathname.startsWith("/api/");
+  return pathname === "/health" || pathname === "/metrics" || pathname === "/api" || pathname.startsWith("/api/");
 }
 
 export class WebProxy {

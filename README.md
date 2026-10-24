@@ -287,6 +287,8 @@ The `dev` user may create as many databases as you like on both servers; add the
 
 **One container, one replica.** Live terminals, project files, the event bus behind every WebSocket, the background workers and the database all live in it. Scale it vertically: give the VPS (or the application, under **Advanced → Resources**) more CPU and RAM. Agent turns are mostly waiting on model APIs, so one container handles many concurrent sessions. Tune the embedded PostgreSQL with `PG_SHARED_BUFFERS`, `PG_EFFECTIVE_CACHE_SIZE` and `PG_WORK_MEM`, or move it out with `DATABASE_URL`.
 
+**Seeing where the time goes.** `/metrics` reports the server's own numbers in the Prometheus text format: event-loop delay, memory and GC, the engine queue, WebSocket connections, subscriptions and frames, HTTP latency by route, and Postgres connections. Without `METRICS_TOKEN` it answers only from inside the container (`docker exec <container> curl -s localhost:3000/metrics`); with it, any caller presenting `Authorization: Bearer <token>`.
+
 ### Research crawler (optional)
 
 Run [Crawl4AI](https://github.com/unclecode/crawl4ai) as its own Dokploy service (image `unclecode/crawl4ai`) and set `CRAWL4AI_URL` (and `CRAWL4AI_API_TOKEN`). `BROWSER_USE_API_KEY` adds the escalation agent.

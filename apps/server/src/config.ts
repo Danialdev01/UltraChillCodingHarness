@@ -194,6 +194,15 @@ const Env = z.object({
    */
   DEFAULT_USER_EMAIL: z.string().email().optional(),
   DEFAULT_USER_PASSWORD: z.string().min(8).optional(),
+
+  /**
+   * The bearer token `/metrics` asks for. Unset, it answers loopback only:
+   * a scraper inside the container, or `docker exec ... curl`. Set it to
+   * scrape from elsewhere; it is the only thing standing between the
+   * numbers and the internet, so it must not be guessable.
+   */
+  METRICS_TOKEN: z.string().min(16).optional(),
+
 });
 
 export type Config = Readonly<z.infer<typeof Env>>;

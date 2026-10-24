@@ -14,6 +14,7 @@ import type { EventBus, Topic } from "./bus.js";
 import type { ComposerState, ComposerStore } from "./composer.js";
 import type { EventStore } from "./eventstore.js";
 import type { OrchestrationEngine, EngineResult } from "./engine.js";
+import { registry } from "./metrics.js";
 import type { PresenceStore } from "./presence.js";
 
 /** Newest events of a thread sent when a client subscribes to it. */
@@ -30,6 +31,8 @@ interface Connection {
   /** The tab's own id, from the upgrade URL; stamped on what it changes. */
   clientId: string;
   subscriptions: Map<string, () => void>;
+  /** Each subscription's topic kind, for the subscription gauge. */
+  subscriptionKinds: Map<string, Topic["name"]>;
   /** The project each project or thread subscription belongs to, to re-check on `revalidate`. */
   subscriptionProjects: Map<string, string>;
   /** The workspace each workspace subscription is for, likewise. */
@@ -134,6 +137,7 @@ export class WebSocketGateway {
       principal,
       clientId,
       subscriptions: new Map(),
+      subscriptionKinds: new Map(),
       subscriptionProjects: new Map(),
       subscriptionWorkspaces: new Map(),
       watching: new Map(),
@@ -176,6 +180,7 @@ export class WebSocketGateway {
     try {
       frame = ClientFrame.parse(JSON.parse(raw));
     } catch (error) {
+      framesIn.inc({ kind: "invalid" });
       send(conn.socket, {
         kind: "error",
         id: null,
@@ -184,6 +189,7 @@ export class WebSocketGateway {
       });
       return;
     }
+    framesIn.inc({ kind: frame.kind });
 
     switch (frame.kind) {
       case "ping":
@@ -278,6 +284,7 @@ export class WebSocketGateway {
         });
 
         conn.subscriptions.set(subscriptionId, unsubscribe);
+        conn.subscriptionKinds.set(subscriptionId, frame.topic.name);
         const watched = frame.topic.name === "project" ? frame.topic.projectId : threadProject;
         if (watched) conn.subscriptionProjects.set(subscriptionId, watched);
         if (frame.topic.name === "workspace") conn.subscriptionWorkspaces.set(subscriptionId, frame.topic.workspaceId);
@@ -467,6 +474,7 @@ export class WebSocketGateway {
   #end(conn: Connection, subscriptionId: string): void {
     conn.subscriptions.get(subscriptionId)?.();
     conn.subscriptions.delete(subscriptionId);
+    conn.subscriptionKinds.delete(subscriptionId);
     conn.subscriptionProjects.delete(subscriptionId);
     conn.subscriptionWorkspaces.delete(subscriptionId);
     const watched = conn.watching.get(subscriptionId);
@@ -524,6 +532,15 @@ export class WebSocketGateway {
     return this.#connections.size;
   }
 
+  /** Open subscriptions across every socket, by topic kind. */
+  subscriptionCounts(): Map<Topic["name"], number> {
+    const counts = new Map<Topic["name"], number>();
+    for (const conn of this.#connections) {
+      for (const kind of conn.subscriptionKinds.values()) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+    return counts;
+  }
+
   close(): void {
     for (const conn of this.#connections) conn.socket.close();
     this.#wss.close();
@@ -551,17 +568,33 @@ function composerEvent(projectId: string, threadId: string, state: ComposerState
  */
 const MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 
+const framesIn = registry.counter("ws_frames_in_total", "Frames received from clients, by kind", ["kind"]);
+const framesOut = registry.counter(
+  "ws_frames_out_total",
+  "Frames sent to clients, by kind and, for pushes, event type",
+  ["kind", "event"],
+);
+const bytesOut = registry.counter("ws_bytes_out_total", "Bytes sent to clients, by frame kind", ["kind"]);
+
 function send(socket: WebSocket, frame: ServerFrame): void {
-  sendRaw(socket, JSON.stringify(frame));
+  const data = JSON.stringify(frame);
+  if (sendRaw(socket, data)) countOut(frame.kind, frame.kind === "push" ? frame.event.type : "", data);
 }
 
-function sendRaw(socket: WebSocket, data: string): void {
-  if (socket.readyState !== socket.OPEN) return;
+/** True when the frame was handed to the socket. */
+function sendRaw(socket: WebSocket, data: string): boolean {
+  if (socket.readyState !== socket.OPEN) return false;
   if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
     socket.terminate();
-    return;
+    return false;
   }
   socket.send(data);
+  return true;
+}
+
+function countOut(kind: string, event: string, data: string): void {
+  framesOut.inc({ kind, event });
+  bytesOut.inc({ kind }, Buffer.byteLength(data));
 }
 
 /**
@@ -593,5 +626,6 @@ function sendPush(
     at: new Date().toISOString(),
     ...(publication.projectId ? { projectId: publication.projectId } : {}),
   });
-  sendRaw(socket, `${head.slice(0, -1)},"event":${event}}`);
+  const data = `${head.slice(0, -1)},"event":${event}}`;
+  if (sendRaw(socket, data)) countOut("push", publication.event.type, data);
 }

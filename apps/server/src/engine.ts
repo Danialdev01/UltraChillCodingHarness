@@ -23,6 +23,7 @@ import {
 import type { EventStore } from "./eventstore.js";
 import type { Principal } from "./auth.js";
 import { decide, type DecisionContext, type DecisionState } from "./decide.js";
+import { LATENCY_BUCKETS, registry } from "./metrics.js";
 import { DrainableWorker } from "./worker.js";
 import { toMembership, toPolicy } from "./workspaces.js";
 
@@ -34,7 +35,22 @@ interface QueueItem {
   principal: Principal;
   command: Command;
   resolve: (result: EngineResult) => void;
+  /** `performance.now()` at dispatch, for the time spent waiting in the queue. */
+  enqueuedAt: number;
 }
+
+const waitSeconds = registry.histogram(
+  "engine_wait_seconds",
+  "Time a command waited in the engine queue before it started",
+  LATENCY_BUCKETS,
+  ["command"],
+);
+const processSeconds = registry.histogram(
+  "engine_process_seconds",
+  "Time the engine spent loading, deciding and appending one command",
+  LATENCY_BUCKETS,
+  ["command"],
+);
 
 /**
  * Serializes every state-changing command through a single worker.
@@ -59,18 +75,23 @@ export class OrchestrationEngine {
       // Every path must settle the caller's promise. An unhandled throw here
       // would leave `dispatch()` pending forever, which surfaces as a silent
       // client hang rather than an error.
+      const labels = { command: item.command.type };
+      const started = performance.now();
+      waitSeconds.observe(labels, (started - item.enqueuedAt) / 1000);
       try {
         item.resolve(await this.#process(item));
       } catch (error) {
         this.onError(error, item.command);
         item.resolve({ ok: false, code: "internal", message: describeError(error) });
+      } finally {
+        processSeconds.observe(labels, (performance.now() - started) / 1000);
       }
     });
   }
 
   dispatch(principal: Principal, command: Command): Promise<EngineResult> {
     return new Promise((resolve) => {
-      this.worker.push({ principal, command, resolve });
+      this.worker.push({ principal, command, resolve, enqueuedAt: performance.now() });
     });
   }
 

@@ -104,6 +104,7 @@ import {
   type SessionRecord,
 } from "./session-lifecycle.js";
 import { cachedCatalogue, catalogue, keyQuota, type KeyQuota } from "./openrouter.js";
+import { LATENCY_BUCKETS, metricsAccess, registry, startRuntimeMetrics } from "./metrics.js";
 import {
   fetchClaudeUsage,
   fetchCodexUsage,
@@ -606,6 +607,22 @@ app.addHook("onSend", async (_request, reply) => {
   }
 });
 
+// Labelled with the route's pattern, never the URL: `/api/projects/:hash`
+// is one series, not one per project. The web app's pages and assets never
+// reach Fastify (web-proxy.ts counts those).
+const httpSeconds = registry.histogram(
+  "http_request_seconds",
+  "API requests by route pattern, method and status",
+  LATENCY_BUCKETS,
+  ["route", "method", "status"],
+);
+app.addHook("onResponse", async (request, reply) => {
+  httpSeconds.observe(
+    { route: request.routeOptions.url ?? "unmatched", method: request.method, status: String(reply.statusCode) },
+    reply.elapsedTime / 1000,
+  );
+});
+
 // Fastify's default answer to a thrown error includes its message, which for
 // a 500 is whatever a driver or the filesystem said -- a path, a host, a SQL
 // fragment. Those belong in the log; the caller gets the status.
@@ -668,6 +685,77 @@ async function within(ms: number, check: () => Promise<unknown>): Promise<"ok" |
     clearTimeout(timer);
   }
 }
+
+/**
+ * What `/metrics` reports from here (the registry is metrics.ts): the
+ * runtime's own figures, gauges read from the reactors when scraped, every
+ * bus publication by type, and Postgres's connections as it sees them.
+ */
+startRuntimeMetrics();
+registry.gauge("ws_connections", "Open WebSocket connections", [], (gauge) => {
+  gauge.set(undefined, gateway.connectionCount);
+});
+registry.gauge("ws_subscriptions", "Open WebSocket subscriptions, by topic kind", ["topic"], (gauge) => {
+  gauge.reset();
+  for (const [topic, count] of gateway.subscriptionCounts()) gauge.set({ topic }, count);
+});
+registry.gauge("engine_queue_depth", "Commands queued or running in the engine", [], (gauge) => {
+  gauge.set(undefined, engine.worker.outstanding);
+});
+registry.gauge("agent_turns_active", "Agent turns in flight", [], (gauge) => {
+  gauge.set(undefined, agentTurns.activeTurns);
+});
+registry.gauge("terminals_open", "Open terminal sessions", [], (gauge) => {
+  gauge.set(undefined, terminals.openTerminals);
+});
+registry.gauge("watched_projects", "Projects whose files are being watched", [], (gauge) => {
+  gauge.set(undefined, fileWatcher.watchedProjects);
+});
+registry.gauge("clone_queue_depth", "Clones queued or running", [], (gauge) => {
+  gauge.set(undefined, clones.worker.outstanding);
+});
+registry.gauge("worktree_queue_depth", "Session worktrees queued or being made", [], (gauge) => {
+  gauge.set(undefined, worktrees.worker.outstanding);
+});
+const busPublishes = registry.counter("bus_publish_total", "Project-scoped bus publications, by event type", [
+  "event",
+]);
+bus.tap(({ event }) => busPublishes.inc({ event: event.type }));
+registry.gauge("pg_connections", "This database's server connections, by state", ["state"], async (gauge) => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const rows = await Promise.race([
+      db.execute<{ state: string; n: number }>(sql`
+        select coalesce(state, 'unknown') as state, count(*)::int as n
+        from pg_stat_activity
+        where datname = current_database()
+        group by 1
+      `),
+      new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("timeout")), 1000))),
+    ]);
+    gauge.reset();
+    for (const row of rows) gauge.set({ state: row.state }, Number(row.n));
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+/**
+ * The numbers, for a scraper. Who may read them is `metricsAccess`'s call:
+ * the bearer token when one is configured, otherwise loopback only.
+ */
+app.get("/metrics", async (request, reply) => {
+  const allowed = metricsAccess({
+    authorization: request.headers.authorization,
+    remoteAddress: request.socket.remoteAddress,
+    token: config.METRICS_TOKEN,
+  });
+  if (!allowed) return reply.code(403).send({ error: "forbidden" });
+  return reply
+    .type("text/plain; version=0.0.4; charset=utf-8")
+    .header("cache-control", "no-store")
+    .send(await registry.render());
+});
 
 /**
  * The container's health: this process, its database, and -- in the single

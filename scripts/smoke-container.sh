@@ -97,6 +97,16 @@ if as_node "PGPASSWORD=\$(cat /data/secrets/dev_db_password 2>/dev/null) psql -h
 fi
 pass "node cannot read the databases or secrets"
 
+metrics=$(docker exec "$NAME" curl -fsS localhost:3000/metrics) || fail "/metrics refused inside the container"
+for family in event_loop_delay_seconds process_rss_bytes gc_pause_seconds http_request_seconds ws_connections \
+  engine_queue_depth pg_connections; do
+  grep -q "^# TYPE $family " <<<"$metrics" || fail "/metrics has no $family"
+done
+pass "/metrics answers inside the container"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$ORIGIN/metrics")
+[ "$code" = 403 ] || fail "/metrics from outside is $code, not 403"
+pass "/metrics is refused from outside"
+
 backup=$(docker exec "$NAME" ucch-backup) || fail "ucch-backup failed"
 docker exec "$NAME" test -s "$backup/ucch.dump" || fail "backup has no ucch.dump"
 pass "ucch-backup wrote $backup"
