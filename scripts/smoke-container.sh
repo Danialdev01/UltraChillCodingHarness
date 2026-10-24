@@ -132,6 +132,9 @@ curl -fsS -c "$jar" -H "origin: $ORIGIN" -H 'content-type: application/json' \
   -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" "$ORIGIN/api/auth/login" >/dev/null \
   || fail "sign-in refused after restart"
 pass "data survived the restart"
+top=$(bash scripts/pg-top.sh "$NAME") || fail "pg-top.sh failed"
+grep -qi 'from' <<<"$top" || fail "pg-top.sh printed no statements"
+pass "pg_stat_statements survives a restart"
 docker exec "$NAME" mariadb-admin --socket=/run/mysqld/mysqld.sock ping --silent || fail "MariaDB is not up"
 docker exec "$NAME" mariadb -h 127.0.0.1 -u dev -p"$(docker exec "$NAME" cat /data/secrets/dev_db_password)" -e 'select 1' >/dev/null \
   || fail "the dev account cannot reach MariaDB"

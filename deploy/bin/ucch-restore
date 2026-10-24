@@ -29,16 +29,27 @@ if [ -n "$key" ] && [ -s "$key" ] && ! cmp -s "$key" "$data/secrets/secret_key";
   echo "         value in $key (and redeploy), or stored keys cannot be decrypted." >&2
 fi
 
+list=$(mktemp)
+chmod 644 "$list"
 /command/s6-svc -d /run/service/server
-trap '/command/s6-svc -u /run/service/server' EXIT
+trap '/command/s6-svc -u /run/service/server; rm -f "$list"' EXIT
+
+# pg_stat_statements is the superuser's (deploy/s6/s6-rc.d/postgres/run makes
+# it on every boot) and is in every dump since; restoring as the harness's
+# role can neither drop it nor comment on it, so its entries are left out.
+# Read from stdin like the restore itself: only root can read the backups.
+toc() {
+  pg_restore -l < "$1" | grep -v -E '(EXTENSION - pg_stat_statements|COMMENT - EXTENSION pg_stat_statements)' > "$list"
+}
 
 restore() {
   local db=$1 file=$2
+  toc "$file"
   if [ -n "${DATABASE_URL:-}" ]; then
-    pg_restore --clean --if-exists --no-owner --dbname="$DATABASE_URL" "$file"
+    pg_restore --clean --if-exists --no-owner -L "$list" --dbname="$DATABASE_URL" "$file"
   else
     /command/s6-setuidgid postgres /usr/lib/postgresql/16/bin/pg_restore --clean --if-exists --no-owner --role=$db \
-      -h /run/postgresql -U postgres -d "$db" < "$file"
+      -L "$list" -h /run/postgresql -U postgres -d "$db" < "$file"
   fi
 }
 

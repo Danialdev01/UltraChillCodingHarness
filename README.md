@@ -287,7 +287,14 @@ The `dev` user may create as many databases as you like on both servers; add the
 
 **One container, one replica.** Live terminals, project files, the event bus behind every WebSocket, the background workers and the database all live in it. Scale it vertically: give the VPS (or the application, under **Advanced → Resources**) more CPU and RAM. Agent turns are mostly waiting on model APIs, so one container handles many concurrent sessions. Tune the embedded PostgreSQL with `PG_SHARED_BUFFERS`, `PG_EFFECTIVE_CACHE_SIZE` and `PG_WORK_MEM`, or move it out with `DATABASE_URL`.
 
-**Seeing where the time goes.** `/metrics` reports the server's own numbers in the Prometheus text format: event-loop delay, memory and GC, the engine queue, WebSocket connections, subscriptions and frames, HTTP latency by route, Postgres connections, and every 15 s the container's memory and CPU by service (`server`, `web`, `postgres`, `mysqld`) and by kind of process the server started (`claude`, `shell`, `git`, `other` for dev servers, …) beside the cgroup's own figures and OOM kills. `LOG_RESOURCE_SAMPLES=true` also logs each of those samples. Without `METRICS_TOKEN` it answers only from inside the container (`docker exec <container> curl -s localhost:3000/metrics`); with it, any caller presenting `Authorization: Bearer <token>`.
+**Seeing where the time goes.** `/metrics` reports the server's own numbers in the Prometheus text format: event-loop delay, memory and GC, the engine queue, WebSocket connections, subscriptions and frames, HTTP latency by route, Postgres connections, and every 15 s the container's memory and CPU by service (`server`, `web`, `postgres`, `mysqld`) and by kind of process the server started (`claude`, `shell`, `git`, `other` for dev servers, …) beside the cgroup's own figures and OOM kills. `LOG_RESOURCE_SAMPLES=true` also logs each of those samples. Without `METRICS_TOKEN` it answers only from inside the container (`docker exec <container> curl -s localhost:3000/metrics`); with it, any caller presenting `Authorization: Bearer <token>`. The embedded PostgreSQL loads `pg_stat_statements` and logs every statement slower than `PG_LOG_MIN_DURATION_MS` (default `500`; `-1` turns the log off) to the container's log. `bash scripts/pg-top.sh` prints the top 20 statements by total time and by calls (`--reset` zeroes the counts first, so reset, do the thing, then read). With `DATABASE_URL` pointing at a server of your own, enable the same once by hand: start that server with `shared_preload_libraries=pg_stat_statements` (plus, optionally, `pg_stat_statements.track=top`, `track_io_timing=on` and `log_min_duration_statement=500`), restart it, then as a superuser, in the harness's database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+GRANT pg_read_all_stats TO <the harness's role>;
+```
+
+and point the script at it with `PG_TOP_PSQL='psql <that DATABASE_URL>' bash scripts/pg-top.sh`.
 
 ### Research crawler (optional)
 
