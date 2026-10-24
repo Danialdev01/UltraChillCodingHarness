@@ -3,6 +3,9 @@ import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   ClientFrame,
+  hasScope,
+  REQUIRED_SCOPE,
+  TERMINAL_INPUT_MAX,
   type Command,
   type DomainEvent,
   type ServerFrame,
@@ -16,12 +19,26 @@ import type { EventStore } from "./eventstore.js";
 import type { OrchestrationEngine, EngineResult } from "./engine.js";
 import { registry } from "./metrics.js";
 import type { PresenceStore } from "./presence.js";
+import type { TerminalReactor } from "./terminals.js";
 
 /** Newest events of a thread sent when a client subscribes to it. */
 const REPLAY_LIMIT = 1_000;
 
 const SERVER_VERSION = "0.1.0";
 const HEARTBEAT_MS = 30_000;
+
+/**
+ * How a `terminal_input` or `terminal_resize` frame starts, as the client
+ * writes it. Matched on the raw text so a keystroke skips the schema the
+ * other frames are parsed with; a frame written another way still works,
+ * through the schema.
+ */
+const TERMINAL_FRAME_PREFIX = '{"kind":"terminal_';
+
+/** A socket is told at most once in this long that its terminal frames went nowhere. */
+const TERMINAL_REFUSAL_MS = 5_000;
+
+type TerminalFrame = Extract<ClientFrame, { kind: "terminal_input" | "terminal_resize" }>;
 
 interface Connection {
   /** This socket, for presence: one person in two windows is two viewers. */
@@ -47,6 +64,8 @@ interface Connection {
    */
   threads: Map<string, string>;
   projects: Set<string>;
+  /** When this socket was last told a terminal frame was refused. */
+  terminalRefusedAt: number;
 }
 
 /**
@@ -70,6 +89,8 @@ export interface GatewayOptions {
   onProjectWatch?: (projectId: string, delta: 1 | -1) => void;
   /** Whether a user may watch a terminal's output; see `TerminalReactor.mayWatch`. */
   mayWatchTerminal?: (userId: string, terminalId: string) => boolean;
+  /** Where `terminal_input` and `terminal_resize` frames go. Absent, they are refused. */
+  terminals?: Pick<TerminalReactor, "input" | "resize">;
   /** After a command from a socket was handled, for the activity log. */
   onDispatched?: (principal: Principal, clientId: string, command: Command, result: EngineResult) => void;
 }
@@ -144,6 +165,7 @@ export class WebSocketGateway {
       alive: true,
       threads: new Map(),
       projects: new Set(),
+      terminalRefusedAt: 0,
     };
     this.#connections.add(conn);
 
@@ -176,6 +198,20 @@ export class WebSocketGateway {
   }
 
   async #onMessage(conn: Connection, raw: string): Promise<void> {
+    // Keystrokes first, and without the schema: they are most of what a
+    // socket sends while someone types, and each one is two fields.
+    if (raw.startsWith(TERMINAL_FRAME_PREFIX)) {
+      const frame = terminalFrame(raw);
+      if (!frame) {
+        framesIn.inc({ kind: "invalid" });
+        this.#refuseTerminal(conn, "invalid", "malformed terminal frame");
+        return;
+      }
+      framesIn.inc({ kind: frame.kind });
+      this.#onTerminal(conn, frame);
+      return;
+    }
+
     let frame: ClientFrame;
     try {
       frame = ClientFrame.parse(JSON.parse(raw));
@@ -408,7 +444,44 @@ export class WebSocketGateway {
         send(conn.socket, { kind: "ack", id: frame.id, events: [] });
         return;
       }
+
+      case "terminal_input":
+      case "terminal_resize":
+        this.#onTerminal(conn, frame);
+        return;
     }
+  }
+
+  /**
+   * A keystroke or a resize, straight to the terminal: not through the
+   * engine's queue, behind every other user's commands, and with no ack.
+   * The scope is the one `dispatch terminal.input` needs; the reactor checks
+   * the terminal is the caller's.
+   */
+  #onTerminal(conn: Connection, frame: TerminalFrame): void {
+    const terminals = this.options.terminals;
+    if (!terminals || !hasScope(conn.principal.scopes, REQUIRED_SCOPE["terminal.input"])) {
+      this.#refuseTerminal(conn, "forbidden", "not allowed to use a terminal");
+      return;
+    }
+    const userId = conn.principal.userId;
+    const delivered =
+      frame.kind === "terminal_input"
+        ? terminals.input(frame.terminalId, userId, frame.data)
+        : terminals.resize(frame.terminalId, userId, frame.cols, frame.rows);
+    if (!delivered) this.#refuseTerminal(conn, "not_found", "no such terminal");
+  }
+
+  /**
+   * Says a terminal frame went nowhere -- once in a while, not once a
+   * keystroke: someone typing into a shell that has exited would otherwise
+   * get an error back for every key.
+   */
+  #refuseTerminal(conn: Connection, code: "invalid" | "forbidden" | "not_found", message: string): void {
+    const now = Date.now();
+    if (now - conn.terminalRefusedAt < TERMINAL_REFUSAL_MS) return;
+    conn.terminalRefusedAt = now;
+    send(conn.socket, { kind: "error", id: null, code, message });
   }
 
   /**
@@ -545,6 +618,39 @@ export class WebSocketGateway {
     for (const conn of this.#connections) conn.socket.close();
     this.#wss.close();
   }
+}
+
+/**
+ * A terminal frame read with `typeof` checks rather than the schema, to the
+ * same rules (see `TerminalInputFrame` in the protocol). Null when it is not
+ * one.
+ */
+export function terminalFrame(raw: string): TerminalFrame | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const frame = value as Record<string, unknown>;
+  const { terminalId } = frame;
+  if (typeof terminalId !== "string" || terminalId.length > 64) return null;
+  if (frame.kind === "terminal_input") {
+    const { data } = frame;
+    if (typeof data !== "string" || data.length > TERMINAL_INPUT_MAX) return null;
+    return { kind: "terminal_input", terminalId, data };
+  }
+  if (frame.kind === "terminal_resize") {
+    const { cols, rows } = frame;
+    if (!isPositiveInt(cols) || !isPositiveInt(rows)) return null;
+    return { kind: "terminal_resize", terminalId, cols, rows };
+  }
+  return null;
+}
+
+function isPositiveInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 function composerEvent(projectId: string, threadId: string, state: ComposerState): DomainEvent {

@@ -139,14 +139,12 @@ export function LoginTerminalDialog({
   const send = (data: string) => {
     const id = terminalRef.current
     if (!id) return
-    void clientRef.current?.dispatch({ type: "terminal.input", terminalId: id, data }).catch(() => {})
+    clientRef.current?.terminalInput(id, data)
   }
   const resize = (cols: number, rows: number) => {
     const id = terminalRef.current
     if (!id) return
-    void clientRef.current
-      ?.dispatch({ type: "terminal.resize", terminalId: id, cols, rows })
-      .catch(() => {})
+    clientRef.current?.terminalResize(id, cols, rows)
   }
 
   const copy = TITLES[program]

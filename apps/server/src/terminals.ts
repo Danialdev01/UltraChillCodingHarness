@@ -87,6 +87,25 @@ export interface TerminalOptions {
 /** How long a watched-but-not-yet-opened terminal id stays reserved. */
 const CLAIM_TTL_MS = 5 * 60_000;
 
+/**
+ * Input held for a terminal that has not opened yet: at most this much, for
+ * at most this long. Keystrokes travel outside the command queue, so the
+ * first of them can arrive before the `terminal.create` that opens the shell
+ * -- a moment's worth of typing, never a stream.
+ */
+const EARLY_INPUT_BYTES = 64 * 1024;
+const EARLY_INPUT_TTL_MS = 30_000;
+
+/** What reached a terminal before it opened. */
+interface EarlyInput {
+  userId: string;
+  chunks: string[];
+  bytes: number;
+  at: number;
+  /** The last size asked for, applied once the shell runs. */
+  size?: { cols: number; rows: number };
+}
+
 export class TerminalReactor {
   readonly #sessions = new Map<string, Session>();
   /**
@@ -95,6 +114,8 @@ export class TerminalReactor {
    * owns it: nobody else may watch it, or open a shell under it.
    */
   readonly #claims = new Map<string, { userId: string; at: number }>();
+  /** Input for terminals someone has claimed but not opened yet; see `input`. */
+  readonly #early = new Map<string, EarlyInput>();
 
   constructor(
     private readonly options: TerminalOptions,
@@ -124,35 +145,13 @@ export class TerminalReactor {
         }
         return;
 
-      case "terminal.input": {
-        const session = this.#mine(command.terminalId, userId);
-        if (!session) return;
-        // Straight through, byte for byte. Control characters are the point:
-        // ctrl-C, arrow keys and a bracketed paste are all just bytes, and
-        // anything that inspected them here would be second-guessing the
-        // terminal it is meant to be.
-        session.pty.write(command.data);
-        this.#touch(session);
+      case "terminal.input":
+        this.input(command.terminalId, userId, command.data);
         return;
-      }
 
-      case "terminal.resize": {
-        const session = this.#mine(command.terminalId, userId);
-        if (!session) return;
-        try {
-          // Bounded because these numbers come from a client: a pty asked
-          // for a preposterous size throws, and a zero-column one makes the
-          // shell divide by it.
-          session.pty.resize(
-            Math.min(1000, Math.max(1, Math.floor(command.cols))),
-            Math.min(1000, Math.max(1, Math.floor(command.rows))),
-          );
-        } catch (error) {
-          // A resize racing the exit is ordinary and not worth failing over.
-          this.onError(error);
-        }
+      case "terminal.resize":
+        this.resize(command.terminalId, userId, command.cols, command.rows);
         return;
-      }
 
       case "terminal.close":
         this.close(command.terminalId, userId);
@@ -164,6 +163,53 @@ export class TerminalReactor {
   }
 
   /**
+   * Keystrokes into a terminal. False when they went nowhere: not this
+   * user's terminal, one that has ended, or more early input than is kept.
+   *
+   * Reached straight from the socket (`terminal_input`), not through the
+   * command queue, so it can arrive before the `terminal.create` sent just
+   * ahead of it. That input is kept until the shell opens -- only for the
+   * user who claimed the id by watching it, which every client does first.
+   */
+  input(terminalId: string, userId: string, data: string): boolean {
+    const session = this.#mine(terminalId, userId);
+    if (session) {
+      // Straight through, byte for byte. Control characters are the point:
+      // ctrl-C, arrow keys and a bracketed paste are all just bytes, and
+      // anything that inspected them here would be second-guessing the
+      // terminal it is meant to be.
+      session.pty.write(data);
+      this.#touch(session);
+      return true;
+    }
+    const early = this.#earlyFor(terminalId, userId);
+    if (!early) return false;
+    const bytes = Buffer.byteLength(data);
+    if (early.bytes + bytes > EARLY_INPUT_BYTES) {
+      // Full for good, not just for this chunk: a later, smaller one let in
+      // would reach the shell with a gap before it.
+      early.bytes = Infinity;
+      return false;
+    }
+    early.chunks.push(data);
+    early.bytes += bytes;
+    return true;
+  }
+
+  /** A terminal's new size; like `input`, kept for a shell that has not opened yet. */
+  resize(terminalId: string, userId: string, cols: number, rows: number): boolean {
+    const session = this.#mine(terminalId, userId);
+    if (session) {
+      this.#resize(session, cols, rows);
+      return true;
+    }
+    const early = this.#earlyFor(terminalId, userId);
+    if (!early) return false;
+    early.size = { cols, rows };
+    return true;
+  }
+
+  /**
    * Whether `userId` may watch terminal `terminalId`'s output: its owner
    * once it runs, and before that whoever watched it first.
    */
@@ -171,7 +217,7 @@ export class TerminalReactor {
     const session = this.#sessions.get(terminalId);
     if (session) return session.userId === userId;
     const now = Date.now();
-    for (const [id, claim] of this.#claims) if (now - claim.at > CLAIM_TTL_MS) this.#claims.delete(id);
+    this.#prune(now);
     const claim = this.#claims.get(terminalId);
     if (claim) return claim.userId === userId;
     this.#claims.set(terminalId, { userId, at: now });
@@ -203,10 +249,10 @@ export class TerminalReactor {
   /**
    * Starts a terminal.
    *
-   * Synchronous on purpose. `terminal.input` for a session that is not in the
-   * map yet is dropped, and the client sends the first keystrokes the moment
-   * the tab opens -- so an `await` here, however brief, is a window where
-   * typing goes nowhere. The one blocking call is a `mkdir` on a local path.
+   * Synchronous on purpose. The claim is released and the early input taken
+   * at the top (see `input`), so an `await` here, however brief, would be a
+   * window where typing had neither a buffer nor a session to go to. The one
+   * blocking call is a `mkdir` on a local path.
    */
   #open(
     terminalId: string,
@@ -221,6 +267,10 @@ export class TerminalReactor {
     const claim = this.#claims.get(terminalId);
     if (claim && claim.userId !== userId) return;
     this.#claims.delete(terminalId);
+    // Taken here whatever happens next: a shell that does not start has no
+    // use for it either.
+    const early = this.#early.get(terminalId);
+    this.#early.delete(terminalId);
 
     if (!this.options.allowHostShell) {
       this.#say(projectId, terminalId, "The terminal is disabled on this server.\r\n");
@@ -272,6 +322,13 @@ export class TerminalReactor {
       const how = signal ? `signal ${signal}` : `code ${exitCode}`;
       this.#say(projectId, terminalId, `\r\n\x1b[2m[exited with ${how}]\x1b[0m\r\n`);
     });
+
+    // What was typed while the shell was starting, at the size the screen
+    // had by then.
+    if (early && early.userId === userId && Date.now() - early.at <= EARLY_INPUT_TTL_MS) {
+      if (early.size) this.#resize(session, early.size.cols, early.size.rows);
+      for (const chunk of early.chunks) child.write(chunk);
+    }
   }
 
   /**
@@ -321,6 +378,44 @@ export class TerminalReactor {
     // realistic attack -- but a shell on the host is not the place to rely on
     // that.
     return session.userId === userId ? session : undefined;
+  }
+
+  /**
+   * The early input held for an id `userId` has claimed and nobody has
+   * opened yet, started on first use. Undefined when the id is not theirs.
+   */
+  #earlyFor(terminalId: string, userId: string): EarlyInput | undefined {
+    const now = Date.now();
+    this.#prune(now);
+    const claim = this.#claims.get(terminalId);
+    if (!claim || claim.userId !== userId) return undefined;
+    let early = this.#early.get(terminalId);
+    if (!early) {
+      early = { userId, chunks: [], bytes: 0, at: now };
+      this.#early.set(terminalId, early);
+    }
+    return early;
+  }
+
+  /** Forgets claims and early input that were never followed by a shell. */
+  #prune(now: number): void {
+    for (const [id, claim] of this.#claims) if (now - claim.at > CLAIM_TTL_MS) this.#claims.delete(id);
+    for (const [id, early] of this.#early) if (now - early.at > EARLY_INPUT_TTL_MS) this.#early.delete(id);
+  }
+
+  #resize(session: Session, cols: number, rows: number): void {
+    try {
+      // Bounded because these numbers come from a client: a pty asked for a
+      // preposterous size throws, and a zero-column one makes the shell
+      // divide by it.
+      session.pty.resize(
+        Math.min(1000, Math.max(1, Math.floor(cols))),
+        Math.min(1000, Math.max(1, Math.floor(rows))),
+      );
+    } catch (error) {
+      // A resize racing the exit is ordinary and not worth failing over.
+      this.onError(error);
+    }
   }
 
   #touch(session: Session): void {

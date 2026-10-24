@@ -404,3 +404,93 @@ describe("who may watch a terminal", () => {
     expect(reactor.openTerminals).toBe(0);
   });
 });
+
+describe("input that arrives before the shell", () => {
+  /** A pty double that records what was written to it and at what size. */
+  function recordingSpawn() {
+    const log: string[] = [];
+    const spawn = (() => ({
+      write(data: string) {
+        log.push(`write ${data}`);
+      },
+      resize(cols: number, rows: number) {
+        log.push(`resize ${cols}x${rows}`);
+      },
+      kill() {},
+      onData() {},
+      onExit() {},
+    })) as unknown as typeof import("@lydell/node-pty").spawn;
+    return { log, spawn };
+  }
+
+  let log: string[];
+  let early: TerminalReactor;
+  const open = (user = USER) =>
+    early.react({ type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24 }, user);
+
+  beforeEach(() => {
+    const recording = recordingSpawn();
+    log = recording.log;
+    early = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, spawn: recording.spawn }, () => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    early.closeAll();
+  });
+
+  it("is kept for whoever claimed the terminal, and written once it opens, in order", () => {
+    expect(early.mayWatch(TERMINAL, USER)).toBe(true);
+    expect(early.input(TERMINAL, USER, "l")).toBe(true);
+    expect(early.input(TERMINAL, USER, "s\r")).toBe(true);
+    expect(log).toEqual([]);
+    open();
+    expect(log).toEqual(["write l", "write s\r"]);
+  });
+
+  it("applies the last size asked for before the input", () => {
+    early.mayWatch(TERMINAL, USER);
+    expect(early.resize(TERMINAL, USER, 100, 30)).toBe(true);
+    early.input(TERMINAL, USER, "x");
+    expect(early.resize(TERMINAL, USER, 132, 40)).toBe(true);
+    open();
+    expect(log).toEqual(["resize 132x40", "write x"]);
+  });
+
+  it("refuses another user's, and an id nobody has claimed", () => {
+    early.mayWatch(TERMINAL, USER);
+    expect(early.input(TERMINAL, OTHER, "rm -rf ~\r")).toBe(false);
+    expect(early.resize(TERMINAL, OTHER, 10, 10)).toBe(false);
+    expect(early.input("88888888-8888-8888-8888-888888888888", USER, "x")).toBe(false);
+    open();
+    expect(log).toEqual([]);
+  });
+
+  it("holds at most 64 KB, and nothing after the first chunk past it", () => {
+    early.mayWatch(TERMINAL, USER);
+    expect(early.input(TERMINAL, USER, "a".repeat(60 * 1024))).toBe(true);
+    expect(early.input(TERMINAL, USER, "b".repeat(8 * 1024))).toBe(false);
+    // Would fit, but the shell would see it without what came before it.
+    expect(early.input(TERMINAL, USER, "c")).toBe(false);
+    open();
+    expect(log).toEqual([`write ${"a".repeat(60 * 1024)}`]);
+  });
+
+  it("is dropped when the shell takes longer than 30 s to open", () => {
+    vi.useFakeTimers();
+    early.mayWatch(TERMINAL, USER);
+    early.input(TERMINAL, USER, "late");
+    vi.advanceTimersByTime(31_000);
+    open();
+    expect(log).toEqual([]);
+  });
+
+  it("goes straight to a shell that is already open, and nowhere once it is someone else's", () => {
+    early.mayWatch(TERMINAL, USER);
+    open();
+    expect(early.input(TERMINAL, USER, "x")).toBe(true);
+    expect(early.resize(TERMINAL, USER, 90, 20)).toBe(true);
+    expect(early.input(TERMINAL, OTHER, "y")).toBe(false);
+    expect(log).toEqual(["write x", "resize 90x20"]);
+  });
+});

@@ -215,9 +215,7 @@ export function TerminalView({ project, active }: { project: Project; active: bo
     if (data.length === 1 && data >= " " && data !== "\x7f" && (!waiting || now - waiting.at > 5_000)) {
       echoRef.current = { terminalId: id, at: now, answered: false }
     }
-    void clientRef.current
-      ?.dispatch({ type: "terminal.input", terminalId: id, data })
-      .catch(() => {})
+    clientRef.current?.terminalInput(id, data)
   }
 
   /**
@@ -228,9 +226,7 @@ export function TerminalView({ project, active }: { project: Project; active: bo
    * bar -- wraps against a width that is not there.
    */
   function resize(id: string, cols: number, rows: number) {
-    void clientRef.current
-      ?.dispatch({ type: "terminal.resize", terminalId: id, cols, rows })
-      .catch(() => {})
+    clientRef.current?.terminalResize(id, cols, rows)
   }
 
   return (

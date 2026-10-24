@@ -82,6 +82,28 @@ const Ping = z.object({
   id: z.string(),
 });
 
+/** The most a `terminal_input` frame carries; a longer paste is sent in pieces. */
+export const TERMINAL_INPUT_MAX = 64 * 1024;
+
+/**
+ * Keystrokes into a terminal, outside the command queue: no id, no ack.
+ * `dispatch terminal.input` does the same, but waits behind every other
+ * command and answers each key with an ack nothing reads.
+ */
+const TerminalInputFrame = z.object({
+  kind: z.literal("terminal_input"),
+  terminalId: z.string().max(64),
+  data: z.string().max(TERMINAL_INPUT_MAX),
+});
+
+/** A terminal's new size, the same way as `terminal_input`. */
+const TerminalResizeFrame = z.object({
+  kind: z.literal("terminal_resize"),
+  terminalId: z.string().max(64),
+  cols: z.number().int().positive(),
+  rows: z.number().int().positive(),
+});
+
 export const ClientFrame = z.discriminatedUnion("kind", [
   Dispatch,
   Subscribe,
@@ -89,6 +111,8 @@ export const ClientFrame = z.discriminatedUnion("kind", [
   ComposerUpdate,
   PresenceSet,
   Ping,
+  TerminalInputFrame,
+  TerminalResizeFrame,
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
 

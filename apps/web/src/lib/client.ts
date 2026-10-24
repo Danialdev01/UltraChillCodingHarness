@@ -2,6 +2,7 @@
 
 import {
   ServerFrame,
+  TERMINAL_INPUT_MAX,
   type ClientFrame,
   type Command,
   type ComposerDraft,
@@ -146,6 +147,21 @@ export class UcchClient {
     else this.#presence.set(projectId, { location, editing });
     if (this.#socket?.readyState !== WebSocket.OPEN) return;
     void this.#request((id) => ({ kind: "presence", id, projectId, location, editing })).catch(() => {});
+  }
+
+  /**
+   * Keystrokes into a terminal: sent and forgotten, with no ack to wait for
+   * and nothing to settle. A paste longer than one frame carries is sent in
+   * pieces, never splitting a character in two. Dropped when the socket is
+   * not open, as a `dispatch` would be refused.
+   */
+  terminalInput(terminalId: string, data: string): void {
+    for (const piece of terminalPieces(data)) this.#send({ kind: "terminal_input", terminalId, data: piece });
+  }
+
+  /** A terminal's new size, the same way as `terminalInput`. */
+  terminalResize(terminalId: string, cols: number, rows: number): void {
+    this.#send({ kind: "terminal_resize", terminalId, cols, rows });
   }
 
   #request(frame: (id: string) => ClientFrame): Promise<void> {
@@ -484,6 +500,24 @@ function websocketOrigin(): string {
   if (configured) return configured.replace(/^http/, "ws").replace(/\/$/, "");
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   return `${scheme}://${window.location.host}`;
+}
+
+/**
+ * Terminal input in pieces of at most `TERMINAL_INPUT_MAX`, each ending on a
+ * whole character: a cut between the two halves of a surrogate pair would
+ * reach the shell as two broken ones.
+ */
+export function terminalPieces(data: string, max = TERMINAL_INPUT_MAX): string[] {
+  if (data.length <= max) return [data];
+  const pieces: string[] = [];
+  for (let at = 0; at < data.length; ) {
+    let end = Math.min(data.length, at + max);
+    const last = data.charCodeAt(end - 1);
+    if (end < data.length && last >= 0xd800 && last <= 0xdbff) end--;
+    pieces.push(data.slice(at, end));
+    at = end;
+  }
+  return pieces;
 }
 
 function topicKey(topic: SubscribeTopic): string {

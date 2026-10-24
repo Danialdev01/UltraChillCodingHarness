@@ -134,7 +134,8 @@ Run the generator on cores the container does not have (`taskset`), so the two d
 node scripts/load/run.mjs [--sessions load-out/sessions.json] [--base URL]
      [--users 50] [--minutes 10] [--ramp 30] [--out FILE] [--label TEXT]
      [--mix native=0.2,terminal=0.3,git=0.3] [--turn-every 60]
-     [--git-every 60] [--poll-every 30] [--type-rate 5] [--scrape-every 5]
+     [--git-every 60] [--poll-every 30] [--type-rate 5] [--type-via frame|dispatch]
+     [--scrape-every 5]
      [--metrics-token T]   (default: $METRICS_TOKEN)
 ```
 
@@ -146,7 +147,7 @@ Users start evenly over `--ramp` seconds and stop together `--minutes` later. Ea
 Then by role, spread evenly over the users by `--mix` (the rest only watch):
 
 - **native** sends a native turn every `--turn-every` seconds, which the mock streams;
-- **terminal** opens a shell and types `--type-rate` characters a second, a comment line at a time;
+- **terminal** opens a shell and types `--type-rate` characters a second, a comment line at a time, as `terminal_input` frames the way the browser sends them (`--type-via dispatch`: as acked `terminal.input` commands, the way it did before PF1.10);
 - **git** reads status, branches and the first log page every `--git-every` seconds, as the Git view does.
 
 It measures, on the client:

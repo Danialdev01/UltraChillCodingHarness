@@ -8,7 +8,7 @@
  *     --users 50 --minutes 10 --out documentation/perf/baseline-2026-10-24.json \
  *     [--base http://127.0.0.1:3397] [--metrics-token T] [--ramp 30]
  *     [--mix native=0.2,terminal=0.3,git=0.3] [--turn-every 60] [--git-every 60]
- *     [--poll-every 30] [--type-rate 5]
+ *     [--poll-every 30] [--type-rate 5] [--type-via frame|dispatch]
  *
  * Every virtual user, as the browser does (solution.md §1):
  *   - takes a ws-ticket and opens /ws, subscribing to `user`, the shared
@@ -18,7 +18,9 @@
  *     and five RSC prefetches through the edge;
  * and by role (the rest only watch):
  *   - native:   sends a native turn every --turn-every s (the mock streams it);
- *   - terminal: types --type-rate characters a second into a shell;
+ *   - terminal: types --type-rate characters a second into a shell, as
+ *               `terminal_input` frames the way the browser does, or with
+ *               --type-via dispatch as acked `terminal.input` commands;
  *   - git:      reads status, branches and the first log page every
  *               --git-every s, as the Git view does.
  *
@@ -49,6 +51,7 @@ const { values: args } = parseArgs({
     "git-every": { type: "string", default: "60" },
     "poll-every": { type: "string", default: "30" },
     "type-rate": { type: "string", default: "5" },
+    "type-via": { type: "string", default: "frame" },
     "scrape-every": { type: "string", default: "5" },
     label: { type: "string", default: "" },
   },
@@ -64,6 +67,7 @@ const TURN_EVERY = Number(args["turn-every"]) * 1000;
 const GIT_EVERY = Number(args["git-every"]) * 1000;
 const POLL_EVERY = Number(args["poll-every"]) * 1000;
 const TYPE_INTERVAL = 1000 / Number(args["type-rate"]);
+const TYPE_VIA = args["type-via"] === "dispatch" ? "dispatch" : "frame";
 const SCRAPE_EVERY = Number(args["scrape-every"]) * 1000;
 const mix = Object.fromEntries(args.mix.split(",").map((part) => part.split("=")).map(([k, v]) => [k, Number(v)]));
 
@@ -187,6 +191,19 @@ class Socket {
 
   dispatch(command) {
     return this.request({ kind: "dispatch", command }, command.type);
+  }
+
+  /** Keystrokes, as the browser sends them: no id, nothing comes back but the echo. */
+  type(terminalId, data) {
+    if (TYPE_VIA === "dispatch") {
+      void this.dispatch({ type: "terminal.input", terminalId, data });
+      return;
+    }
+    try {
+      this.#ws.send(JSON.stringify({ kind: "terminal_input", terminalId, data }));
+    } catch {
+      countError("terminal_input:closed");
+    }
   }
 
   subscribe(topic, extra = {}) {
@@ -351,12 +368,12 @@ async function typing(socket, project, stopAt) {
     // A comment line, so Enter runs nothing.
     const ch = column === 0 ? "#" : LETTERS[column % LETTERS.length];
     pending.push({ ch, at: performance.now() });
-    void socket.dispatch({ type: "terminal.input", terminalId, data: ch });
+    socket.type(terminalId, ch);
     column++;
     await sleep(TYPE_INTERVAL);
     if (column >= 40) {
       column = 0;
-      void socket.dispatch({ type: "terminal.input", terminalId, data: "\r" });
+      socket.type(terminalId, "\r");
       await sleep(600);
       // Anything not echoed by now was lost or mismatched behind the prompt.
       if (pending.length > 0) countError("keystroke:unmatched");
