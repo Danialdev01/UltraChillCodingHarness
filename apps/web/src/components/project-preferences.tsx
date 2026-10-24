@@ -41,6 +41,17 @@ function PreviewPortSetting({ project }: { project: Project }) {
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
+  // Saved somewhere else -- another tab, another member -- and the project's
+  // live copy has it: show theirs, keeping an edit of this form's own.
+  const livePort = project.previewPort ?? null
+  const liveUrl = project.previewUrl ?? null
+  React.useEffect(() => {
+    if (livePort === saved.port && liveUrl === saved.url) return
+    if (value.trim() === (saved.port === null ? "" : String(saved.port))) setValue(livePort === null ? "" : String(livePort))
+    setSaved({ port: livePort, url: liveUrl })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [livePort, liveUrl])
+
   const trimmed = value.trim()
   const port = trimmed === "" ? null : Number(trimmed)
   const valid = port === null || (Number.isInteger(port) && port >= 1024 && port <= 65535)

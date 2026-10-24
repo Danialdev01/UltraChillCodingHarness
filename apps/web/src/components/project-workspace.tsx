@@ -8,6 +8,7 @@ import { CodeEditor } from "@/components/code-editor"
 import { useCurrentProject, useFilesPanel } from "@/components/files-panel"
 import { NotesWorkspace, type DocLocation } from "@/components/notes/notes-workspace"
 import { ProjectChat } from "@/components/project-chat"
+import { useProject } from "@/lib/queries/project"
 import type { Project, ProjectSession } from "@/lib/session"
 
 // Loaded on first use rather than with the page. The terminal brings xterm
@@ -30,7 +31,10 @@ const GitView = dynamic(() => import("@/components/git/git-view").then((m) => m.
  * because the tree stays open across the switch -- the mode is which half of
  * the same project view you are looking at, not where you are.
  */
-export function ProjectWorkspace({ project: base, session }: { project: Project; session?: ProjectSession }) {
+export function ProjectWorkspace({ project: seed, session }: { project: Project; session?: ProjectSession }) {
+  // The live copy, so a rename or a new preview port shows without the page
+  // being rendered again (`ProjectSeed` on the page fills it).
+  const base = useProject(seed.hash) ?? seed
   // In a project session the files, the terminal and git work in the
   // session's own worktree; a session without a branch -- the project's
   // first, or one older than worktrees -- works in the main checkout.

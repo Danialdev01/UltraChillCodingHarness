@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
 import { useQueryClient, type QueryKey } from "@tanstack/react-query"
 import type { DomainEvent, LiveResource, PresenceViewer } from "@ucch/protocol"
 
@@ -265,24 +264,19 @@ export function useLiveResource(
 /**
  * Every event, through `realtime-cache.ts`, into the client cache: whatever
  * it changed is marked stale, so the open views refetch it and the rest do
- * when next shown. Only a settings change the server alone reads renders the
- * page again -- and never for this tab's own echo.
+ * when next shown. Nothing here renders the page again.
  */
 function CacheBridge({ client }: { client: UcchClient | null }) {
-  const router = useRouter()
   const queryClient = useQueryClient()
   React.useEffect(() => {
     if (!client) return
     // Several changes in a burst -- a turn ending, a form saving three
     // fields -- are one refetch of each key.
     const keys = new Map<string, QueryKey>()
-    let refresh = false
     let timer: number | undefined
     const flush = () => {
       for (const key of keys.values()) void queryClient.invalidateQueries({ queryKey: key })
       keys.clear()
-      if (refresh) router.refresh()
-      refresh = false
     }
     // Back from a drop: nothing that happened meanwhile was pushed here, so
     // everything on screen refetches (only what is open; the rest is marked
@@ -290,10 +284,8 @@ function CacheBridge({ client }: { client: UcchClient | null }) {
     const offReconnect = client.onReconnect(() => void queryClient.invalidateQueries())
     const off = client.onEvent(({ event }) => {
       const effect = cacheEffect(event)
-      if (effect.invalidate.length === 0 && !effect.refreshPage) return
+      if (effect.invalidate.length === 0) return
       for (const key of effect.invalidate.map(prefixOf)) keys.set(JSON.stringify(key), key)
-      const own = event.type === "resource.changed" && isOwnChange(event.origin)
-      if (effect.refreshPage && !own) refresh = true
       window.clearTimeout(timer)
       timer = window.setTimeout(flush, 200)
     })
@@ -302,7 +294,7 @@ function CacheBridge({ client }: { client: UcchClient | null }) {
       offReconnect()
       window.clearTimeout(timer)
     }
-  }, [client, router, queryClient])
+  }, [client, queryClient])
   return null
 }
 

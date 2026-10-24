@@ -1,3 +1,5 @@
+"use client";
+
 import { ActivityIcon, BrainIcon, CoinsIcon, HardDriveIcon } from "lucide-react";
 
 import { StatCard } from "@/components/dashboard-stats";
@@ -5,6 +7,7 @@ import { ManageTabs } from "@/components/manage-tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { compactNumber, formatBytes, formatUsd } from "@/lib/stats-format";
 import type { ManageTab } from "@/lib/manage-tabs";
+import { useProject } from "@/lib/queries/project";
 import type { Project, ProjectStats } from "@/lib/session";
 
 /**
@@ -16,7 +19,7 @@ import type { Project, ProjectStats } from "@/lib/session";
  * project's own.
  */
 export function ProjectManage({
-  project,
+  project: seed,
   stats,
   initialTab,
 }: {
@@ -24,6 +27,7 @@ export function ProjectManage({
   stats: ProjectStats | null;
   initialTab: ManageTab;
 }) {
+  const project = useProject(seed.hash) ?? seed;
   return (
     <div className="flex flex-1 flex-col gap-6 p-4">
       <ProjectStatCards stats={stats} />

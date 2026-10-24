@@ -26,7 +26,7 @@ import { SECTIONS, WORKSPACE_SETTINGS, projectHashFromPath, sectionForPath, type
 import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { useTransitionRouter } from "@/lib/view-transitions"
-import { useShellLists } from "@/lib/queries/bootstrap"
+import { useMe, useShellLists } from "@/lib/queries/bootstrap"
 
 /**
  * Two columns: a fixed icon rail topped by the app logo, and a panel
@@ -64,6 +64,12 @@ export function AppSidebar({
     projects: serverProjects,
     connections: serverConnections,
   })
+  // The live account, so a new name or avatar shows without the layout
+  // being rendered again; the server's until the cache has it.
+  const me = useMe()
+  const shownUser = me
+    ? { name: me.name ?? me.login ?? "User", email: me.email ?? "", avatar: me.avatarUrl ?? undefined }
+    : user
   const queryClient = useQueryClient()
   const { setOpen, setOpenMobile, state } = useSidebar()
   const collapsed = state === "collapsed"
@@ -195,7 +201,7 @@ export function AppSidebar({
           states: a second copy inside the collapsed-away column would stay
           focusable and be read out, duplicating this one. */}
       <SidebarFooter className={collapsed ? "items-center border-t p-1.5" : "border-t"}>
-        <NavUser user={user} compact={collapsed} />
+        <NavUser user={shownUser} compact={collapsed} />
       </SidebarFooter>
     </Sidebar>
   )

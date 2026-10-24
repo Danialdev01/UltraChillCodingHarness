@@ -34,6 +34,7 @@ import {
 import { DEFAULT_DOC_WIDTH, docMaxWidth, readDocWidth, watchDocWidth } from "@/lib/doc-width"
 import { docViewFromParam, noteHref, noteIdFromPath, type DocView } from "@/lib/sections"
 import { useCachedState } from "@/lib/queries/cached-state"
+import { useProject } from "@/lib/queries/project"
 import { projectQueries } from "@/lib/queries/project-data"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 import type { Project } from "@/lib/session"
@@ -60,7 +61,7 @@ export interface DocLocation {
  * content under a live cursor -- and its autosave flushes on the way out.
  */
 export function NotesWorkspace({
-  project,
+  project: seed,
   location,
   onLocationChange,
 }: {
@@ -68,6 +69,7 @@ export function NotesWorkspace({
   location?: DocLocation
   onLocationChange?(next: DocLocation): void
 }) {
+  const project = useProject(seed.hash) ?? seed
   const router = useTransitionRouter()
   const ws = useWorkspaceHash()
   const pathNoteId = noteIdFromPath(usePathname())

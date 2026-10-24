@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 
 import { ProjectManage } from "@/components/project-manage";
 import { manageTabOf } from "@/lib/manage-tabs";
+import { ProjectSeed } from "@/lib/queries/project";
 import { PROJECT_HASH } from "@/lib/sections";
 import { getProjectStats } from "@/lib/session";
 import { requireProject } from "@/lib/workspace-route";
@@ -25,5 +26,10 @@ export default async function Page({
     requireProject(workspaceHash, projectHash, "project"),
     getProjectStats(projectHash),
   ]);
-  return <ProjectManage project={project} stats={stats} initialTab={manageTabOf(tab)} />;
+  return (
+    <>
+      <ProjectSeed data={project} />
+      <ProjectManage project={project} stats={stats} initialTab={manageTabOf(tab)} />
+    </>
+  );
 }

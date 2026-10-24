@@ -1,4 +1,5 @@
 import { TimelineWorkspace } from "@/components/timeline/timeline-workspace";
+import { ProjectSeed } from "@/lib/queries/project";
 import { requireProject } from "@/lib/workspace-route";
 
 /**
@@ -9,5 +10,10 @@ import { requireProject } from "@/lib/workspace-route";
 export default async function Page({ params }: { params: Promise<{ workspaceHash: string; projectHash: string }> }) {
   const { workspaceHash, projectHash } = await params;
   const project = await requireProject(workspaceHash, projectHash, "project");
-  return <TimelineWorkspace project={project} />;
+  return (
+    <>
+      <ProjectSeed data={project} />
+      <TimelineWorkspace project={project} />
+    </>
+  );
 }

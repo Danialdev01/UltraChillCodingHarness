@@ -2,6 +2,7 @@ import { Suspense } from "react";
 
 import { NotesWorkspace } from "@/components/notes/notes-workspace";
 import { NotesSkeleton } from "@/components/page-skeletons";
+import { ProjectSeed } from "@/lib/queries/project";
 import { requireProject } from "@/lib/workspace-route";
 
 /**
@@ -45,5 +46,10 @@ export default function NotesLayout({
 async function Workspace({ params }: { params: Promise<{ workspaceHash: string; projectHash: string }> }) {
   const { workspaceHash, projectHash } = await params;
   const project = await requireProject(workspaceHash, projectHash, "project");
-  return <NotesWorkspace project={project} />;
+  return (
+    <>
+      <ProjectSeed data={project} />
+      <NotesWorkspace project={project} />
+    </>
+  );
 }

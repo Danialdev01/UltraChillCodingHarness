@@ -14,6 +14,8 @@ export const qk = {
     all: ["projects"] as const,
     list: (workspaceId: string) => ["projects", "list", workspaceId] as const,
   },
+  /** One project as its pages show it (`lib/queries/project.ts`); `qk.project.all` reaches every one. */
+  project: Object.assign((projectHash: string) => ["project", projectHash] as const, { all: ["project"] as const }),
   connections: {
     all: ["connections"] as const,
     list: (workspaceId: string) => ["connections", "list", workspaceId] as const,

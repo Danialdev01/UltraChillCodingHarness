@@ -1,4 +1,5 @@
 import { TasksBoard } from "@/components/tasks/tasks-board";
+import { ProjectSeed } from "@/lib/queries/project";
 import { listProjects } from "@/lib/session";
 import { requireProject } from "@/lib/workspace-route";
 
@@ -12,5 +13,10 @@ export default async function Page({ params }: { params: Promise<{ workspaceHash
   // The new-todo dialog offers every project of the workspace, this one first picked.
   const listed = project.workspaceId ? await listProjects(project.workspaceId) : [];
   const projects = listed.some((p) => p.hash === project.hash) ? listed : [project, ...listed];
-  return <TasksBoard project={project} projects={projects} />;
+  return (
+    <>
+      <ProjectSeed data={project} />
+      <TasksBoard project={project} projects={projects} />
+    </>
+  );
 }

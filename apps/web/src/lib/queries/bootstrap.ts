@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { qk } from "@/lib/query-keys"
 import type { Bootstrap } from "@/lib/session"
+import { useActiveWorkspace } from "@/lib/workspace-context"
 
 /**
  * What the shell knows about the signed-in person: the server renders it
@@ -42,6 +43,16 @@ export function useBootstrap(ws?: string | null) {
     queryFn: () => fetchBootstrap(ws),
     meta: { persist: true },
   })
+}
+
+/**
+ * The signed-in person, live: the open workspace's bootstrap, which an
+ * `account_settings` event invalidates, so a new name or avatar shows
+ * without the shell being rendered again. Undefined until the shell has
+ * seeded it.
+ */
+export function useMe(): Bootstrap["me"] | undefined {
+  return useBootstrap(useActiveWorkspace()?.hash ?? null).data?.me
 }
 
 /**

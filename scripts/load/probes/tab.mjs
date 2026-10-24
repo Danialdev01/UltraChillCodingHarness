@@ -6,7 +6,8 @@
  *   1. its WebSockets, and the subscriptions open on each once it settles;
  *   2. what it re-renders when another member saves a project setting --
  *      the preview port, which publishes `resource.changed` with
- *      `project_settings` and makes every other tab call `router.refresh()`.
+ *      `project_settings` to every other tab (at the PF0.9 baseline, each
+ *      called `router.refresh()` and re-warmed every page).
  *
  *   node scripts/load/probes/tab.mjs [--sessions load-out/sessions.json]
  *     [--viewer 1] [--saver 0] [--settle 40] [--watch 30]

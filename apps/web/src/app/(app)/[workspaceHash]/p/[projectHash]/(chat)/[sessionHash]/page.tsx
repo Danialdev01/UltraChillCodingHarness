@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { ProjectWorkspace } from "@/components/project-workspace";
+import { ProjectSeed } from "@/lib/queries/project";
 import { HASH } from "@/lib/sections";
 import { listProjectSessions } from "@/lib/session";
 import { requireProject } from "@/lib/workspace-route";
@@ -31,5 +32,10 @@ export default async function ProjectSessionPage({
 
   // Keyed so moving between sessions starts each one's chat, terminal and
   // tree afresh rather than carrying the last session's into it.
-  return <ProjectWorkspace key={session.hash} project={project} session={session} />;
+  return (
+    <>
+      <ProjectSeed data={project} />
+      <ProjectWorkspace key={session.hash} project={project} session={session} />
+    </>
+  );
 }

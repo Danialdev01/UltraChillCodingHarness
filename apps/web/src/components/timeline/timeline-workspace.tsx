@@ -8,6 +8,7 @@ import { GanttChart, HEADER_HEIGHT, ROW_HEIGHT } from "@/components/timeline/gan
 import { TaskDialog, type TaskDialogState } from "@/components/timeline/task-dialog"
 import { Button } from "@/components/ui/button"
 import { useCachedState } from "@/lib/queries/cached-state"
+import { useProject } from "@/lib/queries/project"
 import { projectQueries } from "@/lib/queries/project-data"
 import { useProjectEvents, usePresenceLocation } from "@/lib/realtime"
 import { computeRange, durationDays, localToday, PX_PER_DAY, type Zoom } from "@/lib/gantt"
@@ -38,7 +39,8 @@ const ZOOMS: { id: Zoom; label: string }[] = [
  * Writes are optimistic: a dragged bar stays where it was dropped while the
  * save is in flight, and goes back only if the server refuses.
  */
-export function TimelineWorkspace({ project }: { project: Project }) {
+export function TimelineWorkspace({ project: seed }: { project: Project }) {
+  const project = useProject(seed.hash) ?? seed
   // Cached: coming back to the chart paints it at once, then revalidates.
   const query = projectQueries.timeline(project.hash)
   const [tasks, setTasks, reload, loadState] = useCachedState(query.queryKey, query.queryFn, {

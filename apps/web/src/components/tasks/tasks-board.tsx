@@ -7,6 +7,7 @@ import { TASK_STAGES, type ProjectTask, type TaskStage } from "@ucch/protocol"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useCachedState } from "@/lib/queries/cached-state"
+import { useProject } from "@/lib/queries/project"
 import { projectQueries } from "@/lib/queries/project-data"
 import { useProjectEvents, usePresenceLocation } from "@/lib/realtime"
 import type { Project } from "@/lib/session"
@@ -47,7 +48,8 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
  * does it on a schedule. From there the server's pipeline moves the card
  * itself, and this board follows along through `task.changed`.
  */
-export function TasksBoard({ project, projects }: { project: Project; projects: Project[] }) {
+export function TasksBoard({ project: seed, projects }: { project: Project; projects: Project[] }) {
+  const project = useProject(seed.hash) ?? seed
   const router = useTransitionRouter()
   const ws = useWorkspaceHash()
   // Cached: coming back to the board paints it at once, then revalidates.

@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from "node:fs"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import type { DomainEvent } from "@ucch/protocol"
 
@@ -7,16 +9,18 @@ const P = "33333333-3333-3333-3333-333333333333"
 const ev = (e: object) => e as DomainEvent
 
 describe("cacheEffect", () => {
-  it("refreshes the shell's lists when a workspace's projects change, without re-rendering the page", () => {
+  it("refreshes the shell's lists when a workspace's projects change", () => {
     const effect = cacheEffect(ev({ type: "resource.changed", projectId: null, resource: "projects" }))
-    expect(effect.refreshPage).toBe(false)
     expect(effect.invalidate.map(prefixOf)).toContainEqual(["bootstrap"])
+    // A rename: the open project page shows the new name.
+    expect(effect.invalidate).toContainEqual(["project"])
   })
 
-  it("re-renders the page only for settings the server reads", () => {
-    expect(cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "project_settings" })).refreshPage).toBe(true)
-    expect(cacheEffect(ev({ type: "resource.changed", projectId: null, resource: "account_settings" })).refreshPage).toBe(true)
-    expect(cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "keys" })).refreshPage).toBe(false)
+  it("turns settings changes into invalidations, not page renders", () => {
+    const account = cacheEffect(ev({ type: "resource.changed", projectId: null, resource: "account_settings" }))
+    expect(account).toEqual({ invalidate: [["bootstrap", null]] })
+    const project = cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "project_settings" }))
+    expect(project.invalidate.map(prefixOf)).toEqual([["tasks"], ["bootstrap"], ["project"]])
   })
 
   it("maps each domain's events to its own cache family", () => {
@@ -30,5 +34,13 @@ describe("cacheEffect", () => {
 
   it("leaves streams alone", () => {
     expect(cacheEffect(ev({ type: "agent.text_delta", projectId: P })).invalidate).toEqual([])
+  })
+})
+
+describe("the realtime bridge", () => {
+  it("never renders the page again: no router.refresh in lib/realtime*", () => {
+    const files = readdirSync(__dirname).filter((f) => /^realtime.*\.tsx?$/.test(f) && !f.includes(".test."))
+    expect(files).toContain("realtime.tsx")
+    for (const file of files) expect(readFileSync(join(__dirname, file), "utf8")).not.toMatch(/\.refresh\(/)
   })
 })
