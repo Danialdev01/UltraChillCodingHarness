@@ -74,7 +74,7 @@ export class SessionLifecycle {
   }
 
   async inspect(session: SessionRecord): Promise<SessionInspection> {
-    const running = session.status === "running" || session.status === "cancelling";
+    const running = session.status === "queued" || session.status === "running" || session.status === "cancelling";
     const turns = await this.deps.turnCount(session.id);
     const tree = this.#tree(session);
     if (!tree) return { turns, dirty: false, unpushed: 0, hasRemote: false, running };

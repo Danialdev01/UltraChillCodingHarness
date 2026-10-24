@@ -240,8 +240,9 @@ describe("thread.send", () => {
     });
   });
 
-  // Two concurrent turns would interleave edits to one working tree.
-  it.each(["running", "cancelling"] as const)("refuses while a turn is %s", (status) => {
+  // Two concurrent turns would interleave edits to one working tree. A
+  // queued thread has a message whose turn is about to open.
+  it.each(["queued", "running", "cancelling"] as const)("refuses while a turn is %s", (status) => {
     const d = run({ project: project(), thread: thread({ status }) }, {
       type: "thread.send",
       threadId: THREAD,
@@ -325,6 +326,18 @@ describe("thread.send", () => {
 describe("thread.cancel", () => {
   it("records the request while the turn is running", () => {
     const d = run({ project: project(), thread: thread({ status: "running" }) }, {
+      type: "thread.cancel",
+      threadId: THREAD,
+    });
+    expect(d).toMatchObject({
+      ok: true,
+      events: [{ type: "thread.cancel_requested", threadId: THREAD }],
+    });
+  });
+
+  // Stopped before it opens: the reactor dequeues the turn instead.
+  it("records the request while the message is still queued", () => {
+    const d = run({ project: project(), thread: thread({ status: "queued" }) }, {
       type: "thread.cancel",
       threadId: THREAD,
     });

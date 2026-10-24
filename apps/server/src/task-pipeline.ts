@@ -225,6 +225,10 @@ export class TaskPipeline {
         if (event.stopReason === "cancelled") settle.reject(new Cancelled());
         else settle.resolve(reply);
       } else if (event.type === "agent.turn_failed") settle.reject(new Error(event.error));
+      // The message was taken and no turn ever opened for it.
+      else if (event.type === "turn.dequeued") {
+        settle.reject(event.reason === "cancelled" ? new Cancelled() : new Error("the agent could not start this turn"));
+      }
     });
     const onAbort = () => settle.reject(new Cancelled());
     signal.addEventListener("abort", onAbort, { once: true });

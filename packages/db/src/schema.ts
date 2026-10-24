@@ -306,7 +306,7 @@ export const threads = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     title: text("title").notNull().default("Untitled"),
-    /** idle | running | cancelling | error */
+    /** idle | queued | running | cancelling | error */
     status: text("status").notNull().default("idle"),
     /** Set when this thread was forked from another, for provenance. */
     forkedFromThreadId: uuid("forked_from_thread_id"),

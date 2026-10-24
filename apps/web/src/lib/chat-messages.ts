@@ -384,6 +384,22 @@ export function toMessages(
         // `turn_completed` that follows carries `stopReason: "cancelled"`.
         break;
 
+      case "turn.dequeued":
+        // The message was sent and no turn ever opened for it: stopped while
+        // it waited, refused by the agent, or lost to a restart. A bubble of
+        // its own, so the message does not read as still waiting.
+        messages.push({
+          role: "assistant",
+          text: "",
+          parts: [],
+          reasoning: "",
+          streaming: false,
+          stopReason: "dequeued",
+          startedAt: null,
+          completedAt: row.receivedAt ?? null,
+        });
+        break;
+
       case "agent.retry": {
         const current = activity.get(event.turnId);
         if (current) current.retry = { attempt: event.attempt, maxRetries: event.maxRetries };
@@ -411,6 +427,8 @@ export function toMessages(
  */
 export function describeStop(stopReason: string | null | undefined): string | null {
   if (stopReason === "cancelled") return "Stopped at your request.";
+  // A `turn.dequeued`: there is no answer at all, early or otherwise.
+  if (stopReason === "dequeued") return "Stopped before it started.";
   if (stopReason === "max_iterations") {
     return "Stopped after reaching the maximum number of steps for one turn.";
   }

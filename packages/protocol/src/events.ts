@@ -198,6 +198,23 @@ const ThreadCancelRequested = z.object({
 });
 
 /**
+ * A sent message that never became a turn. `user.message` claims the thread
+ * (`threads.status = 'queued'`) so a second send is refused until the turn
+ * opens; this releases the claim when it never does:
+ * - `error`: the agent could not start it (no project, no one to bill);
+ * - `cancelled`: stopped while it waited;
+ * - `restart`: the server restarted before it opened.
+ *
+ * Recorded for the same reason as `thread.cancel_requested`: the status is a
+ * projection, and replaying the log must not leave a thread `queued`.
+ */
+const TurnDequeued = z.object({
+  type: z.literal("turn.dequeued"),
+  threadId: z.string().uuid(),
+  reason: z.enum(["error", "cancelled", "restart"]),
+});
+
+/**
  * Records anything injected into the model's context that the user did not
  * type -- the system prompt, the file tree, AGENTS.md, a compaction summary.
  * Logging these is what makes a run exactly reproducible rather than
@@ -719,6 +736,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ThreadRemoved,
   UserMessage,
   ThreadCancelRequested,
+  TurnDequeued,
   ContextInjected,
   TurnStarted,
   AgentSessionStarted,

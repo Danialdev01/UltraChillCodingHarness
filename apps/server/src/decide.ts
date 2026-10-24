@@ -44,7 +44,8 @@ export interface WorkspaceSnapshot {
 export interface ThreadSnapshot {
   id: string;
   projectId: string;
-  status: "idle" | "running" | "cancelling" | "error";
+  /** `queued`: a message was sent and its turn has not opened yet. */
+  status: "idle" | "queued" | "running" | "cancelling" | "error";
   /** The backend its first turn bound it to; null until one has run. */
   provider: ProviderId | null;
   /** Whose credentials it was started on; null on threads older than the column. */
@@ -207,8 +208,14 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if ("error" in project) return project.decision;
 
       // One turn at a time per thread. Queueing a second would interleave two
-      // agents editing the same working tree.
-      if (thread.value.status === "running" || thread.value.status === "cancelling") {
+      // agents editing the same working tree. A `queued` thread has a message
+      // whose turn is about to open; the `user.message` projection is what
+      // closes the race between two sends that both read `idle`.
+      if (
+        thread.value.status === "queued" ||
+        thread.value.status === "running" ||
+        thread.value.status === "cancelling"
+      ) {
         return fail("conflict", "this thread already has a turn in progress");
       }
 
@@ -247,13 +254,14 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     case "thread.cancel": {
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
-      if (thread.value.status !== "running") {
+      if (thread.value.status !== "running" && thread.value.status !== "queued") {
         return fail("conflict", "no turn is running on this thread");
       }
       // The turn is not over yet -- the reactor aborts the run in flight and
-      // the loop closes it with `agent.turn_completed`. This records only
-      // that stopping was asked for, which is what moves the thread to
-      // `cancelling` and keeps a second message out until the loop unwinds.
+      // the loop closes it with `agent.turn_completed`, or, if it had not
+      // opened, with `turn.dequeued`. This records only that stopping was
+      // asked for, which is what moves the thread to `cancelling` and keeps a
+      // second message out until the loop unwinds.
       return ok([{ type: "thread.cancel_requested", threadId: thread.value.id }]);
     }
 
@@ -273,7 +281,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     case "thread.revert": {
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
-      if (thread.value.status === "running") {
+      if (thread.value.status === "running" || thread.value.status === "queued") {
         return fail("conflict", "cannot revert while a turn is running");
       }
 

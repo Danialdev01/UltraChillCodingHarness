@@ -75,7 +75,7 @@ export function ProjectSessionRows({ project, onNavigate }: { project: Project; 
         </SidebarMenuSubItem>
       ) : (
         shown.map((session) => {
-          const working = session.status === "running" || session.status === "cancelling"
+          const working = isWorking(session)
           return (
             <SidebarMenuSubItem key={session.id} className="relative">
               <SidebarMenuSubButton
@@ -123,6 +123,11 @@ export function ProjectSessionRows({ project, onNavigate }: { project: Project; 
 function SessionIcon({ session }: { session: ProjectSession }) {
   if (session.worktreeState === "creating") return <Loader2Icon className="animate-spin" aria-label="Preparing worktree" />
   if (session.worktreeState === "error") return <AlertCircleIcon className="text-destructive" aria-label="Worktree failed" />
-  const working = session.status === "running" || session.status === "cancelling"
+  const working = isWorking(session)
   return <BotIcon className="ucch-agent-icon" data-status={working ? "working" : "idle"} aria-hidden />
+}
+
+/** Whether the session's agent has a turn: sent and waiting to open, running, or stopping. */
+function isWorking(session: ProjectSession): boolean {
+  return session.status === "queued" || session.status === "running" || session.status === "cancelling"
 }

@@ -76,6 +76,23 @@ export interface AgentOptions {
   maxConcurrentPerUser?: number;
 }
 
+/** How a turn was asked for: carried on the command, not the event. */
+interface TurnOptions {
+  model?: string | undefined;
+  effort?: ReasoningEffort | undefined;
+  provider?: ProviderId | undefined;
+  mode?: MessageMode | undefined;
+}
+
+/** The account a turn is billed to; see `#owner`. */
+interface TurnOwner {
+  id: string;
+  openrouterKeyEncrypted: string | null;
+  defaultModel: string | null;
+  defaultProvider: string | null;
+  agentPermissionMode: string | null;
+}
+
 /** How many turns pass between looks at a project's stack. */
 export const STACK_RECHECK_TURNS = 5;
 
@@ -322,37 +339,65 @@ export class AgentTurnReactor {
     await Promise.all([...this.#cliRuns].map((run) => run.kill().catch(() => {})));
   }
 
-  async #run(
+  /**
+   * The turn a `user.message` asked for, from the queued thread it left.
+   *
+   * Registered before anything is awaited, so a `thread.cancel` that comes
+   * while the thread is still `queued` finds the turn and stops it before it
+   * opens.
+   */
+  async #run(threadId: string, text: string, options: TurnOptions): Promise<void> {
+    const controller = new AbortController();
+    this.#running.set(threadId, controller);
+    try {
+      await this.#turn(threadId, text, options, controller);
+    } finally {
+      // Only if it is still ours: a turn that overran its own cancellation
+      // must not clear a controller the next turn has already registered.
+      if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
+    }
+  }
+
+  async #turn(
     threadId: string,
     text: string,
-    {
-      model,
-      effort,
-      provider: requestedProvider,
-      mode,
-    }: {
-      model?: string | undefined;
-      effort?: ReasoningEffort | undefined;
-      provider?: ProviderId | undefined;
-      mode?: MessageMode | undefined;
-    },
+    { model, effort, provider: requestedProvider, mode }: TurnOptions,
+    controller: AbortController,
   ): Promise<void> {
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
+    // Nothing to release: the thread, and its status, went with it.
     if (!thread) return;
 
-    const [project] = await this.db
-      .select({ stack: projects.stack })
-      .from(projects)
-      .where(eq(projects.id, thread.projectId))
-      .limit(1);
-    if (!project) return;
+    // Until `turn.started`, the thread is `queued` and refuses every other
+    // message: each way out before it says so, or the thread stays stuck.
+    const dequeue = (reason: "error" | "cancelled") => {
+      const event: DomainEvent = { type: "turn.dequeued", threadId, reason };
+      return this.store
+        .append({ projectId: thread.projectId, threadId }, [event], (tx) => applyProjection(tx, [event], null))
+        .then(() => {}, this.onError);
+    };
 
-    // Whose subscription pays, by the workspace's policy and what the
-    // thread was started on -- not whoever sent this message. Read once,
-    // before the turn opens, because the model it may name is recorded in
-    // `turn.started`.
-    const owner = await this.#owner(thread.projectId, thread);
-    if (!owner) return;
+    let project: { stack: string | null } | undefined;
+    let owner: TurnOwner | null;
+    try {
+      [project] = await this.db
+        .select({ stack: projects.stack })
+        .from(projects)
+        .where(eq(projects.id, thread.projectId))
+        .limit(1);
+      // Whose subscription pays, by the workspace's policy and what the
+      // thread was started on -- not whoever sent this message. Read once,
+      // before the turn opens, because the model it may name is recorded in
+      // `turn.started`.
+      owner = project ? await this.#owner(thread.projectId, thread) : null;
+    } catch (error) {
+      await dequeue("error");
+      throw error;
+    }
+    if (!project || !owner) {
+      await dequeue("error");
+      return;
+    }
 
     const turnId = randomUUID();
     const target = { projectId: thread.projectId, threadId };
@@ -379,13 +424,17 @@ export class AgentTurnReactor {
       );
     };
 
-    const controller = new AbortController();
-    this.#running.set(threadId, controller);
-
     try {
+      // Stopped while it waited: the turn never opens.
+      if (controller.signal.aborted) {
+        await dequeue("cancelled");
+        return;
+      }
+
       // First, and before anything that can fail slowly: this is what
       // inserts the `turns` row and moves the thread to `running`, so until
-      // it lands a cancel has nothing to find and no turn is recorded.
+      // it lands no turn is recorded. A cancel from here on aborts the
+      // controller, and the turn stops as soon as it runs.
       // The model is resolved here rather than at the call to `runTurn`
       // below so the event that opens the turn records what it was actually
       // billed against -- the `turns` row is what the usage breakdown reads.
@@ -547,9 +596,6 @@ export class AgentTurnReactor {
         this.onError,
       );
     } finally {
-      // Only if it is still ours: a turn that overran its own cancellation
-      // must not clear a controller the next turn has already registered.
-      if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
       // After the turn, not during it: a slow disk must not hold the
       // conversation up, and a failure here is never the turn's.
       void this.#recheckStack(thread.projectId, workspace).catch(this.onError);
@@ -906,13 +952,7 @@ export class AgentTurnReactor {
   async #owner(
     projectId: string,
     thread?: { createdByUserId: string | null; credentialSource: string | null },
-  ): Promise<{
-    id: string;
-    openrouterKeyEncrypted: string | null;
-    defaultModel: string | null;
-    defaultProvider: string | null;
-    agentPermissionMode: string | null;
-  } | null> {
+  ): Promise<TurnOwner | null> {
     const [project] = await this.db
       .select({
         creator: projects.userId,

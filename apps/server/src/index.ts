@@ -147,6 +147,20 @@ await mkdir(config.CREDS_ROOT, { recursive: true, mode: 0o700 });
 
 const bus = new EventBus();
 const store = new EventStore(db, bus);
+
+// A message whose turn never opened before the restart left its thread
+// `queued`, refusing every new message. Released through the log, not a
+// bare update like the one above, so the chat says why nothing answered.
+const dequeued = await db
+  .select({ id: threads.id, projectId: threads.projectId })
+  .from(threads)
+  .where(eq(threads.status, "queued"));
+for (const thread of dequeued) {
+  const event: DomainEvent = { type: "turn.dequeued", threadId: thread.id, reason: "restart" };
+  await store.append({ projectId: thread.projectId, threadId: thread.id }, [event], (tx) =>
+    applyProjection(tx, [event], null),
+  );
+}
 const auth = new AuthService(db, config);
 const workspaceService = new WorkspaceService(db);
 const access = new ProjectAccess(db);
@@ -645,6 +659,9 @@ const secureCookies = config.PUBLIC_SCHEME === "https";
 
 if (recovered.length > 0) {
   app.log.warn({ threads: recovered.length }, "reset threads left running by a previous process");
+}
+if (dequeued.length > 0) {
+  app.log.warn({ threads: dequeued.length }, "released threads left queued by a previous process");
 }
 
 // Started here rather than beside the store, because it logs through `app`.

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   generateHash,
   hasScope,
@@ -137,9 +137,16 @@ export class OrchestrationEngine {
         return { ok: false, code: "internal", message: "could not resolve the project for this command" };
       }
 
-      stored = await this.store.append(target, decision.events, (tx) =>
-        applyProjection(tx, decision.events, principal),
-      );
+      try {
+        stored = await this.store.append(target, decision.events, (tx) =>
+          applyProjection(tx, decision.events, principal),
+        );
+      } catch (error) {
+        // The transaction rolled back: nothing was recorded, and the caller
+        // hears the same conflict `decide` would have given on fresher state.
+        if (error instanceof ProjectionConflict) return { ok: false, code: "conflict", message: error.message };
+        throw error;
+      }
     }
 
     // Reactors run after the transaction commits, so they always observe
@@ -159,7 +166,7 @@ export class OrchestrationEngine {
         state.thread = {
           id: row.id,
           projectId: row.projectId,
-          status: row.status as "idle" | "running" | "cancelling" | "error",
+          status: row.status as "idle" | "queued" | "running" | "cancelling" | "error",
           provider: (row.provider as ProviderId | null) ?? null,
           credentialSource:
             row.credentialSource === "workspace" || row.credentialSource === "member"
@@ -242,6 +249,13 @@ export class OrchestrationEngine {
     return state;
   }
 }
+
+/**
+ * The read model refused an event: a rule `decide` checked against state
+ * that changed before the append. Thrown inside the append transaction, so
+ * it rolls back, and answered as `conflict`.
+ */
+export class ProjectionConflict extends Error {}
 
 /**
  * Whoever the events are being projected on behalf of.
@@ -351,14 +365,40 @@ export async function applyProjection(
           .where(eq(threads.id, event.threadId));
         break;
 
+      case "user.message": {
+        // The message claims the thread. `decide` refuses a send unless the
+        // thread is idle or errored, but two sends can both read it so; only
+        // one of them gets this row, and the other's transaction rolls back.
+        // `turn.started` moves it on to `running`, `turn.dequeued` back.
+        const claimed = await tx
+          .update(threads)
+          .set({ status: "queued" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["idle", "error"])))
+          .returning({ id: threads.id });
+        if (claimed.length === 0) throw new ProjectionConflict("this thread already has a turn in progress");
+        break;
+      }
+
+      case "turn.dequeued":
+        // Only from the states a turn that never opened can leave behind: a
+        // stray one must not idle a thread whose turn is running.
+        await tx
+          .update(threads)
+          .set({ status: "idle" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["queued", "cancelling"])));
+        break;
+
       case "thread.cancel_requested":
         // Not `idle`: the loop is still unwinding, and letting a new message
         // in before it finishes is exactly what the guard exists to stop.
-        // `agent.turn_completed` moves it the rest of the way.
+        // `agent.turn_completed` (or `turn.dequeued`) moves it the rest of
+        // the way. Only while there is a turn to stop: one that ended since
+        // the cancel was decided would otherwise leave the thread
+        // `cancelling` with nothing left to move it on.
         await tx
           .update(threads)
           .set({ status: "cancelling" })
-          .where(eq(threads.id, event.threadId));
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["queued", "running"])));
         break;
 
       case "thread.created":

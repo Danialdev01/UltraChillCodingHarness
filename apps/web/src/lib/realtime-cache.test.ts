@@ -53,6 +53,10 @@ describe("turn edges", () => {
       expect(effect.deferred?.map(prefixOf)).toEqual([["bootstrap"]])
     }
   })
+
+  it("refresh the sessions lists when a queued message is dequeued", () => {
+    expect(cacheEffect(ev({ type: "turn.dequeued", reason: "cancelled" }))).toEqual({ invalidate: [["sessions"]] })
+  })
 })
 
 describe("cacheSink", () => {

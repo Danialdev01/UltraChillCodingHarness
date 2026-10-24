@@ -732,7 +732,7 @@ export class WorkspaceService {
       .select({ id: threads.id })
       .from(threads)
       .where(
-        and(eq(threads.projectId, project.id), inArray(threads.status, ["running", "cancelling"])),
+        and(eq(threads.projectId, project.id), inArray(threads.status, ["queued", "running", "cancelling"])),
       )
       .limit(1);
     if (busy) return { error: "busy" };

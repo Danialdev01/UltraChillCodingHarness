@@ -62,6 +62,9 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
     case "agent.turn_completed":
     case "agent.turn_failed":
       return { invalidate: [qk.sessions.all], deferred: [qk.bootstrap()] }
+    // A message that never became a turn: the session's status is idle again.
+    case "turn.dequeued":
+      return { invalidate: [qk.sessions.all] }
     case "thread.removed":
     case "thread.worktree_ready":
     case "thread.worktree_failed":

@@ -242,6 +242,19 @@ describe("toMessages", () => {
     expect(messages[1]!.error).toBeUndefined();
   });
 
+  it("closes a message that never became a turn, without an error", () => {
+    const { messages, running } = log(
+      { type: "user.message", threadId: THREAD, text: "go" },
+      { type: "turn.dequeued", threadId: THREAD, reason: "restart" },
+    );
+    expect(running).toBe(false);
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toMatchObject({ role: "assistant", stopReason: "dequeued", streaming: false, parts: [] });
+    expect(messages[1]!.error).toBeUndefined();
+    expect(messages[1]!.turnId).toBeUndefined();
+    expect(describeStop(messages[1]!.stopReason)).toBe("Stopped before it started.");
+  });
+
   it("reports a failed turn as an error", () => {
     const { messages, running } = log(
       { type: "turn.started", threadId: THREAD, turnId: TURN },

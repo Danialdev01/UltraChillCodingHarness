@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { projectStats, threads, turns, type Transaction } from "@ucch/db";
+import { projectStats, threads, turns, type Database, type Transaction } from "@ucch/db";
 import { LIMIT_STOP_REASONS, type DomainEvent } from "@ucch/protocol";
-import { applyProjection } from "./engine.js";
+import { applyProjection, OrchestrationEngine, ProjectionConflict } from "./engine.js";
+import type { EventStore } from "./eventstore.js";
 import { decide, type DecisionContext } from "./decide.js";
 
 const USER = "11111111-1111-1111-1111-111111111111";
@@ -19,7 +20,7 @@ const TURN = "55555555-5555-5555-5555-555555555555";
  * What matters here is which statements the projection issues for which
  * event, and that is exactly what this records.
  */
-function recorder() {
+function recorder({ claimed = true }: { claimed?: boolean } = {}) {
   const statements: Statement[] = [];
 
   const name = (table: unknown): string =>
@@ -38,12 +39,16 @@ function recorder() {
     const promise = Promise.resolve([]) as Promise<never[]> & {
       onConflictDoNothing(): unknown;
       onConflictDoUpdate(config: { set: Record<string, unknown> }): unknown;
+      returning(): Promise<{ id: string }[]>;
     };
     promise.onConflictDoNothing = () => promise;
     promise.onConflictDoUpdate = (config) => {
       if (statement) statement.onConflict = config.set;
       return promise;
     };
+    // The rows an update claimed: one, or none when `claimed` is false --
+    // the row had already moved on.
+    promise.returning = () => Promise.resolve(claimed ? [{ id: THREAD }] : []);
     return promise;
   };
 
@@ -87,8 +92,8 @@ const rendered = (value: unknown) => {
   return { sql, params };
 };
 
-const apply = async (batch: DomainEvent[]) => {
-  const { statements, tx } = recorder();
+const apply = async (batch: DomainEvent[], options?: { claimed?: boolean }) => {
+  const { statements, tx } = recorder(options);
   await applyProjection(tx, batch, { userId: USER });
   return statements;
 };
@@ -131,7 +136,9 @@ describe("turn.started", () => {
     // the same statement that inserts.
     expect(inserted[0]!.values.seq).toBeTruthy();
 
+    // The message claims the thread; the turn moves it on.
     expect(statements.filter((s) => s.table === "threads")).toEqual([
+      { op: "update", table: "threads", values: { status: "queued" } },
       { op: "update", table: "threads", values: { status: "running" } },
     ]);
   });
@@ -140,7 +147,7 @@ describe("turn.started", () => {
     // The two halves of the bug in one test: the projection sets `running`,
     // and `running` is the state the send guard has always been looking for
     // and never once found.
-    const status = (await apply(send)).find((s) => s.table === "threads")!.values.status;
+    const status = (await apply(send)).findLast((s) => s.table === "threads")!.values.status;
 
     const second = decide(
       {
@@ -156,7 +163,7 @@ describe("turn.started", () => {
   });
 
   it("lets a cancel through, which it never did before", async () => {
-    const status = (await apply(send)).find((s) => s.table === "threads")!.values.status;
+    const status = (await apply(send)).findLast((s) => s.table === "threads")!.values.status;
 
     const cancel = decide(
       {
@@ -176,11 +183,37 @@ describe("turn.started", () => {
 });
 
 describe("thread status", () => {
+  it("is claimed by a message, only from idle or error", async () => {
+    const statements = await apply([{ type: "user.message", threadId: THREAD, text: "hello" }]);
+    expect(statements).toEqual([{ op: "update", table: "threads", values: { status: "queued" } }]);
+    const where = rendered(wheres.get(statements[0]!));
+    expect(where.sql).toMatch(/"threads"\."id" = \$1 and "threads"\."status" in \(\$2, \$3\)/);
+    expect(where.params).toEqual([THREAD, "idle", "error"]);
+  });
+
+  it("refuses a message when another one claimed the thread first", async () => {
+    // Both sends read `idle`; the second finds the row already queued, and
+    // its transaction rolls back with a conflict the engine reports.
+    await expect(
+      apply([{ type: "user.message", threadId: THREAD, text: "again" }], { claimed: false }),
+    ).rejects.toBeInstanceOf(ProjectionConflict);
+  });
+
+  it("goes back to idle when a queued message is dequeued, and only then", async () => {
+    const statements = await apply([{ type: "turn.dequeued", threadId: THREAD, reason: "cancelled" }]);
+    expect(statements).toEqual([{ op: "update", table: "threads", values: { status: "idle" } }]);
+    // Never a running turn's thread: a stray dequeue must not free it.
+    expect(rendered(wheres.get(statements[0]!)).params).toEqual([THREAD, "queued", "cancelling"]);
+  });
+
   it("moves to cancelling on a cancel request, not straight to idle", async () => {
     const statements = await apply([{ type: "thread.cancel_requested", threadId: THREAD }]);
     expect(statements).toEqual([
       { op: "update", table: "threads", values: { status: "cancelling" } },
     ]);
+    // Only while a turn is waiting or running: one that already ended would
+    // leave the thread cancelling for good.
+    expect(rendered(wheres.get(statements[0]!)).params).toEqual([THREAD, "queued", "running"]);
   });
 
   it("returns to idle when the turn completes", async () => {
@@ -341,5 +374,37 @@ describe("project_stats", () => {
     const [flag] = stats(statements);
     expect(Object.keys(flag!.values).sort()).toEqual(["lastTurnFailed", "updatedAt"]);
     expect(whereOf(flag!).params).toEqual([TURN]);
+  });
+});
+
+describe("OrchestrationEngine", () => {
+  it("answers a send that lost the claim with conflict, and starts nothing", async () => {
+    // Both sends read the thread idle; the projection of the second finds it
+    // already queued and throws, rolling its transaction back.
+    const rows: unknown[][] = [
+      [{ id: THREAD, projectId: PROJECT, status: "idle", provider: null, credentialSource: null, worktreeState: null }],
+      [{ project: { ...project, containerState: "running" } }],
+      [{ id: workspace.id, credentialPolicy: "member", role: "owner", canCreateProject: null, canCreateSession: null }],
+    ];
+    const chain: Record<string, unknown> = {};
+    for (const step of ["from", "leftJoin", "where"]) chain[step] = () => chain;
+    chain.limit = () => Promise.resolve(rows.shift() ?? []);
+    const db = { select: () => chain } as unknown as Database;
+    const store = {
+      append: async () => {
+        throw new ProjectionConflict("this thread already has a turn in progress");
+      },
+    } as unknown as EventStore;
+    const reacted: string[] = [];
+    const engine = new OrchestrationEngine(db, store, { react: (command) => reacted.push(command.type) });
+
+    const result = await engine.dispatch(
+      { userId: USER, sessionId: "s", scopes: ["read", "write", "exec"] },
+      { type: "thread.send", threadId: THREAD, text: "again" },
+    );
+
+    expect(result).toEqual({ ok: false, code: "conflict", message: "this thread already has a turn in progress" });
+    expect(reacted).toEqual([]);
+    await engine.worker.drain();
   });
 });

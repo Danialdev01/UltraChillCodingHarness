@@ -39,7 +39,10 @@ function card(overrides: Partial<ProjectTask> = {}): ProjectTask {
  * A board of one card, and an engine whose turns answer from a script: each
  * `thread.send` is answered on the bus the way the agent reactor would.
  */
-function harness(task: ProjectTask, replies: (text: string) => string | Error | null) {
+/** A reply that is never a turn: the message is dequeued instead. */
+const DEQUEUED = Symbol("dequeued");
+
+function harness(task: ProjectTask, replies: (text: string) => string | Error | null | typeof DEQUEUED) {
   let current = task;
   const bus = new EventBus();
   const sent: Extract<Command, { type: "thread.send" }>[] = [];
@@ -86,6 +89,10 @@ function harness(task: ProjectTask, replies: (text: string) => string | Error | 
       const { threadId } = command;
       setTimeout(() => {
         if (reply === null) return; // a turn that never ends on its own
+        if (reply === DEQUEUED) {
+          emit(threadId, { type: "turn.dequeued", threadId, reason: "error" });
+          return;
+        }
         if (reply instanceof Error) {
           emit(threadId, { type: "agent.turn_failed", threadId, turnId, error: reply.message });
           return;
@@ -192,6 +199,14 @@ describe("TaskPipeline", () => {
     h.pipeline.enqueue(PROJECT, task.id);
     await h.pipeline.drain();
     expect(h.now()).toMatchObject({ stage: "research", status: "failed", lastError: "no credits" });
+  });
+
+  it("marks the card failed when its turn never starts", async () => {
+    const task = card();
+    const h = harness(task, () => DEQUEUED);
+    h.pipeline.enqueue(PROJECT, task.id);
+    await h.pipeline.drain();
+    expect(h.now()).toMatchObject({ stage: "research", status: "failed", lastError: "the agent could not start this turn" });
   });
 
   it("cancels the running turn when the card is taken away", async () => {
