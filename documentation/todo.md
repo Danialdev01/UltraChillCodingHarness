@@ -271,7 +271,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
   - **Acceptance:** `grep -rn "router.refresh" apps/web/src` lists only the kept sites (plus `tables-column.tsx` if its grid isn't query-backed), and each converted flow updates the UI without a refresh.
   - **Verify:** standard, plus a manual pass over each converted flow
 
-- [ ] **PF1.7 — Smooth the bootstrap herd from turn edges**
+- [x] **PF1.7 — Smooth the bootstrap herd from turn edges** — 09a321f
 
   - **Depends:** PF1.5
   - **Files:** `apps/web/src/lib/realtime.tsx` (CacheBridge), `apps/web/src/lib/realtime-cache.ts`, `apps/web/src/lib/realtime-cache.test.ts`
