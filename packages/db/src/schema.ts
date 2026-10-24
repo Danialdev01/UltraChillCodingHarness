@@ -383,8 +383,10 @@ export const events = pgTable(
     uniqueIndex("events_thread_seq_idx").on(t.threadId, t.seq),
     index("events_project_idx").on(t.projectId, t.id),
     // `nextSeq` for project-scoped events: max(seq) where thread_id is null.
-    // Without it every such append scanned the project's whole log.
-    index("events_project_seq_idx")
+    // Without it every such append scanned the project's whole log. Unique
+    // for the same reason as the thread index; NULL thread ids would make a
+    // unique (thread_id, seq) index useless for these rows.
+    uniqueIndex("events_project_seq_idx")
       .on(t.projectId, t.seq)
       .where(sql`${t.threadId} is null`),
   ],

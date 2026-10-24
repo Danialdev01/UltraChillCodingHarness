@@ -40,9 +40,12 @@ export class EventStore {
 
     if (durable.length > 0) {
       await this.db.transaction(async (tx) => {
-        // Take the next sequence under the transaction's lock. The unique
-        // index on (thread_id, seq) is the real guard: if two writers ever
-        // race here, one transaction fails rather than silently interleaving.
+        // One writer per stream at a time, until this transaction ends.
+        // Project-scoped events are appended from many places outside the
+        // engine (reactors, routes, the file watcher), and without the lock
+        // two of them could read the same max(seq). The unique indexes on
+        // (thread_id, seq) and (project_id, seq) stay as the backstop.
+        await lockStream(tx, target);
         const next = await nextSeq(tx, target);
 
         // The projection runs first because `events.project_id` and
@@ -176,6 +179,19 @@ function toStored(row: typeof events.$inferSelect): StoredEvent {
     createdAt: row.createdAt.toISOString(),
     event: row.payload,
   };
+}
+
+/**
+ * Takes the stream's advisory lock, held until the transaction ends.
+ *
+ * Its own statement on purpose: under READ COMMITTED each statement reads
+ * its own snapshot, so a `max(seq)` in the same statement as the lock could
+ * see the stream as it was before the lock was granted. `nextSeq`, issued
+ * after this returns, sees every append that held the lock before.
+ */
+async function lockStream(tx: Transaction, target: AppendTarget): Promise<void> {
+  const key = target.threadId ? `thread:${target.threadId}` : `project:${target.projectId}`;
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
 }
 
 async function nextSeq(tx: Transaction, target: AppendTarget): Promise<number> {

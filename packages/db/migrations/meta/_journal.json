@@ -183,6 +183,13 @@
       "when": 1792864560479,
       "tag": "0025_project_stats",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1792884064973,
+      "tag": "0026_event_stream_seq",
+      "breakpoints": true
     }
   ]
 }
