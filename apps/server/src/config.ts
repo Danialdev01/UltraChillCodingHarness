@@ -203,6 +203,15 @@ const Env = z.object({
    */
   METRICS_TOKEN: z.string().min(16).optional(),
 
+  /**
+   * Log every resource sample (resource-sampler.ts: memory and CPU by
+   * service and kind of child, and the cgroup's figures), one line each
+   * 15 s. Off, the figures are on `/metrics` only.
+   */
+  LOG_RESOURCE_SAMPLES: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
 });
 
 export type Config = Readonly<z.infer<typeof Env>>;

@@ -99,7 +99,7 @@ pass "node cannot read the databases or secrets"
 
 metrics=$(docker exec "$NAME" curl -fsS localhost:3000/metrics) || fail "/metrics refused inside the container"
 for family in event_loop_delay_seconds process_rss_bytes gc_pause_seconds http_request_seconds ws_connections \
-  engine_queue_depth pg_connections; do
+  engine_queue_depth pg_connections resource_rss_bytes cgroup_memory_bytes; do
   grep -q "^# TYPE $family " <<<"$metrics" || fail "/metrics has no $family"
 done
 pass "/metrics answers inside the container"

@@ -105,6 +105,7 @@ import {
 } from "./session-lifecycle.js";
 import { cachedCatalogue, catalogue, keyQuota, type KeyQuota } from "./openrouter.js";
 import { LATENCY_BUCKETS, metricsAccess, registry, startRuntimeMetrics } from "./metrics.js";
+import { ResourceSampler } from "./resource-sampler.js";
 import {
   fetchClaudeUsage,
   fetchCodexUsage,
@@ -739,6 +740,13 @@ registry.gauge("pg_connections", "This database's server connections, by state",
     clearTimeout(timer);
   }
 });
+
+// Memory and CPU by service and kind of child, from /proc and the cgroup.
+// Not there (macOS in development) is no figures rather than an error.
+const resources = new ResourceSampler({
+  log: config.LOG_RESOURCE_SAMPLES ? (sample) => app.log.info(sample, "resource sample") : undefined,
+});
+resources.start().catch((error) => app.log.warn({ err: error }, "could not start the resource sampler"));
 
 /**
  * The numbers, for a scraper. Who may read them is `metricsAccess`'s call:
@@ -3408,6 +3416,7 @@ if (config.DEFAULT_USER_EMAIL && config.DEFAULT_USER_PASSWORD) {
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "shutting down");
+  resources.stop();
   gateway.close();
   await engine.worker.stop();
   // After the engine: a command still in the queue can still queue a clone.
