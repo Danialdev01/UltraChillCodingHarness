@@ -283,7 +283,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
 
 ### Bootstrap (`solution.md` §5)
 
-- [ ] **PF1.8 — `project_stats` projection**
+- [x] **PF1.8 — `project_stats` projection** — d38bd1a
 
   - **Depends:** —
   - **Files:** `packages/db/src/schema.ts`, new migration `0026_project_stats.sql` (table, backfill, `threads_running_idx`), `apps/server/src/engine.ts` (`applyProjection`, line 245), `apps/server/src/workspaces.ts` (`listProjects`, line 374), `apps/server/src/index.ts` (thread delete, line 1596), `apps/server/src/engine.test.ts`
@@ -302,6 +302,11 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - `EXPLAIN` shows no scan of `turns`.
     - Not in the top 5 of `pg-top.sh`.
   - **Verify:** `pnpm test -- engine workspaces`, plus `pnpm db:migrate` on a copy and the counts compared with the old query
+  - **Measured:**
+    - The migration is `0025_project_stats.sql`: PF1.1's migration is not written yet.
+    - Bootstrap server p95: 74 ms → 5.3–5.9 ms. `EXPLAIN` shows no scan of `turns`.
+    - Backfill on a copy matched the old query for all 1,220 projects. No drift after a 4-minute load run.
+    - pg-top: `listProjects` mean 1.52 → 0.21 ms, but it is still #1 by total time. The cost is at its floor; the call count keeps it there, so the top-5 criterion is not met.
 
 - [ ] **PF1.9 — Trim `/api/bootstrap`**
 
