@@ -344,7 +344,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Keystroke echo p95/p99: 1.82/4.21 ms, against 2.61/5.81 ms for the old dispatch path on the same image (`run.mjs --type-via dispatch`).
     - 0 ack frames for 18,212 `terminal_input` frames in a 4-minute run.
 
-- [ ] **PF1.11 — Keyed engine queue**
+- [x] **PF1.11 — Keyed engine queue** — 71c2b47
 
   - **Depends:** PF1.1, PF1.2
   - **Files:** `apps/server/src/worker.ts` (new `KeyedWorker`), `apps/server/src/engine.ts` (lines 39–75), `apps/server/src/ws.ts` (per-connection ordering chain), `apps/server/src/access.ts` (`projectOfThread`), `apps/server/src/config.ts` (`ENGINE_MAX_PARALLEL`), `apps/server/src/index.ts` (shutdown, line 3324), `apps/server/src/worker.test.ts`
@@ -359,6 +359,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     4. `loadConfig` rejects `ENGINE_MAX_PARALLEL > DB_POOL_MAX − 4` once PF1.27 lands.
   - **Acceptance:** engine wait p99 < 20 ms under load. Commands from one connection run in the order sent.
   - **Verify:** `pnpm test -- worker engine`, plus load
+  - **Measured:**
+    - Engine wait p50/p99 under the PF0 load (50 users, 5 min): 0.51 / 6.05 ms before, 0.50 / 0.99 ms after.
+    - Commands from one socket whose key lookups finish out of order reach the engine in the order sent (`ws.test.ts`).
+    - `ENGINE_MAX_PARALLEL` is clamped to `DB_POOL_MAX − 4` in `index.ts` (6 today); the `loadConfig` check waits for PF1.27.
 
 - [ ] **PF1.12 — One join in `#loadState`** *(optional)*
 
