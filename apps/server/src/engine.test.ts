@@ -407,4 +407,32 @@ describe("OrchestrationEngine", () => {
     expect(reacted).toEqual([]);
     await engine.worker.drain();
   });
+
+  it("queues each command with its project's", async () => {
+    const OTHER = "88888888-8888-8888-8888-888888888888";
+    const engine = new OrchestrationEngine({} as Database, {} as EventStore, { react: () => {} }, () => {}, {
+      projectOfThread: async (threadId) => (threadId === THREAD ? PROJECT : null),
+    });
+    expect(await engine.keyOf({ type: "project.start", projectId: PROJECT })).toBe(`p:${PROJECT}`);
+    expect(await engine.keyOf({ type: "thread.create", projectId: PROJECT })).toBe(`p:${PROJECT}`);
+    // A thread's commands share its project's queue...
+    expect(await engine.keyOf({ type: "thread.send", threadId: THREAD, text: "hi" })).toBe(`p:${PROJECT}`);
+    // ...or have one of their own when the thread cannot be found.
+    expect(await engine.keyOf({ type: "thread.cancel", threadId: OTHER })).toBe(`t:${OTHER}`);
+    expect(await engine.keyOf({ type: "project.create", workspaceId: OTHER, name: "x" } as never)).toBe(`w:${OTHER}`);
+    expect(await engine.keyOf({ type: "preview.delete", hash: "abcdef123456" } as never)).toBe("preview:abcdef123456");
+    expect(await engine.keyOf({ type: "terminal.input", terminalId: "t1", data: "x" })).toBe("terminal:t1");
+    expect(
+      await engine.keyOf({ type: "terminal.create", projectId: PROJECT, terminalId: "t1", cols: 80, rows: 24 }),
+    ).toBe(`p:${PROJECT}`);
+  });
+
+  it("falls back to the thread's own queue when its project cannot be read", async () => {
+    const engine = new OrchestrationEngine({} as Database, {} as EventStore, { react: () => {} }, () => {}, {
+      projectOfThread: async () => {
+        throw new Error("database down");
+      },
+    });
+    expect(await engine.keyOf({ type: "thread.cancel", threadId: THREAD })).toBe(`t:${THREAD}`);
+  });
 });

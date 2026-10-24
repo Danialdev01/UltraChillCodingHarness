@@ -223,6 +223,13 @@ const Env = z.object({
     .string()
     .optional()
     .transform((v) => v === "true" || v === "1"),
+
+  /**
+   * Commands the engine handles at once, each on a different project (one
+   * project's run in order). Every one can hold a database connection, so
+   * the server keeps it at least 4 below the pool whatever is set here.
+   */
+  ENGINE_MAX_PARALLEL: z.coerce.number().int().positive().default(8),
 });
 
 export type Config = Readonly<z.infer<typeof Env>>;

@@ -9,7 +9,7 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, inArray, lt, notLike, sql } from "drizzle-orm";
-import { createDatabase, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
+import { createDatabase, DB_POOL_MAX, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
 import {
   AgentPermissionMode,
   can,
@@ -376,9 +376,20 @@ const reactors: Reactors = {
   },
 };
 
-const engine = new OrchestrationEngine(db, store, reactors, (error, command) => {
-  app.log.error({ err: error, command: command.type }, "command failed");
-});
+const engine = new OrchestrationEngine(
+  db,
+  store,
+  reactors,
+  (error, command) => {
+    app.log.error({ err: error, command: command.type }, "command failed");
+  },
+  {
+    // Under the pool, with room left for the routes and reactors: every
+    // command in flight can hold a connection for its transaction.
+    maxParallel: Math.min(config.ENGINE_MAX_PARALLEL, DB_POOL_MAX - 4),
+    projectOfThread: (threadId) => access.projectOfThread(threadId),
+  },
+);
 /**
  * Changes on disk nobody announced -- a terminal, a dev server, git -- for
  * every project someone has open (see file-watcher.ts). What the server and

@@ -26,7 +26,7 @@ import type { Principal } from "./auth.js";
 import { decide, type DecisionContext, type DecisionState } from "./decide.js";
 import { LATENCY_BUCKETS, registry } from "./metrics.js";
 import { turnFailed } from "./project-stats.js";
-import { DrainableWorker } from "./worker.js";
+import { KeyedWorker } from "./worker.js";
 import { toMembership, toPolicy } from "./workspaces.js";
 
 export type EngineResult =
@@ -54,26 +54,38 @@ const processSeconds = registry.histogram(
   ["command"],
 );
 
+export interface EngineOptions {
+  /** Commands processed at once across all projects. Bounded below the database pool. */
+  maxParallel?: number;
+  /** A thread's project, for queueing its commands with the project's; see `keyOf`. */
+  projectOfThread?: (threadId: string) => Promise<string | null>;
+}
+
 /**
- * Serializes every state-changing command through a single worker.
+ * Runs state-changing commands one at a time per project, and projects side
+ * by side.
  *
  * Loading state, deciding, and appending is not atomic on its own -- between
  * the read and the write, a concurrent command could invalidate the state the
  * decision was made against. Rather than take row locks across the whole
- * decision, commands run one at a time. This trades write throughput for the
- * guarantee that no decision ever runs on stale state, which for a personal
- * harness is unambiguously the right way round.
+ * decision, the commands that could invalidate each other run one at a time:
+ * a decision reads only its own thread, project, workspace and turn, so they
+ * are the ones on the same project (`keyOf`). The rest holds without the
+ * queue: sequence numbers take a stream lock (`EventStore.append`), a thread
+ * takes one turn at a time by its `queued` claim, membership changes only
+ * through REST, and project_stats is updated by relative SQL.
  */
 export class OrchestrationEngine {
-  readonly worker: DrainableWorker<QueueItem>;
+  readonly worker: KeyedWorker<QueueItem>;
 
   constructor(
     private readonly db: Database,
     private readonly store: EventStore,
     private readonly reactors: Reactors,
     private readonly onError: (error: unknown, command: Command) => void = () => {},
+    private readonly options: EngineOptions = {},
   ) {
-    this.worker = new DrainableWorker<QueueItem>("orchestration", async (item) => {
+    this.worker = new KeyedWorker<QueueItem>("orchestration", options.maxParallel ?? 8, async (item) => {
       // Every path must settle the caller's promise. An unhandled throw here
       // would leave `dispatch()` pending forever, which surfaces as a silent
       // client hang rather than an error.
@@ -91,10 +103,44 @@ export class OrchestrationEngine {
     });
   }
 
-  dispatch(principal: Principal, command: Command): Promise<EngineResult> {
+  /**
+   * Queues a command and settles once it has been handled.
+   *
+   * With `key` (from `keyOf`), queued at once: a caller that must keep its
+   * own commands in order resolves keys in order and pushes each straight
+   * after (see the gateway). Without, the key is looked up first.
+   */
+  dispatch(principal: Principal, command: Command, key?: string): Promise<EngineResult> {
+    if (key === undefined) return this.keyOf(command).then((resolved) => this.dispatch(principal, command, resolved));
     return new Promise((resolve) => {
-      this.worker.push({ principal, command, resolve, enqueuedAt: performance.now() });
+      this.worker.push(key, { principal, command, resolve, enqueuedAt: performance.now() });
     });
+  }
+
+  /**
+   * The queue a command waits in: its project's, wherever one can be named.
+   *
+   * A thread's commands go with its project's, found from the thread (and
+   * cached by the caller); a thread that does not exist yet -- or any more --
+   * gets its own queue, where `decide` refuses it. A new project queues by
+   * its workspace, a preview by its address, a bare terminal command by its
+   * terminal; none of those share state with anything else in the queue.
+   */
+  async keyOf(command: Command): Promise<string> {
+    switch (command.type) {
+      case "project.create":
+        return `w:${command.workspaceId}`;
+      case "preview.delete":
+        return `preview:${command.hash}`;
+      case "terminal.input":
+      case "terminal.resize":
+      case "terminal.close":
+        return `terminal:${command.terminalId}`;
+    }
+    if ("projectId" in command) return `p:${command.projectId}`;
+    // Every command left names a thread and nothing else.
+    const projectId = await this.options.projectOfThread?.(command.threadId).catch(() => null);
+    return projectId ? `p:${projectId}` : `t:${command.threadId}`;
   }
 
   async #process(item: QueueItem): Promise<EngineResult> {

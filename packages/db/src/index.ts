@@ -23,6 +23,9 @@ export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
  */
 const POOL = { max: 10, idle_timeout: 60, max_lifetime: 30 * 60, onnotice: () => {} } as const;
 
+/** Connections each client may open: what anything running queries side by side must stay under. */
+export const DB_POOL_MAX = POOL.max;
+
 export function createDatabase(url: string) {
   const sql = postgres(url, POOL);
   return drizzle(sql, { schema });

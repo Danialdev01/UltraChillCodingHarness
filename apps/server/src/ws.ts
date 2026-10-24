@@ -66,6 +66,13 @@ interface Connection {
   projects: Set<string>;
   /** When this socket was last told a terminal frame was refused. */
   terminalRefusedAt: number;
+  /**
+   * The last of this socket's commands to be queued. Finding a command's
+   * queue can take a read (a thread's project), so each waits for the one
+   * before it to be queued first: the engine runs one queue's commands in
+   * order, and this keeps that order the order they were sent.
+   */
+  order: Promise<void>;
 }
 
 /**
@@ -166,6 +173,7 @@ export class WebSocketGateway {
       threads: new Map(),
       projects: new Set(),
       terminalRefusedAt: 0,
+      order: Promise.resolve(),
     };
     this.#connections.add(conn);
 
@@ -233,7 +241,17 @@ export class WebSocketGateway {
         return;
 
       case "dispatch": {
-        const result = await this.engine.dispatch(conn.principal, frame.command);
+        const queued = conn.order.then(async () => {
+          const key = await this.engine.keyOf(frame.command);
+          return { result: this.engine.dispatch(conn.principal, frame.command, key) };
+        });
+        // The next command waits for this one to be queued, not handled:
+        // commands for different projects still run side by side.
+        conn.order = queued.then(
+          () => {},
+          () => {},
+        );
+        const result = await (await queued).result;
         if (result.ok && frame.command.type === "thread.send") {
           // The message has left the prompt box, in every window at once.
           this.#composerChanged(frame.command.threadId, this.options.composer.clear(frame.command.threadId));

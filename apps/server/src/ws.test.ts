@@ -27,12 +27,15 @@ let delivered: string[];
 /** Whether the terminals accept what they are sent. */
 let accept: boolean;
 let dispatched: Command[];
+/** How long finding a thread command's queue takes. */
+let slowKeyMs: number;
 const sockets: WebSocket[] = [];
 
 beforeEach(async () => {
   delivered = [];
   accept = true;
   dispatched = [];
+  slowKeyMs = 0;
   const auth = {
     // The ticket is the user id, with the scopes after a colon.
     redeemTicket: (ticket?: string): Principal | null => {
@@ -46,6 +49,11 @@ beforeEach(async () => {
     },
   } as unknown as AuthService;
   const engine = {
+    // A thread's queue takes a moment to find, as the real one may.
+    keyOf: async (command: Command) => {
+      if ("threadId" in command) await new Promise((r) => setTimeout(r, slowKeyMs));
+      return "k";
+    },
     dispatch: async (_principal: Principal, command: Command) => {
       dispatched.push(command);
       return { ok: true, events: [] };
@@ -185,5 +193,20 @@ describe("terminalFrame", () => {
     expect(terminalFrame('{"kind":"terminal_resize","terminalId":"t","cols":80.5,"rows":24}')).toBeNull();
     expect(terminalFrame(`{"kind":"terminal_input","terminalId":"${"t".repeat(65)}","data":""}`)).toBeNull();
     expect(terminalFrame("null")).toBeNull();
+  });
+});
+
+describe("dispatch", () => {
+  it("queues a socket's commands in the order they were sent, however long each takes to place", async () => {
+    slowKeyMs = 30;
+    const alice = await connect();
+    const thread = "44444444-4444-4444-4444-444444444444";
+    alice.send({ kind: "dispatch", id: "1", command: { type: "thread.cancel", threadId: thread } });
+    alice.send({ kind: "dispatch", id: "2", command: { type: "terminal.close", terminalId: TERMINAL } });
+    const deadline = Date.now() + 1000;
+    while (alice.frames.filter((f) => f.kind === "ack").length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(dispatched.map((command) => command.type)).toEqual(["thread.cancel", "terminal.close"]);
   });
 });
