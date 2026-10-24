@@ -246,7 +246,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
   - **Acceptance:** the first page of a new browser session shows the shell skeleton immediately with no progress overlay. Sign-in → interactive shell ≤ 2.0 s.
   - **Verify:** standard, plus `pnpm --filter @ucch/web e2e`
 
-- [ ] **PF1.5 — CacheBridge without refresh; `ProjectSeed` / `useProject`**
+- [x] **PF1.5 — CacheBridge without refresh; `ProjectSeed` / `useProject`** — 38c9630
 
   - **Depends:** PF1.3
   - **Files:** `apps/web/src/lib/realtime.tsx` (CacheBridge, lines 272–311), `apps/web/src/lib/realtime-cache.ts` (`cacheEffect`, `RESOURCES`), `apps/web/src/lib/query-keys.ts`, new `apps/web/src/lib/queries/project.ts` (`ProjectSeed`, `useProject`), project page consumers and `components/project-chat.tsx`, `components/app-sidebar.tsx` and the `ViewerProvider` (read `useBootstrap().data.me`), `components/section-panel.tsx` (line 112), `apps/web/src/lib/realtime-cache.test.ts`
