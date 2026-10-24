@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useQueryClient, type QueryKey } from "@tanstack/react-query"
+import { useQueryClient } from "@tanstack/react-query"
 import type { DomainEvent, LiveResource, PresenceViewer } from "@ucch/protocol"
 
 import {
@@ -12,7 +12,7 @@ import {
   type AgentStatus,
 } from "@/lib/agent-activity"
 import { UcchClient, type ClientEvent } from "@/lib/client"
-import { cacheEffect, prefixOf } from "@/lib/realtime-cache"
+import { cacheEffect, cacheSink } from "@/lib/realtime-cache"
 import { TAB_ID, installTabHeader } from "@/lib/tab-id"
 import { useActiveWorkspace } from "@/lib/workspace-context"
 
@@ -271,28 +271,20 @@ function CacheBridge({ client }: { client: UcchClient | null }) {
   React.useEffect(() => {
     if (!client) return
     // Several changes in a burst -- a turn ending, a form saving three
-    // fields -- are one refetch of each key.
-    const keys = new Map<string, QueryKey>()
-    let timer: number | undefined
-    const flush = () => {
-      for (const key of keys.values()) void queryClient.invalidateQueries({ queryKey: key })
-      keys.clear()
-    }
+    // fields -- are one refetch of each key. A hidden tab only marks its
+    // copies stale; it refetches them when it is shown again.
+    const sink = cacheSink((key) => {
+      void queryClient.invalidateQueries({ queryKey: key, refetchType: document.hidden ? "none" : "active" })
+    })
     // Back from a drop: nothing that happened meanwhile was pushed here, so
     // everything on screen refetches (only what is open; the rest is marked
     // stale for when it is next shown).
     const offReconnect = client.onReconnect(() => void queryClient.invalidateQueries())
-    const off = client.onEvent(({ event }) => {
-      const effect = cacheEffect(event)
-      if (effect.invalidate.length === 0) return
-      for (const key of effect.invalidate.map(prefixOf)) keys.set(JSON.stringify(key), key)
-      window.clearTimeout(timer)
-      timer = window.setTimeout(flush, 200)
-    })
+    const off = client.onEvent(({ event }) => sink.push(cacheEffect(event)))
     return () => {
       off()
       offReconnect()
-      window.clearTimeout(timer)
+      sink.dispose()
     }
   }, [client, queryClient])
   return null
