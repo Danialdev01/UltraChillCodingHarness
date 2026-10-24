@@ -9,6 +9,9 @@ touching the network. The plan behind them is `documentation/solution.md`
 | `mock-openrouter.mjs` | An OpenRouter stand-in: streams answers at a set rate, serves the model catalogue and the key/credits endpoints |
 | `fake-claude.mjs` | A `claude` CLI stand-in: answers the harness's probes and plays a turn in stream-json at a set rate, optionally holding the real CLI's memory |
 | `fixtures/claude-text.jsonl` | The stream `fake-claude.mjs` replays, copied from `packages/providers/src/fixtures` |
+| `up.sh` | Starts a load-test target: its own Postgres, and the app limited like the production VPS with the mocks inside |
+| `run.mjs` | The load generator: virtual users on the WebSocket and the edge, measured from outside and from `/metrics` |
+| `apps/web/e2e/stream.spec.ts` | What a streaming answer costs the browser: long tasks, INP and frame-to-paint |
 
 ## Pointing a container at the mocks
 
@@ -108,3 +111,70 @@ It creates:
 It writes `$LOAD_OUT/sessions.json` (mode 600): `{ base, sharedWorkspaceId, password, users: [{ userId, email, cookie, personalWorkspaceId }] }`. Running it again only fills gaps; each run issues fresh sessions. `--users 50 --projects 20` (1,020 projects) takes about 35 s.
 
 `pg-top.sh` reads this database with `PG_TOP_PSQL='docker exec -i ucch-pg-load psql -U postgres -d ucch_load'`.
+
+## A whole run
+
+`up.sh` does the container setup above, limited as the plan's VPS is (`--cpus=4 --memory=8g`, pinned to cores `0-3`). It chooses `SECRET_KEY` and `METRICS_TOKEN` once and keeps them in `load-out/env`. Re-running it replaces the app container and keeps the database; `--fresh` starts both over.
+
+```bash
+docker build --target app -t ucch:load .
+bash scripts/load/up.sh
+set -a; . load-out/env; set +a
+LOADTEST_ALLOW_SEED=1 LOAD_OUT=load-out DATABASE_URL=postgres://postgres:load@127.0.0.1:55432/ucch_load \
+  pnpm --filter @ucch/server exec tsx scripts/seed-load.ts --users 50 --projects 20 --url http://127.0.0.1:3397
+taskset -c 8-15 node scripts/load/run.mjs --users 50 --minutes 10 \
+  --out documentation/perf/<task>-<date>.json
+```
+
+Run the generator on cores the container does not have (`taskset`), so the two do not compete for the CPU being measured.
+
+## `run.mjs`
+
+```
+node scripts/load/run.mjs [--sessions load-out/sessions.json] [--base URL]
+     [--users 50] [--minutes 10] [--ramp 30] [--out FILE] [--label TEXT]
+     [--mix native=0.2,terminal=0.3,git=0.3] [--turn-every 60]
+     [--git-every 60] [--poll-every 30] [--type-rate 5] [--scrape-every 5]
+     [--metrics-token T]   (default: $METRICS_TOKEN)
+```
+
+Users start evenly over `--ramp` seconds and stop together `--minutes` later. Each one, as the browser does:
+
+- takes a ws-ticket and opens `/ws`, subscribing to `user`, the shared workspace and a quiet `project` topic for each of its projects, plus its own thread (`load-vu-N`) with replay;
+- every `--poll-every` seconds fetches `/api/bootstrap` (with its ETag), the workspace page's document and five RSC prefetches of project pages.
+
+Then by role, spread evenly over the users by `--mix` (the rest only watch):
+
+- **native** sends a native turn every `--turn-every` seconds, which the mock streams;
+- **terminal** opens a shell and types `--type-rate` characters a second, a comment line at a time;
+- **git** reads status, branches and the first log page every `--git-every` seconds, as the Git view does.
+
+It measures, on the client:
+
+- the ack round trip by command;
+- keystroke echo (sent until the `terminal.output` holding that character);
+- frames, bytes, first token and time per turn;
+- bootstrap, document time to first byte, RSC prefetch and git latencies;
+- errors by kind.
+
+It scrapes `/metrics` every `--scrape-every` seconds. `--out` gets the JSON (client summaries, errors, a server summary and every scrape); a Markdown summary goes beside it with the same name. A turn still streaming when the run ends is left unfinished, not counted as an error.
+
+## `stream.spec.ts`
+
+One person's browser while an answer streams, against the same target:
+
+```bash
+E2E_BASE_URL=http://127.0.0.1:3397 E2E_API=http://127.0.0.1:3397 \
+E2E_SESSION=<a cookie value from load-out/sessions.json, without "ucch_session="> \
+E2E_CHROME=/opt/google/chrome/chrome \
+  pnpm --filter @ucch/web exec playwright test stream
+```
+
+It opens a new session in the first project it can see, sends one message, presses keys while the answer streams, and writes `apps/web/e2e/results/stream-<E2E_LABEL or "latest">.json`:
+
+- long tasks (count, total, longest);
+- INP over those key presses;
+- frame-to-paint (a delta's arrival on the socket to the paint of the next frame);
+- the gaps between animation frames.
+
+Run it during a `run.mjs` run to see the page under load. Use a user the generator is not driving (`--users` below the seeded count) or the last one.
