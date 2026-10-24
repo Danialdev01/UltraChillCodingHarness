@@ -69,3 +69,42 @@ exec node /load/fake-claude.mjs --rss-mb 370 "$@"
 ```
 
 It names its process `claude`, so the resource sampler counts it as one (`resource_processes{group="claude"}` on `/metrics`). The stop button works: SIGINT ends the answer with the aborted result the real CLI prints.
+
+## Seeding: `apps/server/scripts/seed-load.ts`
+
+Load tests run against their own database, never a real one. The seed script refuses to run unless `LOADTEST_ALLOW_SEED=1` is set *and* the database's name ends in `_load`. That means a separate Postgres, which the container reaches through `DATABASE_URL` (so the embedded one stays off):
+
+```bash
+docker network create ucch-load
+docker run -d --name ucch-pg-load --network ucch-load -p 127.0.0.1:55432:5432 \
+  -e POSTGRES_PASSWORD=load -e POSTGRES_DB=ucch_load postgres:16-alpine \
+  -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=top -c max_connections=200
+SECRET_KEY=$(openssl rand -hex 32)
+docker run -d --name ucch-load --network ucch-load -p 127.0.0.1:3397:3000 \
+  -v "$PWD/scripts/load:/load:ro" \
+  -e DATABASE_URL=postgres://postgres:load@ucch-pg-load:5432/ucch_load -e SECRET_KEY="$SECRET_KEY" \
+  -e ROOT_DOMAIN=localhost -e PUBLIC_SCHEME=http -e PUBLIC_WEB_ORIGIN=http://127.0.0.1:3397 \
+  -e DEFAULT_USER_EMAIL=admin@load.test -e DEFAULT_USER_PASSWORD=load-password-123 \
+  -e AGENT_ALLOW_HOST_SHELL=true \
+  -e OPENROUTER_BASE_URL=http://127.0.0.1:4010/api/v1 -e CLAUDE_BIN=/load/fake-claude.mjs \
+  ucch:load
+```
+
+Then, from the repository, with the server up (it creates the schema on boot):
+
+```bash
+LOADTEST_ALLOW_SEED=1 LOAD_OUT=load-out SECRET_KEY="$SECRET_KEY" \
+DATABASE_URL=postgres://postgres:load@127.0.0.1:55432/ucch_load \
+  pnpm --filter @ucch/server exec tsx scripts/seed-load.ts --users 50 --projects 20 --url http://127.0.0.1:3397
+```
+
+It creates:
+
+- `--users` accounts, `load-000@load.test` onwards, with the password `--password` (default `load-password-123`), each with an encrypted dummy OpenRouter key and its own personal workspace;
+- one workspace, "Load shared", owned by the first user with every other user as a member;
+- a session per user, made directly rather than through the rate-limited sign-in;
+- `--projects` empty projects in every one of those workspaces, through the server's WebSocket, so the clone reactor runs. It waits until each is cloned.
+
+It writes `$LOAD_OUT/sessions.json` (mode 600): `{ base, sharedWorkspaceId, password, users: [{ userId, email, cookie, personalWorkspaceId }] }`. Running it again only fills gaps; each run issues fresh sessions. `--users 50 --projects 20` (1,020 projects) takes about 35 s.
+
+`pg-top.sh` reads this database with `PG_TOP_PSQL='docker exec -i ucch-pg-load psql -U postgres -d ucch_load'`.
