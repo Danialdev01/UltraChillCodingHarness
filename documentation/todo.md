@@ -40,7 +40,7 @@ node scripts/load/run.mjs --users 50 --minutes 10 --out documentation/perf/<task
 
 Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution.md` §1.
 
-- [ ] **PF0.1 — Metrics registry and `/metrics`**
+- [x] **PF0.1 — Metrics registry and `/metrics`** — 42b3e3b
 
   - **Depends:** —
   - **Files:** new `apps/server/src/metrics.ts` and `metrics.test.ts`, `apps/server/src/index.ts` (route, fastify `onResponse` hook, near `/health` at line 677), `apps/server/src/config.ts` (`METRICS_TOKEN`), `apps/server/src/engine.ts` (`#process` timings), `apps/server/src/ws.ts` (`sendRaw`, `sendPush`, `#onMessage` counters), `apps/server/src/worker.ts` (`outstanding`)
@@ -56,7 +56,7 @@ Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution
   - **Acceptance:** `curl localhost:3000/metrics` inside the container returns all families. A request from outside the container gets 403 without the token.
   - **Verify:** `pnpm test -- metrics`, plus a curl from inside and outside the container
 
-- [ ] **PF0.2 — Resource sampler**
+- [x] **PF0.2 — Resource sampler** — 8af56d3
 
   - **Depends:** PF0.1
   - **Files:** new `apps/server/src/resource-sampler.ts` and `resource-sampler.test.ts`, `apps/server/src/index.ts`, `apps/server/src/config.ts` (`LOG_RESOURCE_SAMPLES`)
@@ -69,7 +69,7 @@ Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution
   - **Acceptance:** `/metrics` shows per-group RSS that adds up to within 10% of `docker stats` for the container.
   - **Verify:** `pnpm test -- resource-sampler`, plus a comparison against `docker stats`
 
-- [ ] **PF0.3 — `pg_stat_statements` and slow-query log**
+- [x] **PF0.3 — `pg_stat_statements` and slow-query log** — b872740
 
   - **Depends:** —
   - **Files:** `deploy/s6/s6-rc.d/postgres/run`, new `scripts/pg-top.sh`, `README.md` ("Scaling")
@@ -81,7 +81,7 @@ Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution
   - **Acceptance:** `scripts/pg-top.sh` prints statements after a few page loads, and survives a container restart.
   - **Verify:** `bash scripts/smoke-container.sh`, then `bash scripts/pg-top.sh`
 
-- [ ] **PF0.4 — Proxy and bootstrap counters**
+- [x] **PF0.4 — Proxy and bootstrap counters** — 896f9cc
 
   - **Depends:** PF0.1
   - **Files:** `apps/server/src/web-proxy.ts`, `apps/server/src/index.ts` (`/api/bootstrap`, line 708)
@@ -91,7 +91,7 @@ Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution
   - **Acceptance:** after one fresh sign-in, `/metrics` shows the number of RSC requests it caused (expected ~117 today).
   - **Verify:** `pnpm typecheck`, plus a manual sign-in against a production build
 
-- [ ] **PF0.5 — Load fixtures: mock LLM and fake CLI**
+- [x] **PF0.5 — Load fixtures: mock LLM and fake CLI** — 05c0e9a
 
   - **Depends:** —
   - **Files:** `apps/server/src/config.ts` (`OPENROUTER_BASE_URL`), `apps/server/src/openrouter.ts` (constant at line 18), new `scripts/load/mock-openrouter.mjs`, new `scripts/load/fake-claude.mjs`, new `scripts/load/README.md`
@@ -103,7 +103,7 @@ Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution
   - **Acceptance:** a native turn and a Claude Code turn both complete against the mocks without network access.
   - **Verify:** `pnpm test`, plus a manual turn of each kind
 
-- [ ] **PF0.6 — Load-test seeding**
+- [x] **PF0.6 — Load-test seeding** — 3314cc7
 
   - **Depends:** —
   - **Files:** new `apps/server/scripts/seed-load.ts`, `apps/server/src/password.ts`, `apps/server/src/crypto.ts`, `apps/server/src/auth.ts` (`createSession`), `apps/server/src/workspaces.ts` (`ensureDefault`)
@@ -116,7 +116,7 @@ Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution
   - **Acceptance:** `--users 50 --projects 20` finishes in under a minute, and every cookie authenticates `GET /api/me`.
   - **Verify:** run it against a `ucch_load` database
 
-- [ ] **PF0.7 — Load generator**
+- [x] **PF0.7 — Load generator** — 49f47e9
 
   - **Depends:** PF0.1, PF0.5, PF0.6
   - **Files:** new `scripts/load/run.mjs` (reusing the frame helpers in `scripts/smoke-phase1.mjs`), `scripts/load/README.md`, new `apps/web/e2e/stream.spec.ts`
@@ -140,7 +140,7 @@ Nothing in PF1 starts until PF0.9 has recorded a baseline. **Design:** `solution
   - **Acceptance:** a 10-minute 50-user run against `docker run --cpus=4 --memory=8g` completes and writes the result file.
   - **Verify:** the load verification block above
 
-- [ ] **PF0.8 — Real-user web vitals** *(was B13)*
+- [x] **PF0.8 — Real-user web vitals** *(was B13)* — bf263c4
 
   - **Depends:** PF0.1
   - **Files:** new `apps/web/src/components/vitals-reporter.tsx` (`web-vitals`), `apps/web/src/lib/view-transitions.tsx` (nav marks in `TransitionLink`, line 145), `apps/web/src/components/terminal-view.tsx` (echo mark), `apps/server/src/index.ts` (`POST /api/metrics/vitals`), `apps/server/src/metrics.ts`
