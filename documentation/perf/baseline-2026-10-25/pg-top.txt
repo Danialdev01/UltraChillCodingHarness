@@ -1,0 +1,51 @@
+
+== top 20 by total execution time ==
+ calls | total_ms | mean_ms |  rows  |                                                     query                                                      
+-------+----------+---------+--------+----------------------------------------------------------------------------------------------------------------
+  8919 |  13599.7 |    1.52 | 178380 | select "projects"."id", "projects"."hash", "projects"."name", "projects"."stack", "projects"."container_state"
+ 17786 |   2006.2 |    0.11 |  35856 | select "workspaces"."id", "workspaces"."slug", "workspaces"."hash", "workspaces"."name", "workspaces"."kind", 
+ 13697 |    762.8 |    0.06 |  13697 | select "projects"."id", "projects"."hash", "projects"."name", "projects"."stack", "projects"."container_state"
+  1058 |    498.1 |    0.47 |   1058 | select coalesce(sum(("turns"."usage" ->> $1)::double precision), $6), coalesce(sum(("turns"."usage" ->> $2)::d
+  1058 |    303.3 |    0.29 |   1058 | select count(*)::int, count(*) filter (where exists ( select $2 from "threads" where "project_id" = "projects"
+  8921 |    223.9 |    0.03 |   8921 | select "login", "name", "email", "avatar_url" from "users" where "users"."id" = $1 limit $2
+  8906 |    214.1 |    0.02 |   8906 | select "password_hash" from "users" where "users"."id" = $1 limit $2
+ 10297 |    138.5 |    0.01 |  10297 | select "role", "can_create_project", "can_create_session" from "workspace_members" where ("workspace_members".
+  1256 |     85.7 |    0.07 |      0 | insert into "notes" ("id", "project_id", "parent_id", "title", "icon", "cover", "content", "search_text", "pos
+  2281 |     71.6 |    0.03 |   9173 | select "id", "hash", "title", "status", "provider", "base_branch", "branch", "worktree_state", "worktree_error
+   252 |     70.2 |    0.28 |    390 | select "turns"."model", coalesce(sum("turns"."cost_usd")::double precision, $6), count(*)::int, coalesce(sum((
+  8854 |     67.1 |    0.01 |      0 | select "id", "workspace_id", "name", "engine", "host", "port", "username", "password_encrypted", "database", "
+   397 |     63.5 |    0.16 |    397 | insert into "events" ("id", "project_id", "thread_id", "seq", "type", "payload", "created_at") values (default
+  2019 |     56.1 |    0.03 |   2019 | select "projects"."id" from "projects" inner join "workspace_members" on ("workspace_members"."workspace_id" =
+   296 |     51.8 |    0.17 |    296 | insert into "audit_log" ("id", "project_id", "user_id", "client_id", "action", "target_type", "target_id", "su
+  1253 |     40.4 |    0.03 |   1253 | select "id", "user_id", "scopes", "expires_at", "created_at" from "sessions" where "sessions"."id" = $1 limit 
+    93 |     35.5 |    0.38 |    372 | insert into "events" ("id", "project_id", "thread_id", "seq", "type", "payload", "created_at") values (default
+   840 |     34.6 |    0.04 |    840 | select coalesce(sum(("turns"."usage" ->> $1)::double precision), $6), coalesce(sum(("turns"."usage" ->> $2)::d
+    42 |     30.2 |    0.72 |    756 | select relname as name, pg_total_relation_size(c.oid)::text as bytes from pg_class c join pg_namespace n on n.
+  1256 |     28.9 |    0.02 |   1256 | select "id", "parent_id", "title", "icon", "cover", "position", "updated_at" from "notes" where "notes"."proje
+(20 rows)
+
+== top 20 by calls ==
+ calls | total_ms | mean_ms |  rows  |                                                     query                                                      
+-------+----------+---------+--------+----------------------------------------------------------------------------------------------------------------
+ 17786 |   2006.2 |    0.11 |  35856 | select "workspaces"."id", "workspaces"."slug", "workspaces"."hash", "workspaces"."name", "workspaces"."kind", 
+ 13697 |    762.8 |    0.06 |  13697 | select "projects"."id", "projects"."hash", "projects"."name", "projects"."stack", "projects"."container_state"
+ 10297 |    138.5 |    0.01 |  10297 | select "role", "can_create_project", "can_create_session" from "workspace_members" where ("workspace_members".
+  8921 |    223.9 |    0.03 |   8921 | select "login", "name", "email", "avatar_url" from "users" where "users"."id" = $1 limit $2
+  8919 |  13599.7 |    1.52 | 178380 | select "projects"."id", "projects"."hash", "projects"."name", "projects"."stack", "projects"."container_state"
+  8906 |    214.1 |    0.02 |   8906 | select "password_hash" from "users" where "users"."id" = $1 limit $2
+  8854 |     67.1 |    0.01 |      0 | select "id", "workspace_id", "name", "engine", "host", "port", "username", "password_encrypted", "database", "
+  2281 |     71.6 |    0.03 |   9173 | select "id", "hash", "title", "status", "provider", "base_branch", "branch", "worktree_state", "worktree_error
+  2019 |     56.1 |    0.03 |   2019 | select "projects"."id" from "projects" inner join "workspace_members" on ("workspace_members"."workspace_id" =
+  1256 |     85.7 |    0.07 |      0 | insert into "notes" ("id", "project_id", "parent_id", "title", "icon", "cover", "content", "search_text", "pos
+  1256 |     17.4 |    0.01 |   1256 | select "id", "parent_id", "title", "icon", "cover", "position", "updated_at" from "notes" where ("notes"."proj
+  1256 |     28.9 |    0.02 |   1256 | select "id", "parent_id", "title", "icon", "cover", "position", "updated_at" from "notes" where "notes"."proje
+  1253 |     40.4 |    0.03 |   1253 | select "id", "user_id", "scopes", "expires_at", "created_at" from "sessions" where "sessions"."id" = $1 limit 
+  1058 |    498.1 |    0.47 |   1058 | select coalesce(sum(("turns"."usage" ->> $1)::double precision), $6), coalesce(sum(("turns"."usage" ->> $2)::d
+  1058 |      7.1 |    0.01 |   1058 | select count(*)::int, count(*) filter ( where "previews"."container_state" = $2 and "previews"."expires_at" > 
+  1058 |    303.3 |    0.29 |   1058 | select count(*)::int, count(*) filter (where exists ( select $2 from "threads" where "project_id" = "projects"
+   840 |      7.4 |    0.01 |      0 | select "id", "project_id", "title", "starts_on", "ends_on", "progress", "colour", "position", "depends_on_id",
+   840 |     22.4 |    0.03 |    840 | select "task_agent_provider", "task_agent_model", "task_auto_run" from "projects" where "projects"."id" = $1 l
+   840 |     18.4 |    0.02 |      0 | select "id", "project_id", "title", "description", "references", "stage", "status", "position", "research", "v
+   840 |      7.1 |    0.01 |      0 | select "id", "project_id", "name", "value_encrypted", "tags", "url", "created_at", "updated_at" from "project_
+(20 rows)
+

@@ -13,6 +13,7 @@ import { expect, test } from "@playwright/test";
  *   frame-to-paint  a delta's arrival on the socket -> the end of the next
  *                   frame painted after it (rAF, then a task after paint)
  *   frame gaps      the time between animation frames
+ *   received        frames and bytes on all the tab's sockets, send to done
  *
  * It opens a new session in the first project it can see and sends one
  * message, so the server must stream from the load-test mocks
@@ -22,6 +23,9 @@ import { expect, test } from "@playwright/test";
  *   E2E_BASE_URL=http://127.0.0.1:3397 E2E_API=http://127.0.0.1:3397 \
  *   E2E_SESSION=<a cookie value from load-out/sessions.json> \
  *     pnpm --filter @ucch/web exec playwright test stream
+ *
+ * `E2E_CPU_THROTTLE=4` slows the page's CPU fourfold (Chrome's own
+ * throttling), closer to a mid-range laptop than the machine running this.
  *
  * Results go to `e2e/results/stream-<E2E_LABEL or "latest">.json`.
  */
@@ -100,6 +104,8 @@ test("streaming cost", async ({ page, context, baseURL }) => {
       events: [] as { name: string; id: number; start: number; duration: number }[],
       deltas: [] as { received: number; painted: number }[],
       frames: [] as number[],
+      socketFrames: 0,
+      socketBytes: 0,
       firstDelta: -1,
       done: -1,
       outcome: "",
@@ -130,6 +136,11 @@ test("streaming cost", async ({ page, context, baseURL }) => {
         super(url, protocols);
         this.addEventListener("message", (message: MessageEvent) => {
           const data = String(message.data);
+          // Every frame on every socket of the tab, not just this thread's.
+          if (perf.recording && perf.done < 0) {
+            perf.socketFrames++;
+            perf.socketBytes += data.length;
+          }
           if (!perf.recording || !data.includes(thread)) return;
           if (data.includes('"agent.text_delta"')) {
             const received = performance.now();
@@ -152,6 +163,11 @@ test("streaming cost", async ({ page, context, baseURL }) => {
     requestAnimationFrame(tick);
   }, threadId);
 
+  const throttle = Number(process.env.E2E_CPU_THROTTLE ?? 1);
+  if (throttle > 1) {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: throttle });
+  }
   await page.goto(href);
   const composer = page.locator("textarea[role=combobox]");
   await expect(composer).toBeEnabled({ timeout: 30_000 });
@@ -198,10 +214,12 @@ test("streaming cost", async ({ page, context, baseURL }) => {
   const result = {
     at: new Date().toISOString(),
     baseURL,
+    cpuThrottle: throttle,
     outcome: raw.outcome,
     streamMs: Math.round(to - from),
     firstDeltaMs: Math.round(from - sentAt),
     deltas: raw.deltas.length,
+    received: { frames: raw.socketFrames, bytes: raw.socketBytes },
     longTasks: {
       count: longTasks.length,
       totalMs: Math.round(longTasks.reduce((sum, t) => sum + t.duration, 0)),

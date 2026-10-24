@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { registry } from "./metrics.js";
 
 /**
  * The environment variable the credential helper below reads the token from.
@@ -70,6 +71,26 @@ export interface GitRunOptions {
  * the caller's job to have checked that the token belongs to the host being
  * contacted -- `tokenAppliesTo` is that check.
  */
+// Every git the server starts comes through here, so this is the count of
+// them: what a burst of file changes costs in processes, by subcommand.
+const gitProcesses = registry.counter("git_processes_total", "git processes the server started, by subcommand", [
+  "command",
+]);
+
+/**
+ * The subcommand in a git argv: the first word that is not an option, with
+ * the values of `-c` and `-C` skipped -- `-c user.name=...` carries a
+ * person's name, which has no business in a metric label.
+ */
+export function gitSubcommand(argv: readonly string[]): string {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "-c" || arg === "-C") i++;
+    else if (!arg.startsWith("-")) return arg;
+  }
+  return "other";
+}
+
 export async function runGit(
   argv: string[],
   cwd: string,
@@ -78,6 +99,7 @@ export async function runGit(
 ): Promise<string> {
   const token = options.token ?? null;
   const ok = options.okExitCodes ?? [0];
+  gitProcesses.inc({ command: gitSubcommand(argv) });
   return new Promise<string>((settle, fail) => {
     execFile(
       "git",

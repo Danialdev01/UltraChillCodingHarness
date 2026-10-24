@@ -773,28 +773,28 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
 
 ## Definition of Done
 
-Measured with `scripts/load/run.mjs --users 50` against the production image under `--cpus=4 --memory=8g`, plus `pnpm --filter @ucch/web e2e` (`perf.spec.ts`, `stream.spec.ts`) running alongside. PF0.9 fills the Baseline column; PF3.1 fills After.
+Measured with `scripts/load/run.mjs --users 50` against the production image under `--cpus=4 --memory=8g`, plus `pnpm --filter @ucch/web e2e` (`perf.spec.ts`, `stream.spec.ts`) running alongside. PF0.9 fills the Baseline column; PF3.1 fills After. `scripts/load/profile.sh` runs the whole profile; [`perf/README.md`](./perf/README.md) says how each figure is taken, and `perf/baseline-2026-10-25.json` holds them.
 
 | Metric | Baseline (PF0.9) | Target | After (PF3.1) |
 | --- | --- | --- | --- |
-| RSC requests caused by one fresh sign-in | ~117 (expected) | ≤ 15 | |
-| RSC requests in other tabs when a member saves settings | ~117 per tab | 0 | |
-| Sign-in submit → interactive shell | | ≤ 2.0 s | |
-| Click → skeleton or new page (p95) | 46 ms (single user, 2026-10-18) | ≤ 100 ms under load | |
-| Click → content, cached data (p95) | 52–85 ms (single user) | ≤ 150 ms under load | |
-| Click → content, cold data (p95) | 400 ms (single user) | ≤ 600 ms under load | |
-| Bootstrap server time (200 projects / 20k turns, p95) | | < 15 ms | |
-| Terminal keystroke echo (p95 / p99) | | < 30 ms / < 60 ms | |
-| Engine wait (p99) | | < 20 ms | |
-| WebSocket frames per 2,000-token answer | | ≤ ⅓ of baseline | |
-| Long tasks > 50 ms while streaming a 4,000-token answer | | 0 | |
-| INP while streaming | | < 200 ms | |
-| Git processes per file-change burst, 10 viewers | | ≤ 3 | |
-| Concurrent `claude` processes during a 20-turn burst | uncapped | ≤ `AGENT_MAX_CONCURRENT_TOTAL`, none failed | |
-| Subscriptions per socket | P + 3 | ≈ 4 | |
-| `/ws` connections per tab | 2+ on a chat page | 1 | |
-| API RSS under load | | < 1.2 GB | |
-| Event-loop delay p99 under load | | < 50 ms | |
-| cgroup `oom_kill` during the run | | 0 | |
+| RSC requests caused by one fresh sign-in | 115 | ≤ 15 | |
+| RSC requests in other tabs when a member saves settings | 115 per tab | 0 | |
+| Sign-in submit → interactive shell | 1.99 s (idle 2.03 s) | ≤ 2.0 s | |
+| Click → skeleton or new page (p95) | 87 ms | ≤ 100 ms under load | |
+| Click → content, cached data (p95) | 121 ms | ≤ 150 ms under load | |
+| Click → content, cold data (p95) | 381 ms | ≤ 600 ms under load | |
+| Bootstrap server time (200 projects / 20k turns, p95) | 74 ms | < 15 ms | |
+| Terminal keystroke echo (p95 / p99) | 2.7 ms / 7.3 ms | < 30 ms / < 60 ms | |
+| Engine wait (p99) | < 1 ms | < 20 ms | |
+| WebSocket frames per 2,000-token answer | 2,026 | ≤ ⅓ of baseline | |
+| Long tasks > 50 ms while streaming a 4,000-token answer | 0 (0 at 4× CPU throttle) | 0 | |
+| INP while streaming | 48 ms | < 200 ms | |
+| Git processes per file-change burst, 10 viewers | 80 | ≤ 3 | |
+| Concurrent `claude` processes during a 20-turn burst | 20 of 20, uncapped, none failed | ≤ `AGENT_MAX_CONCURRENT_TOTAL`, none failed | |
+| Subscriptions per socket | P + 3 over 2 sockets (22 + 1) | ≈ 4 | |
+| `/ws` connections per tab | 2–3 on a chat page | 1 | |
+| API RSS under load | 352 MB | < 1.2 GB | |
+| Event-loop delay p99 under load | 14 ms | < 50 ms | |
+| cgroup `oom_kill` during the run | 0 | 0 | |
 | Builds on the VPS per deploy | 1 | 0 | |
-| Shell-route first-load JS | 308 kB gz | ≤ 285 kB | |
+| Shell-route first-load JS | 314 kB gz | ≤ 285 kB | |

@@ -1,0 +1,71 @@
+
+> @ucch/web@0.0.0 build /srv/http/git/work/UltraChillCodingHarness/apps/web
+> next build
+
+   ▲ Next.js 15.5.25
+   - Experiments (use with caution):
+     · staleTimes
+     · optimizePackageImports
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 7.2s
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/12) ...
+   Generating static pages (3/12) 
+   Generating static pages (6/12) 
+   Generating static pages (9/12) 
+ ✓ Generating static pages (12/12)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                                     Size  First Load JS
+┌ ƒ /                                                          214 B         106 kB
+├ ƒ /_not-found                                                 1 kB         107 kB
+├ ƒ /[workspaceHash]                                           190 B         129 kB
+├ ƒ /[workspaceHash]/[...legacy]                               853 B         107 kB
+├ ƒ /[workspaceHash]/code                                      185 B         129 kB
+├ ƒ /[workspaceHash]/database                                  853 B         107 kB
+├ ƒ /[workspaceHash]/database/[connectionId]                 8.18 kB         242 kB
+├ ƒ /[workspaceHash]/database/[connectionId]/[db]            7.87 kB         257 kB
+├ ƒ /[workspaceHash]/database/[connectionId]/[db]/[table]    13.1 kB         232 kB
+├ ƒ /[workspaceHash]/p/[projectHash]                         8.08 kB         169 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/[sessionHash]             208 B         379 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/activity                  853 B         107 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/documentation             214 B         106 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/documentation/[noteId]    853 B         107 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/keys                      853 B         107 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/manage                    193 B         256 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/tasks                   19.6 kB         301 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/timeline                13.7 kB         198 kB
+├ ƒ /[workspaceHash]/publish                                   853 B         107 kB
+├ ƒ /[workspaceHash]/s/[sessionHash]                           207 B         379 kB
+├ ƒ /[workspaceHash]/todo                                      853 B         107 kB
+├ ƒ /[workspaceHash]/workspace-settings                        853 B         107 kB
+├ ƒ /[workspaceHash]/workspace-settings/[page]               13.2 kB         245 kB
+├ ○ /apple-icon.png                                              0 B            0 B
+├ ƒ /dev/themes                                              5.67 kB         111 kB
+├ ƒ /file-icons                                                214 B         106 kB
+├ ƒ /file-icons/resolve                                        214 B         106 kB
+├ ƒ /file-icons/svg/[id]                                       214 B         106 kB
+├ ○ /healthz                                                   214 B         106 kB
+├ ○ /icon.svg                                                    0 B            0 B
+├ ƒ /invite/[token]                                             5 kB         188 kB
+├ ƒ /login                                                   9.22 kB         129 kB
+├ ƒ /setting                                                   853 B         107 kB
+├ ƒ /setting/[page]                                          15.5 kB         258 kB
+├ ƒ /shared/[slug]                                             214 B         106 kB
+├ ƒ /shared/[slug]/documents                                  221 kB         359 kB
+├ ƒ /shared/[slug]/notes/[[...noteId]]                       5.83 kB         144 kB
+└ ƒ /shared/[slug]/timeline                                  6.13 kB         144 kB
++ First Load JS shared by all                                 106 kB
+  ├ chunks/4311-d03d0bd220ed457c.js                          46.5 kB
+  ├ chunks/a84df75d-58e941d883b123b4.js                      54.2 kB
+  └ other shared chunks (total)                              5.01 kB
+
+
+ƒ Middleware                                                 34.6 kB
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

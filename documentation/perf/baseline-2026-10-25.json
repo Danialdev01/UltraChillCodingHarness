@@ -1,0 +1,650 @@
+{
+  "label": "baseline-2026-10-25",
+  "at": "2026-10-24T16:37:43.689Z",
+  "target": {
+    "base": "http://127.0.0.1:3397",
+    "users": 50,
+    "minutes": 10,
+    "mix": {
+      "native": 0.2,
+      "terminal": 0.3,
+      "git": 0.3
+    },
+    "roles": {
+      "watch": 9,
+      "native": 11,
+      "git": 15,
+      "terminal": 15
+    }
+  },
+  "definitionOfDone": {
+    "rscPerFreshSignIn": 115,
+    "rscPerOtherTabOnSettingsSave": 115,
+    "signInToInteractiveMs": {
+      "idle": 2032,
+      "underLoad": [
+        2304,
+        1763,
+        1985
+      ],
+      "underLoadMedian": 1985
+    },
+    "clickToSkeletonP95Ms": 87.4,
+    "clickToContentCachedP95Ms": 120.5,
+    "clickToContentColdP95Ms": 381.3,
+    "perfSuiteRuns": 26,
+    "bootstrapBigP95Ms": 73.61,
+    "bootstrapBig": {
+      "projects": 200,
+      "turns": 20000,
+      "requests": 200,
+      "p50": 49.17,
+      "p95": 73.61,
+      "p99": 93.27,
+      "max": 95.59
+    },
+    "keystrokeEchoMs": {
+      "p95": 2.66,
+      "p99": 7.27
+    },
+    "engineWaitP99Ms": 0.99,
+    "framesPer2000TokenAnswer": 2026,
+    "longTasksStreaming4000": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "longTasksStreaming4000Cpu4x": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "inpWhileStreamingMs": {
+      "runs": [
+        32,
+        40,
+        32,
+        48,
+        32,
+        32,
+        32,
+        40,
+        40,
+        32,
+        32,
+        32,
+        48
+      ],
+      "median": 32,
+      "max": 48
+    },
+    "gitProcessesPerBurst": {
+      "viewers": 10,
+      "files": 20,
+      "refreshesAfterBurst": 10,
+      "gitProcesses": 80,
+      "byCommand": {
+        "for-each-ref": 10,
+        "rev-parse": 40,
+        "status": 10,
+        "remote": 10,
+        "log": 10
+      }
+    },
+    "claudeBurst": {
+      "turns": 20,
+      "users": 10,
+      "seconds": 25.5,
+      "outcomes": {
+        "completed": 20
+      },
+      "processes": {
+        "seconds": 185,
+        "claude": {
+          "processes": 20,
+          "peak": 20
+        }
+      }
+    },
+    "subscriptionsPerSocket": [
+      {
+        "total": 0,
+        "byKind": {}
+      },
+      {
+        "total": 22,
+        "byKind": {
+          "user": 1,
+          "project": 20,
+          "workspace": 1
+        }
+      },
+      {
+        "total": 1,
+        "byKind": {
+          "thread": 1
+        }
+      }
+    ],
+    "wsPerTab": 3,
+    "apiRssMaxMb": 351.88,
+    "eventLoopDelayP99Ms": {
+      "medianScrape": 11.5,
+      "worstScrape": 14.25
+    },
+    "oomKills": 0,
+    "shellRouteFirstLoadKb": {
+      "kB": 314,
+      "route": "/(app)/(home)"
+    }
+  },
+  "run": {
+    "cpuCoresByGroup": {
+      "server": 0.179,
+      "web": 0.19,
+      "postgres": 0,
+      "mysqld": 0,
+      "claude": 0,
+      "codex": 0,
+      "shell": 0.003,
+      "git": 0,
+      "rg": 0,
+      "python": 0,
+      "soffice": 0,
+      "chromium": 0,
+      "other": 0,
+      "system": 0.023
+    },
+    "containers": {
+      "ucch-load": {
+        "cpuCores": {
+          "mean": 0.43,
+          "max": 1.73
+        },
+        "memMiB": {
+          "mean": 772.25,
+          "max": 1039
+        },
+        "samples": 85
+      },
+      "ucch-pg-load": {
+        "cpuCores": {
+          "mean": 0.09,
+          "max": 0.42
+        },
+        "memMiB": {
+          "mean": 243.06,
+          "max": 244
+        },
+        "samples": 85
+      }
+    },
+    "rssMbByGroup": {
+      "server": {
+        "mean": 222.86,
+        "max": 263.61
+      },
+      "web": {
+        "mean": 481.51,
+        "max": 702.21
+      },
+      "shell": {
+        "mean": 8.85,
+        "max": 9.18
+      },
+      "system": {
+        "mean": 18.14,
+        "max": 26.9
+      }
+    },
+    "peakProcessesByGroup": {
+      "server": 1,
+      "web": 1,
+      "postgres": 0,
+      "mysqld": 0,
+      "claude": 0,
+      "codex": 0,
+      "shell": 16,
+      "git": 0,
+      "rg": 0,
+      "python": 0,
+      "soffice": 0,
+      "chromium": 0,
+      "other": 0,
+      "system": 14
+    },
+    "eventLoopUtilization": {
+      "count": 128,
+      "p50": 0.15,
+      "p90": 0.23,
+      "p95": 0.26,
+      "p99": 0.33,
+      "max": 0.42,
+      "mean": 0.16
+    },
+    "cgroupMemoryMaxMb": 1043.72,
+    "engineWaitMs": {
+      "p50": 0.5,
+      "p99": 0.99
+    },
+    "engineProcessMs": {
+      "p50": 0.5,
+      "p99": 0.99
+    },
+    "wsConnections": 55,
+    "wsSubscriptions": {
+      "user": 53,
+      "workspace": 53,
+      "project": 1060,
+      "thread": 52
+    },
+    "webRequests": {
+      "web_requests_total{class=\"document\"}": 1058,
+      "web_requests_total{class=\"static\"}": 4631,
+      "web_requests_total{class=\"other\"}": 2951,
+      "web_requests_total{class=\"rsc_prefetch\"}": 6420,
+      "web_requests_total{class=\"rsc\"}": 4817
+    },
+    "bootstrapRequests": {
+      "bootstrap_requests_total{caller=\"ssr\"}": 7663,
+      "bootstrap_requests_total{caller=\"browser\"}": 1191
+    },
+    "client": {
+      "ack_ms:subscribe:project": {
+        "count": 1000,
+        "p50": 1.26,
+        "p90": 2.36,
+        "p95": 2.96,
+        "p99": 4.65,
+        "max": 11.05,
+        "mean": 1.49
+      },
+      "ack_ms:subscribe:terminal": {
+        "count": 15,
+        "p50": 0.31,
+        "p90": 0.72,
+        "p95": 1.77,
+        "p99": 1.77,
+        "max": 1.77,
+        "mean": 0.44
+      },
+      "ack_ms:subscribe:thread": {
+        "count": 50,
+        "p50": 3.07,
+        "p90": 4.9,
+        "p95": 5.82,
+        "p99": 6.81,
+        "max": 6.81,
+        "mean": 3.25
+      },
+      "ack_ms:subscribe:user": {
+        "count": 50,
+        "p50": 0.4,
+        "p90": 1,
+        "p95": 1.24,
+        "p99": 1.68,
+        "max": 1.68,
+        "mean": 0.48
+      },
+      "ack_ms:subscribe:workspace": {
+        "count": 50,
+        "p50": 1.08,
+        "p90": 2.32,
+        "p95": 2.52,
+        "p99": 2.74,
+        "max": 2.74,
+        "mean": 1.28
+      },
+      "ack_ms:terminal.close": {
+        "count": 15,
+        "p50": 6.13,
+        "p90": 8.11,
+        "p95": 8.58,
+        "p99": 8.58,
+        "max": 8.58,
+        "mean": 5.84
+      },
+      "ack_ms:terminal.create": {
+        "count": 15,
+        "p50": 4.64,
+        "p90": 8.73,
+        "p95": 8.8,
+        "p99": 8.8,
+        "max": 8.8,
+        "mean": 5.27
+      },
+      "ack_ms:terminal.input": {
+        "count": 43927,
+        "p50": 0.4,
+        "p90": 1.06,
+        "p95": 1.52,
+        "p99": 4.11,
+        "max": 43.04,
+        "mean": 0.61
+      },
+      "ack_ms:thread.create": {
+        "count": 12,
+        "p50": 9.71,
+        "p90": 17.33,
+        "p95": 39.62,
+        "p99": 39.62,
+        "max": 39.62,
+        "mean": 12.44
+      },
+      "ack_ms:thread.send": {
+        "count": 80,
+        "p50": 10.94,
+        "p90": 37.64,
+        "p95": 38.85,
+        "p99": 63.19,
+        "max": 63.19,
+        "mean": 14.35
+      },
+      "bootstrap_ms": {
+        "count": 1016,
+        "p50": 13.66,
+        "p90": 19.19,
+        "p95": 23.97,
+        "p99": 34.27,
+        "max": 50.74,
+        "mean": 13.37
+      },
+      "document_ttfb_ms": {
+        "count": 1016,
+        "p50": 10.69,
+        "p90": 17.87,
+        "p95": 21.12,
+        "p99": 33.61,
+        "max": 53.43,
+        "mean": 11.41
+      },
+      "git_branches_ms": {
+        "count": 149,
+        "p50": 23.48,
+        "p90": 37.22,
+        "p95": 44.73,
+        "p99": 50.3,
+        "max": 55.16,
+        "mean": 24.65
+      },
+      "git_log_ms": {
+        "count": 149,
+        "p50": 30.85,
+        "p90": 43.23,
+        "p95": 48.4,
+        "p99": 55.95,
+        "max": 62.72,
+        "mean": 30.75
+      },
+      "git_refresh_ms": {
+        "count": 149,
+        "p50": 32.08,
+        "p90": 44.61,
+        "p95": 49.65,
+        "p99": 57.24,
+        "max": 65.39,
+        "mean": 31.81
+      },
+      "git_status_ms": {
+        "count": 149,
+        "p50": 32.04,
+        "p90": 44.56,
+        "p95": 49.34,
+        "p99": 57.2,
+        "max": 65.35,
+        "mean": 31.67
+      },
+      "keystroke_echo_ms": {
+        "count": 42863,
+        "p50": 0.58,
+        "p90": 1.8,
+        "p95": 2.66,
+        "p99": 7.27,
+        "max": 43.98,
+        "mean": 0.96
+      },
+      "rsc_prefetch_ms": {
+        "count": 5080,
+        "p50": 29.25,
+        "p90": 59.04,
+        "p95": 69.53,
+        "p99": 109.6,
+        "max": 166.68,
+        "mean": 36.21
+      },
+      "turn_bytes": {
+        "count": 79,
+        "p50": 506034,
+        "p90": 522080,
+        "p95": 526039,
+        "p99": 538860,
+        "max": 538860,
+        "mean": 506084.18
+      },
+      "turn_delta_frames": {
+        "count": 79,
+        "p50": 1500,
+        "p90": 1500,
+        "p95": 1500,
+        "p99": 1500,
+        "max": 1500,
+        "mean": 1500
+      },
+      "turn_first_token_ms": {
+        "count": 79,
+        "p50": 349.91,
+        "p90": 369.99,
+        "p95": 383.12,
+        "p99": 398.95,
+        "max": 398.95,
+        "mean": 351.1
+      },
+      "turn_frames": {
+        "count": 79,
+        "p50": 1573,
+        "p90": 1590,
+        "p95": 1600,
+        "p99": 1608,
+        "max": 1608,
+        "mean": 1572.44
+      },
+      "turn_ms": {
+        "count": 79,
+        "p50": 25363.33,
+        "p90": 25391.04,
+        "p95": 25399.65,
+        "p99": 25412.85,
+        "max": 25412.85,
+        "mean": 25366.14
+      }
+    },
+    "errors": {},
+    "framesPerTurn": {
+      "count": 79,
+      "p50": 1573,
+      "p90": 1590,
+      "p95": 1600,
+      "p99": 1608,
+      "max": 1608,
+      "mean": 1572.44
+    },
+    "tokenToPaintMs": {
+      "runs": [
+        16.1,
+        17.1,
+        13.5,
+        19,
+        23.8,
+        13.8,
+        17.1,
+        16.2,
+        21,
+        23.1,
+        15.9,
+        21.2,
+        18.7
+      ],
+      "medianP95": 17.1
+    },
+    "streamLongTasks": [
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      },
+      {
+        "count": 0,
+        "totalMs": 0,
+        "maxMs": 0
+      }
+    ],
+    "navSkeletonP95Ms": 87.4,
+    "peakClaudeProcesses": 20
+  },
+  "load4000": {
+    "errors": {},
+    "client": {
+      "keystroke_echo_ms": {
+        "count": 21960,
+        "p50": 0.58,
+        "p90": 1.71,
+        "p95": 2.39,
+        "p99": 5.65,
+        "max": 38.2,
+        "mean": 0.92
+      }
+    }
+  },
+  "stream4000": {
+    "at": "2026-10-24T16:55:36.290Z",
+    "baseURL": "http://127.0.0.1:3397",
+    "cpuThrottle": 1,
+    "outcome": "completed",
+    "streamMs": 66692,
+    "firstDeltaMs": 365,
+    "deltas": 4000,
+    "received": {
+      "frames": 4029,
+      "bytes": 1179007
+    },
+    "longTasks": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "inp": {
+      "interactions": 132,
+      "measured": 68,
+      "ms": 32
+    },
+    "frameToPaintMs": {
+      "count": 4000,
+      "p50": 8.1,
+      "p95": 14.6,
+      "p99": 21.8,
+      "max": 24.6
+    },
+    "frameGapMs": {
+      "count": 4022,
+      "p50": 16.7,
+      "p95": 16.7,
+      "p99": 16.8,
+      "max": 16.8,
+      "over50": 0
+    }
+  },
+  "stream4000Cpu4x": {
+    "at": "2026-10-24T16:56:54.310Z",
+    "baseURL": "http://127.0.0.1:3397",
+    "cpuThrottle": 4,
+    "outcome": "completed",
+    "streamMs": 66700,
+    "firstDeltaMs": 339,
+    "deltas": 4000,
+    "received": {
+      "frames": 4029,
+      "bytes": 1179006
+    },
+    "longTasks": {
+      "count": 0,
+      "totalMs": 0,
+      "maxMs": 0
+    },
+    "inp": {
+      "interactions": 130,
+      "measured": 124,
+      "ms": 48
+    },
+    "frameToPaintMs": {
+      "count": 4000,
+      "p50": 16.4,
+      "p95": 24.9,
+      "p99": 32.7,
+      "max": 51.7
+    },
+    "frameGapMs": {
+      "count": 4015,
+      "p50": 16.7,
+      "p95": 16.7,
+      "p99": 16.8,
+      "max": 33.4,
+      "over50": 0
+    }
+  },
+  "pgTop": "\n== top 20 by total execution time ==\n calls | total_ms | mean_ms |  rows  |                                                     query                                                      \n-------+----------+---------+--------+----------------------------------------------------------------------------------------------------------------\n  8919 |  13599.7 |    1.52 | 178380 | select \"projects\".\"id\", \"projects\".\"hash\", \"projects\".\"name\", \"projects\".\"stack\", \"projects\".\"container_state\"\n 17786 |   2006.2 |    0.11 |  35856 | select \"workspaces\".\"id\", \"workspaces\".\"slug\", \"workspaces\".\"hash\", \"workspaces\".\"name\", \"workspaces\".\"kind\", \n 13697 |    762.8 |    0.06 |  13697 | select \"projects\".\"id\", \"projects\".\"hash\", \"projects\".\"name\", \"projects\".\"stack\", \"projects\".\"container_state\"\n  1058 |    498.1 |    0.47 |   1058 | select coalesce(sum((\"turns\".\"usage\" ->> $1)::double precision), $6), coalesce(sum((\"turns\".\"usage\" ->> $2)::d\n  1058 |    303.3 |    0.29 |   1058 | select count(*)::int, count(*) filter (where exists ( select $2 from \"threads\" where \"project_id\" = \"projects\"\n  8921 |    223.9 |    0.03 |   8921 | select \"login\", \"name\", \"email\", \"avatar_url\" from \"users\" where \"users\".\"id\" = $1 limit $2\n  8906 |    214.1 |    0.02 |   8906 | select \"password_hash\" from \"users\" where \"users\".\"id\" = $1 limit $2\n 10297 |    138.5 |    0.01 |  10297 | select \"role\", \"can_create_project\", \"can_create_session\" from \"workspace_members\" where (\"workspace_members\".\n  1256 |     85.7 |    0.07 |      0 | insert into \"notes\" (\"id\", \"project_id\", \"parent_id\", \"title\", \"icon\", \"cover\", \"content\", \"search_text\", \"pos\n  2281 |     71.6 |    0.03 |   9173 | select \"id\", \"hash\", \"title\", \"status\", \"provider\", \"base_branch\", \"branch\", \"worktree_state\", \"worktree_error\n   252 |     70.2 |    0.28 |    390 | select \"turns\".\"model\", coalesce(sum(\"turns\".\"cost_usd\")::double precision, $6), count(*)::int, coalesce(sum((\n  8854 |     67.1 |    0.01 |      0 | select \"id\", \"workspace_id\", \"name\", \"engine\", \"host\", \"port\", \"username\", \"password_encrypted\", \"database\", \"\n   397 |     63.5 |    0.16 |    397 | insert into \"events\" (\"id\", \"project_id\", \"thread_id\", \"seq\", \"type\", \"payload\", \"created_at\") values (default\n  2019 |     56.1 |    0.03 |   2019 | select \"projects\".\"id\" from \"projects\" inner join \"workspace_members\" on (\"workspace_members\".\"workspace_id\" =\n   296 |     51.8 |    0.17 |    296 | insert into \"audit_log\" (\"id\", \"project_id\", \"user_id\", \"client_id\", \"action\", \"target_type\", \"target_id\", \"su\n  1253 |     40.4 |    0.03 |   1253 | select \"id\", \"user_id\", \"scopes\", \"expires_at\", \"created_at\" from \"sessions\" where \"sessions\".\"id\" = $1 limit \n    93 |     35.5 |    0.38 |    372 | insert into \"events\" (\"id\", \"project_id\", \"thread_id\", \"seq\", \"type\", \"payload\", \"created_at\") values (default\n   840 |     34.6 |    0.04 |    840 | select coalesce(sum((\"turns\".\"usage\" ->> $1)::double precision), $6), coalesce(sum((\"turns\".\"usage\" ->> $2)::d\n    42 |     30.2 |    0.72 |    756 | select relname as name, pg_total_relation_size(c.oid)::text as bytes from pg_class c join pg_namespace n on n.\n  1256 |     28.9 |    0.02 |   1256 | select \"id\", \"parent_id\", \"title\", \"icon\", \"cover\", \"position\", \"updated_at\" from \"notes\" where \"notes\".\"proje\n(20 rows)\n\n== top 20 by calls ==\n calls | total_ms | mean_ms |  rows  |                                                     query                                                      \n-------+----------+---------+--------+----------------------------------------------------------------------------------------------------------------\n 17786 |   2006.2 |    0.11 |  35856 | select \"workspaces\".\"id\", \"workspaces\".\"slug\", \"workspaces\".\"hash\", \"workspaces\".\"name\", \"workspaces\".\"kind\", \n 13697 |    762.8 |    0.06 |  13697 | select \"projects\".\"id\", \"projects\".\"hash\", \"projects\".\"name\", \"projects\".\"stack\", \"projects\".\"container_state\"\n 10297 |    138.5 |    0.01 |  10297 | select \"role\", \"can_create_project\", \"can_create_session\" from \"workspace_members\" where (\"workspace_members\".\n  8921 |    223.9 |    0.03 |   8921 | select \"login\", \"name\", \"email\", \"avatar_url\" from \"users\" where \"users\".\"id\" = $1 limit $2\n  8919 |  13599.7 |    1.52 | 178380 | select \"projects\".\"id\", \"projects\".\"hash\", \"projects\".\"name\", \"projects\".\"stack\", \"projects\".\"container_state\"\n  8906 |    214.1 |    0.02 |   8906 | select \"password_hash\" from \"users\" where \"users\".\"id\" = $1 limit $2\n  8854 |     67.1 |    0.01 |      0 | select \"id\", \"workspace_id\", \"name\", \"engine\", \"host\", \"port\", \"username\", \"password_encrypted\", \"database\", \"\n  2281 |     71.6 |    0.03 |   9173 | select \"id\", \"hash\", \"title\", \"status\", \"provider\", \"base_branch\", \"branch\", \"worktree_state\", \"worktree_error\n  2019 |     56.1 |    0.03 |   2019 | select \"projects\".\"id\" from \"projects\" inner join \"workspace_members\" on (\"workspace_members\".\"workspace_id\" =\n  1256 |     85.7 |    0.07 |      0 | insert into \"notes\" (\"id\", \"project_id\", \"parent_id\", \"title\", \"icon\", \"cover\", \"content\", \"search_text\", \"pos\n  1256 |     17.4 |    0.01 |   1256 | select \"id\", \"parent_id\", \"title\", \"icon\", \"cover\", \"position\", \"updated_at\" from \"notes\" where (\"notes\".\"proj"
+}

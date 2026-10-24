@@ -2,10 +2,11 @@
 # Starts the load-test target (README.md): a `ucch_load` Postgres and the app
 # image beside it, limited like the production VPS, with the mock OpenRouter
 # running inside and the fake claude CLI as CLAUDE_BIN. Re-running replaces
-# the app container and keeps the database.
+# the app container and keeps the database and the `ucch-load-data` volume
+# (/data: the projects' repositories), so a new image needs no new seed.
 #
 #   bash scripts/load/up.sh            # IMAGE=ucch:load, port 3397
-#   bash scripts/load/up.sh --fresh    # also drop and recreate the database
+#   bash scripts/load/up.sh --fresh    # also drop the database and the volume
 #
 # Environment: IMAGE, PORT, CPUS (4), MEMORY (8g), CPUSET (0-3: the cores the
 # container may use; run the generator on others with `taskset`), and the
@@ -26,6 +27,7 @@ chmod 700 "$OUT"
 
 if [ "${1:-}" = "--fresh" ]; then
   docker rm -f ucch-load ucch-pg-load >/dev/null 2>&1 || true
+  docker volume rm ucch-load-data >/dev/null 2>&1 || true
   rm -f "$OUT/env" "$OUT/sessions.json"
 fi
 
@@ -41,7 +43,9 @@ source "$OUT/env"
 
 docker network inspect ucch-load >/dev/null 2>&1 || docker network create ucch-load >/dev/null
 if ! docker inspect ucch-pg-load >/dev/null 2>&1; then
-  docker run -d --name ucch-pg-load --network ucch-load -p 127.0.0.1:55432:5432 \
+  # On the app's cores: in production the embedded Postgres shares the
+  # box's four with everything else.
+  docker run -d --name ucch-pg-load --network ucch-load -p 127.0.0.1:55432:5432 --cpuset-cpus="$CPUSET" \
     -e POSTGRES_PASSWORD=load -e POSTGRES_DB=ucch_load postgres:16-alpine \
     -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=top \
     -c max_connections=200 -c shared_buffers=256MB >/dev/null
@@ -50,12 +54,13 @@ docker start ucch-pg-load >/dev/null
 # Over TCP: the image's first-boot initialisation runs a socket-only server
 # that answers before the database exists.
 until docker exec ucch-pg-load psql -h 127.0.0.1 -U postgres -d ucch_load -qc "select 1" >/dev/null 2>&1; do sleep 0.5; done
-docker exec ucch-pg-load psql -h 127.0.0.1 -U postgres -d ucch_load -qc "create extension if not exists pg_stat_statements" >/dev/null
+docker exec -e PGOPTIONS=--client-min-messages=warning ucch-pg-load \
+  psql -h 127.0.0.1 -U postgres -d ucch_load -qc "create extension if not exists pg_stat_statements" >/dev/null
 
 docker rm -f ucch-load >/dev/null 2>&1 || true
 docker run -d --name ucch-load --network ucch-load -p "127.0.0.1:$PORT:3000" \
   --cpus="$CPUS" --cpuset-cpus="$CPUSET" --memory="$MEMORY" --memory-swap="$MEMORY" \
-  -v "$PWD/scripts/load:/load:ro" \
+  -v ucch-load-data:/data -v "$PWD/scripts/load:/load:ro" \
   -e DATABASE_URL=postgres://postgres:load@ucch-pg-load:5432/ucch_load \
   -e SECRET_KEY="$SECRET_KEY" -e METRICS_TOKEN="$METRICS_TOKEN" \
   -e ROOT_DOMAIN=localhost -e PUBLIC_SCHEME=http -e PUBLIC_WEB_ORIGIN="http://127.0.0.1:$PORT" \

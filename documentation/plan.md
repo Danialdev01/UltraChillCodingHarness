@@ -16,7 +16,7 @@ The lag and memory use come from **how the system is put together**, not from No
 
 | # | Cause | Where | Would Rust fix it? |
 |---|---|---|---|
-| 1 | Each browser tab pre-renders ~117 pages at sign-in and re-renders them on a timer and after every `router.refresh()` | `apps/web/src/lib/warmup.ts`, `lib/preload.ts`, `components/route-warmup.tsx` | **No.** That is Next.js, which stays Node |
+| 1 | Each browser tab pre-renders 115 pages at sign-in and re-renders them on a timer and after every `router.refresh()` | `apps/web/src/lib/warmup.ts`, `lib/preload.ts`, `components/route-warmup.tsx` | **No.** That is Next.js, which stays Node |
 | 2 | Every page render runs an aggregate SQL query over every turn of every project | `apps/server/src/workspaces.ts:374` | **No.** The time is spent in Postgres |
 | 3 | Every command from every user, **including each terminal keystroke**, waits in one global queue | `apps/server/src/engine.ts:39` | **No.** It is a design choice: keystrokes wait behind other users' DB-bound commands |
 | 4 | Every streamed token is its own WebSocket frame, and the browser re-renders the whole chat per token | `packages/agent/src/loop.ts:263`, `apps/web/src/components/project-chat.tsx` | **No.** The browser work is the same |
@@ -35,7 +35,7 @@ Only row 7 is about the language. A Rust API would save about **0.2–0.5 GB of 
 
 Hosting 50 *heavy* users at once (each with an agent turn and a dev server) does not fit in 8 GB in **any** language; see [Capacity](#2-what-50-concurrent-users-costs). That needs global queues and caps, more RAM, or per-project containers spread over more machines.
 
-> Numbers marked *est.* are estimates from general experience with these runtimes. They are not measured on this deployment. Phase 0 below replaces them with real numbers. The two measured figures are the Claude Code CLI's RSS (372 MB, a running `claude` process on the development machine) and the frontend baselines in `apps/web/e2e/results/`.
+> Numbers marked *est.* are estimates from general experience with these runtimes. They are not measured on this deployment. Numbers marked *measured* come from the Phase 0 baseline ([`perf/README.md`](./perf/README.md), `perf/baseline-2026-10-25.json`): the production image under `--cpus=4 --memory=8g` with 50 simulated users for 10 minutes, Postgres in a container of its own and a fake `claude` that holds no memory. The other measured figures are the Claude Code CLI's RSS (372 MB, a running `claude` process on the development machine) and the frontend baselines in `apps/web/e2e/results/`.
 
 ---
 
@@ -73,37 +73,37 @@ Beside the container on the same VPS: Dokploy itself (its Node app, Postgres, Re
 
 "50 users at the same time" can mean very different loads. The model below separates three profiles.
 
-### Fixed costs (*est.*)
+### Fixed costs
 
 | Item | Node today | With a Rust API |
 |---|---|---|
-| OS, Docker, Dokploy (app + Postgres + Redis), Traefik | ~0.8 GB | ~0.8 GB |
-| PostgreSQL (256 MB buffers + ~10 backends) | ~0.4–0.5 GB | ~0.4–0.5 GB |
-| Next.js server under load | ~0.3–0.8 GB | ~0.3–0.8 GB (unchanged) |
-| API server | ~0.2–0.5 GB | ~0.03–0.1 GB |
-| **Total fixed** | **~1.7–2.6 GB** | **~1.5–2.2 GB** |
+| OS, Docker, Dokploy (app + Postgres + Redis), Traefik | ~0.8 GB (*est.*) | ~0.8 GB (*est.*) |
+| PostgreSQL (256 MB buffers + ~10 backends) | 0.24 GB (*measured*) | 0.24 GB |
+| Next.js server under load | 0.48 GB mean, 0.70 GB max (*measured*, private pages; still growing at the end of the run) | the same (unchanged) |
+| API server | 0.31 GB mean, 0.35 GB max RSS (*measured*) | ~0.03–0.1 GB (*est.*) |
+| **Total fixed** (at the maxima) | **~2.1 GB** | **~1.8 GB** |
 
-That leaves **~5.5–6.3 GB** for users either way. The difference between the two columns is about 0.2–0.4 GB.
+That leaves **~5.9 GB** for users with Node and **~6.2 GB** with Rust. The difference between the two columns is about 0.25–0.3 GB.
 
 ### Per-user costs
 
 | Profile | What they are doing | RAM per user | 50 of them |
 |---|---|---|---|
-| **Light**: connected | sidebar open, reading, navigating | Node ~1–5 MB, Rust <1 MB (*est.*) | ~0.05–0.25 GB |
-| **Medium**: working | chatting with the **native** agent (OpenRouter, in-process) + 1 terminal | ~20–40 MB (shell + state) (*est.*) | ~1–2 GB |
+| **Light**: connected | sidebar open, reading, navigating | Node ≤ ~2.6 MB (*measured* upper bound: the API's RSS grew 219 → 352 MB over the 50-user run), Rust <1 MB (*est.*) | ≤ ~0.13 GB |
+| **Medium**: working | chatting with the **native** agent (OpenRouter, in-process) + 1 terminal | ~1–3 MB (*measured*: the image's login shell holds ~0.6 MB private, 16 shells 9 MB; the agent's state is inside the API's RSS above) | ≤ ~0.15 GB |
 | **Heavy**: building | a **Claude Code** turn + a dev server | 372 MB (measured) + 150–300 MB Vite / 30–60 MB artisan / 0.5–1.5 GB `next dev` ≈ **~0.6 GB typical** | **~30 GB** |
 
 **Reading the table:**
 
 - 50 light or medium users fit comfortably once the fixes in §6 are in, in either language.
 - About 8–9 heavy users at once fill the box. Rust's saving buys roughly one more.
-- A realistic mix of 50 connected users, 15 using the native agent and 8 in heavy turns comes to ~0.25 + 0.5 + 4.8 ≈ **5.5 GB**. That fits, **but only with a global cap on concurrent CLI turns** (today there is none) so the 9th to 50th heavy turns queue instead of pushing the box into swap or the OOM killer.
+- A realistic mix of 50 connected users, 15 using the native agent and 8 in heavy turns comes to ~0.13 + 0.05 + 4.8 ≈ **5.0 GB**. That fits, **but only with a global cap on concurrent CLI turns** (today there is none) so the 9th to 50th heavy turns queue instead of pushing the box into swap or the OOM killer.
 
 ### CPU
 
-The four vCPUs are spent on (*est.*):
+The four vCPUs are spent on:
 
-- **Next.js renders.** A full RSC render with its API calls costs on the order of 20–80 ms of CPU. At sign-in each tab warms ~117 routes (finding 1), so 50 users signing in within a few minutes is ~5,800 renders ≈ 2–8 CPU-minutes, concentrated in one Node process that can use only one core. This is the most likely source of "the whole thing is laggy" right after a deploy or in the morning.
+- **Next.js renders.** A full RSC render with its API calls costs about 10 ms of CPU (*measured*: 12,295 renders in 0.19 cores over the 10-minute run). At sign-in each tab warms 115 routes (finding 1, *measured*), so 50 users signing in within a few minutes is ~5,750 renders ≈ 1 CPU-minute, concentrated in one Node process that can use only one core. This is the most likely source of "the whole thing is laggy" right after a deploy or in the morning.
 - **Postgres** running the per-project aggregate (finding 2) for each of those renders.
 - **Dev servers and CLIs.** Vite and `next dev` rebuilds, and Claude Code processing its stream.
 - **The API process.** JSON, zod, fan-out. Single-threaded, so it saturates at one core, which is 25% of the box.
@@ -114,7 +114,7 @@ The four vCPUs are spent on (*est.*):
 
 ### Finding 1: the boot pre-render storm (web)
 
-`lib/warmup.ts:58` sets `BUDGET = { projects: 20, sessionLists: 60, fileTrees: 5, hot: 5 }`. For each of the 20 most recent projects, `warmupPlan` prefetches the chat page plus 4 project pages, along with 5 data lists. Add the sections, workspace settings, home and settings pages, and it comes to **~117 full RSC renders and ~160 data requests per tab**, run 4 at a time (`lib/preload.ts:45`).
+`lib/warmup.ts:58` sets `BUDGET = { projects: 20, sessionLists: 60, fileTrees: 5, hot: 5 }`. For each of the 20 most recent projects, `warmupPlan` prefetches the chat page plus 4 project pages, along with 5 data lists. Add the sections, workspace settings, home and settings pages, and it comes to **115 full RSC renders and 125 data requests per tab** (*measured* over the 40 s after a fresh sign-in), run 4 at a time (`lib/preload.ts:45`).
 
 They are re-triggered:
 
@@ -122,7 +122,7 @@ They are re-triggered:
 - when a tab returns after ~4 min hidden: everything (`route-warmup.tsx:86`);
 - **2 s after any `router.refresh()`: everything** (`route-warmup.tsx:95`).
 
-`lib/realtime.tsx:285` calls `router.refresh()` and `forgetPrefetched()` on settings events, so **one member saving project settings makes every other member's open tab re-render ~117 pages.** At 50 users that is a thundering herd of ~5,800 renders, each one hitting finding 2. `router.refresh()` is also called from about 20 other places in the UI.
+`lib/realtime.tsx:285` calls `router.refresh()` and `forgetPrefetched()` on settings events, so **one member saving project settings makes every other member's open tab re-render 115 pages (*measured*).** At 50 users that is a thundering herd of ~5,750 renders, each one hitting finding 2. `router.refresh()` is also called from about 20 other places in the UI.
 
 **Rust:** no effect. These are Next.js renders.
 
@@ -160,7 +160,7 @@ Each Claude Code turn starts `claude -p --output-format stream-json …` as a ne
 Also uncapped globally:
 
 - **PTYs.** Each is a login shell (`fish -l` or `bash` with the user's rc), 10 per project, 15 min idle timeout, no per-user or global cap (`terminals.ts:35,49`).
-- **Git.** One `status()` is 4 git processes (`git.ts:97`). The Git view in every visible tab polls status + branches + log every 60 s and after every burst of file changes (`apps/web/src/components/git/use-git-state.ts:28`), ~6 processes per refresh per tab, repeated by every viewer of the same project.
+- **Git.** One `status()` is 4 git processes (`git.ts:97`). The Git view in every visible tab polls status + branches + log every 60 s and after every burst of file changes (`apps/web/src/components/git/use-git-state.ts:28`), 8 processes per refresh per tab (*measured*: 80 for one burst with 10 viewers), repeated by every viewer of the same project.
 - **Document pipeline.** LibreOffice (~200–500 MB *est.*) and Chromium for Mermaid (~150–300 MB *est.*) on demand.
 
 **Rust:** no effect. These are separate programs.
@@ -191,7 +191,7 @@ These are real, but each one also has a cheap TypeScript fix (§6), and the proc
 
 | Dimension | Node 22 (today) | Rust (axum + tokio) | Matters here? |
 |---|---|---|---|
-| Idle RSS of the API | ~120–250 MB (*est.*) | ~10–40 MB (*est.*) | A little: ~0.2 GB |
+| Idle RSS of the API | 219 MB (*measured*, before load) | ~10–40 MB (*est.*) | A little: ~0.2 GB (352 MB under load) |
 | Memory per WebSocket | ~20–50 KB + JS objects (*est.*) | ~5–15 KB (*est.*) | No: 50 users × 2 sockets is a few MB either way |
 | CPU cores used | 1 for JS (libuv pool for fs/crypto) | all 4 | **Yes**, if the API is CPU-bound |
 | JSON + validation | `JSON.parse` + zod: zod v3 is often several times slower than the parse itself | serde, typed | Some: frames per token |

@@ -96,7 +96,7 @@ docker run -d --name ucch-load --network ucch-load -p 127.0.0.1:3397:3000 \
 Then, from the repository, with the server up (it creates the schema on boot):
 
 ```bash
-LOADTEST_ALLOW_SEED=1 LOAD_OUT=load-out SECRET_KEY="$SECRET_KEY" \
+LOADTEST_ALLOW_SEED=1 LOAD_OUT="$PWD/load-out" SECRET_KEY="$SECRET_KEY" \
 DATABASE_URL=postgres://postgres:load@127.0.0.1:55432/ucch_load \
   pnpm --filter @ucch/server exec tsx scripts/seed-load.ts --users 50 --projects 20 --url http://127.0.0.1:3397
 ```
@@ -114,13 +114,13 @@ It writes `$LOAD_OUT/sessions.json` (mode 600): `{ base, sharedWorkspaceId, pass
 
 ## A whole run
 
-`up.sh` does the container setup above, limited as the plan's VPS is (`--cpus=4 --memory=8g`, pinned to cores `0-3`). It chooses `SECRET_KEY` and `METRICS_TOKEN` once and keeps them in `load-out/env`. Re-running it replaces the app container and keeps the database; `--fresh` starts both over.
+`up.sh` does the container setup above, limited as the plan's VPS is (`--cpus=4 --memory=8g`, pinned to cores `0-3`). It chooses `SECRET_KEY` and `METRICS_TOKEN` once and keeps them in `load-out/env`. Postgres runs on the app's cores, as the embedded one does in production. Re-running it replaces the app container and keeps the database and the `ucch-load-data` volume (`/data`, the projects' repositories), so a new image needs no new seed; `--fresh` starts all of it over.
 
 ```bash
 docker build --target app -t ucch:load .
 bash scripts/load/up.sh
 set -a; . load-out/env; set +a
-LOADTEST_ALLOW_SEED=1 LOAD_OUT=load-out DATABASE_URL=postgres://postgres:load@127.0.0.1:55432/ucch_load \
+LOADTEST_ALLOW_SEED=1 LOAD_OUT="$PWD/load-out" DATABASE_URL=postgres://postgres:load@127.0.0.1:55432/ucch_load \
   pnpm --filter @ucch/server exec tsx scripts/seed-load.ts --users 50 --projects 20 --url http://127.0.0.1:3397
 taskset -c 8-15 node scripts/load/run.mjs --users 50 --minutes 10 \
   --out documentation/perf/<task>-<date>.json

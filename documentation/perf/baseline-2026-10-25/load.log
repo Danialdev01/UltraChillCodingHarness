@@ -1,0 +1,23 @@
+load: 50 users for 10 min (+30 s ramp) against http://127.0.0.1:3397
+  30 s: 0 turns, 1044 keystrokes, 0 errors
+  60 s: 4 turns, 3135 keystrokes, 0 errors
+  90 s: 10 turns, 5228 keystrokes, 0 errors
+  120 s: 12 turns, 7321 keystrokes, 0 errors
+  150 s: 16 turns, 9414 keystrokes, 0 errors
+  180 s: 21 turns, 11507 keystrokes, 0 errors
+  210 s: 23 turns, 13596 keystrokes, 0 errors
+  240 s: 25 turns, 15678 keystrokes, 0 errors
+  270 s: 32 turns, 17774 keystrokes, 0 errors
+  300 s: 36 turns, 19864 keystrokes, 0 errors
+  330 s: 39 turns, 21960 keystrokes, 0 errors
+  360 s: 43 turns, 24051 keystrokes, 0 errors
+  390 s: 45 turns, 26145 keystrokes, 0 errors
+  420 s: 49 turns, 28235 keystrokes, 0 errors
+  450 s: 54 turns, 30318 keystrokes, 0 errors
+  480 s: 58 turns, 32409 keystrokes, 0 errors
+  510 s: 62 turns, 34505 keystrokes, 0 errors
+  540 s: 68 turns, 36595 keystrokes, 0 errors
+  570 s: 70 turns, 38691 keystrokes, 0 errors
+  600 s: 73 turns, 40781 keystrokes, 0 errors
+  630 s: 79 turns, 42863 keystrokes, 0 errors
+wrote documentation/perf/baseline-2026-10-25/load.json and its .md summary
