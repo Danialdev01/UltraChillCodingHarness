@@ -189,7 +189,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
 
 ### Correctness first
 
-- [ ] **PF1.1 — Stream lock and unique project-scoped sequence numbers**
+- [x] **PF1.1 — Stream lock and unique project-scoped sequence numbers** — 00fc4e9
 
   - **Depends:** —
   - **Files:** `apps/server/src/eventstore.ts` (`append`, `nextSeq` at lines 42–76 and 181–192), `packages/db/src/schema.ts` (`events_project_seq_idx`, line 381), new migration `packages/db/migrations/0025_event_stream_seq.sql`, new `apps/server/src/eventstore.test.ts` (with a recording `tx` double, as in `engine.test.ts`)
@@ -199,6 +199,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. Leave transient-only appends untouched; they skip the transaction.
   - **Acceptance:** the migration runs on a copy of a real database. Concurrent project-scoped appends never produce a duplicate `(project_id, seq)`.
   - **Verify:** `pnpm test -- eventstore`, plus `pnpm db:migrate` against a copy
+  - **Measured:**
+    - The migration is `0026_event_stream_seq.sql`: PF1.8 took 0025.
+    - On a copy of the development database with 3 duplicates planted, the migration renumbered those 3 streams and left the rest alone.
+    - 200 concurrent appends to one project: 0 failures and 0 duplicates with the lock; 178 unique-index failures without it.
 
 - [ ] **PF1.2 — A send claims the thread (`queued`), and `turn.dequeued`**
 
