@@ -483,7 +483,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
 
 ### Global caps (`solution.md` §9)
 
-- [ ] **PF1.20 — Turn scheduler: global caps with a queue**
+- [x] **PF1.20 — Turn scheduler: global caps with a queue** — ac8b9f6
 
   - **Depends:** PF1.2
   - **Files:** new `apps/server/src/turn-scheduler.ts` and `turn-scheduler.test.ts`, `apps/server/src/agent.ts` (`#run`; remove the throw at lines 653–660), `apps/server/src/config.ts` (`AGENT_MAX_CONCURRENT_TOTAL`, `AGENT_MAX_NATIVE_TOTAL`), `apps/server/src/decide.ts` (cancel while queued), `packages/protocol/src/events.ts` (`agent.queued` in `TRANSIENT`, line 773), `apps/server/src/ws.ts` (re-send queued state on thread subscribe), `apps/web/src/lib/thread-store.ts`, chat composer, `apps/web/src/components/project-sessions-nav.tsx`
@@ -495,6 +495,11 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     5. Web: "Queued — n ahead" with Stop in the composer; `queued` counts as working in the sidebar.
   - **Acceptance:** a burst of 20 CLI turns never runs more than `AGENT_MAX_CONCURRENT_TOTAL` `claude` processes at once (sampler). The rest run in turn, and none fail with "Too many agents".
   - **Verify:** `pnpm test -- turn-scheduler decide`, plus load with `fake-claude --rss-mb 370`
+  - **Measured:** (a burst of 20 CLI turns, 5 accounts × 4 threads, `fake-claude` at 370 MB, `claude` processes sampled every 250 ms)
+    - Most `claude` processes at once: 10 → 5, which is `AGENT_MAX_CONCURRENT_TOTAL`.
+    - Outcomes: 10 completed and 10 failed with "Too many agents" → all 20 completed. 15 turns waited, and the last started after 76 s.
+    - In Chrome, a waiting thread read "Queued — 13 ahead" down to "2 ahead" with Stop shown, then working, then done.
+    - The scheduler takes a per-request `onAhead` rather than one global `onChange(threadId, ahead)`, because only the agent knows which project to publish to.
 
 - [ ] **PF1.21 — Terminal caps in config**
 
