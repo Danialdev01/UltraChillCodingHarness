@@ -444,7 +444,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Subscribe ack p50/p95/p99: 15.95/21.88/23.34 → 12.45/19.98/23.15 ms, under the 50 ms target.
     - Load run: `replay_frames` p95 1,000 → 8, with no errors.
 
-- [ ] **PF1.17 — One WebSocket per tab: chat on the shared socket** *(was B8)*
+- [x] **PF1.17 — One WebSocket per tab: chat on the shared socket** *(was B8)* — 66a6ecd
 
   - **Depends:** PF1.13, PF1.14, PF1.16
   - **Files:** `apps/web/src/components/project-chat.tsx` (own client at lines 380–447), `apps/web/src/lib/client.ts` (subscription refcounts, around line 236), `apps/web/src/lib/realtime.tsx` (`useRealtime().subscribe`, `dispatch`), `apps/web/src/lib/create-project.ts`
@@ -454,6 +454,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. The chat reads its thread store from the shared client. Delete its `new UcchClient()`. `create-project.ts` keeps its one-off socket by design.
   - **Acceptance:** DevTools shows one `/ws` per tab after visiting a chat, a terminal and the dashboard, and deltas arrive once.
   - **Verify:** `pnpm test -- client`, plus manual
+  - **Measured:** (headless Chrome on the load image)
+    - Sockets per tab after a chat, a terminal and the dashboard: 2 → 1. Leaving the project unsubscribes its thread and terminal.
+    - stream.spec, a 4,000-token answer: 1,334 deltas, each received once, and the sent message stays on screen.
+    - The plan's `useRealtime().subscribe/dispatch` wrappers were not added. Views call `client.hold` and `client.dispatch` on the client `useRealtime()` returns, as the terminals already did.
 
 - [ ] **PF1.18 — `@ucch/protocol/plain`: client code without zod** *(the zod part of B11)*
 
