@@ -34,6 +34,10 @@ import { frameBatcher } from "./next-frame";
  * runs. Two versions say what changed: `durableVersion` for the log and
  * for the runs of finished turns, `liveVersion` for the runs of turns still
  * open. Listeners hear at most once a frame.
+ *
+ * `queued` is how many turns are ahead of the thread's sent message while
+ * it waits for the server to have a slot (`agent.queued`), and null once
+ * its turn starts or is dropped. Live state too: it changes `liveVersion`.
  */
 export class ThreadStore {
   readonly threadId: string;
@@ -42,6 +46,7 @@ export class ThreadStore {
   #runs: Run[] = [];
   /** Turns that have ended: their runs no longer change. */
   #ended = new Set<string>();
+  #queued: number | null = null;
   #durableVersion = 0;
   #liveVersion = 0;
   #rows: { durable: number; live: number; rows: readonly ClientEvent[] } | null = null;
@@ -66,12 +71,21 @@ export class ThreadStore {
     return this.#liveVersion;
   }
 
+  /** Turns ahead of the thread's waiting one; null when none is waiting. */
+  get queued(): number | null {
+    return this.#queued;
+  }
+
   /** Takes one event as the client heard it; anything not of this thread is ignored. */
   push(row: ClientEvent): void {
     const event = row.event;
     if (!("threadId" in event) || event.threadId !== this.threadId) return;
     if (row.seq !== null) this.#pushDurable(row, row.seq);
-    else if (LIVE.has(event.type)) this.#pushRun(row);
+    else if (event.type === "agent.queued") {
+      if (this.#queued === event.ahead) return;
+      this.#queued = event.ahead;
+      this.#changed("live");
+    } else if (LIVE.has(event.type)) this.#pushRun(row);
   }
 
   /** Back from a drop: the runs of turns still open are missing what streamed meanwhile. */
@@ -143,6 +157,11 @@ export class ThreadStore {
 
     const event = row.event;
     let liveChanged = false;
+    // The wait is over: the turn opened, or it never will.
+    if ((event.type === "turn.started" || event.type === "turn.dequeued") && this.#queued !== null) {
+      this.#queued = null;
+      liveChanged = true;
+    }
     if ((event.type === "agent.turn_completed" || event.type === "agent.turn_failed") && !this.#ended.has(event.turnId)) {
       this.#ended.add(event.turnId);
       liveChanged = this.#runs.some((run) => run.turnId === event.turnId);

@@ -40,6 +40,7 @@ import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter
 import { documentationPrompt } from "./documents.js";
 import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
+import { TurnScheduler } from "./turn-scheduler.js";
 
 export interface AgentOptions {
   secretKey: string | undefined;
@@ -73,8 +74,11 @@ export interface AgentOptions {
   providers?: ProviderService;
   /** False refuses `claude` and `codex` outright: see `cliProvidersEnabled`. */
   cliEnabled?: boolean;
-  /** CLI turns one account may have in flight. */
-  maxConcurrentPerUser?: number;
+  /**
+   * Where turns wait for a slot (`turn-scheduler.ts`). Absent: two CLI turns
+   * per account, and no limit beyond that.
+   */
+  scheduler?: TurnScheduler;
   /** How long streamed tokens are held to be sent together; see `DeltaCoalescer`. 40 ms when absent. */
   streamFlushMs?: number;
 }
@@ -183,15 +187,17 @@ export class AgentTurnReactor {
   readonly #nativePrompts = new Map<string, Map<string, (decision: ApprovalDecision) => void>>();
   readonly #cliPrompts = new Map<string, Set<string>>();
 
-  /** CLI turns in flight per owning account, for the concurrency cap. */
-  readonly #perUser = new Map<string, number>();
+  readonly #scheduler: TurnScheduler;
 
   constructor(
     private readonly db: Database,
     private readonly store: EventStore,
     private readonly options: AgentOptions,
     private readonly onError: (error: unknown) => void,
-  ) {}
+  ) {
+    this.#scheduler =
+      options.scheduler ?? new TurnScheduler({ cliPerUser: 2, cliTotal: Infinity, nativeTotal: Infinity });
+  }
 
   /** Starts a turn for each user message, and stops one on a cancel. */
   react(command: Command, batch: readonly DomainEvent[]): void {
@@ -443,6 +449,7 @@ export class AgentTurnReactor {
       return write(events);
     };
 
+    let release: (() => void) | undefined;
     try {
       // Stopped while it waited: the turn never opens.
       if (controller.signal.aborted) {
@@ -463,6 +470,25 @@ export class AgentTurnReactor {
       // from the composer always names one; the fallbacks are for everything
       // that does not -- another client, or a turn started by the harness.
       const provider = resolveProvider(requestedProvider, thread.provider, owner.defaultProvider);
+
+      // A slot, before the turn opens: over the server's limits the turn
+      // waits here, with no `turns` row and nothing billed, and the thread
+      // hears how many are ahead of it. Stopped while it waits, it never
+      // opens. Given back in `finally`, however the turn ends.
+      try {
+        release = await this.#scheduler.acquire({
+          ownerId: owner.id,
+          kind: provider === "native" ? "native" : "cli",
+          threadId,
+          signal: controller.signal,
+          onAhead: (ahead) => void write([{ type: "agent.queued", threadId, ahead }]).catch(this.onError),
+        });
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
+        await dequeue("cancelled");
+        return;
+      }
+
       if (provider !== "native") {
         // A CLI provider names its own models; the OpenRouter defaults are
         // not for it. What the composer sent, or nothing -- the CLI's own.
@@ -615,6 +641,7 @@ export class AgentTurnReactor {
         this.onError,
       );
     } finally {
+      release?.();
       // The tail of the answer, should the turn have ended without anything
       // durable after its last token.
       coalescer.dispose();
@@ -682,7 +709,7 @@ export class AgentTurnReactor {
    *
    * The provider spawns the process and hands back events already in the
    * harness's own vocabulary, so what remains here is what the native path
-   * does around `runTurn`: the gate, the cap, the cancel hook, and writing
+   * does around `runTurn`: the gate, the cancel hook, and writing
    * each event through the same `append` -- which is what keeps the file
    * tree cache and the projection honest for both.
    */
@@ -715,17 +742,6 @@ export class AgentTurnReactor {
         `The ${provider} provider is disabled on this server. It runs the CLI on the host, so it needs AGENT_ALLOW_HOST_SHELL like the terminal does.`,
       );
     }
-
-    // One subscription is one human; a few threads running at once on it is
-    // how a rate limit gets mistaken for a broken integration.
-    const cap = this.options.maxConcurrentPerUser ?? 2;
-    const inFlight = this.#perUser.get(input.ownerId) ?? 0;
-    if (inFlight >= cap) {
-      throw new Error(
-        `Too many agents are running on your account (limit ${cap}). Wait for one to finish, then send again.`,
-      );
-    }
-    this.#perUser.set(input.ownerId, inFlight + 1);
 
     let run: AgentRun | undefined;
     try {
@@ -805,9 +821,6 @@ export class AgentTurnReactor {
         this.#cliRuns.delete(run);
         if (this.#cliByThread.get(input.threadId) === run) this.#cliByThread.delete(input.threadId);
       }
-      const left = (this.#perUser.get(input.ownerId) ?? 1) - 1;
-      if (left <= 0) this.#perUser.delete(input.ownerId);
-      else this.#perUser.set(input.ownerId, left);
     }
   }
 
@@ -933,28 +946,40 @@ export class AgentTurnReactor {
       supportsImages(model),
     ]);
 
-    const outcome = await runTurn({
-      projectId: input.projectId,
+    // A loop like a native turn's, so it takes a native turn's slot.
+    const release = await this.#scheduler.acquire({
+      ownerId: owner.id,
+      kind: "native",
       threadId,
-      turnId: randomUUID(),
-      apiKey,
-      model,
-      history: [{ type: "user.message", threadId, text: input.ask }],
-      stack: input.stack,
-      preset: "readonly",
-      registry: this.options.registry,
-      contextLength,
-      supportsImages: canSeeImages,
-      searchModel: this.options.searchModel,
-      maxIterations: this.options.maxIterations,
-      executor: new HostExecutor(workspace),
-      complete: streamCompletion,
       signal: input.signal,
-      conclude: false,
-      append: async () => {},
-      publish: () => {},
-      onDiagnostic: (message) => this.onError(new Error(message)),
     });
+    let outcome: Awaited<ReturnType<typeof runTurn>>;
+    try {
+      outcome = await runTurn({
+        projectId: input.projectId,
+        threadId,
+        turnId: randomUUID(),
+        apiKey,
+        model,
+        history: [{ type: "user.message", threadId, text: input.ask }],
+        stack: input.stack,
+        preset: "readonly",
+        registry: this.options.registry,
+        contextLength,
+        supportsImages: canSeeImages,
+        searchModel: this.options.searchModel,
+        maxIterations: this.options.maxIterations,
+        executor: new HostExecutor(workspace),
+        complete: streamCompletion,
+        signal: input.signal,
+        conclude: false,
+        append: async () => {},
+        publish: () => {},
+        onDiagnostic: (message) => this.onError(new Error(message)),
+      });
+    } finally {
+      release();
+    }
 
     return { text: outcome.text, model, usage: outcome.usage, costUsd: outcome.costUsd };
   }

@@ -39,6 +39,8 @@ let bus: EventBus;
 let history: RawStoredEvent[];
 /** Runs while the replay's read is in flight: what is published meanwhile. */
 let duringRead: () => void;
+/** Turns ahead of THREAD's waiting one, as the scheduler would say. */
+let queued: number | null;
 const sockets: WebSocket[] = [];
 
 beforeEach(async () => {
@@ -49,6 +51,7 @@ beforeEach(async () => {
   watches = [];
   history = [];
   duringRead = () => {};
+  queued = null;
   bus = new EventBus();
   const auth = {
     // The ticket is the user id, with the scopes after a colon.
@@ -100,6 +103,7 @@ beforeEach(async () => {
     },
     onProjectWatch: (projectId, delta) => watches.push(`${delta > 0 ? "+" : "-"}${projectId}`),
     buildId: "build-7",
+    queuedAhead: (threadId) => (threadId === THREAD ? queued : null),
     composer: { get: () => ({ rev: 0, draft: { text: "" }, origin: null }) } as unknown as ComposerStore,
     presence: new PresenceStore(),
     terminals: {
@@ -386,5 +390,16 @@ describe("thread replay", () => {
       [1, AT, PROJECT],
       [2, AT, PROJECT],
     ]);
+  });
+
+  it("says, after the history, how many are ahead of a turn still waiting for a slot", async () => {
+    history = log(1);
+    queued = 3;
+    const alice = await connect(ALICE, "&caps=replay1");
+    alice.send(subscribe);
+    const frames = await alice.acked("s");
+    const kinds = frames.map((f) => (f.kind === "push" ? f.event.type : f.kind));
+    expect(kinds).toEqual(["replay", "composer.changed", "agent.queued", "ack"]);
+    expect(frames[2]).toMatchObject({ seq: null, projectId: PROJECT, event: { type: "agent.queued", threadId: THREAD, ahead: 3 } });
   });
 });

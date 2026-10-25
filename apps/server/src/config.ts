@@ -150,6 +150,17 @@ const Env = z.object({
    */
   AGENT_MAX_CONCURRENT_PER_USER: z.coerce.number().int().positive().default(2),
 
+  /**
+   * CLI-provider turns running at once on the whole server. Each is a
+   * process of about 400 MB; five fit the memory left beside Postgres, the
+   * API and Next.js in a 7 GB container. A turn over the limit waits for a
+   * slot, and the thread says how many are ahead (`turn-scheduler.ts`).
+   */
+  AGENT_MAX_CONCURRENT_TOTAL: z.coerce.number().int().positive().default(5),
+
+  /** Native turns running at once on the whole server, diagram jobs included; likewise. */
+  AGENT_MAX_NATIVE_TOTAL: z.coerce.number().int().positive().default(32),
+
   /** The vendor CLIs. Bare names resolve through PATH; absolute paths pin. */
   CLAUDE_BIN: z.string().default("claude"),
   CODEX_BIN: z.string().default("codex"),

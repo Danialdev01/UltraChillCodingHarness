@@ -26,6 +26,7 @@ import {
 } from "@ucch/protocol";
 import { HostProcessHost, createProviders } from "@ucch/providers";
 import { AgentTurnReactor } from "./agent.js";
+import { TurnScheduler } from "./turn-scheduler.js";
 import { documentsBackends } from "./documents.js";
 import { researchBackends } from "./research.js";
 import { DIAGRAM_FILES, diagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
@@ -209,6 +210,13 @@ const providerService = new ProviderService(
   }),
 );
 
+/** Where agent turns wait when the server runs as many as it allows. */
+const turnScheduler = new TurnScheduler({
+  cliPerUser: config.AGENT_MAX_CONCURRENT_PER_USER,
+  cliTotal: config.AGENT_MAX_CONCURRENT_TOTAL,
+  nativeTotal: config.AGENT_MAX_NATIVE_TOTAL,
+});
+
 /**
  * The container, checkpoint and preview reactors still arrive in later
  * phases; the agent one is here, so a user message is answered.
@@ -230,7 +238,7 @@ const agentTurns = new AgentTurnReactor(
     registry: { allowHostShell: shellPluginEnabled(config) },
     providers: providerService,
     cliEnabled: cliProvidersEnabled(config),
-    maxConcurrentPerUser: config.AGENT_MAX_CONCURRENT_PER_USER,
+    scheduler: turnScheduler,
     streamFlushMs: config.STREAM_FLUSH_MS,
   },
   (error) => app.log.error({ err: error }, "agent turn failed"),
@@ -425,6 +433,7 @@ const gateway = new WebSocketGateway(auth, engine, store, bus, {
   presence,
   mayWatchTerminal: (userId, terminalId) => terminals.mayWatch(terminalId, userId),
   terminals,
+  queuedAhead: (threadId) => turnScheduler.aheadOf(threadId),
   // Unset unless the image was given one: with nothing to compare, a tab
   // is never told it is out of date.
   ...(process.env.BUILD_ID ? { buildId: process.env.BUILD_ID } : {}),
@@ -747,6 +756,13 @@ registry.gauge("engine_queue_depth", "Commands queued or running in the engine",
 });
 registry.gauge("agent_turns_active", "Agent turns in flight", [], (gauge) => {
   gauge.set(undefined, agentTurns.activeTurns);
+});
+registry.gauge("agent_turns_scheduled", "Agent turns running and waiting for a slot, by kind", ["state", "kind"], (gauge) => {
+  const { running, waiting } = turnScheduler.stats();
+  for (const kind of ["cli", "native"] as const) {
+    gauge.set({ state: "running", kind }, running[kind]);
+    gauge.set({ state: "waiting", kind }, waiting[kind]);
+  }
 });
 registry.gauge("terminals_open", "Open terminal sessions", [], (gauge) => {
   gauge.set(undefined, terminals.openTerminals);

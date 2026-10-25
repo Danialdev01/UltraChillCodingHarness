@@ -6,6 +6,7 @@ import type { Database } from "@ucch/db";
 import type { Command, DomainEvent } from "@ucch/protocol";
 import { AgentTurnReactor, resolveModel, resolveProvider, shouldRecheckStack, type AgentOptions } from "./agent.js";
 import type { EventStore } from "./eventstore.js";
+import { TurnScheduler } from "./turn-scheduler.js";
 
 describe("resolveModel", () => {
   const SERVER = "anthropic/claude-sonnet-5";
@@ -139,6 +140,77 @@ describe("a queued message that never becomes a turn", () => {
     agent.react(send, [message]);
     await settle();
     expect(appended).toEqual([]);
+  });
+});
+
+describe("a turn over the server's limits", () => {
+  /** A scheduler with its one CLI slot taken by somebody else's turn. */
+  async function full() {
+    const scheduler = new TurnScheduler({ cliPerUser: 2, cliTotal: 1, nativeTotal: 1 });
+    const release = await scheduler.acquire({ ownerId: "someone-else", kind: "cli", threadId: "elsewhere" });
+    return { scheduler, release };
+  }
+  const claude: Command = { type: "thread.send", threadId: THREAD, text: "hi", provider: "claude" };
+  const completed = (turnId: string): DomainEvent => ({
+    type: "agent.turn_completed",
+    threadId: THREAD,
+    turnId,
+    stopReason: "end_turn",
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+    costUsd: 0,
+  });
+
+  it("waits, saying how many are ahead, and is never opened if cancelled meanwhile", async () => {
+    const { scheduler } = await full();
+    const { agent, appended } = reactorWith({ scheduler, cliEnabled: true }, [thread], [{ stack: null }], [owner], [person]);
+    agent.react(claude, [message]);
+    await settle();
+    expect(appended).toEqual([[{ type: "agent.queued", threadId: THREAD, ahead: 0 }]]);
+    expect(scheduler.aheadOf(THREAD)).toBe(0);
+    agent.react({ type: "thread.cancel", threadId: THREAD }, []);
+    await settle();
+    expect(appended.slice(1)).toEqual([[{ type: "turn.dequeued", threadId: THREAD, reason: "cancelled" }]]);
+    expect(scheduler.stats().waiting.cli).toBe(0);
+  });
+
+  it("opens when a slot frees, and gives it back when it ends", async () => {
+    const { scheduler, release } = await full();
+    const root = await mkdtemp(join(tmpdir(), "ucch-agent-"));
+    try {
+      const providers = {
+        resolve: async () => ({
+          ctx: () => ({}),
+          provider: {
+            run: (input: { turnId: string }) => ({
+              events: (async function* () {
+                yield completed(input.turnId);
+              })(),
+              interrupt: async () => {},
+              kill: async () => {},
+            }),
+          },
+        }),
+      } as unknown as AgentOptions["providers"];
+      const { agent, appended } = reactorWith(
+        { scheduler, cliEnabled: true, workspaceRoot: root, providers },
+        [thread],
+        [{ stack: null }],
+        [owner],
+        [person],
+      );
+      agent.react(claude, [message]);
+      await settle();
+      expect(appended.flat().map((event) => event.type)).toEqual(["agent.queued"]);
+      release();
+      const deadline = Date.now() + 2_000;
+      while (!appended.flat().some((event) => event.type === "agent.turn_completed") && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(appended.flat().map((event) => event.type)).toEqual(["agent.queued", "turn.started", "agent.turn_completed"]);
+      expect(scheduler.stats().running.cli).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

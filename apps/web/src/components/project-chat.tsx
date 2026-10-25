@@ -449,6 +449,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     () => threadStore?.live ?? NO_TURNS,
     () => NO_TURNS,
   );
+  // The sent message's turn waiting for the server to have a slot: how many
+  // are ahead of it, or null.
+  const queuedAhead = useSyncExternalStore(
+    threadStore?.subscribe ?? subscribeToNothing,
+    () => threadStore?.queued ?? null,
+    () => null,
+  );
 
   useEffect(() => {
     const client = sharedClient;
@@ -696,10 +703,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   // -- and the streaming turn is laid over it on every update: only that
   // turn's message is new, so only it draws again.
   const settled = useMemo(() => toMessages(durableEvents), [durableEvents]);
-  const { messages, running, active, prompts, contextTokens } = useMemo(
+  const { messages, running: turnRunning, active, prompts, contextTokens } = useMemo(
     () => overlayLive(settled, liveTurns),
     [settled, liveTurns],
   );
+  // A turn waiting for a slot is the agent's as much as one running: the
+  // composer offers Stop, and the server refuses a second message either way.
+  const running = turnRunning || queuedAhead !== null;
 
   /**
    * frame-to-paint (lib/vitals.ts): a streamed delta's arrival to the paint
@@ -1609,11 +1619,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                 placeholder={
                   threadId
                     ? running
-                      ? research
-                        ? "Researching…"
-                        : documentation
-                          ? "Documenting…"
-                          : "The agent is working…"
+                      ? queuedAhead !== null
+                        ? `Queued — ${queuedAhead} ahead`
+                        : research
+                          ? "Researching…"
+                          : documentation
+                            ? "Documenting…"
+                            : "The agent is working…"
                       : research
                         ? "What should the agent find out?"
                         : documentation

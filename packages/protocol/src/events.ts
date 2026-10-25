@@ -215,6 +215,19 @@ const TurnDequeued = z.object({
 });
 
 /**
+ * A sent message whose turn waits for a slot: the server is running as many
+ * agents as it allows (`turn-scheduler.ts`). `ahead` is how many turns of
+ * the same kind start before it. Sent whenever that changes, and to a tab
+ * that subscribes to the thread meanwhile; `turn.started` or
+ * `turn.dequeued` ends it. Transient: progress, not a fact about the thread.
+ */
+const AgentQueued = z.object({
+  type: z.literal("agent.queued"),
+  threadId: z.string().uuid(),
+  ahead: z.number().int().nonnegative(),
+});
+
+/**
  * Records anything injected into the model's context that the user did not
  * type -- the system prompt, the file tree, AGENTS.md, a compaction summary.
  * Logging these is what makes a run exactly reproducible rather than
@@ -757,6 +770,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   UserMessage,
   ThreadCancelRequested,
   TurnDequeued,
+  AgentQueued,
   ContextInjected,
   TurnStarted,
   AgentSessionStarted,
@@ -814,6 +828,7 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "agent.thinking_delta",
   "agent.text_delta",
   "agent.retry",
+  "agent.queued",
   "note.changed",
   "timeline.changed",
   "task.changed",

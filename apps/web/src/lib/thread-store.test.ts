@@ -115,6 +115,24 @@ describe("ThreadStore", () => {
     expect(shape(store.rows)).toEqual(["1:turn.started", "-:agent.thinking_delta:kept", "2:agent.turn_completed", "3:turn.started"])
   })
 
+  it("says how many are ahead while the message waits, until its turn opens or is dropped", () => {
+    const store = new ThreadStore(THREAD)
+    const queued = (ahead: number) => live({ type: "agent.queued", threadId: THREAD, ahead })
+    expect(store.queued).toBeNull()
+    store.push(user(0, "hi"))
+    store.push(queued(2))
+    store.push(queued(1))
+    expect(store.queued).toBe(1)
+    const version = store.liveVersion
+    store.push(queued(1))
+    expect(store.liveVersion).toBe(version)
+    store.push(started(1))
+    expect(store.queued).toBeNull()
+    store.push(queued(0))
+    store.push(durable(2, { type: "turn.dequeued", threadId: THREAD, reason: "cancelled" }))
+    expect(store.queued).toBeNull()
+  })
+
   it("says which layer changed", () => {
     const store = new ThreadStore(THREAD)
     store.push(started(1))

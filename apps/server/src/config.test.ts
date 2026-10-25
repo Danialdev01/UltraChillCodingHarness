@@ -59,6 +59,13 @@ describe("provider configuration", () => {
     expect(() => load({ AGENT_MAX_CONCURRENT_PER_USER: "0" })).toThrow(/CONCURRENT/);
   });
 
+  it("caps the turns running on the whole server", () => {
+    expect(load().AGENT_MAX_CONCURRENT_TOTAL).toBe(5);
+    expect(load().AGENT_MAX_NATIVE_TOTAL).toBe(32);
+    expect(load({ AGENT_MAX_CONCURRENT_TOTAL: "8" }).AGENT_MAX_CONCURRENT_TOTAL).toBe(8);
+    expect(() => load({ AGENT_MAX_NATIVE_TOTAL: "0" })).toThrow(/NATIVE_TOTAL/);
+  });
+
   it("talks to OpenRouter unless pointed at a mock", () => {
     expect(load().OPENROUTER_BASE_URL).toBe("https://openrouter.ai/api/v1");
     expect(load({ OPENROUTER_BASE_URL: "http://127.0.0.1:4010/api/v1/" }).OPENROUTER_BASE_URL).toBe(

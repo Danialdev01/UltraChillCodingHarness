@@ -117,6 +117,8 @@ export interface GatewayOptions {
   mayWatchTerminal?: (userId: string, terminalId: string) => boolean;
   /** Where `terminal_input` and `terminal_resize` frames go. Absent, they are refused. */
   terminals?: Pick<TerminalReactor, "input" | "resize">;
+  /** How many turns are ahead of the thread's waiting one, or null; see `TurnScheduler.aheadOf`. */
+  queuedAhead?: (threadId: string) => number | null;
   /** This server's build, told to every socket in `ready` so an outdated tab can know it is. */
   buildId?: string;
   /** After a command from a socket was handled, for the activity log. */
@@ -396,7 +398,8 @@ export class WebSocketGateway {
         replaying = false;
 
         // Live state that is not in the log: what is being typed in the
-        // thread's prompt box, and who else has the project open.
+        // thread's prompt box, whether its turn is waiting for a slot, and
+        // who else has the project open.
         if (frame.topic.name === "thread" && threadProject) {
           const state = this.options.composer.get(frame.topic.threadId);
           send(conn.socket, {
@@ -405,6 +408,16 @@ export class WebSocketGateway {
             seq: null,
             event: composerEvent(threadProject, frame.topic.threadId, state),
           });
+          const ahead = this.options.queuedAhead?.(frame.topic.threadId) ?? null;
+          if (ahead !== null) {
+            send(conn.socket, {
+              kind: "push",
+              subscriptionId,
+              seq: null,
+              projectId: threadProject,
+              event: { type: "agent.queued", threadId: frame.topic.threadId, ahead },
+            });
+          }
         }
         if (frame.topic.name === "project") {
           const projectId = frame.topic.projectId;
