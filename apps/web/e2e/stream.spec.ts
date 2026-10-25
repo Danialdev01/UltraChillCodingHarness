@@ -229,6 +229,8 @@ test("streaming cost", async ({ page, context, baseURL }) => {
       count: longTasks.length,
       totalMs: Math.round(longTasks.reduce((sum, t) => sum + t.duration, 0)),
       maxMs: Math.round(Math.max(0, ...longTasks.map((t) => t.duration))),
+      // When each began, in ms after the first delta: one at 0 is the answer appearing.
+      atMs: longTasks.map((t) => Math.round(t.start - from)),
     },
     // As web-vitals reckons it: the slowest, skipping one per 50 interactions.
     inp: {

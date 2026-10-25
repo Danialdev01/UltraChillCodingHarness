@@ -27,10 +27,13 @@ import { frameBatcher } from "./next-frame";
  * message replaces the lot once it lands.
  *
  * `rows` is what `toMessages` reads -- the durable events with each run
- * where it streamed, as the interleaved deltas it used to read. Two
- * versions say what changed: `durableVersion` for the log and for the runs
- * of finished turns, `liveVersion` for the runs of turns still open.
- * Listeners hear at most once a frame.
+ * where it streamed, as the interleaved deltas it used to read. Split for
+ * the chat, which folds the settled part once and redraws only the turn
+ * that is streaming (`overlayLive`): `durable` is that without the runs of
+ * turns still open, and `live` is each open turn's own events with its
+ * runs. Two versions say what changed: `durableVersion` for the log and
+ * for the runs of finished turns, `liveVersion` for the runs of turns still
+ * open. Listeners hear at most once a frame.
  */
 export class ThreadStore {
   readonly threadId: string;
@@ -42,6 +45,8 @@ export class ThreadStore {
   #durableVersion = 0;
   #liveVersion = 0;
   #rows: { durable: number; live: number; rows: readonly ClientEvent[] } | null = null;
+  #settled: { durable: number; rows: readonly ClientEvent[] } | null = null;
+  #live: { durable: number; live: number; turns: readonly LiveTurn[] } | null = null;
   #listeners = new Set<() => void>();
   #notify = frameBatcher(() => {
     for (const listener of this.#listeners) listener();
@@ -87,9 +92,37 @@ export class ThreadStore {
   get rows(): readonly ClientEvent[] {
     const cached = this.#rows;
     if (cached && cached.durable === this.#durableVersion && cached.live === this.#liveVersion) return cached.rows;
-    const rows = this.#merge();
+    const rows = this.#merge(this.#durable, this.#runs);
     this.#rows = { durable: this.#durableVersion, live: this.#liveVersion, rows };
     return rows;
+  }
+
+  /** `rows` without the runs of turns still open. Changes with `durableVersion` only. */
+  get durable(): readonly ClientEvent[] {
+    const cached = this.#settled;
+    if (cached && cached.durable === this.#durableVersion) return cached.rows;
+    const rows = this.#merge(
+      this.#durable,
+      this.#runs.filter((run) => this.#ended.has(run.turnId)),
+    );
+    this.#settled = { durable: this.#durableVersion, rows };
+    return rows;
+  }
+
+  /** Each open turn that has streamed: its own durable events with its runs, in order. */
+  get live(): readonly LiveTurn[] {
+    const cached = this.#live;
+    if (cached && cached.durable === this.#durableVersion && cached.live === this.#liveVersion) return cached.turns;
+    const open = [...new Set(this.#runs.filter((run) => !this.#ended.has(run.turnId)).map((run) => run.turnId))];
+    const turns = open.map((turnId) => ({
+      turnId,
+      rows: this.#merge(
+        this.#durable.filter((row) => "turnId" in row.event && row.event.turnId === turnId),
+        this.#runs.filter((run) => run.turnId === turnId),
+      ),
+    }));
+    this.#live = { durable: this.#durableVersion, live: this.#liveVersion, turns };
+    return turns;
   }
 
   /** Stops notifying: the chat moved to another thread or went away. */
@@ -145,13 +178,11 @@ export class ThreadStore {
     this.#changed(this.#ended.has(event.turnId) ? "durable" : "live");
   }
 
-  #merge(): readonly ClientEvent[] {
-    if (this.#runs.length === 0) return this.#durable.slice();
+  /** Durable rows with each run after the newest of them it streamed after. */
+  #merge(durable: readonly ClientEvent[], runs: readonly Run[]): readonly ClientEvent[] {
+    if (runs.length === 0) return durable.slice();
     const rows: ClientEvent[] = [];
-    const runs = this.#runs;
-    const durable = this.#durable;
-    // Runs are in the order they streamed, so their `after` never goes down:
-    // each goes out after the newest durable event it came after.
+    // Runs are in the order they streamed, so their `after` never goes down.
     let next = 0;
     const before = (limit: number) => {
       while (next < runs.length && runs[next]!.after < limit) rows.push(runs[next++]!.row);
@@ -175,6 +206,12 @@ type LiveEvent = Extract<DomainEvent, { type: "agent.text_delta" | "agent.thinki
 
 /** The unlogged events the chat draws. Composer and presence state are read elsewhere. */
 const LIVE: ReadonlySet<DomainEvent["type"]> = new Set(["agent.text_delta", "agent.thinking_delta", "agent.retry"]);
+
+/** A turn still streaming, as `overlayLive` reads it. */
+export interface LiveTurn {
+  turnId: string;
+  rows: readonly ClientEvent[];
+}
 
 interface Run {
   /** The durable sequence number it streamed after; -1 before any. */

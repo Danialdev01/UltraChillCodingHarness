@@ -418,6 +418,38 @@ export function toMessages(
 }
 
 /**
+ * The chat with the turns still streaming drawn over it.
+ *
+ * `base` is `toMessages` over everything settled -- the log, and what
+ * finished turns streamed -- and is folded again only when that changes.
+ * Each live turn is folded on its own, from its own events and what it has
+ * streamed so far, and its message replaces the one in `base`: a bubble is
+ * built only from its own turn's events, so this is the message the whole
+ * fold would have made. Every other message keeps its identity, so only the
+ * streaming one draws again.
+ *
+ * The turn's activity -- characters streamed, a retry being waited out --
+ * comes from the same fold, for the turn the progress line is about.
+ */
+export function overlayLive(
+  base: ChatState,
+  live: readonly { turnId: string; rows: readonly { event: DomainEvent; receivedAt?: number }[] }[],
+): ChatState {
+  if (live.length === 0) return base;
+  let messages = base.messages;
+  let active = base.active;
+  for (const { turnId, rows } of live) {
+    const folded = toMessages(rows);
+    const message = folded.messages.find((m) => m.turnId === turnId);
+    if (!message) continue;
+    const at = messages.findIndex((m) => m.turnId === turnId);
+    messages = at >= 0 ? [...messages.slice(0, at), message, ...messages.slice(at + 1)] : [...messages, message];
+    if (base.active?.turnId === turnId && folded.active) active = folded.active;
+  }
+  return { ...base, messages, active };
+}
+
+/**
  * How a turn ended, when that is worth saying.
  *
  * "cancelled" and "max_iterations" arrive as `turn_completed` rather than

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DomainEvent } from "@ucch/protocol";
+import { isTransient, type DomainEvent } from "@ucch/protocol";
 import {
   describeSent,
   describeStop,
@@ -7,14 +7,33 @@ import {
   estimateTokens,
   formatCookTime,
   formatDuration,
+  overlayLive,
   splitThinking,
   summariseInput,
-  toMessages,
+  toMessages as foldAll,
 } from "./chat-messages.js";
 import { composeMessage, type Attachment } from "./attachments.js";
+import type { ClientEvent } from "./client.js";
+import { ThreadStore } from "./thread-store.js";
 
 const THREAD = "44444444-4444-4444-4444-444444444444";
 const TURN = "55555555-5555-5555-5555-555555555555";
+
+/**
+ * `toMessages`, and on every fixture in this file, a check that the chat's
+ * own path draws the same: the events through a thread store, the settled
+ * part folded once, and the turns still streaming laid over it.
+ */
+function toMessages(rows: readonly { event: DomainEvent; receivedAt?: number }[]) {
+  const direct = foldAll(rows);
+  const store = new ThreadStore(THREAD);
+  rows.forEach((row, i) =>
+    store.push({ seq: isTransient(row.event.type) ? null : i, event: row.event, receivedAt: row.receivedAt } as ClientEvent),
+  );
+  expect(overlayLive(foldAll(store.durable), store.live)).toEqual(direct);
+  store.dispose();
+  return direct;
+}
 
 const log = (...events: DomainEvent[]) => toMessages(events.map((event) => ({ event })));
 
@@ -681,5 +700,30 @@ describe("describeSent", () => {
 
   it("is nothing when the message carried no time", () => {
     expect(describeSent(null)).toBeNull();
+  });
+});
+
+describe("overlayLive", () => {
+  it("replaces only the streaming turn's message, keeping every other one as it was", () => {
+    const store = new ThreadStore(THREAD);
+    const rows: DomainEvent[] = [
+      ...toolTurn,
+      { type: "user.message", threadId: THREAD, text: "and now?" },
+      { type: "turn.started", threadId: THREAD, turnId: "66666666-6666-6666-6666-666666666666" },
+    ];
+    rows.forEach((event, i) => store.push({ seq: i, event, receivedAt: i }));
+    const base = foldAll(store.durable);
+    store.push({
+      seq: null,
+      event: { type: "agent.text_delta", threadId: THREAD, turnId: "66666666-6666-6666-6666-666666666666", text: "Still" },
+      receivedAt: 99,
+    });
+    const shown = overlayLive(base, store.live);
+    expect(shown.messages.slice(0, -1)).toEqual(base.messages.slice(0, -1));
+    shown.messages.slice(0, -1).forEach((message, i) => expect(message).toBe(base.messages[i]));
+    expect(shown.messages.at(-1)!.parts).toEqual([{ kind: "text", text: "Still", streaming: true }]);
+    expect(shown.active).toMatchObject({ chars: 5 });
+    expect(overlayLive(base, [])).toBe(base);
+    store.dispose();
   });
 });

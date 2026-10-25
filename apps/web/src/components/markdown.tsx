@@ -8,6 +8,7 @@ import remarkGfm from "remark-gfm"
 
 import { copyText } from "@/lib/clipboard"
 import { nodeLanguage, nodeText, type SyntaxNode } from "@/lib/code-text"
+import { streamingCut } from "@/lib/streaming-markdown"
 
 /**
  * Model prose, rendered as the Markdown it is written in.
@@ -216,3 +217,25 @@ export const Markdown = React.memo(function Markdown({
     </div>
   )
 })
+
+/**
+ * An answer still being written.
+ *
+ * `Markdown` parses its whole text, and an answer streaming in would be
+ * parsed again, from the top, on every update: a long one costs more with
+ * each token. Here it is cut where a finished block ends (`streamingCut`):
+ * the part before goes through the memoised `Markdown` and is parsed again
+ * only when the cut moves on, and only the tail is parsed each time. Once
+ * the answer is done the message draws it with `Markdown` whole, as ever.
+ */
+export function StreamingMarkdown({ children, className }: { children: string; className?: string }) {
+  const cut = streamingCut(children)
+  // The same two children from the first token, so the tail is never
+  // mounted afresh when the first cut appears; an empty prefix draws nothing.
+  return (
+    <div>
+      <Markdown>{children.slice(0, cut)}</Markdown>
+      <Markdown className={className}>{children.slice(cut)}</Markdown>
+    </div>
+  )
+}

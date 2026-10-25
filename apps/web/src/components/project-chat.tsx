@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode, type Ref } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode, type Ref } from "react";
 import {
   AlertCircleIcon,
   ArrowDownIcon,
@@ -69,11 +69,11 @@ import {
 } from "@/components/attachment-preview";
 import { discardUpload, stageUpload, uploadContentUrl } from "@/lib/uploads-api";
 import { ContextMeter } from "@/components/context-meter";
-import { Markdown } from "@/components/markdown";
+import { Markdown, StreamingMarkdown } from "@/components/markdown";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
 import { UcchClient, type ClientEvent } from "@/lib/client";
-import { ThreadStore } from "@/lib/thread-store";
+import { ThreadStore, type LiveTurn } from "@/lib/thread-store";
 import {
   readLastModel,
   readLastProvider,
@@ -98,6 +98,7 @@ import {
   formatCookTime,
   formatDuration,
   splitThinking,
+  overlayLive,
   summariseInput,
   toMessages,
   type ChatMessage,
@@ -184,6 +185,22 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    * can be mounted in one page, and `getElementById` would find the wrong one.
    */
   const blockRefs = useRef(new Map<number, HTMLDivElement>());
+  /**
+   * One ref callback per position, the same on every render: a new one
+   * each time would draw every memoised message again for nothing.
+   */
+  const blockRefCallbacks = useRef(new Map<number, (el: HTMLDivElement | null) => void>());
+  const blockRef = useCallback((i: number) => {
+    let callback = blockRefCallbacks.current.get(i);
+    if (!callback) {
+      callback = (el) => {
+        if (el) blockRefs.current.set(i, el);
+        else blockRefs.current.delete(i);
+      };
+      blockRefCallbacks.current.set(i, callback);
+    }
+    return callback;
+  }, []);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -409,15 +426,22 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   }, []);
 
   /**
-   * The events of the thread on screen, with what is streaming into it
-   * folded into runs. The store is per thread, so after a context clear the
-   * old conversation is not in it; `file.changed`, which is project-scoped
-   * and carries no thread, reaches the file panel from `events`.
+   * The events of the thread on screen, in two parts: what has settled --
+   * the log, and what finished turns streamed -- and each turn still
+   * streaming, with its own events and runs. The store is per thread, so
+   * after a context clear the old conversation is not in it; `file.changed`,
+   * which is project-scoped and carries no thread, reaches the file panel
+   * from `events`.
    */
-  const threadEvents = useSyncExternalStore(
+  const durableEvents = useSyncExternalStore(
     threadStore?.subscribe ?? subscribeToNothing,
-    () => threadStore?.rows ?? NO_ROWS,
+    () => threadStore?.durable ?? NO_ROWS,
     () => NO_ROWS,
+  );
+  const liveTurns = useSyncExternalStore(
+    threadStore?.subscribe ?? subscribeToNothing,
+    () => threadStore?.live ?? NO_TURNS,
+    () => NO_TURNS,
   );
 
   useEffect(() => {
@@ -604,7 +628,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
 
   useEffect(() => {
     if (followRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [threadEvents]);
+  }, [durableEvents, liveTurns]);
 
   /** Scrolls a message to the top of the view, for the prompt arrows. */
   const jumpTo = useCallback((index: number) => {
@@ -660,7 +684,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     if (!session?.branch) return null;
     let state = session.worktreeState;
     let failure = session.worktreeError;
-    for (const row of threadEvents) {
+    for (const row of durableEvents) {
       if (row.event.type === "thread.worktree_ready") {
         state = "ready";
         failure = null;
@@ -670,12 +694,16 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       }
     }
     return { branch: session.branch, state, failure };
-  }, [session, threadEvents]);
+  }, [session, durableEvents]);
   const worktreeBlocked = worktree !== null && worktree.state !== "ready";
 
+  // The settled part is folded when it changes -- a tool call, a turn's end
+  // -- and the streaming turn is laid over it on every update: only that
+  // turn's message is new, so only it draws again.
+  const settled = useMemo(() => toMessages(durableEvents), [durableEvents]);
   const { messages, running, active, prompts, contextTokens } = useMemo(
-    () => toMessages(threadEvents),
-    [threadEvents],
+    () => overlayLive(settled, liveTurns),
+    [settled, liveTurns],
   );
 
   /**
@@ -736,11 +764,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    * treated as new typing, not as a position in the walk.
    */
   const history = useRef<HistoryCursor>(idleCursor);
+  // From the settled messages: what streams changes no prompt, and these
+  // stay the same objects while a turn streams.
   const promptHistory = useMemo(
-    () => messages.filter((m) => m.role === "user" && m.text.trim()).map((m) => m.text),
-    [messages],
+    () => settled.messages.filter((m) => m.role === "user" && m.text.trim()).map((m) => m.text),
+    [settled],
   );
-  const neighbours = useMemo(() => promptNeighbours(messages), [messages]);
+  const neighbours = useMemo(() => promptNeighbours(settled.messages), [settled]);
 
   const recall = useCallback(
     (direction: "back" | "forward") => {
@@ -1295,10 +1325,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
               messages.map((message, i) => (
                 <Message
                   key={i}
-                  ref={(el) => {
-                    if (el) blockRefs.current.set(i, el);
-                    else blockRefs.current.delete(i);
-                  }}
+                  ref={blockRef(i)}
                   message={message}
                   hash={project.hash}
                   onPreview={setPreviewing}
@@ -1914,6 +1941,7 @@ function AttachMenu({
  * unless the workspace lets members choose.
  */
 const NO_ROWS: readonly ClientEvent[] = [];
+const NO_TURNS: readonly LiveTurn[] = [];
 const subscribeToNothing = () => () => {};
 
 async function createThread(client: UcchClient, project: Project): Promise<string | null> {
@@ -1928,7 +1956,11 @@ async function createThread(client: UcchClient, project: Project): Promise<strin
 }
 
 
-function Message({
+/**
+ * One message. Memoised: while an answer streams only its own message is a
+ * new object (`overlayLive`), so every other one is skipped.
+ */
+const Message = memo(function Message({
   ref,
   message,
   hash,
@@ -2091,21 +2123,20 @@ function Message({
     <div ref={ref} className="flex flex-col gap-2">
       {work.length > 0 && <WorkDropdown items={work} working={working} message={message} />}
 
-      {answers.map((answer, i) => (
+      {answers.map((answer, i) => {
+        const caret = message.streaming && lastIsAnswer && i === answers.length - 1;
         // Rendered as Markdown, which is what the model writes whether or
         // not anything draws it: the alternative is the reader picking
-        // headings and tables out of their own syntax.
-        <Markdown
-          key={answer.key}
-          className={
-            message.streaming && lastIsAnswer && i === answers.length - 1
-              ? "streaming-caret"
-              : undefined
-          }
-        >
-          {answer.text}
-        </Markdown>
-      ))}
+        // headings and tables out of their own syntax. The prose still being
+        // written parses only its unfinished tail on each update.
+        return caret ? (
+          <StreamingMarkdown key={answer.key} className="streaming-caret">
+            {answer.text}
+          </StreamingMarkdown>
+        ) : (
+          <Markdown key={answer.key}>{answer.text}</Markdown>
+        );
+      })}
 
       {/* A turn that has produced nothing yet still shows it is alive. */}
       {message.streaming && work.length === 0 && answers.length === 0 && (
@@ -2145,7 +2176,7 @@ function Message({
       )}
     </div>
   );
-}
+});
 
 type WorkItem =
   | { kind: "think"; key: string; text: string }
