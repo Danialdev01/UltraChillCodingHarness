@@ -14,12 +14,14 @@ import {
   type GitStatus,
 } from "@ucch/protocol";
 import { PathError } from "./files.js";
+import type { GitCache, GitRead } from "./git-cache.js";
 import { GitError, RepoUrlError } from "./git-exec.js";
 import { GitRefError, type GitAuthor, type GitChangedPath, type GitService, type GitTarget } from "./git.js";
 import { tokenAppliesTo } from "./github.js";
 import type { ProjectSummary } from "./workspaces.js";
 
 type ProjectRequest = { cookies: Record<string, string | undefined>; params: { hash: string }; query?: unknown };
+type Headers = Record<string, string | string[] | undefined>;
 
 /** Who the owner commits as, and what they authenticate to the remote with. */
 export interface GitCredentials {
@@ -36,6 +38,8 @@ export interface GitRouteDeps {
    */
   treeFor(request: ProjectRequest, project: ProjectSummary): Promise<GitTarget | null>;
   git: GitService;
+  /** The reads every viewer of a tree shares (`git-cache.ts`). */
+  cache: GitCache;
   /** Resolved per request: a token is decrypted for the one push that needs it. */
   credentialsFor(projectId: string): Promise<GitCredentials>;
   /** Tells the project's other open views something changed. Never throws. */
@@ -47,9 +51,11 @@ export interface GitRouteDeps {
 const Sha = z.string().regex(/^[0-9a-f]{4,40}$/);
 const DiffQuery = z.object({ path: z.string().min(1), scope: GitDiffScope.default("worktree") });
 const CommitDiffQuery = z.object({ path: z.string().min(1) });
+/** A page of the log when the view does not say. */
+const LOG_PAGE = 50;
 const LogQuery = z.object({
   skip: z.coerce.number().int().min(0).default(0),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  limit: z.coerce.number().int().min(1).max(100).default(LOG_PAGE),
 });
 
 /** What git says when the failure is the user's situation rather than ours. */
@@ -64,9 +70,13 @@ const AUTH_FAULT = /Authentication failed|could not read Username|Permission den
  * afterwards, and every one that touches the working tree announces the
  * paths so the file tree and the editor hear about it the way they hear
  * about the agent's writes.
+ *
+ * The status, the branches, the first page of the log and whether the tree
+ * is a repository at all are read through the cache every viewer shares,
+ * with an `ETag`; every git action through here invalidates it.
  */
 export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): void {
-  const { projectFor, treeFor, git, credentialsFor, announce, remoteChanged } = deps;
+  const { projectFor, treeFor, git, cache, credentialsFor, announce, remoteChanged } = deps;
 
   type Hash = { hash: string };
   type HashAndSha = { hash: string; sha: string };
@@ -88,6 +98,42 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return { token, author: credentials.author };
   }
 
+  /**
+   * A shared read: 304 to a viewer that already has its current version,
+   * otherwise the kept answer, or one computed for everybody asking.
+   */
+  async function cached<T>(
+    request: { headers: Headers },
+    reply: FastifyReply,
+    projectId: string,
+    tree: GitTarget,
+    read: GitRead,
+    compute: () => Promise<T>,
+  ): Promise<T | FastifyReply | undefined> {
+    const current = cache.etag(git.dir(tree), read);
+    if (current && request.headers["if-none-match"] === current) {
+      return reply.header("etag", current).header("cache-control", "private, no-cache").code(304).send();
+    }
+    return attempt(reply, async () => {
+      const { value, etag } = await cache.read(projectId, git.dir(tree), read, compute);
+      void reply.header("etag", etag).header("cache-control", "private, no-cache");
+      return value;
+    });
+  }
+
+  function isRepo(projectId: string, tree: GitTarget): Promise<boolean> {
+    return cache.read(projectId, git.dir(tree), "isRepo", () => git.isRepo(tree)).then((answer) => answer.value);
+  }
+
+  /**
+   * After a git action: everything it may have changed is read again, the
+   * status at once -- for this answer, and kept for every other viewer.
+   */
+  async function fresh(projectId: string, tree: GitTarget): Promise<GitStatus> {
+    cache.invalidate(projectId);
+    return (await cache.read(projectId, git.dir(tree), "status", () => git.status(tree))).value;
+  }
+
   /** Runs a handler, turning git's refusals into the status they deserve. */
   async function attempt<T>(reply: FastifyReply, work: () => Promise<T>): Promise<T | undefined> {
     try {
@@ -105,8 +151,8 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!project) return reply.code(404).send(notFound);
     const tree = await treeFor(request, project);
     if (!tree) return reply.code(404).send({ error: "session not found" });
-    if (!(await git.isRepo(tree))) return reply.code(409).send({ error: "not a git repository", notRepo: true });
-    return attempt(reply, () => git.status(tree));
+    if (!(await isRepo(project.id, tree))) return reply.code(409).send({ error: "not a git repository", notRepo: true });
+    return cached(request, reply, project.id, tree, "status", () => git.status(tree));
   });
 
   app.get<{ Params: Hash; Querystring: unknown }>("/api/projects/:hash/git/diff", async (request, reply) => {
@@ -126,6 +172,10 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!tree) return reply.code(404).send({ error: "session not found" });
     const query = LogQuery.safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: "bad paging" });
+    // The first page as the view asks for it is shared; any other is read as asked.
+    if (query.data.skip === 0 && query.data.limit === LOG_PAGE) {
+      return cached(request, reply, project.id, tree, "log", () => git.log(tree, query.data));
+    }
     return attempt(reply, () => git.log(tree, query.data));
   });
 
@@ -158,7 +208,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!project) return reply.code(404).send(notFound);
     const tree = await treeFor(request, project);
     if (!tree) return reply.code(404).send({ error: "session not found" });
-    return attempt(reply, () => git.branches(tree));
+    return cached(request, reply, project.id, tree, "branches", () => git.branches(tree));
   });
 
   // ---- the index ----------------------------------------------------------
@@ -174,7 +224,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
       const paths = "all" in body.data ? "all" : body.data.paths;
       return attempt(reply, async (): Promise<GitStatus> => {
         await git[action](tree, paths);
-        return git.status(tree);
+        return fresh(project.id, tree);
       });
     });
   }
@@ -190,7 +240,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return attempt(reply, async (): Promise<GitStatus> => {
       const changed = await git.discard(tree, paths);
       await fileEvents(project.id, changed);
-      return git.status(tree);
+      return fresh(project.id, tree);
     });
   });
 
@@ -214,7 +264,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
           message: body.data.summary,
         },
       ]);
-      return { sha, branch, status: await git.status(tree) };
+      return { sha, branch, status: await fresh(project.id, tree) };
     });
   });
 
@@ -230,7 +280,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return attempt(reply, async (): Promise<GitStatus> => {
       const changed = await git.checkout(tree, body.data.branch, body.data.remote ?? false);
       await fileEvents(project.id, changed);
-      return git.status(tree);
+      return fresh(project.id, tree);
     });
   });
 
@@ -243,7 +293,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!body.success) return reply.code(400).send({ error: "a branch name is required" });
     return attempt(reply, async (): Promise<GitStatus> => {
       await git.createBranch(tree, body.data.name);
-      return git.status(tree);
+      return fresh(project.id, tree);
     });
   });
 
@@ -259,7 +309,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return attempt(reply, async (): Promise<GitStatus> => {
       const { token } = await remoteCredentials(project);
       await git.fetch(tree, token, body.data);
-      return git.status(tree);
+      return fresh(project.id, tree);
     });
   });
 
@@ -272,7 +322,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
       const { token, author } = await remoteCredentials(project);
       const { conflicts, changed } = await git.pull(tree, token, author);
       await fileEvents(project.id, changed);
-      return { conflicts, status: await git.status(tree) };
+      return { conflicts, status: await fresh(project.id, tree) };
     });
   });
 
@@ -285,7 +335,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
       const { token } = await remoteCredentials(project);
       const { branch, remoteSha } = await git.push(tree, token);
       await announce(project.id, [{ type: "git.pushed", projectId: project.id, branch, remoteSha }]);
-      return git.status(tree);
+      return fresh(project.id, tree);
     });
   });
 
@@ -305,14 +355,17 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
       const { mergedFrom, conflicts, changed } = await git.connectRemote(tree, url, token, credentials.author);
       await remoteChanged(project.id, url);
       await fileEvents(project.id, changed);
-      return { mergedFrom, conflicts, status: await git.status(tree) };
+      return { mergedFrom, conflicts, status: await fresh(project.id, tree) };
     });
   });
 
   // Reading, moving and forgetting `origin`, for the manage page. Adding one
   // is the POST above, because it also fetches and joins the histories.
-  async function remoteInfo(tree: GitTarget): Promise<GitRemoteInfo> {
-    const [url, status] = await Promise.all([git.remoteUrl(tree), git.status(tree)]);
+  async function remoteInfo(projectId: string, tree: GitTarget): Promise<GitRemoteInfo> {
+    const [url, status] = await Promise.all([
+      git.remoteUrl(tree),
+      cache.read(projectId, git.dir(tree), "status", () => git.status(tree)).then((answer) => answer.value),
+    ]);
     return { url: url ? scrub(url) : null, status };
   }
 
@@ -321,8 +374,8 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!project) return reply.code(404).send(notFound);
     const tree = await treeFor(request, project);
     if (!tree) return reply.code(404).send({ error: "session not found" });
-    if (!(await git.isRepo(tree))) return reply.code(409).send({ error: "not a git repository", notRepo: true });
-    return attempt(reply, () => remoteInfo(tree));
+    if (!(await isRepo(project.id, tree))) return reply.code(409).send({ error: "not a git repository", notRepo: true });
+    return attempt(reply, () => remoteInfo(project.id, tree));
   });
 
   app.put<{ Params: Hash; Body: unknown }>("/api/projects/:hash/git/remote", async (request, reply) => {
@@ -335,7 +388,8 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return attempt(reply, async () => {
       await git.setRemoteUrl(tree, body.data.url);
       await remoteChanged(project.id, body.data.url);
-      return remoteInfo(tree);
+      cache.invalidate(project.id);
+      return remoteInfo(project.id, tree);
     });
   });
 
@@ -347,7 +401,8 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return attempt(reply, async () => {
       await git.removeRemote(tree);
       await remoteChanged(project.id, null);
-      return remoteInfo(tree);
+      cache.invalidate(project.id);
+      return remoteInfo(project.id, tree);
     });
   });
 
@@ -363,7 +418,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return attempt(reply, async (): Promise<GitStatus> => {
       await git.resolve(tree, body.data.path, body.data.strategy);
       await fileEvents(project.id, [{ path: body.data.path, change: "modified" }]);
-      return git.status(tree);
+      return fresh(project.id, tree);
     });
   });
 
@@ -375,7 +430,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return attempt(reply, async (): Promise<GitStatus> => {
       const changed = await git.abortMerge(tree);
       await fileEvents(project.id, changed);
-      return git.status(tree);
+      return fresh(project.id, tree);
     });
   });
 }

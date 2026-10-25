@@ -55,6 +55,12 @@ export interface GitRunOptions {
    * there are differences, `merge` exits 1 on a conflict.
    */
   okExitCodes?: readonly number[];
+  /**
+   * A read: `GIT_OPTIONAL_LOCKS=0`, so `status` and `diff` do not refresh
+   * and rewrite `.git/index` on the way -- a write that woke the file
+   * watcher again, and took the index lock from under the agent.
+   */
+  read?: boolean;
 }
 
 /**
@@ -128,6 +134,7 @@ export async function runGit(
           GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new",
           GIT_CONFIG_GLOBAL: "/dev/null",
           GIT_CONFIG_SYSTEM: "/dev/null",
+          ...(options.read ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
         },
       },
       (error, stdout, stderr) => {

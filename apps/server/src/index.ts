@@ -89,6 +89,7 @@ import { devServersFromConfig, ensureProjectInfo, renderDefaultInfo } from "./de
 import { probe } from "./database-probe.js";
 import { GitService } from "./git.js";
 import { registerGitRoutes } from "./git-routes.js";
+import { FILE_READS, GitCache } from "./git-cache.js";
 import { registerPublicRoutes } from "./public-routes.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import {
@@ -1754,6 +1755,33 @@ async function announceFileChange(
 const gitService = new GitService(config.WORKSPACE_ROOT);
 
 /**
+ * The Git view's reads, shared by every viewer of a tree (`git-cache.ts`).
+ * A file changing stales the status; a commit, a push, a clone or a new
+ * worktree stales everything. Viewers hear once per burst that their git
+ * state is stale, and fetch it again, mostly from here.
+ */
+const gitCache = new GitCache({
+  onInvalidated: (projectId) =>
+    bus.publish({
+      seq: null,
+      projectId,
+      threadId: null,
+      event: { type: "resource.changed", projectId, resource: "git" },
+    }),
+});
+bus.tap(({ projectId, event }) => {
+  if (event.type === "file.changed") gitCache.invalidate(projectId, FILE_READS);
+  else if (
+    event.type === "git.committed" ||
+    event.type === "git.pushed" ||
+    event.type === "project.cloned" ||
+    event.type === "thread.worktree_ready"
+  ) {
+    gitCache.invalidate(projectId);
+  }
+});
+
+/**
  * Removing project sessions: settled by hand (their work pushed first), or
  * swept away for having nothing in them. See `session-lifecycle.ts`.
  */
@@ -2024,6 +2052,7 @@ registerGitRoutes(app, {
   projectFor,
   treeFor: sessionTarget,
   git: gitService,
+  cache: gitCache,
   credentialsFor: ownerCredentials,
   remoteChanged: (projectId, url) => workspaceService.setRepoUrl(projectId, url),
   announce: async (projectId, events) => {

@@ -78,7 +78,7 @@ export class GitService {
   /** Whether the project directory is a repository at all. */
   async isRepo(projectId: GitTarget): Promise<boolean> {
     try {
-      await runGit(["rev-parse", "--git-dir"], this.dir(projectId), this.timeoutMs);
+      await runGit(["rev-parse", "--git-dir"], this.dir(projectId), this.timeoutMs, { read: true });
       return true;
     } catch {
       return false;
@@ -97,11 +97,14 @@ export class GitService {
 
   async status(projectId: GitTarget): Promise<GitStatus> {
     const cwd = this.dir(projectId);
-    const [raw, gitDir, shallow, remotes] = await Promise.all([
-      this.#git(cwd, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
-      this.#git(cwd, ["rev-parse", "--absolute-git-dir"]).then((s) => s.trim()),
-      this.#git(cwd, ["rev-parse", "--is-shallow-repository"]).then((s) => s.trim() === "true"),
-      this.#git(cwd, ["remote"]).then((s) => s.split("\n").filter(Boolean)),
+    const [raw, [gitDir, shallow], remotes] = await Promise.all([
+      this.#git(cwd, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"], { read: true }),
+      // One process for both: the git directory, then whether it is shallow.
+      this.#git(cwd, ["rev-parse", "--absolute-git-dir", "--is-shallow-repository"], { read: true }).then((s) => {
+        const [dir = "", isShallow = ""] = s.split("\n").map((line) => line.trim());
+        return [dir, isShallow === "true"] as const;
+      }),
+      this.#git(cwd, ["remote"], { read: true }).then((s) => s.split("\n").filter(Boolean)),
     ]);
     const parsed = parseStatusV2(raw);
     const [fetchedAt, merging, rebasing] = await Promise.all([
@@ -154,7 +157,7 @@ export class GitService {
     if (scope === "worktree") {
       // A file mid-conflict has markers in the working copy; the diff against
       // the index is noise, and the resolver wants the copy itself.
-      const conflicted = await this.#git(cwd, ["diff", "--name-only", "--diff-filter=U", "-z", "--", rel]);
+      const conflicted = await this.#git(cwd, ["diff", "--name-only", "--diff-filter=U", "-z", "--", rel], { read: true });
       if (conflicted.length > 0) {
         const content = await readFile(join(cwd, rel), "utf8");
         return {
@@ -166,7 +169,7 @@ export class GitService {
     }
     const args = ["diff", "--no-color", "--no-ext-diff", "-U3", "-M"];
     if (scope === "index") args.push("--cached");
-    const patch = await this.#git(cwd, [...args, "--", rel]);
+    const patch = await this.#git(cwd, [...args, "--", rel], { read: true });
     return patchResult(patch);
   }
 
@@ -174,15 +177,10 @@ export class GitService {
     const cwd = this.dir(projectId);
     const skip = Math.max(0, options.skip ?? 0);
     const limit = Math.min(100, Math.max(1, options.limit ?? 50));
-    const shallow = (await this.#git(cwd, ["rev-parse", "--is-shallow-repository"])).trim() === "true";
+    const shallow = (await this.#git(cwd, ["rev-parse", "--is-shallow-repository"], { read: true })).trim() === "true";
     let out: string;
     try {
-      out = await this.#git(cwd, [
-        "log",
-        `--format=${LOG_FORMAT}`,
-        `--skip=${skip}`,
-        `-n${limit + 1}`,
-      ]);
+      out = await this.#git(cwd, ["log", `--format=${LOG_FORMAT}`, `--skip=${skip}`, `-n${limit + 1}`], { read: true });
     } catch (error) {
       // A branch with no commits yet is not an error, it is an empty page.
       if (error instanceof GitError && /does not have any commits|bad default revision/i.test(error.stderr)) {
@@ -236,13 +234,17 @@ export class GitService {
 
   async branches(projectId: GitTarget): Promise<GitBranchList> {
     const cwd = this.dir(projectId);
-    const out = await this.#git(cwd, [
-      "for-each-ref",
-      "--format=%(refname)%00%(objectname:short)%00%(upstream:short)%00%(committerdate:iso-strict)%00%(HEAD)",
-      "--sort=-committerdate",
-      "refs/heads",
-      "refs/remotes",
-    ]);
+    const out = await this.#git(
+      cwd,
+      [
+        "for-each-ref",
+        "--format=%(refname)%00%(objectname:short)%00%(upstream:short)%00%(committerdate:iso-strict)%00%(HEAD)",
+        "--sort=-committerdate",
+        "refs/heads",
+        "refs/remotes",
+      ],
+      { read: true },
+    );
     return parseForEachRef(out);
   }
 
@@ -507,11 +509,12 @@ export class GitService {
   #git(
     cwd: string,
     argv: string[],
-    options: { token?: string | null; okExitCodes?: readonly number[]; timeoutMs?: number } = {},
+    options: { token?: string | null; okExitCodes?: readonly number[]; timeoutMs?: number; read?: boolean } = {},
   ): Promise<string> {
     return runGit(argv, cwd, options.timeoutMs ?? this.timeoutMs, {
       token: options.token,
       okExitCodes: options.okExitCodes,
+      read: options.read,
     });
   }
 

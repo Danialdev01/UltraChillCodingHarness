@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -129,6 +129,20 @@ describe("status", () => {
         expect.objectContaining({ path: "c.ts", index: "A", worktree: "." }),
       ]),
     );
+  });
+});
+
+describe("status as a read", () => {
+  it("leaves the index as it found it, even with stale stat data", async () => {
+    await write("a.ts", "one\n");
+    await commitAll("init");
+    // The same content, a later mtime: a plain `git status` refreshes the
+    // index's stat data and writes `.git/index` back.
+    await utimes(join(dir, "a.ts"), new Date(), new Date(Date.now() + 60_000));
+    const before = (await stat(join(dir, ".git", "index"))).mtimeMs;
+    const { files } = await git.status(PROJECT);
+    expect(files).toEqual([]);
+    expect((await stat(join(dir, ".git", "index"))).mtimeMs).toBe(before);
   });
 });
 
