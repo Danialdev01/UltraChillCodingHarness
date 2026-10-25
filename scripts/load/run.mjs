@@ -9,7 +9,7 @@
  *     [--base http://127.0.0.1:3397] [--metrics-token T] [--ramp 30]
  *     [--mix native=0.2,terminal=0.3,git=0.3] [--turn-every 60] [--git-every 60]
  *     [--poll-every 30] [--type-rate 5] [--type-via frame|dispatch]
- *     [--sidebar workspace|per-project]
+ *     [--sidebar workspace|per-project] [--replay batched|per-event]
  *
  * Every virtual user, as the browser does (solution.md §1):
  *   - takes a ws-ticket and opens /ws, subscribing to `user`, the shared
@@ -17,7 +17,9 @@
  *     topic for the project it has open -- with `files: true` for the git
  *     role, whose Git view shows files -- and its own thread, with replay;
  *     with --sidebar per-project, a quiet `project` topic for every project
- *     instead, the way the sidebar did before PF1.26;
+ *     instead, the way the sidebar did before PF1.26; the thread's replay
+ *     comes in `replay` frames, as the browser asks (`caps=replay1`), or with
+ *     --replay per-event one push an event, as it did before PF1.16;
  *   - every --poll-every seconds fetches /api/bootstrap, one page document
  *     and five RSC prefetches through the edge;
  * and by role (the rest only watch):
@@ -29,7 +31,8 @@
  *               --git-every s, as the Git view does.
  *
  * Also measured: how long after its own `turn.started` a native user's
- * sidebar hears `project.activity` say the project is running.
+ * sidebar hears `project.activity` say the project is running, and how many
+ * frames each thread's replay took.
  *
  * Measured on the client: ack round trip by command; keystroke echo (send
  * until the `terminal.output` holding that character); frames, bytes and
@@ -60,6 +63,7 @@ const { values: args } = parseArgs({
     "type-rate": { type: "string", default: "5" },
     "type-via": { type: "string", default: "frame" },
     sidebar: { type: "string", default: "workspace" },
+    replay: { type: "string", default: "batched" },
     "scrape-every": { type: "string", default: "5" },
     label: { type: "string", default: "" },
   },
@@ -77,6 +81,7 @@ const POLL_EVERY = Number(args["poll-every"]) * 1000;
 const TYPE_INTERVAL = 1000 / Number(args["type-rate"]);
 const TYPE_VIA = args["type-via"] === "dispatch" ? "dispatch" : "frame";
 const SIDEBAR = args.sidebar === "per-project" ? "per-project" : "workspace";
+const REPLAY = args.replay === "per-event" ? "per-event" : "batched";
 const SCRAPE_EVERY = Number(args["scrape-every"]) * 1000;
 const mix = Object.fromEntries(args.mix.split(",").map((part) => part.split("=")).map(([k, v]) => [k, Number(v)]));
 
@@ -144,7 +149,8 @@ class Socket {
     const response = await fetch(`${BASE}/api/ws-ticket`, { method: "POST", headers: { cookie, origin: BASE } });
     if (!response.ok) throw new Error(`ws-ticket ${response.status}`);
     const { ticket } = await response.json();
-    const socket = new Socket(new WebSocket(`${WS_BASE}/ws?ticket=${encodeURIComponent(ticket)}`));
+    const caps = REPLAY === "batched" ? "&caps=replay1" : "";
+    const socket = new Socket(new WebSocket(`${WS_BASE}/ws?ticket=${encodeURIComponent(ticket)}${caps}`));
     await socket.#opened;
     return socket;
   }
@@ -219,6 +225,21 @@ class Socket {
     return this.request({ kind: "subscribe", topic, ...extra }, `subscribe:${topic.name}`);
   }
 
+  /** Subscribes to a thread, and records how many frames its logged events took. */
+  async subscribeThread(threadId) {
+    // The id `request` is about to give it, which the replay's frames carry.
+    const id = `r${this.#next + 1}`;
+    let frames = 0;
+    const off = this.on((frame) => {
+      if (frame.subscriptionId !== id) return;
+      if (frame.kind === "replay" || (frame.kind === "push" && frame.seq !== null)) frames++;
+    });
+    const answer = await this.subscribe({ name: "thread", threadId });
+    off();
+    record("replay_frames", frames);
+    return answer;
+  }
+
   on(listener) {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -281,7 +302,7 @@ async function virtualUser(index, stopAt) {
     threadId = created.events?.find((e) => e.event.type === "thread.created")?.event.threadId;
   }
   if (!threadId) throw new Error("no thread");
-  await socket.subscribe({ name: "thread", threadId });
+  await socket.subscribeThread(threadId);
   if (role === "native") watchActivity(socket, threadId);
 
   const tasks = [poll(socket, headers, shared, projects, bootstrapUrl, stopAt)];

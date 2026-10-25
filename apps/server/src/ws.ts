@@ -4,6 +4,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   ClientFrame,
   hasScope,
+  REPLAY_CAP,
   REQUIRED_SCOPE,
   TERMINAL_INPUT_MAX,
   THREAD_WINDOW,
@@ -24,6 +25,21 @@ import type { TerminalReactor } from "./terminals.js";
 
 /** Newest events of a thread sent when a client subscribes to it: what the browser keeps of one. */
 const REPLAY_LIMIT = THREAD_WINDOW;
+
+/**
+ * The most a `replay` frame carries. Large enough that a full replay is a
+ * handful of frames, small enough that the browser parses each between two
+ * of its frames' worth of work.
+ */
+const REPLAY_FRAME_BYTES = 256 * 1024;
+
+/**
+ * A batched replay waits between frames while the socket holds more than
+ * this unsent, polling every `REPLAY_DRAIN_POLL_MS`: a long replay to a slow
+ * client is then held by the client's network, not queued whole in here.
+ */
+const REPLAY_DRAIN_BYTES = 1024 * 1024;
+const REPLAY_DRAIN_POLL_MS = 5;
 
 const SERVER_VERSION = "0.1.0";
 const HEARTBEAT_MS = 30_000;
@@ -48,6 +64,8 @@ interface Connection {
   principal: Principal;
   /** The tab's own id, from the upgrade URL; stamped on what it changes. */
   clientId: string;
+  /** What the client said it reads, from the upgrade URL's `caps`: `replay1`. */
+  caps: ReadonlySet<string>;
   subscriptions: Map<string, () => void>;
   /** Each subscription's topic kind, for the subscription gauge. */
   subscriptionKinds: Map<string, Topic["name"]>;
@@ -156,17 +174,19 @@ export class WebSocketGateway {
     }
 
     const clientId = (url.searchParams.get("client") ?? "").slice(0, 64) || randomUUID();
+    const caps = new Set((url.searchParams.get("caps") ?? "").slice(0, 256).split(",").filter(Boolean));
     this.#wss.handleUpgrade(request, socket as never, head, (ws) => {
-      this.#accept(ws, principal, clientId);
+      this.#accept(ws, principal, clientId, caps);
     });
   }
 
-  #accept(socket: WebSocket, principal: Principal, clientId: string): void {
+  #accept(socket: WebSocket, principal: Principal, clientId: string, caps: ReadonlySet<string>): void {
     const conn: Connection = {
       id: randomUUID(),
       socket,
       principal,
       clientId,
+      caps,
       subscriptions: new Map(),
       subscriptionKinds: new Map(),
       subscriptionProjects: new Map(),
@@ -357,20 +377,9 @@ export class WebSocketGateway {
           // Bounded: the browser keeps the newest THREAD_WINDOW events of a
           // thread, so replaying the whole of a long one is frames it would
           // discard.
-          const history = await this.store.readThread(frame.topic.threadId, frame.sinceSeq ?? -1, {
-            limit: REPLAY_LIMIT,
-          });
-          for (const stored of history) {
-            send(conn.socket, {
-              kind: "push",
-              subscriptionId,
-              seq: stored.seq,
-              at: stored.createdAt,
-              projectId: stored.projectId,
-              event: stored.event,
-            });
-          }
-          const seen = new Set(history.map((h) => h.seq));
+          const seen = conn.caps.has(REPLAY_CAP)
+            ? await this.#replayBatched(conn, subscriptionId, frame.topic.threadId, frame.sinceSeq ?? -1)
+            : await this.#replayEach(conn, subscriptionId, frame.topic.threadId, frame.sinceSeq ?? -1);
           for (const stored of buffered) {
             if (stored.seq >= 0 && seen.has(stored.seq)) continue;
             send(conn.socket, {
@@ -548,6 +557,59 @@ export class WebSocketGateway {
   }
 
   /** The thread's project, if this socket's user may open it. */
+  /**
+   * A thread's history as `replay` frames of at most `REPLAY_FRAME_BYTES`,
+   * put together from the payloads as the database prints them: no event is
+   * parsed or serialized on the way. Stops early if the subscription or the
+   * socket goes while it waits for the socket to drain. Returns the
+   * sequence numbers it sent.
+   */
+  async #replayBatched(conn: Connection, subscriptionId: string, threadId: string, sinceSeq: number): Promise<Set<number>> {
+    const history = await this.store.readThreadRaw(threadId, sinceSeq, REPLAY_LIMIT);
+    const seen = new Set<number>();
+    const head = `{"kind":"replay","subscriptionId":${JSON.stringify(subscriptionId)},"events":[`;
+    // What a frame holds besides its events: the head, and `],"done":false}`.
+    const room = REPLAY_FRAME_BYTES - Buffer.byteLength(head) - 16;
+    let entries: string[] = [];
+    let bytes = 0;
+    const flush = (done: boolean) => {
+      const data = `${head}${entries.join(",")}],"done":${done}}`;
+      entries = [];
+      bytes = 0;
+      if (sendRaw(conn.socket, data)) countOut("replay", "", data);
+    };
+    for (const row of history) {
+      // The fields in the order of `ServerFrame`'s replay entries.
+      const entry = `{"seq":${row.seq},"at":"${row.createdAt}","projectId":"${row.projectId}","event":${row.payload}}`;
+      const size = Buffer.byteLength(entry) + 1;
+      if (entries.length > 0 && bytes + size > room) {
+        flush(false);
+        if (!(await drained(conn.socket)) || !conn.subscriptions.has(subscriptionId)) return seen;
+      }
+      entries.push(entry);
+      bytes += size;
+      seen.add(row.seq);
+    }
+    if (entries.length > 0) flush(true);
+    return seen;
+  }
+
+  /** The replay for a client without `replay1`: one push per event. */
+  async #replayEach(conn: Connection, subscriptionId: string, threadId: string, sinceSeq: number): Promise<Set<number>> {
+    const history = await this.store.readThread(threadId, sinceSeq, { limit: REPLAY_LIMIT });
+    for (const stored of history) {
+      send(conn.socket, {
+        kind: "push",
+        subscriptionId,
+        seq: stored.seq,
+        at: stored.createdAt,
+        projectId: stored.projectId,
+        event: stored.event,
+      });
+    }
+    return new Set(history.map((h) => h.seq));
+  }
+
   async #mayOpenThread(conn: Connection, threadId: string): Promise<string | null> {
     const known = conn.threads.get(threadId);
     if (known) return known;
@@ -721,6 +783,14 @@ function sendRaw(socket: WebSocket, data: string): boolean {
   }
   socket.send(data);
   return true;
+}
+
+/** Waits for the socket to hold at most `REPLAY_DRAIN_BYTES` unsent; false once it has closed. */
+async function drained(socket: WebSocket): Promise<boolean> {
+  while (socket.readyState === socket.OPEN && socket.bufferedAmount > REPLAY_DRAIN_BYTES) {
+    await new Promise((resolve) => setTimeout(resolve, REPLAY_DRAIN_POLL_MS));
+  }
+  return socket.readyState === socket.OPEN;
 }
 
 function countOut(kind: string, event: string, data: string): void {

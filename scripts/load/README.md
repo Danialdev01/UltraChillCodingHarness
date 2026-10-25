@@ -135,14 +135,14 @@ node scripts/load/run.mjs [--sessions load-out/sessions.json] [--base URL]
      [--users 50] [--minutes 10] [--ramp 30] [--out FILE] [--label TEXT]
      [--mix native=0.2,terminal=0.3,git=0.3] [--turn-every 60]
      [--git-every 60] [--poll-every 30] [--type-rate 5] [--type-via frame|dispatch]
-     [--sidebar workspace|per-project]
+     [--sidebar workspace|per-project] [--replay batched|per-event]
      [--scrape-every 5]
      [--metrics-token T]   (default: $METRICS_TOKEN)
 ```
 
 Users start evenly over `--ramp` seconds and stop together `--minutes` later. Each one, as the browser does:
 
-- takes a ws-ticket and opens `/ws`, subscribing to `user`, the shared workspace (whose `project.activity` is the sidebar), a quiet `project` topic for the project it has open (with `files: true` for the git role, as the Git view asks), and its own thread (`load-vu-N`) with replay. `--sidebar per-project` subscribes to a quiet `project` topic for every project instead, the way the sidebar did before PF1.26;
+- takes a ws-ticket and opens `/ws`, subscribing to `user`, the shared workspace (whose `project.activity` is the sidebar), a quiet `project` topic for the project it has open (with `files: true` for the git role, as the Git view asks), and its own thread (`load-vu-N`) with replay. `--sidebar per-project` subscribes to a quiet `project` topic for every project instead, the way the sidebar did before PF1.26. The thread's history comes in `replay` frames, as the browser asks for it (`caps=replay1`); `--replay per-event` takes one push an event, the way it came before PF1.16;
 - every `--poll-every` seconds fetches `/api/bootstrap` (with its ETag), the workspace page's document and five RSC prefetches of project pages.
 
 Then by role, spread evenly over the users by `--mix` (the rest only watch):
@@ -156,6 +156,7 @@ It measures, on the client:
 - the ack round trip by command;
 - keystroke echo (sent until the `terminal.output` holding that character);
 - activity lag: from a native user's own `turn.started` to the workspace's `project.activity` saying its project is running;
+- replay frames: how many frames each thread subscription's logged events took (`replay_frames`), next to its ack round trip (`ack_ms:subscribe:thread`);
 - frames, bytes, first token and time per turn;
 - bootstrap, document time to first byte, RSC prefetch and git latencies;
 - errors by kind.

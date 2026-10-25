@@ -3,6 +3,14 @@ import { events, type Database, type Transaction } from "@ucch/db";
 import { isTransient, type DomainEvent, type StoredEvent } from "@ucch/protocol";
 import type { EventBus, Publication } from "./bus.js";
 
+/** A logged event with its payload left as JSON text. */
+export interface RawStoredEvent {
+  seq: number;
+  projectId: string;
+  createdAt: string;
+  payload: string;
+}
+
 export interface AppendTarget {
   projectId: string;
   threadId: string | null;
@@ -127,6 +135,26 @@ export class EventStore {
           ).reverse();
 
     return rows.map(toStored);
+  }
+
+  /**
+   * `readThread` for a replay, newest `limit` events in order: each payload
+   * as Postgres prints it, so it goes into a frame as it is instead of
+   * being parsed into objects here only to be serialized again.
+   */
+  async readThreadRaw(threadId: string, sinceSeq: number, limit: number): Promise<RawStoredEvent[]> {
+    const rows = await this.db
+      .select({
+        seq: events.seq,
+        projectId: events.projectId,
+        createdAt: events.createdAt,
+        payload: sql<string>`${events.payload}::text`,
+      })
+      .from(events)
+      .where(and(eq(events.threadId, threadId), gt(events.seq, sinceSeq)))
+      .orderBy(desc(events.seq))
+      .limit(limit);
+    return rows.reverse().map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
   }
 
   /**

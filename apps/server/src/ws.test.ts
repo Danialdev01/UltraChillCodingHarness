@@ -7,7 +7,7 @@ import { EventBus } from "./bus.js";
 import { terminalFrame, WebSocketGateway } from "./ws.js";
 import type { AuthService, Principal } from "./auth.js";
 import type { ComposerStore } from "./composer.js";
-import type { EventStore } from "./eventstore.js";
+import type { EventStore, RawStoredEvent } from "./eventstore.js";
 import type { OrchestrationEngine } from "./engine.js";
 import { PresenceStore } from "./presence.js";
 
@@ -35,6 +35,10 @@ let slowKeyMs: number;
 /** What the file watcher was told, one line per call. */
 let watches: string[];
 let bus: EventBus;
+/** The thread's log, as the store reads it for a replay. */
+let history: RawStoredEvent[];
+/** Runs while the replay's read is in flight: what is published meanwhile. */
+let duringRead: () => void;
 const sockets: WebSocket[] = [];
 
 beforeEach(async () => {
@@ -43,6 +47,8 @@ beforeEach(async () => {
   dispatched = [];
   slowKeyMs = 0;
   watches = [];
+  history = [];
+  duringRead = () => {};
   bus = new EventBus();
   const auth = {
     // The ticket is the user id, with the scopes after a colon.
@@ -67,16 +73,34 @@ beforeEach(async () => {
       return { ok: true, events: [] };
     },
   } as unknown as OrchestrationEngine;
-  gateway = new WebSocketGateway(auth, engine, {} as EventStore, bus, {
+  const after = (sinceSeq: number) => history.filter((row) => row.seq > sinceSeq);
+  const store = {
+    readThreadRaw: async (_threadId: string, sinceSeq: number) => {
+      duringRead();
+      return after(sinceSeq);
+    },
+    readThread: async (_threadId: string, sinceSeq: number) => {
+      duringRead();
+      return after(sinceSeq).map((row) => ({
+        id: String(row.seq),
+        projectId: row.projectId,
+        threadId: THREAD,
+        seq: row.seq,
+        createdAt: row.createdAt,
+        event: JSON.parse(row.payload),
+      }));
+    },
+  } as unknown as EventStore;
+  gateway = new WebSocketGateway(auth, engine, store, bus, {
     access: {
       canAccessProject: async () => true,
       canAccessWorkspace: async () => true,
-      threadProject: async () => null,
+      threadProject: async (_userId, threadId) => (threadId === THREAD ? PROJECT : null),
       projectOfThread: async () => null,
     },
     onProjectWatch: (projectId, delta) => watches.push(`${delta > 0 ? "+" : "-"}${projectId}`),
     buildId: "build-7",
-    composer: {} as ComposerStore,
+    composer: { get: () => ({ rev: 0, draft: { text: "" }, origin: null }) } as unknown as ComposerStore,
     presence: new PresenceStore(),
     terminals: {
       input: (terminalId, userId, data) => {
@@ -102,26 +126,43 @@ afterEach(async () => {
 
 interface Peer {
   frames: ServerFrame[];
+  /** Each frame's size in bytes, in the order of `frames`. */
+  sizes: number[];
   raw(text: string): void;
   send(frame: object): void;
   /** Everything the server sent in answer to what was sent so far, ready frame aside. */
   settle(): Promise<ServerFrame[]>;
+  /** Everything the server sent until frame `id` was answered, ready frame aside. */
+  acked(id: string): Promise<ServerFrame[]>;
 }
 
-async function connect(ticket = ALICE): Promise<Peer> {
+async function connect(ticket = ALICE, query = ""): Promise<Peer> {
   const { port } = server.address() as AddressInfo;
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${ticket}`);
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${ticket}${query}`);
   sockets.push(socket);
   const frames: ServerFrame[] = [];
-  socket.on("message", (raw) => frames.push(JSON.parse(raw.toString()) as ServerFrame));
+  const sizes: number[] = [];
+  socket.on("message", (raw) => {
+    sizes.push((raw as Buffer).length);
+    frames.push(JSON.parse(raw.toString()) as ServerFrame);
+  });
   await new Promise<void>((resolve) => socket.once("open", () => resolve()));
   let pings = 0;
   const peer: Peer = {
     frames,
+    sizes,
     raw: (text) => socket.send(text),
     send: (frame) => socket.send(JSON.stringify(frame)),
     // Frames are handled in order, and the fast path without awaiting: once
     // a ping sent after them is answered, every answer they got is in.
+    acked: async (id) => {
+      const deadline = Date.now() + 2000;
+      while (!frames.some((f) => (f.kind === "ack" || f.kind === "error") && f.id === id)) {
+        if (Date.now() > deadline) throw new Error(`no answer to ${id}`);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      return frames.filter((f) => f.kind !== "ready" && f.kind !== "pong");
+    },
     settle: async () => {
       const id = `settle-${++pings}`;
       socket.send(JSON.stringify({ kind: "ping", id }));
@@ -273,5 +314,77 @@ describe("project.activity", () => {
     bus.publishToWorkspace(WORKSPACE, event);
     const pushes = (await alice.settle()).filter((f) => f.kind === "push" && f.event.type === "project.activity");
     expect(pushes).toEqual([expect.objectContaining({ kind: "push", subscriptionId: "w", event })]);
+  });
+});
+
+describe("thread replay", () => {
+  const AT = "2026-01-01T00:00:00.000Z";
+  /** `count` logged messages of about `size` bytes each, seq 0 up. */
+  const log = (count: number, size = 100) =>
+    Array.from({ length: count }, (_, seq) => ({
+      seq,
+      projectId: PROJECT,
+      createdAt: AT,
+      payload: JSON.stringify({ type: "user.message", threadId: THREAD, text: `${seq} ${"x".repeat(size)}` }),
+    }));
+  const subscribe = { kind: "subscribe", id: "s", topic: { name: "thread", threadId: THREAD } };
+
+  it("sends a thousand events in a few frames, in order, each at most 256 KB", async () => {
+    history = log(1000, 1000);
+    const alice = await connect(ALICE, "&caps=replay1");
+    alice.send(subscribe);
+    const frames = await alice.acked("s");
+    const replays = frames.filter((f) => f.kind === "replay");
+    expect(replays.length).toBeLessThanOrEqual(5);
+    expect(replays.map((f) => f.done)).toEqual([...replays.slice(1).map(() => false), true]);
+    expect(replays.flatMap((f) => f.events.map((e) => e.seq))).toEqual(history.map((row) => row.seq));
+    expect(replays[0]!.events[0]).toEqual({ seq: 0, at: AT, projectId: PROJECT, event: JSON.parse(history[0]!.payload) });
+    const sizes = alice.frames.flatMap((f, i) => (f.kind === "replay" ? [alice.sizes[i]!] : []));
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(256 * 1024);
+    expect(frames.filter((f) => f.kind === "push" && f.event.type === "user.message")).toEqual([]);
+  });
+
+  it("follows it with what was published meanwhile, once each", async () => {
+    history = log(3);
+    const delta = { type: "agent.text_delta", threadId: THREAD, turnId: THREAD, text: "x" } as const;
+    const message = (seq: number) => ({ type: "user.message", threadId: THREAD, text: `${seq}` }) as const;
+    duringRead = () => {
+      bus.publish({ seq: 2, projectId: PROJECT, threadId: THREAD, event: message(2) });
+      bus.publish({ seq: 3, projectId: PROJECT, threadId: THREAD, event: message(3) });
+      bus.publish({ seq: null, projectId: PROJECT, threadId: THREAD, event: delta });
+    };
+    const alice = await connect(ALICE, "&caps=replay1");
+    alice.send(subscribe);
+    const frames = await alice.acked("s");
+    const order = frames.flatMap((f) => {
+      if (f.kind === "replay") return [`replay ${f.events.map((e) => e.seq).join(",")}`];
+      return f.kind === "push" && f.event.type !== "composer.changed" ? [`push ${f.seq}`] : [];
+    });
+    expect(order).toEqual(["replay 0,1,2", "push 3", "push null"]);
+  });
+
+  it("resumes after `sinceSeq`, and sends nothing when there is nothing newer", async () => {
+    history = log(5);
+    const alice = await connect(ALICE, "&caps=replay1");
+    alice.send({ ...subscribe, sinceSeq: 2 });
+    const first = await alice.acked("s");
+    expect(first.filter((f) => f.kind === "replay").flatMap((f) => f.events.map((e) => e.seq))).toEqual([3, 4]);
+    alice.send({ ...subscribe, id: "t", sinceSeq: 4 });
+    const second = (await alice.acked("t")).slice(first.length);
+    expect(second.filter((f) => f.kind === "replay")).toEqual([]);
+  });
+
+  it("is one push an event for a client that did not ask for batches", async () => {
+    history = log(3);
+    const alice = await connect();
+    alice.send(subscribe);
+    const frames = await alice.acked("s");
+    expect(frames.some((f) => f.kind === "replay")).toBe(false);
+    const pushes = frames.filter((f) => f.kind === "push" && f.event.type === "user.message");
+    expect(pushes.map((f) => (f.kind === "push" ? [f.seq, f.at, f.projectId] : []))).toEqual([
+      [0, AT, PROJECT],
+      [1, AT, PROJECT],
+      [2, AT, PROJECT],
+    ]);
   });
 });

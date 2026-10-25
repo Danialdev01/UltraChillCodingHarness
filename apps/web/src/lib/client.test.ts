@@ -30,11 +30,13 @@ class FakeSocket {
   static OPEN = 1
   static last: FakeSocket | null = null
   readyState = 1
+  url: string
   sent: Array<Record<string, unknown>> = []
   onmessage: ((message: { data: string }) => void) | null = null
   onclose: (() => void) | null = null
   onerror: (() => void) | null = null
-  constructor() {
+  constructor(url: string) {
+    this.url = url
     FakeSocket.last = this
   }
   send(text: string) {
@@ -119,6 +121,7 @@ describe("parseServerFrame", () => {
       { kind: "ack", id: "2", events: [{ id: "9", seq: 3, projectId: THREAD, threadId: THREAD, createdAt: "x", event: delta }] },
       { kind: "error", id: null, code: "invalid", message: "no" },
       { kind: "ready", userId: THREAD, scopes: ["read"], serverVersion: "1", buildId: "b" },
+      { kind: "replay", subscriptionId: "1", events: [{ seq: 5, at: "2026-01-01T00:00:00.000Z", projectId: THREAD, event: delta }], done: true },
       { kind: "revoked", subscriptionId: "1" },
       { kind: "pong", id: "3", serverTime: "2026-01-01T00:00:00.000Z" },
     ]
@@ -134,6 +137,7 @@ describe("parseServerFrame", () => {
       JSON.stringify({ kind: "push", subscriptionId: "1", seq: "4", event: delta }),
       JSON.stringify({ kind: "push", subscriptionId: "1", seq: null, event: { text: "no type" } }),
       JSON.stringify({ kind: "ack", id: "2", events: [{ seq: 1 }] }),
+      JSON.stringify({ kind: "replay", subscriptionId: "1", events: [{ seq: null, event: delta }], done: true }),
       JSON.stringify({ kind: "ready", userId: THREAD }),
       JSON.stringify({ kind: "surprise" }),
     ]) {
@@ -181,6 +185,40 @@ describe("UcchClient history", () => {
       await vi.advanceTimersByTimeAsync(100)
       expect(changed).toHaveBeenCalledTimes(1)
       expect(client.events).toHaveLength(20)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("asks for replays in batches, and keeps one as it would the pushes", async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, socket, sent } = await readyClient()
+      expect(new URL(socket.url).searchParams.get("caps")).toBe("replay1")
+      const THREAD = "44444444-4444-4444-4444-444444444444"
+      void client.subscribe({ name: "thread", threadId: THREAD })
+      const heard: number[] = []
+      client.onEvent(({ seq }) => heard.push(seq ?? -1))
+      const changed = vi.fn()
+      client.subscribeToChanges(changed)
+      const at = "2026-01-01T00:00:00.000Z"
+      const events = [0, 1, 2].map((seq) => ({ seq, at, projectId: PROJECT, event: { type: "user.message", threadId: THREAD, text: `m${seq}` } }))
+      socket.onmessage!({ data: JSON.stringify({ kind: "replay", subscriptionId: "0", events: events.slice(0, 2), done: false }) })
+      socket.onmessage!({ data: JSON.stringify({ kind: "replay", subscriptionId: "0", events: events.slice(1), done: true }) })
+      expect(heard).toEqual([0, 1, 2])
+      expect(client.events.map((row) => [row.seq, row.receivedAt, row.projectId])).toEqual([
+        [0, Date.parse(at), PROJECT],
+        [1, Date.parse(at), PROJECT],
+        [2, Date.parse(at), PROJECT],
+      ])
+      await vi.advanceTimersByTimeAsync(100)
+      expect(changed).toHaveBeenCalledTimes(1)
+      // Back from a drop, it resumes after the last event the replay held.
+      socket.onmessage!({
+        data: JSON.stringify({ kind: "ready", userId: "11111111-1111-1111-1111-111111111111", scopes: ["read"], serverVersion: "test" }),
+      })
+      expect(sent()).toEqual(["subscribe 0", "subscribe 1"])
+      expect(socket.sent[1]).toMatchObject({ sinceSeq: 2 })
     } finally {
       vi.useRealTimers()
     }

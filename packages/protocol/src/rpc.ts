@@ -170,6 +170,30 @@ const Push = z.object({
   event: DomainEvent,
 });
 
+/**
+ * A thread's logged history, many events to a frame: what a thread
+ * subscription replays to a client that connected with `caps=replay1`
+ * (`REPLAY_CAP`). One push per event was a thousand frames, and a thousand
+ * serializations on the server, for every long thread opened. `done` is set
+ * on the last of them. Live events that arrived meanwhile follow as pushes.
+ */
+const Replay = z.object({
+  kind: z.literal("replay"),
+  subscriptionId: z.string(),
+  events: z.array(
+    z.object({
+      seq: z.number().int().nonnegative(),
+      at: z.string().datetime(),
+      projectId: z.string().uuid().optional(),
+      event: DomainEvent,
+    }),
+  ),
+  done: z.boolean(),
+});
+
+/** In the socket URL's `caps`: this client reads `replay` frames. */
+export const REPLAY_CAP = "replay1";
+
 const Pong = z.object({
   kind: z.literal("pong"),
   id: z.string(),
@@ -198,7 +222,7 @@ const Revoked = z.object({
   subscriptionId: z.string(),
 });
 
-export const ServerFrame = z.discriminatedUnion("kind", [Ack, Err, Push, Pong, Ready, Revoked]);
+export const ServerFrame = z.discriminatedUnion("kind", [Ack, Err, Push, Replay, Pong, Ready, Revoked]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
 
 // -- Authorization -----------------------------------------------------------

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  REPLAY_CAP,
   TERMINAL_INPUT_MAX,
   type ClientFrame,
   type Command,
@@ -210,7 +211,7 @@ export class UcchClient {
     // subscription nothing will ever read.
     if (this.#closed) return;
 
-    const socket = new WebSocket(`${websocketOrigin()}/ws?ticket=${ticket}&client=${TAB_ID}`);
+    const socket = new WebSocket(`${websocketOrigin()}/ws?ticket=${ticket}&client=${TAB_ID}&caps=${REPLAY_CAP}`);
     this.#socket = socket;
 
     socket.onmessage = (message) => this.#onFrame(String(message.data));
@@ -437,6 +438,20 @@ export class UcchClient {
         break;
       }
 
+      case "replay": {
+        // A thread's history, many events at once: recorded together, so
+        // the history is copied once for the lot rather than once an event.
+        const sub = this.#subscriptions.get(frame.subscriptionId);
+        const kept: ClientEvent[] = [];
+        for (const stored of frame.events) {
+          if (sub && stored.seq > sub.lastSeq) sub.lastSeq = stored.seq;
+          const row = this.#take(stored.seq, stored.event, Date.parse(stored.at), stored.projectId);
+          if (row) kept.push(row);
+        }
+        this.#keep(kept);
+        break;
+      }
+
       case "revoked":
         // Access to it is gone (removed from the workspace, project deleted):
         // forget it, so a reconnect does not ask again.
@@ -460,6 +475,12 @@ export class UcchClient {
     at: number = Date.now(),
     projectId?: string,
   ): void {
+    const row = this.#take(seq, event, at, projectId);
+    if (row) this.#keep([row]);
+  }
+
+  /** Tells the event listeners of an event not seen before; the row to keep in the history, if any. */
+  #take(seq: number | null, event: DomainEvent, at: number, projectId?: string): ClientEvent | null {
     // (scope, seq) is what the server's unique index enforces, so it is what
     // identifies an event here too. Transient events carry no sequence and
     // arrive only once, by push.
@@ -471,7 +492,7 @@ export class UcchClient {
             ? `p:${event.projectId}`
             : "";
       const key = `${scope}:${seq}`;
-      if (this.#seen.has(key)) return;
+      if (this.#seen.has(key)) return null;
       this.#seen.add(key);
     }
 
@@ -488,8 +509,12 @@ export class UcchClient {
         // One broken view must not stop the others hearing.
       }
     }
-    if (EPHEMERAL.has(event.type)) return;
-    this.#events = [...this.#events, row].slice(-500);
+    return EPHEMERAL.has(event.type) ? null : row;
+  }
+
+  #keep(rows: readonly ClientEvent[]): void {
+    if (rows.length === 0) return;
+    this.#events = [...this.#events, ...rows].slice(-500);
     this.#emit();
   }
 
@@ -568,6 +593,12 @@ export function parseServerFrame(raw: string): ServerFrame | null {
           typeof data.subscriptionId === "string" &&
           (data.seq === null || typeof data.seq === "number") &&
           isEvent(data.event)
+        );
+      case "replay":
+        return (
+          typeof data.subscriptionId === "string" &&
+          Array.isArray(data.events) &&
+          data.events.every((row) => isRecord(row) && typeof row.seq === "number" && isEvent(row.event))
         );
       case "ack":
         return (
