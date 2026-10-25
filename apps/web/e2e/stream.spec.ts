@@ -14,6 +14,8 @@ import { expect, test } from "@playwright/test";
  *                   frame painted after it (rAF, then a task after paint)
  *   frame gaps      the time between animation frames
  *   received        frames and bytes on all the tab's sockets, send to done
+ *   kept            whether the message sent is still on screen once the
+ *                   answer is done: a long answer used to push it out
  *
  * It opens a new session in the first project it can see and sends one
  * message, so the server must stream from the load-test mocks
@@ -173,7 +175,8 @@ test("streaming cost", async ({ page, context, baseURL }) => {
   await expect(composer).toBeEnabled({ timeout: 30_000 });
   // Past the boot screen and the warmup behind it (CLAUDE.md, "The whole app loads at boot").
   await page.waitForTimeout(Number(process.env.E2E_IDLE_MS ?? 8000));
-  await composer.fill("Explain what you would change.");
+  const ASK = "Explain what you would change.";
+  await composer.fill(ASK);
 
   const sentAt = await page.evaluate(() => {
     (window as any).__streamPerf.recording = true;
@@ -192,6 +195,7 @@ test("streaming cost", async ({ page, context, baseURL }) => {
     if (presses > 600) throw new Error("the answer did not finish in five minutes");
   }
   await page.waitForTimeout(500);
+  const kept = (await page.getByText(ASK, { exact: true }).count()) > 0;
 
   const raw = await page.evaluate(() => (window as any).__streamPerf);
   const from = raw.firstDelta as number;
@@ -220,6 +224,7 @@ test("streaming cost", async ({ page, context, baseURL }) => {
     firstDeltaMs: Math.round(from - sentAt),
     deltas: raw.deltas.length,
     received: { frames: raw.socketFrames, bytes: raw.socketBytes },
+    kept,
     longTasks: {
       count: longTasks.length,
       totalMs: Math.round(longTasks.reduce((sum, t) => sum + t.duration, 0)),

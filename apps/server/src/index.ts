@@ -425,6 +425,9 @@ const gateway = new WebSocketGateway(auth, engine, store, bus, {
   presence,
   mayWatchTerminal: (userId, terminalId) => terminals.mayWatch(terminalId, userId),
   terminals,
+  // Unset unless the image was given one: with nothing to compare, a tab
+  // is never told it is out of date.
+  ...(process.env.BUILD_ID ? { buildId: process.env.BUILD_ID } : {}),
   profileOf: async (userId) => {
     const profile = await auth.getProfile(userId);
     return profile ? { name: profile.name ?? profile.login ?? "Someone", avatarUrl: profile.avatarUrl ?? null } : null;

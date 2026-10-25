@@ -1,15 +1,16 @@
 "use client";
 
 import {
-  ServerFrame,
   TERMINAL_INPUT_MAX,
   type ClientFrame,
   type Command,
   type ComposerDraft,
   type DomainEvent,
   type Scope,
+  type ServerFrame,
   type StoredEvent,
 } from "@ucch/protocol";
+import { frameBatcher } from "./next-frame";
 import { TAB_ID } from "./tab-id";
 
 /**
@@ -27,6 +28,11 @@ const EPHEMERAL: ReadonlySet<DomainEvent["type"]> = new Set([
   // A terminal's bytes: read straight off `onEvent` by the terminal views. In
   // the history they evicted the conversation and copied the array per chunk.
   "terminal.output",
+  // A turn's tokens, likewise: the chat folds them into runs of its own
+  // (`thread-store.ts`), and as rows here a long answer pushed the rest of
+  // the conversation out of the window.
+  "agent.text_delta",
+  "agent.thinking_delta",
 ]);
 
 /** A refusal from the server, with its code -- `conflict` is the one callers branch on. */
@@ -98,6 +104,10 @@ export class UcchClient {
   #reconnectListeners = new Set<() => void>();
   #retry: ReturnType<typeof setTimeout> | null = null;
   #nextId = 0;
+  /** Change listeners hear once a frame, however many frames arrived in it. */
+  #emitter = frameBatcher(() => {
+    for (const listener of this.#listeners) listener();
+  });
 
   get state(): ConnectionState {
     return this.#state;
@@ -356,15 +366,12 @@ export class UcchClient {
   }
 
   #onFrame(raw: string): void {
-    let frame;
-    try {
-      frame = ServerFrame.parse(JSON.parse(raw));
-    } catch {
-      return;
-    }
+    const frame = parseServerFrame(raw);
+    if (!frame) return;
 
     switch (frame.kind) {
       case "ready": {
+        outdatedBuild(frame.buildId);
         this.#attempt = 0;
         this.#userId = frame.userId;
         this.#scopes = frame.scopes;
@@ -533,8 +540,99 @@ export class UcchClient {
   }
 
   #emit(): void {
-    for (const listener of this.#listeners) listener();
+    this.#emitter.schedule();
   }
+}
+
+/**
+ * A server frame, or null for one this client cannot read.
+ *
+ * Not the schema: `ServerFrame.parse` on every frame was most of the
+ * client's time while an answer streamed. The fields this file reads are
+ * checked instead -- the server is the one that wrote the frame, and it
+ * built it from the same types. In development the schema still runs,
+ * after the fact, and says when the two disagree.
+ */
+export function parseServerFrame(raw: string): ServerFrame | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(data) || typeof data.kind !== "string") return null;
+  const ok = (() => {
+    switch (data.kind) {
+      case "push":
+        return (
+          typeof data.subscriptionId === "string" &&
+          (data.seq === null || typeof data.seq === "number") &&
+          isEvent(data.event)
+        );
+      case "ack":
+        return (
+          typeof data.id === "string" &&
+          Array.isArray(data.events) &&
+          data.events.every((row) => isRecord(row) && typeof row.seq === "number" && isEvent(row.event))
+        );
+      case "error":
+        return typeof data.code === "string" && typeof data.message === "string";
+      case "ready":
+        return typeof data.userId === "string" && Array.isArray(data.scopes);
+      case "revoked":
+        return typeof data.subscriptionId === "string";
+      case "pong":
+        return true;
+      default:
+        return false;
+    }
+  })();
+  if (!ok) return null;
+  if (process.env.NODE_ENV === "development") {
+    void import("@ucch/protocol").then(({ ServerFrame: schema }) => {
+      const checked = schema.safeParse(data);
+      if (!checked.success) console.warn("[ucch] a server frame does not match the protocol", data, checked.error.issues);
+    });
+  }
+  return data as ServerFrame;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isEvent(value: unknown): boolean {
+  return isRecord(value) && typeof value.type === "string";
+}
+
+/**
+ * Whether this tab runs another build than the server, and if so, what to
+ * do. The update prompt (W5) is not built yet, so a tab found out of date
+ * reloads -- once per build, and only while it is hidden, so nothing being
+ * typed is lost to it. Without a build id on both sides (development, an
+ * image built without one) there is nothing to compare.
+ */
+function outdatedBuild(serverBuild: string | undefined): void {
+  const running = process.env.NEXT_PUBLIC_BUILD_ID;
+  if (!running || !serverBuild || serverBuild === running || typeof document === "undefined") return;
+  const key = `ucch:reloaded-for:${serverBuild}`;
+  try {
+    if (sessionStorage.getItem(key)) return;
+  } catch {
+    return;
+  }
+  const reload = () => {
+    if (document.visibilityState !== "hidden") return;
+    document.removeEventListener("visibilitychange", reload);
+    try {
+      sessionStorage.setItem(key, "1");
+    } catch {
+      return;
+    }
+    location.reload();
+  };
+  document.addEventListener("visibilitychange", reload);
+  reload();
 }
 
 /**

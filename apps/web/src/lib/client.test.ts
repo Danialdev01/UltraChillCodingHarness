@@ -1,7 +1,7 @@
 import { TERMINAL_INPUT_MAX } from "@ucch/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { terminalPieces, UcchClient } from "./client"
+import { parseServerFrame, terminalPieces, UcchClient } from "./client"
 
 describe("terminalPieces", () => {
   it("sends a keystroke, or anything that fits, as it is", () => {
@@ -105,5 +105,84 @@ describe("UcchClient.holdFiles", () => {
     const release = client.holdFiles(PROJECT)
     release()
     expect(sent()).toEqual(["subscribe 0", "unsubscribe 0", "subscribe 1 files", "unsubscribe 1", "subscribe 2"])
+  })
+})
+
+describe("parseServerFrame", () => {
+  const THREAD = "44444444-4444-4444-4444-444444444444"
+  const delta = { type: "agent.text_delta", threadId: THREAD, turnId: THREAD, text: "x" }
+
+  it("reads each kind of frame the server sends", () => {
+    const frames = [
+      { kind: "push", subscriptionId: "1", seq: null, event: delta },
+      { kind: "push", subscriptionId: "1", seq: 4, at: "2026-01-01T00:00:00.000Z", event: delta },
+      { kind: "ack", id: "2", events: [{ id: "9", seq: 3, projectId: THREAD, threadId: THREAD, createdAt: "x", event: delta }] },
+      { kind: "error", id: null, code: "invalid", message: "no" },
+      { kind: "ready", userId: THREAD, scopes: ["read"], serverVersion: "1", buildId: "b" },
+      { kind: "revoked", subscriptionId: "1" },
+      { kind: "pong", id: "3", serverTime: "2026-01-01T00:00:00.000Z" },
+    ]
+    for (const frame of frames) expect(parseServerFrame(JSON.stringify(frame))).toEqual(frame)
+  })
+
+  it("refuses what it could not use", () => {
+    for (const raw of [
+      "not json",
+      "null",
+      "[]",
+      JSON.stringify({ kind: "push", subscriptionId: 1, seq: null, event: delta }),
+      JSON.stringify({ kind: "push", subscriptionId: "1", seq: "4", event: delta }),
+      JSON.stringify({ kind: "push", subscriptionId: "1", seq: null, event: { text: "no type" } }),
+      JSON.stringify({ kind: "ack", id: "2", events: [{ seq: 1 }] }),
+      JSON.stringify({ kind: "ready", userId: THREAD }),
+      JSON.stringify({ kind: "surprise" }),
+    ]) {
+      expect(parseServerFrame(raw)).toBeNull()
+    }
+  })
+})
+
+describe("UcchClient history", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+  })
+
+  it("hands tokens to listeners and keeps them out of the history", async () => {
+    const { client, socket } = await readyClient()
+    const heard: string[] = []
+    client.onEvent(({ event }) => heard.push(event.type))
+    const THREAD = "44444444-4444-4444-4444-444444444444"
+    for (const type of ["agent.text_delta", "agent.thinking_delta"]) {
+      socket.onmessage!({
+        data: JSON.stringify({ kind: "push", subscriptionId: "1", seq: null, event: { type, threadId: THREAD, turnId: THREAD, text: "x" } }),
+      })
+    }
+    socket.onmessage!({
+      data: JSON.stringify({ kind: "push", subscriptionId: "1", seq: 0, event: { type: "user.message", threadId: THREAD, text: "hi" } }),
+    })
+    expect(heard).toEqual(["agent.text_delta", "agent.thinking_delta", "user.message"])
+    expect(client.events.map((row) => row.event.type)).toEqual(["user.message"])
+  })
+
+  it("tells its change listeners once a frame", async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, socket } = await readyClient()
+      const changed = vi.fn()
+      client.subscribeToChanges(changed)
+      const THREAD = "44444444-4444-4444-4444-444444444444"
+      for (let seq = 0; seq < 20; seq++) {
+        socket.onmessage!({
+          data: JSON.stringify({ kind: "push", subscriptionId: "1", seq, event: { type: "user.message", threadId: THREAD, text: "hi" } }),
+        })
+      }
+      expect(changed).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(100)
+      expect(changed).toHaveBeenCalledTimes(1)
+      expect(client.events).toHaveLength(20)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

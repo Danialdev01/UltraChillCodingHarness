@@ -75,6 +75,7 @@ beforeEach(async () => {
       projectOfThread: async () => null,
     },
     onProjectWatch: (projectId, delta) => watches.push(`${delta > 0 ? "+" : "-"}${projectId}`),
+    buildId: "build-7",
     composer: {} as ComposerStore,
     presence: new PresenceStore(),
     terminals: {
@@ -218,6 +219,14 @@ describe("dispatch", () => {
       await new Promise((r) => setTimeout(r, 5));
     }
     expect(dispatched.map((command) => command.type)).toEqual(["thread.cancel", "terminal.close"]);
+  });
+});
+
+describe("ready", () => {
+  it("says which build the server is", async () => {
+    const alice = await connect();
+    await alice.settle();
+    expect(alice.frames.find((frame) => frame.kind === "ready")).toMatchObject({ userId: ALICE, buildId: "build-7" });
   });
 });
 

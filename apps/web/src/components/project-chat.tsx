@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode, type Ref } from "react";
 import {
   AlertCircleIcon,
   ArrowDownIcon,
@@ -73,6 +73,7 @@ import { Markdown } from "@/components/markdown";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
 import { UcchClient, type ClientEvent } from "@/lib/client";
+import { ThreadStore } from "@/lib/thread-store";
 import {
   readLastModel,
   readLastProvider,
@@ -378,6 +379,47 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     ? null
     : visionWarning(pendingImageCount(attachments), models.find((m) => m.id === model));
 
+  /**
+   * The thread on screen, and the store its events are kept in
+   * (`thread-store.ts`): the conversation and what is streaming into it,
+   * apart from the client's capped history of everything. What the client
+   * has already heard of the thread is taken in first, so a store made
+   * after the thread was subscribed to misses nothing that fits there.
+   */
+  const threadStoreRef = useRef<{ store: ThreadStore; off: () => void } | null>(null);
+  const [threadStore, setThreadStore] = useState<ThreadStore | null>(null);
+  const openThread = useCallback((client: UcchClient, id: string) => {
+    threadStoreRef.current?.off();
+    const store = new ThreadStore(id);
+    for (const row of client.events) store.push(row);
+    const offEvent = client.onEvent((row) => store.push(row));
+    // Back from a drop: what streamed meanwhile is gone, and the logged
+    // message, replayed, replaces it.
+    const offReconnect = client.onReconnect(() => store.reset());
+    threadStoreRef.current = {
+      store,
+      off: () => {
+        offEvent();
+        offReconnect();
+        store.dispose();
+      },
+    };
+    setThreadStore(store);
+    setThreadId(id);
+  }, []);
+
+  /**
+   * The events of the thread on screen, with what is streaming into it
+   * folded into runs. The store is per thread, so after a context clear the
+   * old conversation is not in it; `file.changed`, which is project-scoped
+   * and carries no thread, reaches the file panel from `events`.
+   */
+  const threadEvents = useSyncExternalStore(
+    threadStore?.subscribe ?? subscribeToNothing,
+    () => threadStore?.rows ?? NO_ROWS,
+    () => NO_ROWS,
+  );
+
   useEffect(() => {
     const client = new UcchClient();
     clientRef.current = client;
@@ -415,7 +457,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       const id = opened?.id ?? (await createThread(client, project));
       if (cancelled || !id) return;
 
-      setThreadId(id);
+      // Before subscribing, so the replay -- up to a whole window of the
+      // thread, more than the client's own history keeps -- lands in it.
+      openThread(client, id);
       // A thread that has run is bound to its provider; the picker shows it
       // locked rather than offering a switch the server would refuse.
       setBoundProvider(isProviderId(opened?.provider) ? opened.provider : null);
@@ -435,6 +479,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     return () => {
       cancelled = true;
       unsubscribe();
+      threadStoreRef.current?.off();
+      threadStoreRef.current = null;
       client.close();
       clientRef.current = null;
     };
@@ -464,8 +510,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     if (!followed || threadIdRef.current === event.threadId) return;
     const client = clientRef.current;
     if (!client) return;
+    openThread(client, event.threadId);
     void client.subscribe({ name: "thread", threadId: event.threadId }).catch(() => {});
-    setThreadId(event.threadId);
     setBoundProvider(null);
   });
 
@@ -558,7 +604,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
 
   useEffect(() => {
     if (followRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events.length]);
+  }, [threadEvents]);
 
   /** Scrolls a message to the top of the view, for the prompt arrows. */
   const jumpTo = useCallback((index: number) => {
@@ -603,23 +649,6 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     // past the tenth line.
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
   }, [draft, panelHeight]);
-
-  /**
-   * The events of the thread on screen.
-   *
-   * The client's buffer is per connection, not per thread, so after a
-   * context clear it holds the old conversation as well as the new one.
-   * Filtering here rather than emptying the buffer keeps the client a plain
-   * record of what the server said, and keeps `file.changed` -- which is
-   * project-scoped and carries no thread -- reaching the file panel below.
-   */
-  const threadEvents = useMemo(
-    () =>
-      events.filter(
-        (row) => "threadId" in row.event && row.event.threadId === threadId,
-      ),
-    [events, threadId],
-  );
 
   /**
    * Where a project session's worktree is. Until git has made it nothing can
@@ -1067,7 +1096,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       const id = await createThread(client, project);
       if (!id) throw new Error("could not start a new conversation");
       await client.subscribe({ name: "thread", threadId: id });
-      setThreadId(id);
+      openThread(client, id);
       // A fresh thread is bound to nothing yet, so the picker opens again.
       setBoundProvider(null);
     } catch (e) {
@@ -1075,7 +1104,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     } finally {
       setClearing(false);
     }
-  }, [clearing, project, running, session, transitionRouter]);
+  }, [clearing, openThread, project, running, session, transitionRouter]);
 
   /**
    * What the open menu lists, each row with what picking it does.
@@ -1884,6 +1913,9 @@ function AttachMenu({
  * Carries your subscription choice for the workspace; the server ignores it
  * unless the workspace lets members choose.
  */
+const NO_ROWS: readonly ClientEvent[] = [];
+const subscribeToNothing = () => () => {};
+
 async function createThread(client: UcchClient, project: Project): Promise<string | null> {
   const credentialSource = readCredentialChoice(project.workspaceId);
   const created = await client.dispatch({

@@ -6,6 +6,7 @@ import {
   hasScope,
   REQUIRED_SCOPE,
   TERMINAL_INPUT_MAX,
+  THREAD_WINDOW,
   type Command,
   type DomainEvent,
   type ServerFrame,
@@ -21,8 +22,8 @@ import { registry } from "./metrics.js";
 import type { PresenceStore } from "./presence.js";
 import type { TerminalReactor } from "./terminals.js";
 
-/** Newest events of a thread sent when a client subscribes to it. */
-const REPLAY_LIMIT = 1_000;
+/** Newest events of a thread sent when a client subscribes to it: what the browser keeps of one. */
+const REPLAY_LIMIT = THREAD_WINDOW;
 
 const SERVER_VERSION = "0.1.0";
 const HEARTBEAT_MS = 30_000;
@@ -98,6 +99,8 @@ export interface GatewayOptions {
   mayWatchTerminal?: (userId: string, terminalId: string) => boolean;
   /** Where `terminal_input` and `terminal_resize` frames go. Absent, they are refused. */
   terminals?: Pick<TerminalReactor, "input" | "resize">;
+  /** This server's build, told to every socket in `ready` so an outdated tab can know it is. */
+  buildId?: string;
   /** After a command from a socket was handled, for the activity log. */
   onDispatched?: (principal: Principal, clientId: string, command: Command, result: EngineResult) => void;
 }
@@ -186,6 +189,7 @@ export class WebSocketGateway {
       userId: principal.userId,
       scopes: principal.scopes,
       serverVersion: SERVER_VERSION,
+      ...(this.options.buildId ? { buildId: this.options.buildId } : {}),
     });
 
     socket.on("message", (raw) => {
@@ -350,8 +354,9 @@ export class WebSocketGateway {
         }
 
         if (frame.topic.name === "thread") {
-          // Bounded: the browser keeps the newest 500 events of a thread, so
-          // replaying the whole of a long one is frames it would discard.
+          // Bounded: the browser keeps the newest THREAD_WINDOW events of a
+          // thread, so replaying the whole of a long one is frames it would
+          // discard.
           const history = await this.store.readThread(frame.topic.threadId, frame.sinceSeq ?? -1, {
             limit: REPLAY_LIMIT,
           });

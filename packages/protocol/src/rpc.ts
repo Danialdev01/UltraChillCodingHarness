@@ -94,6 +94,13 @@ const Ping = z.object({
 export const TERMINAL_INPUT_MAX = 64 * 1024;
 
 /**
+ * A thread's newest durable events: what the server replays when a thread
+ * is subscribed to, and what the browser keeps of one. One number, so the
+ * browser never keeps less than it was sent.
+ */
+export const THREAD_WINDOW = 1000;
+
+/**
  * Keystrokes into a terminal, outside the command queue: no id, no ack.
  * `dispatch terminal.input` does the same, but waits behind every other
  * command and answers each key with an ack nothing reads.
@@ -174,6 +181,11 @@ const Ready = z.object({
   userId: z.string().uuid(),
   scopes: z.array(Scope),
   serverVersion: z.string(),
+  /**
+   * The server's build, when it was given one. A tab running another build
+   * of the web app is out of date (`client.ts`).
+   */
+  buildId: z.string().optional(),
 });
 
 /**
