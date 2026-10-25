@@ -374,7 +374,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
 
 ### Streaming and chat (`solution.md` §7–§8)
 
-- [ ] **PF1.13 — Delta coalescer, and deltas on the thread topic only**
+- [x] **PF1.13 — Delta coalescer, and deltas on the thread topic only** — 07d3ede
 
   - **Depends:** —
   - **Files:** new `apps/server/src/delta-coalescer.ts` and `delta-coalescer.test.ts`, `apps/server/src/agent.ts` (the `append` closure at line 364), `apps/server/src/bus.ts` (topic routing, line 90), `apps/server/src/config.ts` (`STREAM_FLUSH_MS`)
@@ -384,6 +384,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. `bus.ts`: `agent.text_delta` and `agent.thinking_delta` go to `thread:` only.
   - **Acceptance:** a 2,000-token answer at 60 tokens/s sends ≤ ⅓ of today's frames, and time-to-first-token is unchanged.
   - **Verify:** `pnpm test -- delta-coalescer`, plus load (frames per turn)
+  - **Measured:**
+    - Delta frames per turn under the PF0 load (1,500 deltas at ~60 a second): 1,500 before, 501 after. That is a third plus the turn's first delta, which is never held, so one frame over a strict third.
+    - Bytes per turn: 453 KB before, 178 KB after.
+    - Time to first token p50/p95/p99: 351/378/387 ms before, 348/378/385 ms after.
 
 - [ ] **PF1.14 — Client thread store; deltas ephemeral; no zod on hot frames**
 
