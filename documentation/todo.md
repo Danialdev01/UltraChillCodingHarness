@@ -412,7 +412,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Runs outlive their turn, unlike the plan's live layer: a turn's thinking is never logged, so dropping it at `turn_completed` would have lost it from the screen.
     - `ready.buildId` is inert until a build sets both `BUILD_ID` and `NEXT_PUBLIC_BUILD_ID`.
 
-- [ ] **PF1.15 — Chat render: durable/live split, memoized messages, streaming tail**
+- [x] **PF1.15 — Chat render: durable/live split, memoized messages, streaming tail** — e21969e
 
   - **Depends:** PF1.14
   - **Files:** `apps/web/src/components/project-chat.tsx` (filter line 615, worktree line 629, `toMessages` line 646, list line 1239, `Message` line 1872), `apps/web/src/lib/chat-messages.ts` (line 248) and `chat-messages.test.ts`, `apps/web/src/components/markdown.tsx` (line 199), new `StreamingMarkdown`
@@ -423,6 +423,11 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     4. `StreamingMarkdown`: the prefix up to the last blank line outside a code fence goes through the memoized `Markdown`, and only the tail re-parses.
   - **Acceptance:** on a 4,000-token answer, no long task over 50 ms while streaming, and INP < 200 ms (`stream.spec.ts`). `overlayLive` matches today's output on every existing fixture.
   - **Verify:** `pnpm test -- chat-messages`, plus `pnpm --filter @ucch/web e2e`
+  - **Measured:** (stream.spec, a 4,000-token answer, CPU throttled 4x)
+    - Long tasks while streaming: 1 × 55 ms before; none in 3 of 4 runs after, and 1 × 53 ms in the other.
+    - INP: 48 → 32 ms.
+    - Frame-to-paint p50/p95/p99: 22.3/31.5/40.7 → 18.0/20.1/32.4 ms (the median run).
+    - `overlayLive(fold(durable), live)` equals `fold(rows)` on every fixture.
 
 - [ ] **PF1.16 — Batched replay frame**
 
