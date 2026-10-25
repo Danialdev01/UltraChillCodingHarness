@@ -19,6 +19,9 @@ import { PresenceStore } from "./presence.js";
 
 const ALICE = "11111111-1111-1111-1111-111111111111";
 const TERMINAL = "77777777-7777-7777-7777-777777777777";
+const PROJECT = "33333333-3333-3333-3333-333333333333";
+const THREAD = "44444444-4444-4444-4444-444444444444";
+const WORKSPACE = "55555555-5555-5555-5555-555555555555";
 
 let server: Server;
 let gateway: WebSocketGateway;
@@ -29,6 +32,9 @@ let accept: boolean;
 let dispatched: Command[];
 /** How long finding a thread command's queue takes. */
 let slowKeyMs: number;
+/** What the file watcher was told, one line per call. */
+let watches: string[];
+let bus: EventBus;
 const sockets: WebSocket[] = [];
 
 beforeEach(async () => {
@@ -36,6 +42,8 @@ beforeEach(async () => {
   accept = true;
   dispatched = [];
   slowKeyMs = 0;
+  watches = [];
+  bus = new EventBus();
   const auth = {
     // The ticket is the user id, with the scopes after a colon.
     redeemTicket: (ticket?: string): Principal | null => {
@@ -59,12 +67,14 @@ beforeEach(async () => {
       return { ok: true, events: [] };
     },
   } as unknown as OrchestrationEngine;
-  gateway = new WebSocketGateway(auth, engine, {} as EventStore, new EventBus(), {
+  gateway = new WebSocketGateway(auth, engine, {} as EventStore, bus, {
     access: {
       canAccessProject: async () => true,
+      canAccessWorkspace: async () => true,
       threadProject: async () => null,
       projectOfThread: async () => null,
     },
+    onProjectWatch: (projectId, delta) => watches.push(`${delta > 0 ? "+" : "-"}${projectId}`),
     composer: {} as ComposerStore,
     presence: new PresenceStore(),
     terminals: {
@@ -208,5 +218,51 @@ describe("dispatch", () => {
       await new Promise((r) => setTimeout(r, 5));
     }
     expect(dispatched.map((command) => command.type)).toEqual(["thread.cancel", "terminal.close"]);
+  });
+});
+
+describe("project subscriptions and the file watcher", () => {
+  it("leave the watcher alone when quiet, or not asking for files", async () => {
+    const alice = await connect();
+    alice.send({ kind: "subscribe", id: "1", topic: { name: "project", projectId: PROJECT, quiet: true } });
+    alice.send({ kind: "subscribe", id: "2", topic: { name: "project", projectId: PROJECT } });
+    await alice.settle();
+    alice.send({ kind: "unsubscribe", id: "1" });
+    alice.send({ kind: "unsubscribe", id: "2" });
+    await alice.settle();
+    expect(watches).toEqual([]);
+  });
+
+  it("keep it going for as long as a `files: true` one lasts", async () => {
+    const alice = await connect();
+    alice.send({ kind: "subscribe", id: "1", topic: { name: "project", projectId: PROJECT, quiet: true, files: true } });
+    await alice.settle();
+    expect(watches).toEqual([`+${PROJECT}`]);
+    alice.send({ kind: "unsubscribe", id: "1" });
+    await alice.settle();
+    expect(watches).toEqual([`+${PROJECT}`, `-${PROJECT}`]);
+  });
+
+  it("let it go when the socket closes", async () => {
+    const alice = await connect();
+    alice.send({ kind: "subscribe", id: "1", topic: { name: "project", projectId: PROJECT, files: true } });
+    await alice.settle();
+    sockets.at(-1)!.close();
+    const deadline = Date.now() + 1000;
+    while (watches.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    expect(watches).toEqual([`+${PROJECT}`, `-${PROJECT}`]);
+  });
+});
+
+describe("project.activity", () => {
+  it("reaches the workspace's subscribers and not the project's", async () => {
+    const alice = await connect();
+    alice.send({ kind: "subscribe", id: "w", topic: { name: "workspace", workspaceId: WORKSPACE } });
+    alice.send({ kind: "subscribe", id: "p", topic: { name: "project", projectId: PROJECT, quiet: true } });
+    await alice.settle();
+    const event = { type: "project.activity", projectId: PROJECT, threadId: THREAD, state: "running" } as const;
+    bus.publishToWorkspace(WORKSPACE, event);
+    const pushes = (await alice.settle()).filter((f) => f.kind === "push" && f.event.type === "project.activity");
+    expect(pushes).toEqual([expect.objectContaining({ kind: "push", subscriptionId: "w", event })]);
   });
 });

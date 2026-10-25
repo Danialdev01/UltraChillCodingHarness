@@ -840,11 +840,24 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   // saves are already on screen.
   const noteChangedRef = React.useRef(value.noteChanged)
   noteChangedRef.current = value.noteChanged
-  useProjectEvents(project?.id, (event) => {
-    // Any writer but this tab: another person, the agent, a git checkout.
-    if (event.type !== "file.changed" || isOwnChange(event.origin)) return
-    noteChangedRef.current(event.path, event.change)
-  })
+  // Changes made outside the server -- a terminal, git, a dev server -- are
+  // reported only while the tree or a file is showing. Shown again, the
+  // tree is reread for whatever changed meanwhile.
+  const showsFiles = project !== null && (sidebar === "files" || tabs.length > 0)
+  useProjectEvents(
+    project?.id,
+    (event) => {
+      // Any writer but this tab: another person, the agent, a git checkout.
+      if (event.type !== "file.changed" || isOwnChange(event.origin)) return
+      noteChangedRef.current(event.path, event.change)
+    },
+    { files: showsFiles },
+  )
+  const showedFiles = React.useRef(showsFiles)
+  React.useEffect(() => {
+    if (showsFiles && !showedFiles.current) refreshTree()
+    showedFiles.current = showsFiles
+  }, [showsFiles, refreshTree])
 
   const buffersValue = React.useMemo<FileBuffersContextValue>(
     () => ({

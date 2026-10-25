@@ -35,6 +35,14 @@ const Subscribe = z.object({
        * notes is not sent every token of a running agent.
        */
       quiet: z.boolean().optional(),
+      /**
+       * Keeps the project's file watcher running for as long as this
+       * subscription lasts, so changes made outside the server -- a
+       * terminal, a dev server, git -- arrive as `file.changed`. Only views
+       * that show files ask for it: every watched project is an inotify
+       * watch on the server.
+       */
+      files: z.boolean().optional(),
     }),
     z.object({ name: z.literal("terminal"), terminalId: z.string() }),
     /** The caller's own account: settings and other things without a project. */

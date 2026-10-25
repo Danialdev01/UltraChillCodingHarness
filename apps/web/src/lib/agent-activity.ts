@@ -1,11 +1,11 @@
-import { stoppedShort, type DomainEvent } from "@ucch/protocol";
+import type { DomainEvent } from "@ucch/protocol";
 
 /**
  * Whether a project's agent is working, as the sidebar shows it.
  *
  * Pure, so the bookkeeping -- several threads in one project, a turn that was
- * already running when the page loaded, a replayed history -- can be tested
- * without a socket.
+ * already running when the page loaded, a message that never became a turn
+ * -- can be tested without a socket.
  */
 
 export type AgentStatus = "idle" | "working" | "done" | "error";
@@ -29,50 +29,46 @@ export interface ProjectActivity {
 export type ActivityState = Readonly<Record<string, ProjectActivity>>;
 
 /**
- * Folds one event into the state. Anything that is not a turn starting or
- * ending comes back as the same object, so a caller can skip the render.
+ * Folds one event into the state: the server's `project.activity`, sent to
+ * the workspace for each turn picked up, started or ended. Anything else
+ * comes back as the same object, so a caller can skip the render.
  *
- * `at` is when the event happened by the server's clock, not when it
- * arrived: a thread's history is replayed on every subscribe, and a turn
- * that finished an hour ago must not light the row up again.
+ * `at` is when the event arrived. Activity is live only -- nothing replays
+ * it -- so that is when it happened, near enough.
  */
-export function reduceActivity(
-  state: ActivityState,
-  projectId: string,
-  event: DomainEvent,
-  at: number,
-): ActivityState {
+export function reduceActivity(state: ActivityState, event: DomainEvent, at: number): ActivityState {
+  if (event.type !== "project.activity") return state;
+  const { projectId, threadId } = event;
   const current = state[projectId] ?? { running: [], doneUntil: null, failed: false };
+  const listed = current.running.includes(threadId);
+  const running = listed ? current.running : [...current.running, threadId];
 
-  if (event.type === "turn.started") {
-    if (current.running.includes(event.threadId)) return state;
-    return {
-      ...state,
-      [projectId]: { running: [...current.running, event.threadId], doneUntil: null, failed: false },
-    };
+  switch (event.state) {
+    // Picked up but not started: working already, as the session list has
+    // it, but an earlier failure stands until the turn really starts -- a
+    // message that never becomes a turn changes nothing about it.
+    case "queued":
+      if (listed) return state;
+      return { ...state, [projectId]: { running, doneUntil: null, failed: current.failed } };
+    case "running":
+      if (listed && !current.failed && current.doneUntil === null) return state;
+      return { ...state, [projectId]: { running, doneUntil: null, failed: false } };
+    default: {
+      const left = current.running.filter((id) => id !== threadId);
+      // A turn that failed, ran into a limit or was stopped did not finish
+      // its work, so it is not marked done -- green there would say the
+      // opposite of what happened. Stopped (and a message that never became
+      // a turn) is `idle` and stays quiet; the other two are `failed`.
+      return {
+        ...state,
+        [projectId]: {
+          running: left,
+          doneUntil: left.length > 0 ? null : event.state === "done" ? at + DONE_MS : null,
+          failed: event.state === "failed" || current.failed,
+        },
+      };
+    }
   }
-
-  if (event.type === "agent.turn_completed" || event.type === "agent.turn_failed") {
-    const running = current.running.filter((id) => id !== event.threadId);
-    // A turn that failed, ran into a limit or was stopped did not finish its
-    // work, so it is not marked done -- green there would say the opposite
-    // of what happened. Stopped is the person's own doing and stays quiet;
-    // the other two are marked failed.
-    const failed =
-      event.type === "agent.turn_failed" ||
-      (event.type === "agent.turn_completed" && stoppedShort(event.stopReason));
-    const succeeded = event.type === "agent.turn_completed" && !failed && event.stopReason !== "cancelled";
-    return {
-      ...state,
-      [projectId]: {
-        running,
-        doneUntil: running.length > 0 ? null : succeeded ? at + DONE_MS : null,
-        failed: failed || current.failed,
-      },
-    };
-  }
-
-  return state;
 }
 
 /**

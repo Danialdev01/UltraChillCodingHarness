@@ -54,7 +54,7 @@ interface Connection {
   subscriptionProjects: Map<string, string>;
   /** The workspace each workspace subscription is for, likewise. */
   subscriptionWorkspaces: Map<string, string>;
-  /** Project-topic subscriptions only, for `onProjectWatch`. */
+  /** Project subscriptions with `files: true` only, for `onProjectWatch`. */
   watching: Map<string, string>;
   alive: boolean;
   /**
@@ -92,7 +92,7 @@ export interface GatewayOptions {
   presence: PresenceStore;
   /** A person's display name and picture, for presence. */
   profileOf?: (userId: string) => Promise<{ name: string; avatarUrl: string | null } | null>;
-  /** A project subscription opened (+1) or closed (-1): drives the file watcher. */
+  /** A project subscription with `files: true` opened (+1) or closed (-1): drives the file watcher. */
   onProjectWatch?: (projectId: string, delta: 1 | -1) => void;
   /** Whether a user may watch a terminal's output; see `TerminalReactor.mayWatch`. */
   mayWatchTerminal?: (userId: string, terminalId: string) => boolean;
@@ -342,7 +342,9 @@ export class WebSocketGateway {
         const watched = frame.topic.name === "project" ? frame.topic.projectId : threadProject;
         if (watched) conn.subscriptionProjects.set(subscriptionId, watched);
         if (frame.topic.name === "workspace") conn.subscriptionWorkspaces.set(subscriptionId, frame.topic.workspaceId);
-        if (frame.topic.name === "project") {
+        // Only a view that shows files keeps the watcher going: a sidebar or
+        // a board listening to the project has no use for changes on disk.
+        if (frame.topic.name === "project" && frame.topic.files === true) {
           conn.watching.set(subscriptionId, frame.topic.projectId);
           this.options.onProjectWatch?.(frame.topic.projectId, 1);
         }

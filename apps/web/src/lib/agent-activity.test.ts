@@ -12,17 +12,20 @@ const P = "11111111-1111-4111-8111-111111111111";
 const A = "22222222-2222-4222-8222-222222222222";
 const B = "33333333-3333-4333-8333-333333333333";
 const TURN = "44444444-4444-4444-8444-444444444444";
-const usage = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
-
-const started = (threadId: string) =>
-  ({ type: "turn.started", threadId, turnId: TURN }) as DomainEvent;
-const completed = (threadId: string, stopReason: string | null = "end_turn") =>
-  ({ type: "agent.turn_completed", threadId, turnId: TURN, stopReason, usage, costUsd: 0 }) as DomainEvent;
-const failed = (threadId: string) =>
-  ({ type: "agent.turn_failed", threadId, turnId: TURN, error: "boom" }) as DomainEvent;
+type State = "queued" | "running" | "done" | "failed" | "idle";
+const activity = (threadId: string, state: State): DomainEvent => ({
+  type: "project.activity",
+  projectId: P,
+  threadId,
+  state,
+});
+const started = (threadId: string) => activity(threadId, "running");
+const completed = (threadId: string) => activity(threadId, "done");
+const failed = (threadId: string) => activity(threadId, "failed");
+const stopped = (threadId: string) => activity(threadId, "idle");
 
 function fold(events: DomainEvent[], at = 1_000): ActivityState {
-  return events.reduce<ActivityState>((s, e) => reduceActivity(s, P, e, at), {});
+  return events.reduce<ActivityState>((s, e) => reduceActivity(s, e, at), {});
 }
 
 describe("agent activity", () => {
@@ -39,30 +42,38 @@ describe("agent activity", () => {
   it("keeps working until every thread in the project has finished", () => {
     const state = fold([started(A), started(B), completed(A)]);
     expect(agentStatus(state[P], false, 1_000)).toBe("working");
-    expect(agentStatus(reduceActivity(state, P, completed(B), 1_000)[P], false, 1_000)).toBe("done");
+    expect(agentStatus(reduceActivity(state, completed(B), 1_000)[P], false, 1_000)).toBe("done");
   });
 
-  it("is not marked done when the turn failed or was cancelled", () => {
+  it("is not marked done when the turn failed or was stopped", () => {
     expect(agentStatus(fold([started(A), failed(A)])[P], false, 1_000)).toBe("error");
-    expect(agentStatus(fold([started(A), completed(A, "cancelled")])[P], false, 1_000)).toBe("idle");
+    expect(agentStatus(fold([started(A), stopped(A)])[P], false, 1_000)).toBe("idle");
   });
 
-  it("marks a turn cut off by a limit as an error, not done", () => {
-    for (const reason of ["max_iterations", "max_tokens", "length", "error_max_turns"]) {
-      expect(agentStatus(fold([started(A), completed(A, reason)])[P], false, 1_000)).toBe("error");
-    }
+  it("is working from the moment a message is picked up", () => {
+    expect(agentStatus(fold([activity(A, "queued")])[P], false, 1_000)).toBe("working");
+    expect(agentStatus(fold([activity(A, "queued"), started(A), completed(A)])[P], false, 1_000)).toBe("done");
+  });
+
+  it("keeps an earlier error through a message that never became a turn", () => {
+    const state = fold([started(A), failed(A), activity(A, "queued")]);
+    expect(agentStatus(state[P], false, 1_000)).toBe("working");
+    expect(agentStatus(reduceActivity(state, stopped(A), 1_000)[P], false, 1_000)).toBe("error");
+    expect(agentStatus(reduceActivity(state, started(A), 1_000)[P], false, 1_000)).toBe("working");
+    const ran = reduceActivity(reduceActivity(state, started(A), 1_000), completed(A), 1_000);
+    expect(agentStatus(ran[P], false, 1_000)).toBe("done");
   });
 
   it("holds the error past the done window, until the next turn starts", () => {
     const state = fold([started(A), failed(A)], 1_000);
     expect(agentStatus(state[P], false, 1_000 + 60 * 60_000)).toBe("error");
-    expect(agentStatus(reduceActivity(state, P, started(A), 2_000)[P], false, 2_000)).toBe("working");
+    expect(agentStatus(reduceActivity(state, started(A), 2_000)[P], false, 2_000)).toBe("working");
   });
 
   it("shows working over an error from another session", () => {
     const state = fold([started(A), started(B), failed(A)]);
     expect(agentStatus(state[P], false, 1_000)).toBe("working");
-    expect(agentStatus(reduceActivity(state, P, completed(B), 1_000)[P], false, 1_000)).toBe("error");
+    expect(agentStatus(reduceActivity(state, completed(B), 1_000)[P], false, 1_000)).toBe("error");
   });
 
   it("trusts the page's snapshot of a failed turn", () => {
@@ -70,7 +81,7 @@ describe("agent activity", () => {
     expect(agentStatus(undefined, true, 0, true)).toBe("working");
   });
 
-  it("dates the done mark to the event, so replayed history stays quiet", () => {
+  it("dates the done mark to when the event arrived", () => {
     const state = fold([started(A), completed(A)], 1_000);
     expect(agentStatus(state[P], false, 1_000 + 60 * 60_000)).toBe("idle");
   });
@@ -78,14 +89,15 @@ describe("agent activity", () => {
   it("trusts the page's snapshot until the socket says otherwise", () => {
     expect(agentStatus(undefined, true, 0)).toBe("working");
     // Running when the page loaded, on a thread this tab never saw start.
-    const state = reduceActivity({}, P, completed(A), 1_000);
+    const state = reduceActivity({}, completed(A), 1_000);
     expect(agentStatus(state[P], true, 1_000)).toBe("done");
   });
 
   it("ignores everything else", () => {
     const state = fold([started(A)]);
-    const other = { type: "agent.text_delta", threadId: A, turnId: TURN, text: "x" } as DomainEvent;
-    expect(reduceActivity(state, P, other, 1_000)).toBe(state);
+    const other: DomainEvent = { type: "turn.started", threadId: A, turnId: TURN };
+    expect(reduceActivity(state, other, 1_000)).toBe(state);
+    expect(reduceActivity(state, started(A), 1_000)).toBe(state);
   });
 
   it("knows when the next done mark lapses", () => {

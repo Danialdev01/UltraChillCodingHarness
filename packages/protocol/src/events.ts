@@ -612,6 +612,26 @@ const PresenceChanged = z.object({
   viewers: z.array(PresenceViewer),
 });
 
+/**
+ * A project's agent picked up, started or finished a turn, for the sidebars
+ * of everyone in its workspace. Published to the workspace's topic rather
+ * than read off each project's, so a sidebar listing twenty projects holds
+ * one subscription instead of twenty. Derived on the server from the turn's
+ * own events (`project-activity.ts`).
+ *
+ * `failed` is a turn that failed or was cut off by a limit; `idle` one that
+ * was stopped, or a message that never became a turn.
+ */
+export const ProjectActivityState = z.enum(["queued", "running", "done", "failed", "idle"]);
+export type ProjectActivityState = z.infer<typeof ProjectActivityState>;
+
+const ProjectActivity = z.object({
+  type: z.literal("project.activity"),
+  projectId: z.string().uuid(),
+  threadId: z.string().uuid(),
+  state: ProjectActivityState,
+});
+
 export const LiveResource = z.enum([
   "keys",
   "database_connections",
@@ -758,6 +778,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   TaskChanged,
   ComposerChanged,
   PresenceChanged,
+  ProjectActivity,
   ResourceChanged,
   AuditRecorded,
   PortOpened,
@@ -798,6 +819,7 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "task.changed",
   "composer.changed",
   "presence.changed",
+  "project.activity",
   "resource.changed",
   "audit.recorded",
 ]);

@@ -122,75 +122,66 @@ export function useToast(): Realtime["toast"] {
  * Calls `handler` for every event on the project's topic. Quiet: the token
  * and terminal streams are left out on the server.
  *
+ * `files: true` is for views that show files: while it is set, the server
+ * watches the project's directory, so changes made outside it -- a
+ * terminal, a dev server, git -- arrive as `file.changed` too. Without it,
+ * only the changes the server and the agent make themselves do.
+ *
  * The handler is read through a ref, so passing a new function each render
  * does not resubscribe.
  */
 export function useProjectEvents(
   projectId: string | null | undefined,
   handler: (event: DomainEvent, row: ClientEvent) => void,
+  options: { files?: boolean } = {},
 ): UcchClient | null {
   const { client } = useRealtime()
   const ref = React.useRef(handler)
   ref.current = handler
+  const files = options.files === true
 
   React.useEffect(() => {
     if (!client || !projectId) return
+    // Files first, so a first subscription asks for them at once rather
+    // than being upgraded straight after.
+    const release = files ? client.holdFiles(projectId) : undefined
     void client.subscribe({ name: "project", projectId, quiet: true }).catch(() => {})
-    return client.onEvent((row) => {
+    const off = client.onEvent((row) => {
       const event = row.event
       if (!("projectId" in event) || event.projectId !== projectId) return
       ref.current(event, row)
     })
-  }, [client, projectId])
+    return () => {
+      off()
+      release?.()
+    }
+  }, [client, projectId, files])
 
   return client
 }
 
-const TURN_EDGES: ReadonlySet<DomainEvent["type"]> = new Set([
-  "turn.started",
-  "agent.turn_completed",
-  "agent.turn_failed",
-])
-
 /**
  * Whether each project's agent is working, done, or idle, for the sidebar.
  *
- * Watches every listed project quietly -- turn starts and ends still arrive,
- * the token stream does not. `running` on each project is the page's own
- * snapshot, used until the socket has something newer to say.
- *
- * `onStackChange` is called when a watched project's stack is detected
- * afresh, so the caller can fetch the list again with its new icon.
+ * Read off the workspace topic, which the shell holds already: the server
+ * sends it `project.activity` for every turn picked up, started or ended in
+ * any of its projects, so a sidebar of twenty projects subscribes to none of
+ * them. `running` and `failed` on each project are the page's own snapshot,
+ * used until the socket has something newer to say.
  */
-export function useAgentActivity(
-  projects: readonly { id: string; running?: boolean; failed?: boolean }[],
-  onStackChange?: () => void,
-): (project: { id: string; running?: boolean; failed?: boolean }) => AgentStatus {
+export function useAgentActivity(): (project: { id: string; running?: boolean; failed?: boolean }) => AgentStatus {
   const { client } = useRealtime()
-  const stackChanged = React.useRef(onStackChange)
-  stackChanged.current = onStackChange
   const [state, setState] = React.useState<ActivityState>({})
   const [now, setNow] = React.useState(() => Date.now())
-  const ids = projects.map((p) => p.id).join(",")
 
   React.useEffect(() => {
-    if (!client || !ids) return
-    const watched = new Set(ids.split(","))
-    for (const projectId of watched) {
-      void client.subscribe({ name: "project", projectId, quiet: true }).catch(() => {})
-    }
-    return client.onEvent(({ event, projectId, receivedAt }) => {
-      if (!projectId || !watched.has(projectId)) return
-      // Fresh ones only: a subscribe replays history, and a stack detected
-      // last week is already in the list the page was rendered with.
-      if (event.type === "project.stack_detected" && Date.now() - receivedAt < 60_000) {
-        stackChanged.current?.()
-      }
-      if (!TURN_EDGES.has(event.type)) return
-      setState((current) => reduceActivity(current, projectId, event, receivedAt))
+    if (!client) return
+    return client.onEvent(({ event, receivedAt }) => {
+      if (event.type !== "project.activity") return
+      setState((current) => reduceActivity(current, event, receivedAt))
       setNow(Date.now())
     })
-  }, [client, ids])
+  }, [client])
 
   // One timer for whichever done mark lapses first, so the row turns back
   // without the sidebar re-rendering on a clock.

@@ -57,5 +57,15 @@ export class ProjectAccess {
     return row.projectId;
   }
 
+  /** The project's workspace, unchecked: for routing, never for permission. */
+  async workspaceOfProject(projectId: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ workspaceId: projects.workspaceId })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    return row?.workspaceId ?? null;
+  }
+
   #threads = new Map<string, string>();
 }

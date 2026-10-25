@@ -9,11 +9,15 @@
  *     [--base http://127.0.0.1:3397] [--metrics-token T] [--ramp 30]
  *     [--mix native=0.2,terminal=0.3,git=0.3] [--turn-every 60] [--git-every 60]
  *     [--poll-every 30] [--type-rate 5] [--type-via frame|dispatch]
+ *     [--sidebar workspace|per-project]
  *
  * Every virtual user, as the browser does (solution.md §1):
  *   - takes a ws-ticket and opens /ws, subscribing to `user`, the shared
- *     workspace, and a quiet `project` topic for each of its projects -- the
- *     sidebar today -- plus its own thread, with replay;
+ *     workspace (whose `project.activity` is the sidebar), a quiet `project`
+ *     topic for the project it has open -- with `files: true` for the git
+ *     role, whose Git view shows files -- and its own thread, with replay;
+ *     with --sidebar per-project, a quiet `project` topic for every project
+ *     instead, the way the sidebar did before PF1.26;
  *   - every --poll-every seconds fetches /api/bootstrap, one page document
  *     and five RSC prefetches through the edge;
  * and by role (the rest only watch):
@@ -23,6 +27,9 @@
  *               --type-via dispatch as acked `terminal.input` commands;
  *   - git:      reads status, branches and the first log page every
  *               --git-every s, as the Git view does.
+ *
+ * Also measured: how long after its own `turn.started` a native user's
+ * sidebar hears `project.activity` say the project is running.
  *
  * Measured on the client: ack round trip by command; keystroke echo (send
  * until the `terminal.output` holding that character); frames, bytes and
@@ -52,6 +59,7 @@ const { values: args } = parseArgs({
     "poll-every": { type: "string", default: "30" },
     "type-rate": { type: "string", default: "5" },
     "type-via": { type: "string", default: "frame" },
+    sidebar: { type: "string", default: "workspace" },
     "scrape-every": { type: "string", default: "5" },
     label: { type: "string", default: "" },
   },
@@ -68,6 +76,7 @@ const GIT_EVERY = Number(args["git-every"]) * 1000;
 const POLL_EVERY = Number(args["poll-every"]) * 1000;
 const TYPE_INTERVAL = 1000 / Number(args["type-rate"]);
 const TYPE_VIA = args["type-via"] === "dispatch" ? "dispatch" : "frame";
+const SIDEBAR = args.sidebar === "per-project" ? "per-project" : "workspace";
 const SCRAPE_EVERY = Number(args["scrape-every"]) * 1000;
 const mix = Object.fromEntries(args.mix.split(",").map((part) => part.split("=")).map(([k, v]) => [k, Number(v)]));
 
@@ -253,7 +262,13 @@ async function virtualUser(index, stopAt) {
   const socket = await Socket.open(user.cookie);
   await socket.subscribe({ name: "user" });
   await socket.subscribe({ name: "workspace", workspaceId: shared.id });
-  for (const p of projects) await socket.subscribe({ name: "project", projectId: p.id, quiet: true });
+  if (SIDEBAR === "per-project") {
+    for (const p of projects) {
+      await socket.subscribe({ name: "project", projectId: p.id, quiet: true, ...(p.id === project.id && role === "git" ? { files: true } : {}) });
+    }
+  } else {
+    await socket.subscribe({ name: "project", projectId: project.id, quiet: true, ...(role === "git" ? { files: true } : {}) });
+  }
 
   // The user's own thread in its project, found again on later runs.
   const title = `load-vu-${index}`;
@@ -267,6 +282,7 @@ async function virtualUser(index, stopAt) {
   }
   if (!threadId) throw new Error("no thread");
   await socket.subscribe({ name: "thread", threadId });
+  if (role === "native") watchActivity(socket, threadId);
 
   const tasks = [poll(socket, headers, shared, projects, bootstrapUrl, stopAt)];
   if (role === "native") tasks.push(turns(socket, threadId, stopAt));
@@ -275,6 +291,19 @@ async function virtualUser(index, stopAt) {
   await Promise.all(tasks);
   socket.close();
   return role;
+}
+
+/** From the thread's own `turn.started` to the workspace's `project.activity` saying so. */
+function watchActivity(socket, threadId) {
+  let startedAt = null;
+  socket.on((frame) => {
+    if (frame.kind !== "push" || frame.event.threadId !== threadId) return;
+    if (frame.event.type === "turn.started") startedAt = performance.now();
+    if (frame.event.type === "project.activity" && frame.event.state === "running" && startedAt !== null) {
+      record("activity_lag_ms", performance.now() - startedAt);
+      startedAt = null;
+    }
+  });
 }
 
 async function poll(socket, headers, shared, projects, bootstrapUrl, stopAt) {

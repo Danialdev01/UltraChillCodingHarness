@@ -106,6 +106,7 @@ import {
 import { cachedCatalogue, catalogue, keyQuota, setOpenRouterBase, type KeyQuota } from "./openrouter.js";
 import { isLoopback, LATENCY_BUCKETS, metricsAccess, recordVitals, registry, startRuntimeMetrics } from "./metrics.js";
 import { recomputeProjectStats } from "./project-stats.js";
+import { ProjectActivityPublisher } from "./project-activity.js";
 import { ResourceSampler } from "./resource-sampler.js";
 import {
   fetchClaudeUsage,
@@ -408,6 +409,12 @@ const fileWatcher = new FileWatcher({
 bus.tap(({ projectId, event }) => {
   if (event.type === "file.changed" && !watcherEvents.has(event)) fileWatcher.noteOwnWrite(projectId, event.path);
 });
+// Turn edges and new stacks, to the workspace topic every sidebar holds.
+new ProjectActivityPublisher(
+  bus,
+  (projectId) => access.workspaceOfProject(projectId),
+  (error) => app.log.warn({ err: error }, "could not find a project's workspace"),
+).start();
 
 const gateway = new WebSocketGateway(auth, engine, store, bus, {
   onProjectWatch: (projectId, delta) =>

@@ -44,9 +44,7 @@ import {
   type Section,
 } from "@/lib/sections"
 import { prefetchProject } from "@/lib/preload"
-import { qk } from "@/lib/query-keys"
 import { useAgentActivity } from "@/lib/realtime"
-import { prefixOf } from "@/lib/realtime-cache"
 import type { Project, Workspace } from "@/lib/session"
 import { countLabel } from "@/lib/workspace-api"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
@@ -111,11 +109,7 @@ export function SectionPanel({
 }) {
   const router = useTransitionRouter()
   const queryClient = useQueryClient()
-  // A stack detected afresh is a new icon for the row: the shell's lists
-  // come from the bootstrap, which is fetched again.
-  const agentStatusOf = useAgentActivity(LISTS_PROJECTS.has(section.id) ? projects : [], () =>
-    void queryClient.invalidateQueries({ queryKey: prefixOf(qk.bootstrap()) }),
-  )
+  const agentStatusOf = useAgentActivity()
   const pathname = usePathname()
   const ws = useWorkspaceHash()
   const hrefOf = useProjectHref()

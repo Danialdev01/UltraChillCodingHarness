@@ -191,22 +191,28 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
   // pull. Taken only when there is nothing unsaved here to lose.
   const draftRef = React.useRef(draft)
   draftRef.current = draft
-  useProjectEvents(project.id, (event) => {
-    if (event.type !== "file.changed" || event.path !== PATH || isOwnChange(event.origin)) return
-    // Unsaved typing here is not thrown away: its save will be refused and
-    // reverted with a notice instead, so nothing is lost silently.
-    if (draftRef.current !== saved.current) return
-    void fetchDiagram(project.hash, kind).then(
-      (file) => {
-        if (!file || draftRef.current !== saved.current) return
-        version.current = file.version
-        if (file.source === saved.current) return
-        saved.current = file.source
-        setDraft(file.source)
-      },
-      () => {},
-    )
-  })
+  // With files: the diagram's source is a file in the project, which a
+  // terminal or a pull can change as well as the agent.
+  useProjectEvents(
+    project.id,
+    (event) => {
+      if (event.type !== "file.changed" || event.path !== PATH || isOwnChange(event.origin)) return
+      // Unsaved typing here is not thrown away: its save will be refused and
+      // reverted with a notice instead, so nothing is lost silently.
+      if (draftRef.current !== saved.current) return
+      void fetchDiagram(project.hash, kind).then(
+        (file) => {
+          if (!file || draftRef.current !== saved.current) return
+          version.current = file.version
+          if (file.source === saved.current) return
+          saved.current = file.source
+          setDraft(file.source)
+        },
+        () => {},
+      )
+    },
+    { files: true },
+  )
 
   const editing = draft !== null && draft !== saved.current
   usePresenceLocation(project.id, `file:${PATH}`, editing)

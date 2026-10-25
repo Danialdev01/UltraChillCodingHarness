@@ -21,6 +21,7 @@ import { TAB_ID } from "./tab-id";
 const EPHEMERAL: ReadonlySet<DomainEvent["type"]> = new Set([
   "composer.changed",
   "presence.changed",
+  "project.activity",
   "audit.recorded",
   "resource.changed",
   // A terminal's bytes: read straight off `onEvent` by the terminal views. In
@@ -79,6 +80,8 @@ export class UcchClient {
   #presence = new Map<string, { location: string | null; editing: boolean }>();
   #pending = new Map<string, { resolve: (v: StoredEvent[]) => void; reject: (e: Error) => void }>();
   #subscriptions = new Map<string, { topic: SubscribeTopic; lastSeq: number }>();
+  /** Views holding each project's file watcher; see `holdFiles`. */
+  #fileHolders = new Map<string, number>();
   /**
    * Durable events already recorded, keyed by scope and sequence.
    *
@@ -270,11 +273,13 @@ export class UcchClient {
     for (const [existingId, existing] of this.#subscriptions) {
       if (topicKey(existing.topic) !== key) continue;
       // A quiet project subscription leaves out the token and terminal
-      // streams. A view that wants them -- asked for the same topic loudly --
-      // upgrades it, rather than being silently given the quiet one; one
-      // subscription per topic stays the rule.
-      const quiet = (t: SubscribeTopic) => t.name === "project" && t.quiet === true;
-      if (!quiet(existing.topic) || quiet(topic)) return;
+      // streams, and one without `files` leaves the server's file watcher
+      // off. A view that wants more than the subscription gives -- the same
+      // topic asked for loudly, or with files -- upgrades it, rather than
+      // being silently given less; one subscription per topic stays the rule.
+      const merged = mergeTopic(existing.topic, topic);
+      if (sameTopic(merged, existing.topic)) return;
+      topic = merged;
       lastSeq = existing.lastSeq;
       this.#subscriptions.delete(existingId);
       this.#send({ kind: "unsubscribe", id: existingId });
@@ -295,6 +300,49 @@ export class UcchClient {
       this.#pending.set(id, { resolve: () => resolve(), reject });
       this.#send({ kind: "subscribe", id, topic });
     });
+  }
+
+  /**
+   * Keeps the server's file watcher on a project running for as long as a
+   * view showing its files is mounted: changes made on disk outside the
+   * server -- a terminal, a dev server, git -- then arrive as
+   * `file.changed`. Counted, so the watcher goes off when the last such view
+   * calls the returned function, and the project's subscription stays, as
+   * quiet as it was.
+   */
+  holdFiles(projectId: string): () => void {
+    const holders = (this.#fileHolders.get(projectId) ?? 0) + 1;
+    this.#fileHolders.set(projectId, holders);
+    if (holders === 1) void this.subscribe({ name: "project", projectId, quiet: true, files: true }).catch(() => {});
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = (this.#fileHolders.get(projectId) ?? 1) - 1;
+      if (left > 0) {
+        this.#fileHolders.set(projectId, left);
+        return;
+      }
+      this.#fileHolders.delete(projectId);
+      this.#withoutFiles(projectId);
+    };
+  }
+
+  /** Turns `files` off on the project's subscription, keeping the rest of it. */
+  #withoutFiles(projectId: string): void {
+    for (const [existingId, existing] of this.#subscriptions) {
+      const topic = existing.topic;
+      if (topic.name !== "project" || topic.projectId !== projectId || !topic.files) continue;
+      const id = String(this.#nextId++);
+      const lowered: SubscribeTopic = { name: "project", projectId, ...(topic.quiet ? { quiet: true } : {}) };
+      this.#subscriptions.delete(existingId);
+      this.#subscriptions.set(id, { topic: lowered, lastSeq: existing.lastSeq });
+      this.#send({ kind: "unsubscribe", id: existingId });
+      // Dropped when not open: the `ready` handler subscribes it then, as it
+      // is now. Nothing waits on the ack, as with the `ready` handler's.
+      this.#send({ kind: "subscribe", id, topic: lowered });
+      return;
+    }
   }
 
   /** Stops listening to a topic -- a terminal tab closed. Idempotent. */
@@ -520,6 +568,22 @@ export function terminalPieces(data: string, max = TERMINAL_INPUT_MAX): string[]
   return pieces;
 }
 
+/**
+ * One subscription that gives both views what they asked for: loud if
+ * either is, watching files if either does. Only project topics differ.
+ */
+function mergeTopic(existing: SubscribeTopic, wanted: SubscribeTopic): SubscribeTopic {
+  if (existing.name !== "project" || wanted.name !== "project") return existing;
+  const quiet = existing.quiet === true && wanted.quiet === true;
+  const files = existing.files === true || wanted.files === true;
+  return { name: "project", projectId: existing.projectId, ...(quiet ? { quiet } : {}), ...(files ? { files } : {}) };
+}
+
+function sameTopic(a: SubscribeTopic, b: SubscribeTopic): boolean {
+  if (a.name !== "project" || b.name !== "project") return topicKey(a) === topicKey(b);
+  return a.projectId === b.projectId && (a.quiet === true) === (b.quiet === true) && (a.files === true) === (b.files === true);
+}
+
 function topicKey(topic: SubscribeTopic): string {
   switch (topic.name) {
     case "thread":
@@ -537,7 +601,7 @@ function topicKey(topic: SubscribeTopic): string {
 
 export type SubscribeTopic =
   | { name: "thread"; threadId: string }
-  | { name: "project"; projectId: string; quiet?: boolean }
+  | { name: "project"; projectId: string; quiet?: boolean; files?: boolean }
   | { name: "terminal"; terminalId: string }
   | { name: "user" }
   | { name: "workspace"; workspaceId: string };

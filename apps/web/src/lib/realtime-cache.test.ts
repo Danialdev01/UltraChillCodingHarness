@@ -54,6 +54,17 @@ describe("turn edges", () => {
     }
   })
 
+  it("reach the sidebar from the workspace's activity, ends only", () => {
+    for (const state of ["done", "failed", "idle"]) {
+      const effect = cacheEffect(ev({ type: "project.activity", projectId: P, threadId: P, state }))
+      expect(effect.invalidate).toEqual([["sessions"]])
+      expect(effect.deferred?.map(prefixOf)).toEqual([["bootstrap"]])
+    }
+    for (const state of ["queued", "running"]) {
+      expect(cacheEffect(ev({ type: "project.activity", projectId: P, threadId: P, state })).invalidate).toEqual([])
+    }
+  })
+
   it("refresh the sessions lists when a queued message is dequeued", () => {
     expect(cacheEffect(ev({ type: "turn.dequeued", reason: "cancelled" }))).toEqual({ invalidate: [["sessions"]] })
   })

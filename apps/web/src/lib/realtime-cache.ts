@@ -62,6 +62,12 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
     case "agent.turn_completed":
     case "agent.turn_failed":
       return { invalidate: [qk.sessions.all], deferred: [qk.bootstrap()] }
+    // The same edges for every project in the workspace, open here or not:
+    // the sidebar's counts and dots. A project open here hears the turn's
+    // own events too; the sink folds the two into one refetch.
+    case "project.activity":
+      if (event.state === "queued" || event.state === "running") return NONE
+      return { invalidate: [qk.sessions.all], deferred: [qk.bootstrap()] }
     // A message that never became a turn: the session's status is idle again.
     case "turn.dequeued":
       return { invalidate: [qk.sessions.all] }

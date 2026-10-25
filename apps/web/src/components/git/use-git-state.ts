@@ -136,20 +136,26 @@ export function useGitState(project: Project): GitState {
     },
     [],
   )
-  useProjectEvents(projectId, (event) => {
-    const changed =
-      event.type === "file.changed" ||
-      event.type === "git.committed" ||
-      event.type === "git.pushed" ||
-      // Staging, a checkout, a branch: the index and refs, from another tab.
-      (event.type === "resource.changed" && event.resource === "git" && !isOwnChange(event.origin))
-    if (!changed) return
-    if (pending.current) clearTimeout(pending.current)
-    pending.current = setTimeout(() => {
-      pending.current = null
-      void refresh()
-    }, DEBOUNCE_MS)
-  })
+  // With files: a checkout or a commit made in a terminal changes the tree
+  // without the server saying so, and only the watcher hears it.
+  useProjectEvents(
+    projectId,
+    (event) => {
+      const changed =
+        event.type === "file.changed" ||
+        event.type === "git.committed" ||
+        event.type === "git.pushed" ||
+        // Staging, a checkout, a branch: the index and refs, from another tab.
+        (event.type === "resource.changed" && event.resource === "git" && !isOwnChange(event.origin))
+      if (!changed) return
+      if (pending.current) clearTimeout(pending.current)
+      pending.current = setTimeout(() => {
+        pending.current = null
+        void refresh()
+      }, DEBOUNCE_MS)
+    },
+    { files: true },
+  )
 
   // The diff follows the selection. Keyed on its parts rather than the
   // object so a refresh that rebuilds the same selection does not refetch.

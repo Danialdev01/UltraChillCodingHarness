@@ -30,7 +30,7 @@ export function SessionList({
   sessions: readonly Project[]
   activeProjectHash?: string
 }) {
-  const agentStatusOf = useAgentActivity(sessions)
+  const agentStatusOf = useAgentActivity()
   const { project: openProject, closeFiles } = useFilesPanel()
   const router = useTransitionRouter()
   const ws = useWorkspaceHash()
