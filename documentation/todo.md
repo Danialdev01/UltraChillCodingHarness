@@ -533,7 +533,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
 
 ### Subscriptions and runtime (`solution.md` §11–§12)
 
-- [ ] **PF1.26 — Workspace activity topic; only file views retain the watcher**
+- [x] **PF1.26 — Workspace activity topic; only file views retain the watcher** — edc0931
 
   - **Depends:** PF1.2
   - **Files:** `apps/server/src/index.ts` (a `bus.tap` deriving `project.activity`), `apps/server/src/bus.ts` (`publishToWorkspace`), `apps/server/src/ws.ts` (`onProjectWatch` at lines 284–287 and 472–476: only `files: true`), `packages/protocol` (`project.activity` transient event; project subscribe `files` flag), `apps/web/src/lib/realtime.tsx` (`useAgentActivity` at lines 160–182; quiet subscriptions at lines 140, 182, 256), `apps/web/src/components/session-list.tsx`, the views that need files (Git view, files panel, code editor, the chat's file pane) via `useProjectEvents({ files: true })`
@@ -543,6 +543,11 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. Only subscriptions with `files: true` call `onProjectWatch`.
   - **Acceptance:** about 4 subscriptions per socket (metrics). `watched_projects` equals the number of projects open in a view that shows files.
   - **Verify:** `pnpm test -- ws`, plus load
+  - **Measured:**
+    - Subscriptions per socket under the PF0 load: 23 before (1,000 project subscriptions for 50 sockets), 4 after.
+    - `watched_projects` max: 20 before (every listed project), 15 after, one per git-role user with the Git view open.
+    - `project.activity` reaches the sidebar 0.30 ms p50 and 1.81 ms p99 after the thread's own `turn.started`.
+    - The files panel holds the watcher while its tree or a file tab is open, and rereads the tree when shown again. The Git view and the diagram editor hold it while mounted.
 
 - [ ] **PF1.27 — Runtime: heap flags, DB pool, logging, Postgres defaults**
 
