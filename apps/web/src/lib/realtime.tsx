@@ -17,9 +17,10 @@ import { TAB_ID, installTabHeader } from "@/lib/tab-id"
 import { useActiveWorkspace } from "@/lib/workspace-context"
 
 /**
- * One socket per tab for everything that only needs to hear that something
- * changed: notes, activity, presence, settings. Views with their own
- * long-lived streams -- the chat, a terminal -- keep their own.
+ * One socket per tab, for every view: notes, activity, presence, settings,
+ * terminals, and the chat, which holds its thread's subscription on it
+ * (`UcchClient.hold`). Only `create-project.ts` opens one of its own, for
+ * one command.
  */
 interface Realtime {
   client: UcchClient | null

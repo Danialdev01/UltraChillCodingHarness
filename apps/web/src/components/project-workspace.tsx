@@ -43,9 +43,9 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
   useCurrentProject(project)
   const { mode, sidebar } = useFilesPanel()
 
-  // ProjectChat holds the project's WebSocket subscription, so it stays
-  // mounted and hidden rather than unmounting: switching to files and back
-  // would otherwise tear down the socket and replay the event log. It is
+  // ProjectChat holds its thread's subscription, so it stays mounted and
+  // hidden rather than unmounting: switching to files and back would
+  // otherwise end the subscription and replay the thread again. It is
   // rendered through a portal so the right-hand column can show the same
   // instance beside the editor; the dock here is where it sits otherwise.
   const docked = mode !== "chat" && sidebar === "chat"

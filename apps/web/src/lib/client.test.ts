@@ -110,6 +110,67 @@ describe("UcchClient.holdFiles", () => {
   })
 })
 
+describe("UcchClient.hold", () => {
+  const THREAD = "44444444-4444-4444-4444-444444444444"
+  const thread = { name: "thread", threadId: THREAD } as const
+  const at = "2026-01-01T00:00:00.000Z"
+  const replay = (subscriptionId: string, seqs: number[]) =>
+    JSON.stringify({
+      kind: "replay",
+      subscriptionId,
+      events: seqs.map((seq) => ({ seq, at, projectId: PROJECT, event: { type: "user.message", threadId: THREAD, text: `m${seq}` } })),
+      done: true,
+    })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+  })
+
+  it("subscribes once however many views hold a topic, and ends it after the last", async () => {
+    const { client, sent } = await readyClient()
+    const a = client.hold({ name: "terminal", terminalId: "t" })
+    const b = client.hold({ name: "terminal", terminalId: "t" })
+    a.release()
+    a.release()
+    expect(sent()).toEqual(["subscribe 0"])
+    b.release()
+    expect(sent()).toEqual(["subscribe 0", "unsubscribe 0"])
+  })
+
+  it("goes back to quiet when the view that wanted it loud lets go", async () => {
+    const { client, sent } = await readyClient()
+    void client.subscribe({ name: "project", projectId: PROJECT, quiet: true })
+    const loud = client.hold({ name: "project", projectId: PROJECT })
+    expect(sent()).toEqual(["subscribe 0 quiet", "unsubscribe 0", "subscribe 1"])
+    loud.release()
+    expect(sent().slice(3)).toEqual(["unsubscribe 1", "subscribe 2 quiet"])
+  })
+
+  it("hands each view holding a thread its replay, the second one too", async () => {
+    const { client, socket, sent } = await readyClient()
+    const heard: number[] = []
+    client.onEvent(({ seq }) => heard.push(seq ?? -1))
+    const first: number[] = []
+    const second: number[] = []
+    const a = client.hold(thread, ({ seq }) => first.push(seq ?? -1))
+    socket.onmessage!({ data: replay("0", [0, 1, 2]) })
+    socket.onmessage!({
+      data: JSON.stringify({ kind: "push", subscriptionId: "0", seq: null, event: { type: "agent.text_delta", threadId: THREAD, turnId: THREAD, text: "x" } }),
+    })
+    // A second view on the same thread asks the server for the replay again.
+    client.hold(thread, ({ seq }) => second.push(seq ?? -1))
+    expect(sent()).toEqual(["subscribe 0", "unsubscribe 0", "subscribe 1"])
+    socket.onmessage!({ data: replay("1", [0, 1, 2]) })
+    expect(first).toEqual([0, 1, 2, -1, 0, 1, 2])
+    expect(second).toEqual([0, 1, 2])
+    // The rest of the tab heard each event once.
+    expect(heard).toEqual([0, 1, 2, -1])
+    a.release()
+    expect(sent()).toHaveLength(3)
+  })
+})
+
 describe("parseServerFrame", () => {
   const THREAD = "44444444-4444-4444-4444-444444444444"
   const delta = { type: "agent.text_delta", threadId: THREAD, turnId: THREAD, text: "x" }

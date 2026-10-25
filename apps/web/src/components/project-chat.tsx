@@ -118,7 +118,7 @@ import type { ComposerDraft, MessageImage, MessageMode, ReasoningEffort } from "
 import type { Project, ProjectSession } from "@/lib/session";
 import { ServerError } from "@/lib/client";
 import { createComposerSync, type ComposerSync } from "@/lib/composer-sync";
-import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents } from "@/lib/realtime";
+import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents, useRealtime } from "@/lib/realtime";
 import { isTaskThreadTitle } from "@/lib/tasks-api";
 import { NEW_SESSION_NAME, renameProject, sessionTitleFrom } from "@/lib/create-project";
 import { useRouter } from "next/navigation";
@@ -144,12 +144,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   const sessionId = session?.id ?? null;
   const sessionProvider = session?.provider ?? null;
   const transitionRouter = useTransitionRouter();
-  // Owned by the effect below rather than by a memo: the effect is what
-  // connects and what closes, so tying the client's lifetime to anything else
-  // leaves a socket alive that nothing is reading. A ref, because the
-  // composer needs it without re-rendering when it changes.
-  const clientRef = useRef<UcchClient | null>(null);
-  const [events, setEvents] = useState<readonly ClientEvent[]>([]);
+  // The tab's one socket (`realtime.tsx`), shared with every other view:
+  // the chat holds its thread's subscription on it rather than opening a
+  // socket of its own. A ref as well, because the composer needs it without
+  // re-rendering when it changes.
+  const { client: sharedClient } = useRealtime();
+  const clientRef = useRef<UcchClient | null>(sharedClient);
+  clientRef.current = sharedClient;
   const [threadId, setThreadId] = useState<string | null>(null);
   // Until the opening thread's history has replayed, an empty `events` means
   // "not here yet" rather than "nothing said", and the list is a skeleton.
@@ -228,19 +229,12 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    *
    * `file.changed` arrives on this thread's own subscription -- the agent
    * emits it from inside the turn -- so the panel is refreshed from the
-   * socket that is already open rather than a second one of its own, and an
-   * open file the model rewrote is reread underneath the editor.
+   * subscription that is already open (`openThread`), and an open file the
+   * model rewrote is reread underneath the editor.
    */
   const { noteChanged, tree } = useFilesPanel();
-  const seenFileEvents = useRef(0);
-
-  useEffect(() => {
-    for (let i = seenFileEvents.current; i < events.length; i++) {
-      const event = events[i]!.event;
-      if (event.type === "file.changed") noteChanged(event.path, event.change);
-    }
-    seenFileEvents.current = events.length;
-  }, [events, noteChanged]);
+  const noteChangedRef = useRef(noteChanged);
+  noteChangedRef.current = noteChanged;
 
   const { models, defaultModel } = useModels();
   const [model, setModel] = useState("");
@@ -399,23 +393,34 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   /**
    * The thread on screen, and the store its events are kept in
    * (`thread-store.ts`): the conversation and what is streaming into it,
-   * apart from the client's capped history of everything. What the client
-   * has already heard of the thread is taken in first, so a store made
-   * after the thread was subscribed to misses nothing that fits there.
+   * apart from the client's capped history of everything.
+   *
+   * Holds the thread's subscription for as long as it is on screen, and
+   * resolves once its history has replayed. The subscription's own events
+   * fill the store, the replay included even when another view had the
+   * thread open first; the acks to this tab's commands come through
+   * `onEvent`, ahead of their push, and only logged events are taken from
+   * there -- a token would arrive twice.
    */
   const threadStoreRef = useRef<{ store: ThreadStore; off: () => void } | null>(null);
   const [threadStore, setThreadStore] = useState<ThreadStore | null>(null);
-  const openThread = useCallback((client: UcchClient, id: string) => {
+  const openThread = useCallback((client: UcchClient, id: string): Promise<void> => {
     threadStoreRef.current?.off();
     const store = new ThreadStore(id);
-    for (const row of client.events) store.push(row);
-    const offEvent = client.onEvent((row) => store.push(row));
+    const held = client.hold({ name: "thread", threadId: id }, (row) => {
+      store.push(row);
+      if (row.event.type === "file.changed") noteChangedRef.current(row.event.path, row.event.change);
+    });
+    const offEvent = client.onEvent((row) => {
+      if (row.seq !== null) store.push(row);
+    });
     // Back from a drop: what streamed meanwhile is gone, and the logged
     // message, replayed, replaces it.
     const offReconnect = client.onReconnect(() => store.reset());
     threadStoreRef.current = {
       store,
       off: () => {
+        held.release();
         offEvent();
         offReconnect();
         store.dispose();
@@ -423,6 +428,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     };
     setThreadStore(store);
     setThreadId(id);
+    return held.ready;
   }, []);
 
   /**
@@ -445,16 +451,11 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   );
 
   useEffect(() => {
-    const client = new UcchClient();
-    clientRef.current = client;
-
-    const unsubscribe = client.subscribeToChanges(() => setEvents(client.events));
+    const client = sharedClient;
+    if (!client) return;
 
     let cancelled = false;
     void (async () => {
-      await client.connect();
-      if (cancelled) return;
-
       // A session's page names its thread. Otherwise -- a session
       // workspace's session, which is a project of its own -- the
       // conversation is the project's newest thread, so a reload continues
@@ -478,20 +479,18 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       }
 
       if (cancelled) return;
+      // Subscribing on a ready socket waits for the ack, which carries the
+      // replayed history -- on one still opening it would return at once --
+      // and creating a thread needs one too.
+      await client.whenReady();
+      if (cancelled) return;
       const id = opened?.id ?? (await createThread(client, project));
       if (cancelled || !id) return;
 
-      // Before subscribing, so the replay -- up to a whole window of the
-      // thread, more than the client's own history keeps -- lands in it.
-      openThread(client, id);
       // A thread that has run is bound to its provider; the picker shows it
       // locked rather than offering a switch the server would refuse.
       setBoundProvider(isProviderId(opened?.provider) ? opened.provider : null);
-      // Subscribing on a ready socket waits for the ack, which carries the
-      // replayed history -- on one still opening it would return at once.
-      await client.whenReady();
-      if (cancelled) return;
-      await client.subscribe({ name: "thread", threadId: id });
+      await openThread(client, id);
       if (!cancelled) setHistoryLoaded(true);
     })().catch(() => {
       // The socket closing mid-setup is ordinary: unmount, or a drop the
@@ -502,16 +501,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
 
     return () => {
       cancelled = true;
-      unsubscribe();
       threadStoreRef.current?.off();
       threadStoreRef.current = null;
-      client.close();
-      clientRef.current = null;
     };
     // The session's provider is read once, with its id: it only matters
     // until the thread's own events say otherwise.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id, project.hash, sessionId]);
+  }, [sharedClient, project.id, project.hash, sessionId]);
 
   /**
    * "Clear context" in another window starts a new thread; this one follows
@@ -534,8 +530,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     if (!followed || threadIdRef.current === event.threadId) return;
     const client = clientRef.current;
     if (!client) return;
-    openThread(client, event.threadId);
-    void client.subscribe({ name: "thread", threadId: event.threadId }).catch(() => {});
+    void openThread(client, event.threadId).catch(() => {});
     setBoundProvider(null);
   });
 
@@ -710,8 +705,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    * frame-to-paint (lib/vitals.ts): a streamed delta's arrival to the paint
    * of the commit that shows it. One delta at a time -- the oldest still
    * waiting -- and at most two a second, so a stream of sixty tokens a second
-   * is sampled rather than reported token by token. The effect runs after
-   * the one above that makes the client, so it taps the current one.
+   * is sampled rather than reported token by token.
    */
   const deltaAt = useRef<number | null>(null);
   const lastDeltaSample = useRef(0);
@@ -723,7 +717,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       const now = performance.now();
       if (deltaAt.current === null && now - lastDeltaSample.current >= 500) deltaAt.current = now;
     });
-  }, [project.id, project.hash, sessionId]);
+  }, [sharedClient]);
   useLayoutEffect(() => {
     const at = deltaAt.current;
     if (at === null) return;
@@ -1125,8 +1119,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       }
       const id = await createThread(client, project);
       if (!id) throw new Error("could not start a new conversation");
-      await client.subscribe({ name: "thread", threadId: id });
-      openThread(client, id);
+      await openThread(client, id);
       // A fresh thread is bound to nothing yet, so the picker opens again.
       setBoundProvider(null);
     } catch (e) {

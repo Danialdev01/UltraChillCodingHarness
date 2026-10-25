@@ -87,8 +87,12 @@ export class UcchClient {
   #presence = new Map<string, { location: string | null; editing: boolean }>();
   #pending = new Map<string, { resolve: (v: StoredEvent[]) => void; reject: (e: Error) => void }>();
   #subscriptions = new Map<string, { topic: SubscribeTopic; lastSeq: number }>();
-  /** Views holding each project's file watcher; see `holdFiles`. */
-  #fileHolders = new Map<string, number>();
+  /**
+   * What each topic is subscribed for, by `topicKey`: `pinned` by
+   * `subscribe` until `unsubscribe`, and the views holding it (`hold`) until
+   * each lets go. The subscription is what all of them together ask for.
+   */
+  #wanted = new Map<string, { pinned: SubscribeTopic | null; holds: Set<Hold> }>();
   /**
    * Durable events already recorded, keyed by scope and sequence.
    *
@@ -276,25 +280,95 @@ export class UcchClient {
     });
   }
 
-  async subscribe(topic: SubscribeTopic): Promise<void> {
-    // Subscribing to the same topic twice would have the server push every
-    // event to this socket once per registration.
+  /**
+   * Subscribes to a topic for as long as the tab is open, or until
+   * `unsubscribe`. Resolves once the server has answered -- after the
+   * replay, for a thread -- or at once when the socket is not open yet.
+   */
+  subscribe(topic: SubscribeTopic): Promise<void> {
+    const wanted = this.#wantedFor(topic);
+    wanted.pinned = wanted.pinned ? mergeTopic(wanted.pinned, topic) : topic;
+    return this.#sync(topicKey(topic));
+  }
+
+  /**
+   * Subscribes to a topic for one view, until it calls `release`.
+   *
+   * Counted: the subscription ends when the last view lets go of it and
+   * nothing `subscribe`d it, and one that asked for more than the rest --
+   * loud, or files -- goes back to what the others ask for. `onEvent` hears
+   * every event of the subscription, the ones this client heard before
+   * included: a thread's replay lands in it however many views already
+   * had the thread open, since holding a thread with `onEvent` asks for
+   * the replay again. `ready` is `subscribe`'s promise.
+   */
+  hold(topic: SubscribeTopic, onEvent?: (row: ClientEvent) => void): { ready: Promise<void>; release(): void } {
     const key = topicKey(topic);
+    const hold: Hold = { topic, ...(onEvent ? { onEvent } : {}) };
+    this.#wantedFor(topic).holds.add(hold);
+    const ready = this.#sync(key, topic.name === "thread" && onEvent !== undefined);
+    let released = false;
+    return {
+      ready,
+      release: () => {
+        if (released) return;
+        released = true;
+        this.#wanted.get(key)?.holds.delete(hold);
+        void this.#sync(key).catch(() => {});
+      },
+    };
+  }
+
+  /**
+   * Keeps the server's file watcher on a project running for as long as a
+   * view showing its files is mounted: changes made on disk outside the
+   * server -- a terminal, a dev server, git -- then arrive as
+   * `file.changed`. The watcher goes off when the last such view calls the
+   * returned function, and the project's subscription stays, as quiet as it
+   * was.
+   */
+  holdFiles(projectId: string): () => void {
+    const held = this.hold({ name: "project", projectId, quiet: true, files: true });
+    held.ready.catch(() => {});
+    return held.release;
+  }
+
+  /** Stops listening to a topic -- a terminal tab closed -- whoever asked for it. Idempotent. */
+  unsubscribe(topic: SubscribeTopic): void {
+    const key = topicKey(topic);
+    this.#wanted.delete(key);
+    void this.#sync(key).catch(() => {});
+  }
+
+  #wantedFor(topic: SubscribeTopic): { pinned: SubscribeTopic | null; holds: Set<Hold> } {
+    const key = topicKey(topic);
+    let wanted = this.#wanted.get(key);
+    if (!wanted) this.#wanted.set(key, (wanted = { pinned: null, holds: new Set() }));
+    return wanted;
+  }
+
+  /**
+   * Brings the server's subscription to a topic in line with what is wanted
+   * of it: none, or one that gives everyone what they asked for. A change is
+   * an unsubscribe and a new subscription; `replay` makes one even when
+   * nothing changed, so the server replays the thread again.
+   */
+  async #sync(key: string, replay = false): Promise<void> {
+    const wanted = this.#wanted.get(key);
+    const topics = wanted ? [...(wanted.pinned ? [wanted.pinned] : []), ...[...wanted.holds].map((h) => h.topic)] : [];
+    if (wanted && topics.length === 0) this.#wanted.delete(key);
+    const topic = topics.length > 0 ? topics.reduce(mergeTopic) : null;
+
     let lastSeq = -1;
     for (const [existingId, existing] of this.#subscriptions) {
       if (topicKey(existing.topic) !== key) continue;
-      // A quiet project subscription leaves out the token and terminal
-      // streams, and one without `files` leaves the server's file watcher
-      // off. A view that wants more than the subscription gives -- the same
-      // topic asked for loudly, or with files -- upgrades it, rather than
-      // being silently given less; one subscription per topic stays the rule.
-      const merged = mergeTopic(existing.topic, topic);
-      if (sameTopic(merged, existing.topic)) return;
-      topic = merged;
-      lastSeq = existing.lastSeq;
+      if (topic && !replay && sameTopic(existing.topic, topic)) return;
+      // A replay asked for is the whole of it, even if it waits for a reconnect.
+      lastSeq = replay ? -1 : existing.lastSeq;
       this.#subscriptions.delete(existingId);
       this.#send({ kind: "unsubscribe", id: existingId });
     }
+    if (!topic) return;
 
     const id = String(this.#nextId++);
     this.#subscriptions.set(id, { topic, lastSeq });
@@ -313,56 +387,20 @@ export class UcchClient {
     });
   }
 
-  /**
-   * Keeps the server's file watcher on a project running for as long as a
-   * view showing its files is mounted: changes made on disk outside the
-   * server -- a terminal, a dev server, git -- then arrive as
-   * `file.changed`. Counted, so the watcher goes off when the last such view
-   * calls the returned function, and the project's subscription stays, as
-   * quiet as it was.
-   */
-  holdFiles(projectId: string): () => void {
-    const holders = (this.#fileHolders.get(projectId) ?? 0) + 1;
-    this.#fileHolders.set(projectId, holders);
-    if (holders === 1) void this.subscribe({ name: "project", projectId, quiet: true, files: true }).catch(() => {});
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const left = (this.#fileHolders.get(projectId) ?? 1) - 1;
-      if (left > 0) {
-        this.#fileHolders.set(projectId, left);
-        return;
+  /** Hands a subscription's events to the views holding it with `onEvent`. */
+  #toHolds(subscriptionId: string, rows: readonly ClientEvent[]): void {
+    const sub = this.#subscriptions.get(subscriptionId);
+    const holds = sub && this.#wanted.get(topicKey(sub.topic))?.holds;
+    if (!holds) return;
+    for (const hold of holds) {
+      if (!hold.onEvent) continue;
+      for (const row of rows) {
+        try {
+          hold.onEvent(row);
+        } catch {
+          // One broken view must not stop the others hearing.
+        }
       }
-      this.#fileHolders.delete(projectId);
-      this.#withoutFiles(projectId);
-    };
-  }
-
-  /** Turns `files` off on the project's subscription, keeping the rest of it. */
-  #withoutFiles(projectId: string): void {
-    for (const [existingId, existing] of this.#subscriptions) {
-      const topic = existing.topic;
-      if (topic.name !== "project" || topic.projectId !== projectId || !topic.files) continue;
-      const id = String(this.#nextId++);
-      const lowered: SubscribeTopic = { name: "project", projectId, ...(topic.quiet ? { quiet: true } : {}) };
-      this.#subscriptions.delete(existingId);
-      this.#subscriptions.set(id, { topic: lowered, lastSeq: existing.lastSeq });
-      this.#send({ kind: "unsubscribe", id: existingId });
-      // Dropped when not open: the `ready` handler subscribes it then, as it
-      // is now. Nothing waits on the ack, as with the `ready` handler's.
-      this.#send({ kind: "subscribe", id, topic: lowered });
-      return;
-    }
-  }
-
-  /** Stops listening to a topic -- a terminal tab closed. Idempotent. */
-  unsubscribe(topic: SubscribeTopic): void {
-    const key = topicKey(topic);
-    for (const [id, existing] of this.#subscriptions) {
-      if (topicKey(existing.topic) !== key) continue;
-      this.#subscriptions.delete(id);
-      this.#send({ kind: "unsubscribe", id });
     }
   }
 
@@ -429,12 +467,9 @@ export class UcchClient {
       case "push": {
         const sub = this.#subscriptions.get(frame.subscriptionId);
         if (sub && frame.seq !== null && frame.seq > sub.lastSeq) sub.lastSeq = frame.seq;
-        this.#record(
-          frame.seq,
-          frame.event,
-          frame.at ? Date.parse(frame.at) : Date.now(),
-          frame.projectId,
-        );
+        const row = toRow(frame.seq, frame.event, frame.at ? Date.parse(frame.at) : Date.now(), frame.projectId);
+        this.#toHolds(frame.subscriptionId, [row]);
+        if (this.#take(row)) this.#keep([row]);
         break;
       }
 
@@ -442,13 +477,12 @@ export class UcchClient {
         // A thread's history, many events at once: recorded together, so
         // the history is copied once for the lot rather than once an event.
         const sub = this.#subscriptions.get(frame.subscriptionId);
-        const kept: ClientEvent[] = [];
-        for (const stored of frame.events) {
+        const rows = frame.events.map((stored) => {
           if (sub && stored.seq > sub.lastSeq) sub.lastSeq = stored.seq;
-          const row = this.#take(stored.seq, stored.event, Date.parse(stored.at), stored.projectId);
-          if (row) kept.push(row);
-        }
-        this.#keep(kept);
+          return toRow(stored.seq, stored.event, Date.parse(stored.at), stored.projectId);
+        });
+        this.#toHolds(frame.subscriptionId, rows);
+        this.#keep(rows.filter((row) => this.#take(row)));
         break;
       }
 
@@ -475,12 +509,13 @@ export class UcchClient {
     at: number = Date.now(),
     projectId?: string,
   ): void {
-    const row = this.#take(seq, event, at, projectId);
-    if (row) this.#keep([row]);
+    const row = toRow(seq, event, at, projectId);
+    if (this.#take(row)) this.#keep([row]);
   }
 
-  /** Tells the event listeners of an event not seen before; the row to keep in the history, if any. */
-  #take(seq: number | null, event: DomainEvent, at: number, projectId?: string): ClientEvent | null {
+  /** Tells the event listeners of an event not heard before; whether it goes in the history. */
+  #take(row: ClientEvent): boolean {
+    const { seq, event } = row;
     // (scope, seq) is what the server's unique index enforces, so it is what
     // identifies an event here too. Transient events carry no sequence and
     // arrive only once, by push.
@@ -492,16 +527,10 @@ export class UcchClient {
             ? `p:${event.projectId}`
             : "";
       const key = `${scope}:${seq}`;
-      if (this.#seen.has(key)) return null;
+      if (this.#seen.has(key)) return false;
       this.#seen.add(key);
     }
 
-    const row: ClientEvent = {
-      seq,
-      event,
-      receivedAt: Number.isFinite(at) ? at : Date.now(),
-      ...(projectId ? { projectId } : {}),
-    };
     for (const listener of this.#eventListeners) {
       try {
         listener(row);
@@ -509,7 +538,7 @@ export class UcchClient {
         // One broken view must not stop the others hearing.
       }
     }
-    return EPHEMERAL.has(event.type) ? null : row;
+    return !EPHEMERAL.has(event.type);
   }
 
   #keep(rows: readonly ClientEvent[]): void {
@@ -695,6 +724,21 @@ export function terminalPieces(data: string, max = TERMINAL_INPUT_MAX): string[]
     at = end;
   }
   return pieces;
+}
+
+/** One view's claim on a topic; see `UcchClient.hold`. */
+interface Hold {
+  topic: SubscribeTopic;
+  onEvent?: (row: ClientEvent) => void;
+}
+
+function toRow(seq: number | null, event: DomainEvent, at: number, projectId?: string): ClientEvent {
+  return {
+    seq,
+    event,
+    receivedAt: Number.isFinite(at) ? at : Date.now(),
+    ...(projectId ? { projectId } : {}),
+  };
 }
 
 /**
