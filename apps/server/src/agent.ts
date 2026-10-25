@@ -39,6 +39,7 @@ import type { EventStore } from "./eventstore.js";
 import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter.js";
 import { documentationPrompt } from "./documents.js";
 import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
+import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 
 export interface AgentOptions {
   secretKey: string | undefined;
@@ -74,6 +75,8 @@ export interface AgentOptions {
   cliEnabled?: boolean;
   /** CLI turns one account may have in flight. */
   maxConcurrentPerUser?: number;
+  /** How long streamed tokens are held to be sent together; see `DeltaCoalescer`. 40 ms when absent. */
+  streamFlushMs?: number;
 }
 
 /** How a turn was asked for: carried on the command, not the event. */
@@ -406,7 +409,7 @@ export class AgentTurnReactor {
     // the project's checkout.
     const workspace = treeFor(this.options.workspaceRoot, thread.projectId, thread);
 
-    const append = (events: readonly DomainEvent[]) => {
+    const write = (events: readonly DomainEvent[]) => {
       if (events.length === 0) return Promise.resolve([]);
       // The prompt's file tree is cached between turns, and this is the half
       // of its invalidation that is exact: everything the agent itself
@@ -422,6 +425,22 @@ export class AgentTurnReactor {
         events,
         durable ? (tx) => applyProjection(tx, events, null) : undefined,
       );
+    };
+    // Tokens go out in runs rather than one frame each. Native, CLI and
+    // research turns all stream through here. Everything else flushes the
+    // run first: a transient-only append publishes before it returns, with
+    // no await on the way, so what was streamed before a tool call or the
+    // turn's end reaches the wire before it.
+    const coalescer = new DeltaCoalescer((delta) => void write([delta]).catch(this.onError), {
+      flushMs: this.options.streamFlushMs ?? 40,
+    });
+    const append = (events: readonly DomainEvent[]) => {
+      if (events.length > 0 && events.every(isDelta)) {
+        for (const event of events) coalescer.push(event);
+        return Promise.resolve([]);
+      }
+      coalescer.flush();
+      return write(events);
     };
 
     try {
@@ -596,6 +615,9 @@ export class AgentTurnReactor {
         this.onError,
       );
     } finally {
+      // The tail of the answer, should the turn have ended without anything
+      // durable after its last token.
+      coalescer.dispose();
       // After the turn, not during it: a slow disk must not hold the
       // conversation up, and a failure here is never the turn's.
       void this.#recheckStack(thread.projectId, workspace).catch(this.onError);

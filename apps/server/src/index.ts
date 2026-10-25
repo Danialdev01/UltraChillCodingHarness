@@ -231,6 +231,7 @@ const agentTurns = new AgentTurnReactor(
     providers: providerService,
     cliEnabled: cliProvidersEnabled(config),
     maxConcurrentPerUser: config.AGENT_MAX_CONCURRENT_PER_USER,
+    streamFlushMs: config.STREAM_FLUSH_MS,
   },
   (error) => app.log.error({ err: error }, "agent turn failed"),
 );

@@ -31,4 +31,23 @@ describe("EventBus", () => {
     expect(project).toHaveLength(1);
     expect(thread).toHaveLength(1);
   });
+
+  it("sends a turn's tokens to its thread only, and the rest of the turn to both", () => {
+    const bus = new EventBus();
+    const project = heard(bus, { name: "project", projectId: PROJECT });
+    const thread = heard(bus, { name: "thread", threadId: "t1" });
+    const tap: Publication[] = [];
+    bus.tap((p) => tap.push(p));
+    for (const type of ["agent.text_delta", "agent.thinking_delta"] as const) {
+      const event = { type, threadId: "t1", turnId: "u1", text: "x" } as DomainEvent;
+      bus.publish({ seq: null, projectId: PROJECT, threadId: "t1", event });
+    }
+    expect(thread).toHaveLength(2);
+    expect(project).toHaveLength(0);
+    expect(tap).toHaveLength(2);
+    const ended = { type: "agent.message", threadId: "t1", turnId: "u1", text: "x" } as unknown as DomainEvent;
+    bus.publish({ seq: 2, projectId: PROJECT, threadId: "t1", event: ended });
+    expect(thread).toHaveLength(3);
+    expect(project).toHaveLength(1);
+  });
 });

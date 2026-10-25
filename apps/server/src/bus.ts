@@ -85,6 +85,16 @@ export class EventBus {
       return;
     }
 
+    // A turn's tokens go to its thread and nowhere else: nothing on a project
+    // topic reads them, and a tab holding both topics would get each twice.
+    if (
+      (publication.event.type === "agent.text_delta" || publication.event.type === "agent.thinking_delta") &&
+      publication.threadId
+    ) {
+      this.#deliver([`thread:${publication.threadId}`], publication);
+      return;
+    }
+
     // A thread event also reaches project subscribers, so a client watching a
     // project sees activity in all of its threads without subscribing to each.
     const keys: string[] = [`project:${publication.projectId}`];

@@ -230,6 +230,13 @@ const Env = z.object({
    * the server keeps it at least 4 below the pool whatever is set here.
    */
   ENGINE_MAX_PARALLEL: z.coerce.number().int().positive().default(8),
+
+  /**
+   * How long a turn's streamed tokens are held to go out together, in ms:
+   * one frame per run rather than per token. The first token of a turn is
+   * never held.
+   */
+  STREAM_FLUSH_MS: z.coerce.number().int().min(0).max(1000).default(40),
 });
 
 export type Config = Readonly<z.infer<typeof Env>>;
