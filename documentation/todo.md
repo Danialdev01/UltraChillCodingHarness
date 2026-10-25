@@ -389,7 +389,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Bytes per turn: 453 KB before, 178 KB after.
     - Time to first token p50/p95/p99: 351/378/387 ms before, 348/378/385 ms after.
 
-- [ ] **PF1.14 — Client thread store; deltas ephemeral; no zod on hot frames**
+- [x] **PF1.14 — Client thread store; deltas ephemeral; no zod on hot frames** — d5d5ef1
 
   - **Depends:** —
   - **Files:** `apps/web/src/lib/client.ts` (`EPHEMERAL` line 20, `#record` lines 386–422, `#emit` line 471, `ServerFrame.parse` line 297), new `apps/web/src/lib/thread-store.ts` and `thread-store.test.ts`, `packages/protocol` (`THREAD_WINDOW = 1000`, `ready.buildId`), `apps/server/src/ws.ts` (`REPLAY_LIMIT` uses `THREAD_WINDOW`; `ready` carries `buildId`)
@@ -405,6 +405,12 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     5. On a `ready.buildId` mismatch, show the update prompt (or reload if W5 isn't done).
   - **Acceptance:** a 4,000-token answer never pushes earlier messages out of view. The `ServerFrame.parse` CPU is gone from the streaming profile.
   - **Verify:** `pnpm test -- thread-store client`, plus `pnpm --filter @ucch/web build`
+  - **Measured:**
+    - `stream.spec.ts` with a 4,000-token answer: the message sent was gone from the screen when the answer finished before, and is still shown after. The spec now records this as `kept`.
+    - Frame-to-paint p50/p95/p99: 13.7/16.7/22.4 ms before, 13.8/19.1/21.8 ms after. No long tasks either way.
+    - The production bundle has `parseServerFrame` and no schema check.
+    - Runs outlive their turn, unlike the plan's live layer: a turn's thinking is never logged, so dropping it at `turn_completed` would have lost it from the screen.
+    - `ready.buildId` is inert until a build sets both `BUILD_ID` and `NEXT_PUBLIC_BUILD_ID`.
 
 - [ ] **PF1.15 — Chat render: durable/live split, memoized messages, streaming tail**
 
