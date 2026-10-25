@@ -429,7 +429,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Frame-to-paint p50/p95/p99: 22.3/31.5/40.7 → 18.0/20.1/32.4 ms (the median run).
     - `overlayLive(fold(durable), live)` equals `fold(rows)` on every fixture.
 
-- [ ] **PF1.16 — Batched replay frame**
+- [x] **PF1.16 — Batched replay frame** — 34fc959
 
   - **Depends:** —
   - **Files:** `packages/protocol` (rpc.ts `ServerFrame`: `replay`), `apps/server/src/ws.ts` (subscribe replay, lines 258–319), `apps/server/src/eventstore.ts` (new `readThreadRaw`), `apps/web/src/lib/client.ts` (`caps=replay1` in the socket URL at line 184, batch record + single emit)
@@ -439,6 +439,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. Only with `caps=replay1`; otherwise keep the per-event path.
   - **Acceptance:** a 1,000-event replay arrives in ≤ 5 frames, with server p95 < 50 ms.
   - **Verify:** `pnpm test -- ws`, plus load
+  - **Measured:** (a 1,000-event thread of 1.85 MB, 220 subscribes during a 50-user load run)
+    - Frames per replay: 1,000 → 8. That misses the ≤ 5 target because these events average 1.85 KB, so 256 KB frames hold about 140 each. Five frames needs events of about 1.3 KB or less. The 256 KB cap from solution.md §8 was kept.
+    - Subscribe ack p50/p95/p99: 15.95/21.88/23.34 → 12.45/19.98/23.15 ms, under the 50 ms target.
+    - Load run: `replay_frames` p95 1,000 → 8, with no errors.
 
 - [ ] **PF1.17 — One WebSocket per tab: chat on the shared socket** *(was B8)*
 
