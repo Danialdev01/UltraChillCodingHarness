@@ -523,7 +523,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
 
 ### Git (`solution.md` §10)
 
-- [ ] **PF1.23 — Server-side git cache; cheaper git reads**
+- [x] **PF1.23 — Server-side git cache; cheaper git reads** — fc1a816
 
   - **Depends:** —
   - **Files:** new `apps/server/src/git-cache.ts` and `git-cache.test.ts`, `apps/server/src/git-routes.ts` (status line 103, branches line 156, log line 122; `announce`), `apps/server/src/git.ts` (`status`, lines 97–127), `apps/server/src/git-exec.ts` (line 73)
@@ -534,6 +534,9 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     4. Set `GIT_OPTIONAL_LOCKS=0` on read commands, and merge the two `rev-parse` calls.
   - **Acceptance:** with 10 viewers on one project, one file-change burst runs ≤ 3 git processes for that tree.
   - **Verify:** `pnpm test -- git-cache git`, plus load
+  - **Measured:**
+    - With 10 viewers refetching as the view does, one burst of 20 file writes ran 80 git processes before and 3 after (`status`, `rev-parse`, `remote`). 20 of the 30 refetches were answered 304.
+    - Load run p50/p95 for git status reads: 30.8/37.5 → 8.5/54.5 ms. The slower tail is the cold first reads. No errors.
 
 - [ ] **PF1.24 — Watch `.git` and session worktrees; `worktreeId`; burst cap**
 
