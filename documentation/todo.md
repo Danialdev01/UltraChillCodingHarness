@@ -555,7 +555,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - One tree is watched per project subscription. When two views in a tab hold different trees, the latest one wins.
     - A watch opened before its folder existed is retried on `project.cloned` and `thread.worktree_ready` (`rearm`).
 
-- [ ] **PF1.25 — Git view as queries; no polling**
+- [x] **PF1.25 — Git view as queries; no polling** — 8912dd1
 
   - **Depends:** PF1.23, PF1.24
   - **Files:** `apps/web/src/components/git/use-git-state.ts` (`POLL_MS` line 28, `refresh` lines 94–117, diff effect lines 200–215), `apps/web/src/lib/git-api.ts`, `apps/web/src/lib/realtime-cache.ts`, `apps/web/src/lib/query-keys.ts`
@@ -566,6 +566,12 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     4. Refetch the selected diff only when its file's status entry changes.
   - **Acceptance:** no periodic git requests from an idle Git view (DevTools network panel over 5 min).
   - **Verify:** standard, plus manual
+  - **Measured:** (headless Chrome on the load image, a project's Git view)
+    - Git requests from an idle Git view over 5 min: 15 before (3 every 60 s), 0 after.
+    - A file written in the container shows in the changes list 690 ms later. A `git commit` run in the container takes it off the list 690 ms after the commit returns. PF1.24's acceptance is under 1 s.
+    - Each change refetches status, branches and log once (3 requests). The server answers unchanged reads from its cache.
+    - The selected diff is also read again when its file is written while its status entry stays the same (a second edit of a modified file). Otherwise the diff would go stale.
+    - The queries also refetch when the view opens, since events can be missed while it is closed. A repository watch that starts fresh invalidates the git cache once, and a `.git` appearing in the checkout (`git init`) starts the repository watch.
 
 ### Subscriptions and runtime (`solution.md` §11–§12)
 
