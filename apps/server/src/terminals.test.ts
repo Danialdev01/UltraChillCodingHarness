@@ -587,3 +587,34 @@ describe("how many terminals may be open", () => {
     }
   });
 });
+
+describe("a terminal's priority", () => {
+  it("starts the shell behind the server's prefix, in the terminal's directory", () => {
+    const started: { file: string; args: string[]; cwd?: string }[] = [];
+    const spawn = ((file: string, args: string[], options: { cwd?: string }) => {
+      started.push({ file, args, cwd: options.cwd });
+      return { write() {}, resize() {}, kill() {}, onData() {}, onExit() {} };
+    }) as unknown as typeof import("@lydell/node-pty").spawn;
+    const wrapped: { argv: readonly string[]; cwd?: string }[] = [];
+    const terminals = new TerminalReactor(
+      {
+        workspaceRoot: root,
+        allowHostShell: true,
+        spawn,
+        wrapArgv: (argv, _env, cwd) => {
+          wrapped.push({ argv, cwd });
+          return ["/usr/bin/choom", "-n", "500", "--", ...argv];
+        },
+      },
+      () => {},
+    );
+    terminals.react(
+      { type: "terminal.create", projectId: "aaaaaaaa-0000-0000-0000-000000000000", terminalId: "00000000-0000-0000-0000-000000000001", cols: 80, rows: 24 },
+      USER,
+    );
+    expect(started).toHaveLength(1);
+    expect(started[0]!.file).toBe("/usr/bin/choom");
+    expect(started[0]!.args).toEqual(["-n", "500", "--", ...wrapped[0]!.argv]);
+    expect(wrapped[0]!.cwd).toBe(started[0]!.cwd);
+  });
+});

@@ -287,6 +287,8 @@ The `dev` user may create as many databases as you like on both servers; add the
 
 **One container, one replica.** Live terminals, project files, the event bus behind every WebSocket, the background workers and the database all live in it. Scale it vertically: give the VPS (or the application, under **Advanced → Resources**) more CPU and RAM. Agent turns are mostly waiting on model APIs, so one container handles many concurrent sessions. Tune the embedded PostgreSQL, or move it out with `DATABASE_URL`.
 
+**Container limits.** In Dokploy → **Advanced → Resources**: memory limit **7168 MB**, memory reservation **4096 MB**, no CPU limit (and memory + swap equal to the memory limit, if your Dokploy version shows it). The kernel then kills inside the container rather than the VPS's own services, and what it kills first is what the settings below mark.
+
 **Runtime settings.** Each has a default for an 8 GB VPS and is set in the application's environment:
 
 | Variable | Default | What it is |
@@ -296,6 +298,7 @@ The `dev` user may create as many databases as you like on both servers; add the
 | `ENGINE_MAX_PARALLEL` | `8` | Commands handled at once, each on a different project. At most `DB_POOL_MAX − 4`, or the server refuses to start. |
 | `LOG_LEVEL` | `info` (`debug` outside production) | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`. |
 | `LOG_SLOW_MS` | `1000` | Requests are not logged one by one: only those slower than this, and every 5xx. `/metrics` counts them all. |
+| `CHILD_OOM_ADJ` / `CHILD_NICE` | `800` / `10` | What everything the server starts for someone (CLIs, the agent's tool calls, dev servers) runs with: an `oom_score_adj` (higher is killed sooner) and a `nice` value, plus the lowest best-effort I/O priority. Terminals, and so what you run in them, get at most `500` and `5`. The server and PostgreSQL keep `0`, so a runaway dev server is killed first. Without `choom`, `nice` or `ionice` children run at the server's own priority, and the log says so. |
 | `PG_SHARED_BUFFERS` | `1GB` | On a 2–4 GB VPS, `256MB`. |
 | `PG_EFFECTIVE_CACHE_SIZE` | `3GB` | A planner hint; on a 2–4 GB VPS, `768MB`. |
 | `PG_WORK_MEM` | `8MB` | Per sort or hash, per connection. |

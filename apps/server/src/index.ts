@@ -56,6 +56,7 @@ import {
   contentDisposition,
 } from "./uploads.js";
 import { TerminalReactor } from "./terminals.js";
+import { probePriorityTools, terminalPriority, unwrapped, wrapperFor } from "./child-priority.js";
 import { AuthService, DEV_USER_ID } from "./auth.js";
 import { EventBus } from "./bus.js";
 import { cliProvidersEnabled, loadConfig, logLevel, shellPluginEnabled, webOrigin } from "./config.js";
@@ -129,6 +130,14 @@ setOpenRouterBase(config.OPENROUTER_BASE_URL);
 await runMigrations(config.DATABASE_URL);
 
 const db = createDatabase(config.DATABASE_URL, { max: config.DB_POOL_MAX });
+
+// What the kernel gives up first when memory runs short: everything started
+// on someone's behalf, behind a raised OOM score and a lower CPU and I/O
+// priority, never the server or Postgres. Not git, whose runs are brief.
+const childPriority = { oomScoreAdj: config.CHILD_OOM_ADJ, nice: config.CHILD_NICE };
+const priorityProbe = probePriorityTools(childPriority);
+const wrapChild = priorityProbe.tools ? wrapperFor(priorityProbe.tools, childPriority) : unwrapped;
+const wrapTerminal = priorityProbe.tools ? wrapperFor(priorityProbe.tools, terminalPriority(childPriority)) : unwrapped;
 
 // A turn lives in this process, so nothing that was running before the
 // restart is running now. Left alone, those threads would sit in `running`
@@ -204,7 +213,7 @@ const uploads = new UploadStore(config.WORKSPACE_ROOT, workspaceFiles, {
 const providerService = new ProviderService(
   db,
   config,
-  new HostProcessHost(),
+  new HostProcessHost({ wrapArgv: wrapChild }),
   createProviders({
     claudeBin: config.CLAUDE_BIN,
     codexBin: config.CODEX_BIN,
@@ -237,6 +246,7 @@ const agentTurns = new AgentTurnReactor(
     research: researchBackends(config),
     documents,
     heavyJobs: new HeavyJobGate(config.DOC_JOBS_MAX, documents.kitDir),
+    wrapArgv: wrapChild,
     // Decided once, at boot: in production the shell plugin loads only when
     // it has been asked for explicitly.
     registry: { allowHostShell: shellPluginEnabled(config) },
@@ -362,6 +372,7 @@ const terminals = new TerminalReactor(
     maxPerUser: config.TERMINAL_MAX_PER_USER,
     maxTotal: config.TERMINAL_MAX_TOTAL,
     idleMs: config.TERMINAL_IDLE_MINUTES * 60_000,
+    wrapArgv: wrapTerminal,
     // A sign-in terminal: the CLI's own login flow, in the user's credential
     // directory, so what it writes is what every later turn reads.
     login: (userId, program) => {
@@ -732,6 +743,9 @@ if (recovered.length > 0) {
 }
 if (dequeued.length > 0) {
   app.log.warn({ threads: dequeued.length }, "released threads left queued by a previous process");
+}
+if (!priorityProbe.tools) {
+  app.log.warn({ reason: priorityProbe.reason }, "children run at the server's own priority and OOM score");
 }
 
 // Started here rather than beside the store, because it logs through `app`.

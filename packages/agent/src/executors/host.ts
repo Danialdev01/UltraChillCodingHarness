@@ -110,6 +110,11 @@ function cancelledWhileWaiting(): ExecInterruptedError {
 export interface HostExecutorOptions {
   /** Where document renders wait their turn; none means they never wait. */
   heavyJobs?: HeavyJobGate;
+  /**
+   * Rewrites a command's argv just before it starts: the server puts it
+   * behind a lower priority (apps/server/src/child-priority.ts).
+   */
+  wrapArgv?: (argv: readonly string[], env?: NodeJS.ProcessEnv, cwd?: string) => string[];
 }
 
 /**
@@ -212,10 +217,13 @@ export class HostExecutor implements Executor {
   #run(command: string, args: string[], cwd: string, options: ExecOptions): Promise<ExecResult> {
     const cap = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
+    const env = safeEnv();
+    const [file, ...rest] = this.options.wrapArgv?.([command, ...args], env, cwd) ?? [command, ...args];
+
     return new Promise<ExecResult>((settle, fail) => {
-      const child = spawn(command, args, {
+      const child = spawn(file!, rest, {
         cwd,
-        env: safeEnv(),
+        env,
         // stdin is closed rather than inherited: a command that reads it gets
         // EOF immediately instead of blocking until the timeout.
         stdio: ["ignore", "pipe", "pipe"],

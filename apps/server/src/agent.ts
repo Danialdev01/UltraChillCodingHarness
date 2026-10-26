@@ -42,6 +42,7 @@ import { documentationPrompt } from "./documents.js";
 import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 import { TurnScheduler } from "./turn-scheduler.js";
+import type { ArgvWrapper } from "./child-priority.js";
 
 export interface AgentOptions {
   secretKey: string | undefined;
@@ -73,6 +74,8 @@ export interface AgentOptions {
    * for the whole server, so `DOC_JOBS_MAX` holds across every turn.
    */
   heavyJobs?: HeavyJobGate;
+  /** Puts the native loop's tool calls behind a lower priority (child-priority.ts). */
+  wrapArgv?: ArgvWrapper;
   /**
    * The CLI providers. Optional so a harness can run with the native loop
    * alone; a turn that asks for one then fails with a message saying so.
@@ -622,7 +625,7 @@ export class AgentTurnReactor {
         supportsImages: canSeeImages,
         searchModel: this.options.searchModel,
         maxIterations: this.options.maxIterations,
-        executor: new HostExecutor(workspace, { heavyJobs: this.options.heavyJobs }),
+        executor: new HostExecutor(workspace, { heavyJobs: this.options.heavyJobs, wrapArgv: this.options.wrapArgv }),
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
         complete: streamCompletion,
         signal: controller.signal,
@@ -901,7 +904,7 @@ export class AgentTurnReactor {
       supportsImages: canSeeImages,
       searchModel: this.options.searchModel,
       maxIterations: this.options.maxIterations,
-      executor: new HostExecutor(input.workspace, { heavyJobs: this.options.heavyJobs }),
+      executor: new HostExecutor(input.workspace, { heavyJobs: this.options.heavyJobs, wrapArgv: this.options.wrapArgv }),
       complete: streamCompletion,
       signal: input.signal,
       conclude: false,
@@ -980,7 +983,7 @@ export class AgentTurnReactor {
         supportsImages: canSeeImages,
         searchModel: this.options.searchModel,
         maxIterations: this.options.maxIterations,
-        executor: new HostExecutor(workspace, { heavyJobs: this.options.heavyJobs }),
+        executor: new HostExecutor(workspace, { heavyJobs: this.options.heavyJobs, wrapArgv: this.options.wrapArgv }),
         complete: streamCompletion,
         signal: input.signal,
         conclude: false,

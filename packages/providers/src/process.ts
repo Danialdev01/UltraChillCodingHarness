@@ -109,12 +109,24 @@ const KILL_GRACE_MS = 2_000;
  * CLI itself started -- the bash tool trees Claude Code runs, for one -- and
  * a backgrounded server cannot outlive the turn that started it.
  */
+export interface HostProcessHostOptions {
+  /**
+   * Rewrites a child's argv just before it starts: the server puts it behind
+   * a lower priority (apps/server/src/child-priority.ts). Messages still name
+   * the command itself.
+   */
+  wrapArgv?: (argv: readonly string[], env?: NodeJS.ProcessEnv, cwd?: string) => string[];
+}
+
 export class HostProcessHost implements ProcessHost {
+  constructor(private readonly options: HostProcessHostOptions = {}) {}
+
   spawn(spec: SpawnSpec): ChildHandle {
-    const [command, ...args] = spec.argv;
+    const [command] = spec.argv;
     if (!command) throw new Error("spawn requires a command");
 
-    const child = spawn(command, args, {
+    const [file, ...args] = this.options.wrapArgv?.(spec.argv, spec.env, spec.cwd) ?? spec.argv;
+    const child = spawn(file!, args, {
       cwd: spec.cwd,
       env: spec.env,
       stdio: ["pipe", "pipe", "pipe"],

@@ -255,6 +255,15 @@ const Env = z.object({
    */
   ENGINE_MAX_PARALLEL: z.coerce.number().int().positive().default(8),
 
+  /**
+   * What everything the server starts for someone -- CLIs, agent tool calls,
+   * dev servers -- runs with: an `oom_score_adj` (0..1000; higher is killed
+   * sooner) and a `nice` value (0..19). Terminals get at most 500 and 5. See
+   * child-priority.ts.
+   */
+  CHILD_OOM_ADJ: z.coerce.number().int().min(0).max(1000).default(800),
+  CHILD_NICE: z.coerce.number().int().min(0).max(19).default(10),
+
   /** The server log's level. Unset: `info` in production, `debug` otherwise. */
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).optional(),
 

@@ -142,6 +142,14 @@ describe("runtime settings", () => {
     expect(() => load({ ENGINE_MAX_PARALLEL: "17" })).toThrow(/ENGINE_MAX_PARALLEL/);
   });
 
+  it("starts children at OOM score 800 and nice 10, within the kernel's ranges", () => {
+    expect(load().CHILD_OOM_ADJ).toBe(800);
+    expect(load().CHILD_NICE).toBe(10);
+    expect(() => load({ CHILD_OOM_ADJ: "1001" })).toThrow(/CHILD_OOM_ADJ/);
+    expect(() => load({ CHILD_OOM_ADJ: "-100" })).toThrow(/CHILD_OOM_ADJ/);
+    expect(() => load({ CHILD_NICE: "20" })).toThrow(/CHILD_NICE/);
+  });
+
   it("logs at info in production and debug otherwise, unless told", () => {
     const production = { NODE_ENV: "production", DEV_AUTH_BYPASS: "false", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "s" };
     expect(logLevel(load(production))).toBe("info");

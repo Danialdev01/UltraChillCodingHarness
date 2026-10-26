@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as pty from "@lydell/node-pty";
 import type { Command, DomainEvent } from "@ucch/protocol";
+import type { ArgvWrapper } from "./child-priority.js";
 import { sessionTree } from "./trees.js";
 
 /**
@@ -95,6 +96,8 @@ export interface TerminalOptions {
   login?: (userId: string, program: Exclude<TerminalProgram, "shell">) => LoginLaunch;
   /** The pty spawner. Injected by tests; the real one otherwise. */
   spawn?: typeof pty.spawn;
+  /** Rewrites a shell's argv just before it starts: its priority (child-priority.ts). */
+  wrapArgv?: ArgvWrapper;
 }
 
 /** How long a watched-but-not-yet-opened terminal id stays reserved. */
@@ -301,7 +304,7 @@ export class TerminalReactor {
       return;
     }
 
-    const [file, ...args] = launch.argv;
+    const [file, ...args] = this.options.wrapArgv?.(launch.argv, launch.env, launch.cwd) ?? launch.argv;
     const child = (this.options.spawn ?? pty.spawn)(file!, args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
