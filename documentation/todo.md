@@ -926,7 +926,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
   - **Verify:** manual
   - **Measured:** /offline is static (○ in `next build`) and is precached by the worker. The recent projects come from the newest bootstrap in the persisted IndexedDB cache: the workspace open last, and its projects, most recently active first, as plain links. The offline check stopped the servers instead of using DevTools' offline mode, so the worker itself had no network either. Navigating to a page it had no copy of showed "You're offline", the retry button and the project list (W3's notes).
 
-- [ ] **W5 — Update prompt and install entry**
+- [x] **W5 — Update prompt and install entry** — b7b9697
 
   - **Depends:** W3, PF1.14
   - **Files:** new `apps/web/src/components/update-toast.tsx`, `apps/web/src/components/nav-user.tsx`
@@ -935,6 +935,15 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     2. Capture `beforeinstallprompt` and show an "Install app" item in the user menu.
   - **Acceptance:** deploying a new build while a tab is open shows the toast, and reloading picks up the new version.
   - **Verify:** manual
+  - **Measured:**
+    - Nothing set `NEXT_PUBLIC_BUILD_ID` or the server's `BUILD_ID` before this, so the comparison never ran. The image now takes one `BUILD_ID` build argument and passes it to both. The old `outdatedBuild` in `client.ts`, which reloaded a hidden tab silently, gave way to the prompt: a reload offered, never taken unasked. The store (`lib/app-update.ts`) hears from three places: the socket's `ready` frame, the bootstrap, and a worker that is waiting while another one controls the page.
+    - Deploy rehearsal in headless Chrome against the production build behind the edge. Build A ran with the PWA flag (A in the bundle and on the server), and a tab was opened on it. Then build B was deployed: B's `sw.js`, Next on B, and the server restarted with `BUILD_ID=build-b`.
+      - The toast appeared 4 s later, from the socket's reconnect.
+      - B's worker was installed and waiting.
+      - "Reload" told the worker to take over, and the page reloaded on B's chunks (`9542-785e…` in place of `9542-fc84…`), with no toast and nothing waiting.
+    - The toast sits bottom-centre; bottom-left covered the user menu.
+    - Install: headless Chrome fired a real `beforeinstallprompt` on the production build, and the user menu showed "Install app". Choosing it called `prompt()`, and the item went away.
+    - `pnpm typecheck && pnpm test`: 1993 passed, 2 skipped. Bundle budget: within budget.
 
 ---
 
