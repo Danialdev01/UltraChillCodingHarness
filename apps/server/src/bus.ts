@@ -69,6 +69,13 @@ export class EventBus {
     };
   }
 
+  /** The projects whose own topic somebody holds: the ones open in a view. */
+  *subscribedProjects(): Iterable<string> {
+    for (const key of this.#subscribers.keys()) {
+      if (key.startsWith("project:")) yield key.slice("project:".length);
+    }
+  }
+
   publish(publication: Publication): void {
     for (const tap of this.#taps) {
       try {

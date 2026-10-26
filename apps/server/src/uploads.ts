@@ -24,6 +24,13 @@ import {
 import { assertRealpathInside } from "@ucch/agent";
 import { PathError, type WorkspaceFiles } from "./files.js";
 
+export interface UploadChange {
+  projectId: string;
+  uploadId: string;
+  change: "attached" | "deleted";
+  path?: string;
+}
+
 /**
  * Where attachments live before they are part of a project.
  *
@@ -51,6 +58,12 @@ export class UploadStore implements UploadStaging {
     workspaceRoot: string,
     private readonly files: WorkspaceFiles,
     private readonly limits: { maxBytes: number; ttlMs: number },
+    /**
+     * A staged file left staging -- placed or thrown away -- however it was
+     * asked for: the chat, the attach route, the agent's `attach_upload`.
+     * Other tabs drop the chip that still names it.
+     */
+    private readonly onChange?: (change: UploadChange) => void,
   ) {
     this.#root = resolve(workspaceRoot, ".uploads");
   }
@@ -179,6 +192,7 @@ export class UploadStore implements UploadStaging {
     await rm(resolve(directory, `${upload.id}.json`), { force: true });
 
     const relative = destination.slice(this.files.root(projectId).length + 1);
+    this.onChange?.({ projectId, uploadId, change: "attached", path: relative });
     return { path: relative, size: upload.size };
   }
 
@@ -255,6 +269,7 @@ export class UploadStore implements UploadStaging {
 
     await rm(resolve(directory, uploadId), { force: true });
     await rm(resolve(directory, `${uploadId}.json`), { force: true });
+    this.onChange?.({ projectId, uploadId, change: "deleted" });
     return true;
   }
 

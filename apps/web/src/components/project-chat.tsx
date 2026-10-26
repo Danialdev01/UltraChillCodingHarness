@@ -761,6 +761,15 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     if (project.workspaceHash) transitionRouter.replace(projectHref(project.workspaceHash, "project", project.hash));
   });
 
+  // A staged file thrown away or placed in the project from another tab:
+  // its chip here would send an upload that is no longer there.
+  useProjectEvents(project.id, (event) => {
+    if (event.type !== "upload.changed") return;
+    setAttachments((current) =>
+      current.some((a) => a.uploadId === event.uploadId) ? current.filter((a) => a.uploadId !== event.uploadId) : current,
+    );
+  });
+
   /**
    * Up / Down (with the caret at the end of the draft, or Alt+Up / Alt+Down
    * anywhere) through what was asked before. The entries are the

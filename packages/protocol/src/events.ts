@@ -551,6 +551,20 @@ const TaskChanged = z.object({
   origin: ChangeOrigin.optional(),
 });
 
+/**
+ * A staged attachment left staging: placed into the project, or thrown
+ * away. Other tabs drop the chip that still names it; a nudge, like
+ * `task.changed`, so transient.
+ */
+const UploadChanged = z.object({
+  type: z.literal("upload.changed"),
+  projectId: z.string().uuid(),
+  uploadId: z.string(),
+  change: z.enum(["attached", "deleted"]),
+  /** Where an attached file now is, from the project root. */
+  path: z.string().optional(),
+});
+
 // -- Live collaboration ------------------------------------------------------
 
 /**
@@ -796,6 +810,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   NoteChanged,
   TimelineChanged,
   TaskChanged,
+  UploadChanged,
   ComposerChanged,
   PresenceChanged,
   ProjectActivity,
@@ -838,6 +853,7 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "note.changed",
   "timeline.changed",
   "task.changed",
+  "upload.changed",
   "composer.changed",
   "presence.changed",
   "project.activity",

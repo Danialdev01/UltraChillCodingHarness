@@ -19,9 +19,8 @@ import { fetchPreviewStatus, setPreviewPort, setStaticPreview } from "@/lib/prev
 import type { Project } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import { qk } from "@/lib/query-keys";
+import { useProjectEvents } from "@/lib/realtime";
 import { useInvalidate } from "@/lib/use-invalidate";
-
-const STATUS_POLL_MS = 3000;
 
 type Mode = "server" | "static";
 
@@ -72,25 +71,30 @@ export function PreviewDialog({
     setError(null);
   }, [open, project]);
 
-  // Whether anything answers on the port, while the dialog is up. A dev
-  // server started in the terminal shows up here within a few seconds.
+  // Whether anything answers on the port, while the dialog is up: asked
+  // once, then followed. The server probes the port of every project in
+  // view and says when it opens or closes (`port-watcher.ts`), so a dev
+  // server started in the terminal shows up here within a few seconds --
+  // in every tab, without each one polling.
   useEffect(() => {
     if (!open || !saved.previewPort) {
       setListening(null);
       return;
     }
     let cancelled = false;
-    const check = () =>
-      fetchPreviewStatus(saved.hash)
-        .then((s) => !cancelled && setListening(s.listening))
-        .catch(() => !cancelled && setListening(null));
-    void check();
-    const timer = setInterval(check, STATUS_POLL_MS);
+    fetchPreviewStatus(saved.hash)
+      .then((s) => !cancelled && setListening(s.listening))
+      .catch(() => !cancelled && setListening(null));
     return () => {
       cancelled = true;
-      clearInterval(timer);
     };
   }, [open, saved.hash, saved.previewPort, saved.previewStaticDir]);
+
+  useProjectEvents(open ? saved.id : null, (event) => {
+    if (event.type !== "port.opened" && event.type !== "port.closed") return;
+    if (saved.previewStaticDir != null || event.port !== saved.previewPort) return;
+    setListening(event.type === "port.opened");
+  });
 
   const parsed = Number(port);
   const savedStatic = saved.previewStaticDir != null;

@@ -68,6 +68,7 @@ import { OrchestrationEngine, applyProjection, type Reactors } from "./engine.js
 import { EventStore } from "./eventstore.js";
 import { WebSocketGateway } from "./ws.js";
 import { PreviewGateway } from "./preview.js";
+import { PortWatcher } from "./port-watcher.js";
 import { WorkspaceService, type ProjectSummary } from "./workspaces.js";
 import { StorageService } from "./storage.js";
 import { NotesService } from "./notes.js";
@@ -201,10 +202,18 @@ const storageService = new StorageService(db, workspaceService, config.WORKSPACE
  * directories rather than inside any of them, so nothing the agent or the
  * file panel can reach sees a file until it is placed deliberately.
  */
-const uploads = new UploadStore(config.WORKSPACE_ROOT, workspaceFiles, {
-  maxBytes: config.UPLOAD_MAX_BYTES,
-  ttlMs: config.UPLOAD_TTL_HOURS * 3600_000,
-});
+const uploads = new UploadStore(
+  config.WORKSPACE_ROOT,
+  workspaceFiles,
+  { maxBytes: config.UPLOAD_MAX_BYTES, ttlMs: config.UPLOAD_TTL_HOURS * 3600_000 },
+  ({ projectId, uploadId, change, path }) =>
+    bus.publish({
+      seq: null,
+      projectId,
+      threadId: null,
+      event: { type: "upload.changed", projectId, uploadId, change, ...(path ? { path } : {}) },
+    }),
+);
 
 /**
  * The vendor CLIs as providers. They run on the host until the container
@@ -623,6 +632,19 @@ const preview = new PreviewGateway({
   devBypass: config.DEV_AUTH_BYPASS,
   log: { error: (obj, msg) => app.log.error(obj, msg) },
 });
+
+/**
+ * Whether open projects' dev servers are up, for the preview dialog: one
+ * probe per project here instead of a poll from every tab (port-watcher.ts).
+ */
+const portWatcher = new PortWatcher({
+  watched: () => bus.subscribedProjects(),
+  portOf: (projectId) => workspaceService.previewPortOf(projectId),
+  probe: (projectId, port) => preview.listening({ id: projectId, userId: "", previewPort: port }, port),
+  publish: (projectId, event) => bus.publish({ seq: null, projectId, threadId: null, event }),
+  log: { warn: (obj, msg) => app.log.warn(obj, msg) },
+});
+portWatcher.start();
 
 /** The web app behind this server's port, in the single container; see web-proxy.ts. */
 const web = config.WEB_UPSTREAM
@@ -1411,6 +1433,7 @@ app.put<{ Params: { hash: string } }>("/api/projects/:hash/preview", async (requ
   });
   if (!project) return reply.code(404).send({ error: "project not found" });
   preview.invalidate(request.params.hash);
+  portWatcher.invalidate(project.id);
   return withPreviewUrls(project);
 });
 
@@ -2736,7 +2759,8 @@ app.post<{ Params: { hash: string; id: string } }>(
 
     try {
       const attached = await uploads.attach(project.id, request.params.id, parsed.data.path ?? "");
-      await announceFileChange(project.id, attached.path, "added");
+      // A person placed it, not the agent: their own tab knows it already.
+      await announceFileChange(project.id, attached.path, "added", await originOf(request));
       return attached;
     } catch (error) {
       if (error instanceof UnknownUploadError) {
@@ -3607,6 +3631,7 @@ const shutdown = async (signal: string) => {
   app.log.info({ signal }, "shutting down");
   resources.stop();
   watchdog.stop();
+  portWatcher.stop();
   gateway.close();
   await engine.worker.stop();
   // After the engine: a command still in the queue can still queue a clone.

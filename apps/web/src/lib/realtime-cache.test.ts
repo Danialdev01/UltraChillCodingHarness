@@ -36,6 +36,13 @@ describe("cacheEffect", () => {
     expect(cacheEffect(ev({ type: "resource.changed", projectId: null, resource: "workspace_members" })).invalidate).toContainEqual(["members"])
   })
 
+  it("leaves the nudges their views read themselves", () => {
+    // The attached file has its own `file.changed`; a port is read off the event.
+    expect(cacheEffect(ev({ type: "upload.changed", projectId: P, change: "attached" }))).toEqual({ invalidate: [] })
+    expect(cacheEffect(ev({ type: "port.opened", projectId: P, port: 5173 }))).toEqual({ invalidate: [] })
+    expect(cacheEffect(ev({ type: "port.closed", projectId: P, port: 5173 }))).toEqual({ invalidate: [] })
+  })
+
   it("leaves streams alone", () => {
     expect(cacheEffect(ev({ type: "agent.text_delta", projectId: P })).invalidate).toEqual([])
   })

@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { UnknownUploadError, UploadConflictError } from "@ucch/agent";
 import { PathError, WorkspaceFiles } from "./files.js";
-import { UploadStore, contentDisposition, safeName } from "./uploads.js";
+import { UploadStore, contentDisposition, safeName, type UploadChange } from "./uploads.js";
 
 const PROJECT = "11111111-1111-1111-1111-111111111111";
 const OTHER = "22222222-2222-2222-2222-222222222222";
@@ -12,11 +12,13 @@ const OTHER = "22222222-2222-2222-2222-222222222222";
 let root: string;
 let files: WorkspaceFiles;
 let store: UploadStore;
+let changes: UploadChange[];
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "ucch-uploads-"));
   files = new WorkspaceFiles(root);
-  store = new UploadStore(root, files, { maxBytes: 1024, ttlMs: 60_000 });
+  changes = [];
+  store = new UploadStore(root, files, { maxBytes: 1024, ttlMs: 60_000 }, (change) => changes.push(change));
   await files.ensureRoot(PROJECT);
 });
 
@@ -105,6 +107,12 @@ describe("attaching a staged file to the project", () => {
     );
   });
 
+  it("tells the other tabs where it went", async () => {
+    const upload = await stage("logo.png", "image/png", "bytes");
+    await store.attach(PROJECT, upload.id, "public/logo.png");
+    expect(changes).toEqual([{ projectId: PROJECT, uploadId: upload.id, change: "attached", path: "public/logo.png" }]);
+  });
+
   it("falls back to the file's own name when no path is given", async () => {
     const upload = await stage("notes.txt");
     const attached = await store.attach(PROJECT, upload.id, "");
@@ -176,6 +184,13 @@ describe("discarding", () => {
     expect(await store.list(PROJECT)).toEqual([]);
     // A second discard is not an error, but it is not a success either.
     expect(await store.discard(PROJECT, upload.id)).toBe(false);
+  });
+
+  it("tells the other tabs once, and only when something was there", async () => {
+    const upload = await stage("notes.txt");
+    await store.discard(PROJECT, upload.id);
+    await store.discard(PROJECT, upload.id);
+    expect(changes).toEqual([{ projectId: PROJECT, uploadId: upload.id, change: "deleted" }]);
   });
 
   it("forgets everything a project had staged", async () => {

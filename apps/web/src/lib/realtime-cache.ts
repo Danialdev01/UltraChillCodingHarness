@@ -61,6 +61,14 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
     case "git.committed":
     case "git.pushed":
       return { invalidate: [qk.git.all] }
+    // An attachment placed in the project arrives as its own `file.changed`;
+    // one thrown away is only a chip, which the chat drops (project-chat.tsx).
+    // A port opening or closing is read by the preview dialog straight off
+    // the event: nothing cached shows it.
+    case "upload.changed":
+    case "port.opened":
+    case "port.closed":
+      return NONE
     // Turn edges reach every member's tab at once: their bootstrap refetch,
     // for the project list's counts and dots, waits and spreads out.
     case "thread.created":

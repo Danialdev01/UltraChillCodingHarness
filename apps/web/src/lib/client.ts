@@ -17,6 +17,9 @@ const EPHEMERAL: ReadonlySet<DomainEvent["type"]> = new Set([
   "project.activity",
   "audit.recorded",
   "resource.changed",
+  "upload.changed",
+  "port.opened",
+  "port.closed",
   // A terminal's bytes: read straight off `onEvent` by the terminal views. In
   // the history they evicted the conversation and copied the array per chunk.
   "terminal.output",

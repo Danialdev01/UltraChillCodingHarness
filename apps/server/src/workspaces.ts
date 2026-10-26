@@ -724,6 +724,16 @@ export class WorkspaceService {
     return row ?? null;
   }
 
+  /** A project's dev-server port for the port watcher: null when it has none, or serves a folder. */
+  async previewPortOf(projectId: string): Promise<number | null> {
+    const [row] = await this.db
+      .select({ port: projects.previewPort, staticDir: projects.previewStaticDir })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    return row && row.staticDir == null ? row.port : null;
+  }
+
   async deleteProject(
     hash: string,
     userId: string,
