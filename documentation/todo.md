@@ -818,7 +818,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     - Load, without PF3.1's full PF0 profile (unchecked): 20 co-editors on one note typed about 100 keystrokes/s through the API's proxy for 30 s, about 3,000 keystrokes in all. API event-loop p99 was 10.5 ms idle and 10.9 ms with the co-editors; ELU went from 1% to 6% for piping the sockets. All 20 editors ended identical. The PF0-load half of the acceptance is still to be run once PF3.1 exists.
     - `pnpm typecheck && pnpm test`: 2006 passed, 2 skipped.
 
-- [ ] **R9 — Notes editor co-editing**
+- [x] **R9 — Notes editor co-editing** — c85623f
 
   - **Depends:** R8
   - **Files:** `apps/web/src/components/notes/note-editor-impl.tsx`, `note-editor.tsx`, `notes-workspace.tsx`, `apps/web/src/lib/note-autosave.ts`, `apps/web/package.json` (`@hocuspocus/provider`, `@tiptap/extension-collaboration`, `@tiptap/extension-collaboration-caret`, `yjs`; exact versions matching Tiptap 3.31.3)
@@ -831,6 +831,12 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     6. Offline: Yjs keeps local edits and syncs them on reconnect. Show the reconnect banner.
   - **Acceptance:** two browsers type in the same paragraph at once with live carets, and nothing is lost or reverted.
   - **Verify:** `pnpm --filter @ucch/web build`, a manual two-browser check, and an e2e test with two contexts
+  - **Measured:**
+    - `lib/note-collab.ts` (`useNoteCollab`) owns the provider; `buildExtensions` takes an optional collab argument. The carets are drawn by our own `render`, since the kit accepts only hex colours and `personColor` is oklch; a remote colour is let through only in that shape.
+    - Title, icon and cover saves drop `ifUpdatedAt`: collab moves `updatedAt` on every body save, so the check made renames during typing conflict. Last write wins per field.
+    - `e2e/coedit.spec.ts`: two contexts type at both ends of one paragraph at once; both end on "before and middle and after", each shows one remote caret, the saved note has the merge, and a reload opens on it (4.9 s).
+    - Manual (headless Chrome): a rename in one window while the other types kept both, with 0 409s. With collab stopped, the banner appeared, typing went on, and the offline edit reached the other window 3.7 s after collab restarted.
+    - Web build OK; `pnpm typecheck && pnpm test`: 2006 passed, 2 skipped.
 
 - [ ] **R10 — Code and diagram co-editing**
 
