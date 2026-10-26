@@ -853,13 +853,17 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     - Two headless browser contexts: an edit saved after another user's save showed "Someone else changed qty in this row to 7"; "Use theirs" showed 7; "Overwrite" saved 11; the other tab followed each save.
     - `pnpm typecheck && pnpm test`: 1981 passed, 2 skipped.
 
-- [ ] **W1 — Manifest, icons, theme colour**
+- [x] **W1 — Manifest, icons, theme colour** — a868e8b
 
   - **Depends:** —
   - **Files:** new `apps/web/src/app/manifest.ts`, new icons in `apps/web/src/app/` (`icon-192.png`, `icon-512.png`, `icon-maskable-512.png`), `apple-icon.png` replaced with 180×180, `apps/web/src/app/layout.tsx` (`export const viewport = { themeColor }`), `apps/web/src/middleware.ts` matcher (exclude `manifest.webmanifest`)
   - **Steps:** Generate the icons from `icon.svg` or `components/app-logo.tsx`. Manifest values: `display: "standalone"`, `start_url: "/"`, `scope: "/"`, and colours from theme tokens.
   - **Acceptance:** Chrome DevTools → Application → Manifest shows no errors.
   - **Verify:** `pnpm --filter @ucch/web build`, plus DevTools
+  - **Measured:**
+    - Next serves only its own `icon` / `apple-icon` names from `app/`, so the three PNGs are imported by `manifest.ts` and ship under `/_next/static/media` with a content hash. `apple-icon.png` was already 180×180 and is unchanged; the new icons are its tile at 192 and 512, and a maskable 512 with the mark inside the crop circle.
+    - Chrome's `Page.getAppManifest` and `Page.getInstallabilityErrors` (the data behind DevTools' Manifest pane) on `/login` and an app page of the production build: no manifest errors, no installability errors. Both pages carry the light and dark `theme-color`.
+    - `pnpm typecheck && pnpm test`: 1981 passed, 2 skipped.
 
 - [ ] **W2 — Static root layout**
 
