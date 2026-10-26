@@ -731,7 +731,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
 
 These are unchanged in substance. Their dependencies on completed tasks are dropped and new ones added.
 
-- [ ] **B11 (rest) — Bundle splitting**
+- [x] **B11 (rest) — Bundle splitting** — b501feb
 
   > PARTIAL (from the previous list): done -- analyzer behind `ANALYZE=1`, `optimizePackageImports`, `scripts/bundle-budget.mjs --check`, shell dialogs and the search panel behind `dynamic()` via `components/on-demand.tsx`, lazy login boot screen. Shell routes 329 → 308 kB (baseline 315: −2%). The zod part is now PF1.18.
   >
@@ -743,6 +743,10 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     2. Split `FilesTree` out of `files-panel.tsx`.
   - **Acceptance:** shell-route first-load JS ≥ 10% below the 315 kB baseline (target revised from −25%; the rest is `@base-ui/react` and the framework).
   - **Verify:** `ANALYZE=1 pnpm --filter @ucch/web build`, plus the budget script
+  - **Measured:**
+    - The palette (`quick-menu-palette.tsx`), the switcher's list (`workspace-list.tsx`) and the phone view picker (`view-mode-list.tsx`) load through `on-demand.tsx`, with row skeletons inside an open popover and the boot preload warming them. `FilesTree` is `files-tree.tsx`, loaded the same way; `FilesPanelProvider` stays in the shell.
+    - `/(app)/(home)`: 297 → 274 kB gz, 13% below the 315 kB baseline. Every app route dropped 20–25 kB. `bundle-budget.mjs --check`: within budget.
+    - `pnpm typecheck && pnpm test`: 1960 passed, 2 skipped.
 
 - [ ] **R5 (rest) — Fill missing events**
 
