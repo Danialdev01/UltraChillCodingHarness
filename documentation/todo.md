@@ -382,6 +382,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
   - **Steps:** Fetch thread → project → workspace + membership in one query when the command carries a `threadId` or `projectId`. Keep the `turnId` read separate.
   - **Acceptance:** engine process time p50 for `thread.send` drops by ≥ 30%.
   - **Verify:** `pnpm test -- engine`, plus load
+  > BLOCKED: the join cannot meet the acceptance, so it was not merged. Written and tested (one left-joined read from `(select 1)`, a command's own ids first), then measured in the load container: the state read for a `thread.send` took 0.144 → 0.086 ms p50 (0.78 → 0.41 ms p99) over 2,000 alternating rounds. `thread.send` process time is about 11 ms under load (mean, 135 sends), so the saving is about 0.5%. The three reads were never the cost. The time is in the append, so a 30% cut has to come from there.
 
 ### Streaming and chat (`solution.md` §7–§8)
 
