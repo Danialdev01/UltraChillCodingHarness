@@ -248,6 +248,13 @@ const Env = z.object({
    * never held.
    */
   STREAM_FLUSH_MS: z.coerce.number().int().min(0).max(1000).default(40),
+
+  /**
+   * Thread events kept in memory for the agent's context, across all
+   * threads: the least recently used thread goes first, and a thread longer
+   * than half of this is read from the database each turn instead.
+   */
+  HISTORY_CACHE_EVENTS: z.coerce.number().int().min(0).default(20_000),
 });
 
 export type Config = Readonly<z.infer<typeof Env>>;

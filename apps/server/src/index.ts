@@ -149,7 +149,7 @@ await ensureWorkspaceRoot(config.WORKSPACE_ROOT);
 await mkdir(config.CREDS_ROOT, { recursive: true, mode: 0o700 });
 
 const bus = new EventBus();
-const store = new EventStore(db, bus);
+const store = new EventStore(db, bus, { historyCacheEvents: config.HISTORY_CACHE_EVENTS });
 
 // A message whose turn never opened before the restart left its thread
 // `queued`, refusing every new message. Released through the log, not a
@@ -781,6 +781,9 @@ registry.gauge("agent_turns_scheduled", "Agent turns running and waiting for a s
     gauge.set({ state: "running", kind }, running[kind]);
     gauge.set({ state: "waiting", kind }, waiting[kind]);
   }
+});
+registry.gauge("history_cache_events", "Thread events held in memory for agent context", [], (gauge) => {
+  gauge.set(undefined, store.cachedHistoryEvents);
 });
 registry.gauge("terminals_open", "Open terminal sessions", [], (gauge) => {
   gauge.set(undefined, terminals.openTerminals);

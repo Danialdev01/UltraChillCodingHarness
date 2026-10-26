@@ -25,10 +25,16 @@ export interface AppendTarget {
  * projection function, which is what guarantees it cannot durably disagree
  * with the log.
  */
+export interface EventStoreOptions {
+  /** Events `threadHistory` keeps in memory, across all threads. */
+  historyCacheEvents?: number;
+}
+
 export class EventStore {
   constructor(
     private readonly db: Database,
     private readonly bus: EventBus,
+    private readonly options: EventStoreOptions = {},
   ) {}
 
   /**
@@ -162,8 +168,10 @@ export class EventStore {
    *
    * The log is append-only, so a thread read once is kept and only what was
    * appended since is fetched on the next turn -- rather than every turn of
-   * a long conversation re-reading all of it. Bounded to the threads most
-   * recently used.
+   * a long conversation re-reading all of it. Bounded by events, not
+   * threads: a thousand-turn thread weighs what a hundred short ones do.
+   * The least recently used go first, and a thread longer than half the
+   * bound is read whole every time rather than pushing everyone else out.
    */
   async threadHistory(threadId: string): Promise<readonly StoredEvent[]> {
     const run = async () => {
@@ -171,11 +179,13 @@ export class EventStore {
       const since = cached?.at(-1)?.seq ?? -1;
       const fresh = await this.readThread(threadId, since);
       const all = cached ? (fresh.length ? [...cached, ...fresh] : cached) : fresh;
-      // Re-inserted, so iteration order is least-recently-used first.
-      this.#history.delete(threadId);
-      this.#history.set(threadId, all);
-      while (this.#history.size > HISTORY_CACHE_THREADS) {
-        this.#history.delete(this.#history.keys().next().value!);
+      this.#forget(threadId);
+      const cap = this.options.historyCacheEvents ?? HISTORY_CACHE_EVENTS;
+      if (all.length <= cap / 2) {
+        // Re-inserted, so iteration order is least-recently-used first.
+        this.#history.set(threadId, all);
+        this.#historyEvents += all.length;
+        while (this.#historyEvents > cap) this.#forget(this.#history.keys().next().value!);
       }
       return all;
     };
@@ -191,12 +201,25 @@ export class EventStore {
     }
   }
 
+  /** Events `threadHistory` holds in memory now, for `/metrics`. */
+  get cachedHistoryEvents(): number {
+    return this.#historyEvents;
+  }
+
+  #forget(threadId: string): void {
+    const kept = this.#history.get(threadId);
+    if (!kept) return;
+    this.#history.delete(threadId);
+    this.#historyEvents -= kept.length;
+  }
+
   #history = new Map<string, readonly StoredEvent[]>();
+  #historyEvents = 0;
   #historyReads = new Map<string, Promise<readonly StoredEvent[]>>();
 }
 
-/** Threads whose history `threadHistory` keeps in memory. */
-const HISTORY_CACHE_THREADS = 32;
+/** Events `threadHistory` keeps in memory by default; `HISTORY_CACHE_EVENTS`. */
+const HISTORY_CACHE_EVENTS = 20_000;
 
 function toStored(row: typeof events.$inferSelect): StoredEvent {
   return {
