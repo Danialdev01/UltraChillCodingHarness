@@ -471,7 +471,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - stream.spec, a 4,000-token answer: 1,334 deltas, each received once, and the sent message stays on screen.
     - The plan's `useRealtime().subscribe/dispatch` wrappers were not added. Views call `client.hold` and `client.dispatch` on the client `useRealtime()` returns, as the terminals already did.
 
-- [ ] **PF1.18 — `@ucch/protocol/plain`: client code without zod** *(the zod part of B11)*
+- [x] **PF1.18 — `@ucch/protocol/plain`: client code without zod** *(the zod part of B11)* — 09cd500
 
   - **Depends:** PF1.14
   - **Files:** `packages/protocol/package.json` (`exports["./plain"]`, `"sideEffects": false`), new `packages/protocol/src/plain.ts`, web imports of runtime values from `@ucch/protocol` (constants and helpers such as `TASK_STAGES`, `AVATAR_SIZE`, identifier helpers), a new test that forbids runtime imports of the barrel in `apps/web/src`
@@ -481,6 +481,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. Run the analyzer to confirm zod is gone from shell chunks.
   - **Acceptance:** shell-route first-load JS drops by roughly the size of zod (~12 kB gz). `bundle-budget.mjs --check` passes.
   - **Verify:** `ANALYZE=1 pnpm --filter @ucch/web build`, plus `node apps/web/scripts/bundle-budget.mjs --check`
+  - **Measured:** (`next build`, first-load JS gzipped)
+    - The zod chunk (12.6 kB) was on every shell route. Now it is on none: not home, dashboard or session. It stays on the database pages, whose forms validate with `Identifier`, `ColumnSpec`, `CreateDatabaseBody` and `CreateUserBody`, imported from `@ucch/protocol/database`.
+    - Shell routes 314–322 → 297–305 kB (−17 kB, zod plus the barrel's schemas). Session 407 → 400 kB, tasks 385 → 364 kB. `/login` unchanged. `--check` is within budget.
+    - The enums the web read at runtime became plain arrays the zod enums are built from (`DATABASE_ENGINES`, `PROJECT_MODES`), and `DevDatabaseName.safeParse` became `DEV_DATABASE_NAME.test`.
 
 - [ ] **PF1.19 — Bounded `threadHistory`**
 
