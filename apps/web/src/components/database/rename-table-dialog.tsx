@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { Loader2Icon } from "lucide-react"
-import { Identifier } from "@ucch/protocol"
+import { Identifier } from "@ucch/protocol/database"
 
 import { errorText, useDb } from "@/components/database/db-context"
 import { Button } from "@/components/ui/button"

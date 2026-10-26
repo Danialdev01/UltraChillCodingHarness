@@ -17,7 +17,7 @@ import type { LeaderCommand } from "@/lib/leader-keymap"
 import { matchLines } from "@/lib/line-search"
 import { cn } from "@/lib/utils"
 import { usePresenceLocation } from "@/lib/realtime"
-import { isPreviewable, previewKindFor } from "@ucch/protocol"
+import { isPreviewable, previewKindFor } from "@ucch/protocol/plain"
 
 /**
  * CodeMirror and the vim layer are a third of the project page's JavaScript,

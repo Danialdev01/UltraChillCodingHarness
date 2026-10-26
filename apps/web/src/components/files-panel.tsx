@@ -51,7 +51,7 @@ import {
 import { targetOf, type ProjectTarget } from "@/lib/project-target"
 import { projectQueries, treeKey } from "@/lib/queries/project-data"
 import { movableInto } from "@/lib/file-drop"
-import { isPreviewable } from "@ucch/protocol"
+import { isPreviewable } from "@ucch/protocol/plain"
 import type { Project } from "@/lib/session"
 import { isOwnChange, useProjectEvents, useToast } from "@/lib/realtime"
 import { codeReference, type CodeReference } from "@/lib/code-chat"

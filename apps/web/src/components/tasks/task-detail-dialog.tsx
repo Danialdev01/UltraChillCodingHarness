@@ -11,7 +11,8 @@ import {
   Trash2Icon,
   XCircleIcon,
 } from "lucide-react"
-import { TASK_FEEDBACK_MAX, type ProjectTask } from "@ucch/protocol"
+import { TASK_FEEDBACK_MAX } from "@ucch/protocol/plain"
+import type { ProjectTask } from "@ucch/protocol"
 
 import { Markdown } from "@/components/markdown"
 import { Button } from "@/components/ui/button"

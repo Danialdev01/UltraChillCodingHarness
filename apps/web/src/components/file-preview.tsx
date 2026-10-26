@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { AlertCircleIcon, FileTextIcon, ImageIcon } from "lucide-react"
-import { extensionOf, previewKindFor } from "@ucch/protocol"
+import { extensionOf, previewKindFor } from "@ucch/protocol/plain"
 
 import { ImageViewer } from "@/components/image-viewer"
 import { PdfViewer } from "@/components/pdf-viewer"

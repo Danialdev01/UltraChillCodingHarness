@@ -12,7 +12,8 @@ import {
   SettingsIcon,
   Trash2Icon,
 } from "lucide-react"
-import { DATABASE_ENGINE_LABELS, type DatabaseConnectionSummary } from "@ucch/protocol"
+import { DATABASE_ENGINE_LABELS } from "@ucch/protocol/plain"
+import type { DatabaseConnectionSummary } from "@ucch/protocol"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ConnectionSettingsDialog, CreateDatabaseDialog, NewDatabaseDialog } from "@/components/on-demand"

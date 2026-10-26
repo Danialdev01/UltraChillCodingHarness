@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ProjectDatabase } from "./database.js";
 import { BranchName, PreviewHash, ProjectHash, ThreadHash } from "./ids.js";
+import { PROJECT_MODES } from "./plain.js";
 
 /**
  * The append-only session log.
@@ -26,14 +27,8 @@ import { BranchName, PreviewHash, ProjectHash, ThreadHash } from "./ids.js";
  * What a project is for. Stored and shown; nothing behaves differently by it
  * yet, except that only a development project may ask for a database.
  */
-export const ProjectMode = z.enum(["research", "development", "creative_design"]);
+export const ProjectMode = z.enum(PROJECT_MODES);
 export type ProjectMode = z.infer<typeof ProjectMode>;
-
-export const PROJECT_MODE_LABELS: Record<ProjectMode, string> = {
-  research: "Research",
-  development: "Development",
-  creative_design: "Creative design",
-};
 
 export const ContainerState = z.enum(["absent", "creating", "running", "stopped", "error"]);
 export type ContainerState = z.infer<typeof ContainerState>;

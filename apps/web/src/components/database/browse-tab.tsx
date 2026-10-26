@@ -14,7 +14,8 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react"
-import { ROW_PAGE_SIZES, type Cell, type RowPage, type TableDetail } from "@ucch/protocol"
+import { ROW_PAGE_SIZES } from "@ucch/protocol/plain"
+import type { Cell, RowPage, TableDetail } from "@ucch/protocol"
 
 import { CellValue } from "@/components/database/cell-value"
 import { selectClass } from "@/components/database/column-form"

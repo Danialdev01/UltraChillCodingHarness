@@ -15,7 +15,8 @@
  * into a repository that did not ask for one.
  */
 
-import { isModelImageType, previewKindFor, type MessageImage } from "@ucch/protocol";
+import { isModelImageType, previewKindFor } from "@ucch/protocol/plain";
+import type { MessageImage } from "@ucch/protocol";
 
 /**
  * The most one file may contribute as inlined text. Past this the content is

@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { ChevronRightIcon, KeyRoundIcon, Loader2Icon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react"
-import { Identifier, type ColumnInfo, type IndexInfo, type TableDetail } from "@ucch/protocol"
+import { Identifier } from "@ucch/protocol/database"
+import type { ColumnInfo, IndexInfo, TableDetail } from "@ucch/protocol"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ColumnFormDialog, Flag, selectClass } from "@/components/database/column-form"

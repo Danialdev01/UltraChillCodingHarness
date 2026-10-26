@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DATABASE_ENGINES, DEV_DATABASE_NAME } from "./plain.js";
 
 /**
  * What the Database view and its routes say to each other.
@@ -9,43 +10,16 @@ import { z } from "zod";
  * back -- `DatabaseConnectionSummary` has no field for it.
  */
 
-export const DatabaseEngine = z.enum(["mysql", "postgresql"]);
+export const DatabaseEngine = z.enum(DATABASE_ENGINES);
 export type DatabaseEngine = z.infer<typeof DatabaseEngine>;
 
-export const DEFAULT_DB_PORTS: Record<DatabaseEngine, number> = {
-  mysql: 3306,
-  postgresql: 5432,
-};
-
-/**
- * The name of a development database a project asks the harness to create.
- *
- * Narrower than either engine allows, on purpose: lower-case, starting with a
- * letter, letters/digits/underscores only. It is the same identifier on MySQL
- * and PostgreSQL without quoting, and it is safe in a URL and a `.env` file.
- */
-export const DevDatabaseName = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/, "lower-case letters, digits and underscores, starting with a letter");
+/** The name of a development database; what it may be is `DEV_DATABASE_NAME`. */
+export const DevDatabaseName = z.string().regex(DEV_DATABASE_NAME, "lower-case letters, digits and underscores, starting with a letter");
 export type DevDatabaseName = z.infer<typeof DevDatabaseName>;
 
 /** A project's own development database: which shared server, and its name. */
 export const ProjectDatabase = z.object({ engine: DatabaseEngine, name: DevDatabaseName });
 export type ProjectDatabase = z.infer<typeof ProjectDatabase>;
-
-/** Turns a project name into a database name a person would probably pick. */
-export function suggestDevDatabaseName(projectName: string): string {
-  const cleaned = projectName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^[^a-z]+/, "")
-    .replace(/_+$/, "")
-    .slice(0, 63);
-  return cleaned;
-}
-
-export const DATABASE_ENGINE_LABELS: Record<DatabaseEngine, string> = {
-  mysql: "MySQL",
-  postgresql: "PostgreSQL",
-};
 
 export const DatabaseConnectionCreate = z.object({
   name: z.string().trim().min(1).max(80),
@@ -176,8 +150,6 @@ export interface TableDetail {
   indexes: IndexInfo[];
   foreignKeys: ForeignKeyInfo[];
 }
-
-export const ROW_PAGE_SIZES = [25, 100, 500] as const;
 
 export const RowsQuery = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -331,16 +303,7 @@ export type ImportResult =
 
 // --- Permissions -------------------------------------------------------------
 
-export const MYSQL_PRIVILEGES = [
-  "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX", "REFERENCES",
-  "CREATE VIEW", "SHOW VIEW", "TRIGGER", "EXECUTE", "EVENT", "CREATE ROUTINE", "ALTER ROUTINE",
-  "LOCK TABLES", "CREATE TEMPORARY TABLES", "ALL",
-] as const;
-export const PG_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "ALL"] as const;
-
-export function privilegesFor(engine: DatabaseEngine): readonly string[] {
-  return engine === "mysql" ? MYSQL_PRIVILEGES : PG_PRIVILEGES;
-}
+// Which privileges each engine has (`privilegesFor`): `plain.ts`, for the browser.
 
 export const CreateUserBody = z.object({
   name: Identifier,

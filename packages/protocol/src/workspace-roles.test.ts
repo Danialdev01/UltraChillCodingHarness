@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { can, canAssignRole, canManageMember, permissionsOf } from "./plain.js";
 import {
-  can,
-  canAssignRole,
-  canManageMember,
   effectiveCredentialSource,
-  permissionsOf,
   resolveCredentialSource,
   type Membership,
   type WorkspaceRole,

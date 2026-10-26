@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { TIMELINE_COLOURS, TIMELINE_TITLE_MAX, type TimelineColour } from "@ucch/protocol"
+import { TIMELINE_COLOURS, TIMELINE_TITLE_MAX } from "@ucch/protocol/plain"
+import type { TimelineColour } from "@ucch/protocol"
 
 import { Button } from "@/components/ui/button"
 import {

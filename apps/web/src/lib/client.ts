@@ -1,16 +1,7 @@
 "use client";
 
-import {
-  REPLAY_CAP,
-  TERMINAL_INPUT_MAX,
-  type ClientFrame,
-  type Command,
-  type ComposerDraft,
-  type DomainEvent,
-  type Scope,
-  type ServerFrame,
-  type StoredEvent,
-} from "@ucch/protocol";
+import { REPLAY_CAP, TERMINAL_INPUT_MAX } from "@ucch/protocol/plain";
+import type { ClientFrame, Command, ComposerDraft, DomainEvent, Scope, ServerFrame, StoredEvent } from "@ucch/protocol";
 import { frameBatcher } from "./next-frame";
 import { TAB_ID } from "./tab-id";
 

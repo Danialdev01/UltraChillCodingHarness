@@ -2,13 +2,8 @@
 
 import * as React from "react"
 import { Loader2Icon } from "lucide-react"
-import {
-  DATABASE_ENGINE_LABELS,
-  DEFAULT_DB_PORTS,
-  DatabaseEngine,
-  type DatabaseConnectionSummary,
-  type DatabaseConnectionUpdate,
-} from "@ucch/protocol"
+import { DATABASE_ENGINE_LABELS, DATABASE_ENGINES, DEFAULT_DB_PORTS } from "@ucch/protocol/plain"
+import type { DatabaseEngine, DatabaseConnectionSummary, DatabaseConnectionUpdate } from "@ucch/protocol"
 
 import { errorText } from "@/components/database/db-context"
 import { Button } from "@/components/ui/button"
@@ -120,7 +115,7 @@ export function ConnectionSettingsDialog({
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium">Engine</span>
               <div className="grid grid-cols-2 gap-1" role="radiogroup" aria-label="Engine">
-                {DatabaseEngine.options.map((option) => (
+                {DATABASE_ENGINES.map((option) => (
                   <button
                     key={option}
                     type="button"

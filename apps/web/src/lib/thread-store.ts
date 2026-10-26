@@ -1,4 +1,5 @@
-import { THREAD_WINDOW, type DomainEvent } from "@ucch/protocol";
+import { THREAD_WINDOW } from "@ucch/protocol/plain";
+import type { DomainEvent } from "@ucch/protocol";
 import type { ClientEvent } from "./client";
 import { frameBatcher } from "./next-frame";
 

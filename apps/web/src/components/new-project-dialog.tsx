@@ -13,13 +13,12 @@ import {
 } from "lucide-react";
 import {
   DATABASE_ENGINE_LABELS,
-  DevDatabaseName,
+  DEV_DATABASE_NAME,
   PROJECT_MODE_LABELS,
-  ProjectMode,
+  PROJECT_MODES,
   suggestDevDatabaseName,
-  type DatabaseEngine,
-  type ProjectDatabase,
-} from "@ucch/protocol";
+} from "@ucch/protocol/plain";
+import type { DevDatabaseName, ProjectMode, DatabaseEngine, ProjectDatabase } from "@ucch/protocol";
 
 import { GithubMark } from "@/components/github-mark";
 import { Button } from "@/components/ui/button";
@@ -312,7 +311,7 @@ export function NewProjectDialog({
 
   /** The database to ask for, or null for none -- also null outside development. */
   const database = mode === "development" && engine ? { engine, name: dbName } : null;
-  const dbNameValid = !database || DevDatabaseName.safeParse(dbName).success;
+  const dbNameValid = !database || DEV_DATABASE_NAME.test(dbName);
 
   const busy = stage !== "idle";
 
@@ -430,7 +429,7 @@ export function NewProjectDialog({
                   Mode
                 </span>
                 <Segmented
-                  options={ProjectMode.options.map((value) => ({
+                  options={PROJECT_MODES.map((value) => ({
                     value,
                     label: MODE_SHORT_LABELS[value],
                     ariaLabel: PROJECT_MODE_LABELS[value],

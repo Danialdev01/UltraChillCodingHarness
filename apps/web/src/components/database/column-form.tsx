@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { Loader2Icon } from "lucide-react"
-import { ColumnSpec, type ColumnInfo, type DatabaseEngine } from "@ucch/protocol"
+import { ColumnSpec } from "@ucch/protocol/database"
+import type { ColumnInfo, DatabaseEngine } from "@ucch/protocol"
 
 import { errorText } from "@/components/database/db-context"
 import { Button } from "@/components/ui/button"

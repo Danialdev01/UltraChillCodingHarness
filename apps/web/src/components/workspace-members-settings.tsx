@@ -3,14 +3,8 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Loader2Icon, LogOutIcon, TrashIcon, UserPlusIcon, UsersRoundIcon } from "lucide-react"
-import {
-  canAssignRole,
-  canManageMember,
-  ROLE_PERMISSIONS,
-  type AssignableRole,
-  type Membership,
-  type WorkspaceRole,
-} from "@ucch/protocol"
+import { canAssignRole, canManageMember, ROLE_PERMISSIONS } from "@ucch/protocol/plain"
+import type { AssignableRole, Membership, WorkspaceRole } from "@ucch/protocol"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ListRowsSkeleton } from "@/components/page-skeletons"

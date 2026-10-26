@@ -1,4 +1,5 @@
-import { DEFAULT_DB_PORTS, type DatabaseEngine } from "@ucch/protocol";
+import { DEFAULT_DB_PORTS } from "@ucch/protocol/plain";
+import type { DatabaseEngine } from "@ucch/protocol";
 
 /**
  * A connection URL as hosting panels print it, taken apart into fields.

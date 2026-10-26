@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { PlusIcon, SquareKanbanIcon } from "lucide-react"
-import { TASK_STAGES, type ProjectTask, type TaskStage } from "@ucch/protocol"
+import { TASK_STAGES } from "@ucch/protocol/plain"
+import type { ProjectTask, TaskStage } from "@ucch/protocol"
 
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"

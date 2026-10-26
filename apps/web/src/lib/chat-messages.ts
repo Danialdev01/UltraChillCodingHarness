@@ -141,7 +141,7 @@ export interface ChatState {
  * `agent.turn_completed`, so anything shown during the turn is counted from
  * what has streamed. Whatever displays it says so.
  */
-export { estimateTokens } from "@ucch/protocol";
+export { estimateTokens } from "@ucch/protocol/plain";
 
 export function toMessages(
   events: readonly { event: DomainEvent; receivedAt?: number }[],

@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { BotIcon, Loader2Icon, SaveIcon } from "lucide-react"
-import { TASK_AUTO_RUN_USAGE_LIMIT, type TaskSettings } from "@ucch/protocol"
+import { TASK_AUTO_RUN_USAGE_LIMIT } from "@ucch/protocol/plain"
+import type { TaskSettings } from "@ucch/protocol"
 
 import { ModelSelect, useModels } from "@/components/model-picker"
 import { ProviderSelect, useProviders } from "@/components/provider-picker"

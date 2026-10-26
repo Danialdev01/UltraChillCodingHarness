@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { CheckIcon, CopyIcon, LinkIcon, Loader2Icon, Share2Icon, TrashIcon } from "lucide-react"
-import { canAssignRole, type AssignableRole } from "@ucch/protocol"
+import { canAssignRole } from "@ucch/protocol/plain"
+import type { AssignableRole } from "@ucch/protocol"
 
 import { ListRowsSkeleton } from "@/components/page-skeletons"
 import { Outcome, useOutcome } from "@/components/settings-outcome"

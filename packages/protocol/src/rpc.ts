@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Command, type CommandType } from "./commands.js";
 import { ComposerDraft, DomainEvent, StoredEvent } from "./events.js";
+import { TERMINAL_INPUT_MAX } from "./plain.js";
 
 /**
  * The client/server wire contract: one authenticated WebSocket carrying
@@ -98,16 +99,6 @@ const Ping = z.object({
   id: z.string(),
 });
 
-/** The most a `terminal_input` frame carries; a longer paste is sent in pieces. */
-export const TERMINAL_INPUT_MAX = 64 * 1024;
-
-/**
- * A thread's newest durable events: what the server replays when a thread
- * is subscribed to, and what the browser keeps of one. One number, so the
- * browser never keeps less than it was sent.
- */
-export const THREAD_WINDOW = 1000;
-
 /**
  * Keystrokes into a terminal, outside the command queue: no id, no ack.
  * `dispatch terminal.input` does the same, but waits behind every other
@@ -198,9 +189,6 @@ const Replay = z.object({
   ),
   done: z.boolean(),
 });
-
-/** In the socket URL's `caps`: this client reads `replay` frames. */
-export const REPLAY_CAP = "replay1";
 
 const Pong = z.object({
   kind: z.literal("pong"),

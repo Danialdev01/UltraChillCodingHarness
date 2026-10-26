@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { WORKSPACE_PERMISSIONS, WORKSPACE_ROLES } from "./plain.js";
 
 /**
  * Who a person is in a workspace.
@@ -11,23 +12,14 @@ import { z } from "zod";
  * Shared between server and web so the UI hides exactly what the server
  * would refuse.
  */
-export const WorkspaceRole = z.enum(["owner", "admin", "member", "viewer"]);
+export const WorkspaceRole = z.enum(WORKSPACE_ROLES);
 export type WorkspaceRole = z.infer<typeof WorkspaceRole>;
 
 /** The roles a person can be given -- `owner` is only ever the creator. */
 export const AssignableRole = z.enum(["admin", "member", "viewer"]);
 export type AssignableRole = z.infer<typeof AssignableRole>;
 
-export const WorkspacePermission = z.enum([
-  "workspace.view",
-  "workspace.manage",
-  "workspace.delete",
-  "members.manage",
-  "credentials.manage",
-  "project.create",
-  "project.write",
-  "session.create",
-]);
+export const WorkspacePermission = z.enum(WORKSPACE_PERMISSIONS);
 export type WorkspacePermission = z.infer<typeof WorkspacePermission>;
 
 /**
@@ -43,15 +35,6 @@ export type CredentialPolicy = z.infer<typeof CredentialPolicy>;
 export const CredentialSource = z.enum(["member", "workspace"]);
 export type CredentialSource = z.infer<typeof CredentialSource>;
 
-const ALL = WorkspacePermission.options;
-
-export const ROLE_PERMISSIONS: Record<WorkspaceRole, readonly WorkspacePermission[]> = {
-  owner: ALL,
-  admin: ALL.filter((p) => p !== "workspace.delete"),
-  member: ["workspace.view", "project.create", "project.write", "session.create"],
-  viewer: ["workspace.view"],
-};
-
 export interface Membership {
   role: WorkspaceRole;
   /** Null follows the role's default. */
@@ -59,40 +42,7 @@ export interface Membership {
   canCreateSession: boolean | null;
 }
 
-export function can(membership: Membership | null | undefined, permission: WorkspacePermission) {
-  if (!membership) return false;
-  // The owner's overrides are ignored so the owner can never lock themselves out.
-  if (membership.role !== "owner") {
-    if (permission === "project.create" && membership.canCreateProject !== null) {
-      return membership.canCreateProject;
-    }
-    if (permission === "session.create" && membership.canCreateSession !== null) {
-      return membership.canCreateSession;
-    }
-  }
-  return ROLE_PERMISSIONS[membership.role].includes(permission);
-}
-
-export function permissionsOf(membership: Membership | null | undefined): WorkspacePermission[] {
-  return ALL.filter((p) => can(membership, p));
-}
-
-/**
- * Whether `actor` may change or remove `target`'s membership. Nobody touches
- * the owner; an admin manages members and viewers but not other admins.
- */
-export function canManageMember(actor: Membership | null | undefined, target: Membership) {
-  if (!can(actor, "members.manage") || !actor) return false;
-  if (target.role === "owner") return false;
-  if (actor.role === "owner") return true;
-  return target.role !== "admin";
-}
-
-/** The role an actor may hand out: an admin cannot mint other admins. */
-export function canAssignRole(actor: Membership | null | undefined, role: WorkspaceRole) {
-  if (!actor || !can(actor, "members.manage") || role === "owner") return false;
-  return actor.role === "owner" || role !== "admin";
-}
+// What each role may do, and who may manage whom: `plain.ts`, for the browser.
 
 /**
  * Whose credentials a new thread binds to. Under `either` the starter's

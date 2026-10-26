@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { CylinderIcon, DownloadIcon, ExternalLinkIcon, MoreHorizontalIcon, PlusIcon, RefreshCwIcon, ServerIcon, Trash2Icon, UploadIcon } from "lucide-react"
-import { DATABASE_ENGINE_LABELS, type DatabaseConnectionSummary, type DatabaseSummary } from "@ucch/protocol"
+import { DATABASE_ENGINE_LABELS } from "@ucch/protocol/plain"
+import type { DatabaseConnectionSummary, DatabaseSummary } from "@ucch/protocol"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { CreateDatabaseDialog } from "@/components/database/create-database-dialog"

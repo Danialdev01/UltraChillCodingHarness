@@ -2,7 +2,9 @@
 
 import * as React from "react"
 import { KeyRoundIcon, Loader2Icon, MoreHorizontalIcon, PlusIcon, RefreshCwIcon, ShieldMinusIcon, Trash2Icon } from "lucide-react"
-import { CreateUserBody, privilegesFor, type DbUser } from "@ucch/protocol"
+import { CreateUserBody } from "@ucch/protocol/database"
+import { privilegesFor } from "@ucch/protocol/plain"
+import type { DbUser } from "@ucch/protocol"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Flag } from "@/components/database/column-form"

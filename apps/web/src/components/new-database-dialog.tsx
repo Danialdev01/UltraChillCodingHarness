@@ -2,12 +2,8 @@
 
 import * as React from "react";
 import { AlertCircleIcon, DatabaseIcon, LockIcon } from "lucide-react";
-import {
-  DATABASE_ENGINE_LABELS,
-  DEFAULT_DB_PORTS,
-  DatabaseEngine,
-  type DatabaseConnectionCreate,
-} from "@ucch/protocol";
+import { DATABASE_ENGINE_LABELS, DATABASE_ENGINES, DEFAULT_DB_PORTS } from "@ucch/protocol/plain";
+import type { DatabaseEngine, DatabaseConnectionCreate } from "@ucch/protocol";
 
 import {
   Callout,
@@ -167,7 +163,7 @@ export function NewDatabaseDialog({
         helper={urlEngineLocked ? "Read from the URL's scheme." : undefined}
       >
         <Segmented
-          options={DatabaseEngine.options.map((value) => ({
+          options={DATABASE_ENGINES.map((value) => ({
             value,
             label: DATABASE_ENGINE_LABELS[value],
           }))}

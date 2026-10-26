@@ -11,7 +11,7 @@
  * middle, and the alternative is squashing it.
  */
 
-import { AVATAR_SIZE, AVATAR_TYPES, MAX_AVATAR_BYTES } from "@ucch/protocol";
+import { AVATAR_SIZE, AVATAR_TYPES, MAX_AVATAR_BYTES } from "@ucch/protocol/plain";
 
 /**
  * The area of the source to draw, as a centred square.

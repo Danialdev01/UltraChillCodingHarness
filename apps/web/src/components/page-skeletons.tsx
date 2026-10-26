@@ -1,4 +1,4 @@
-import { TASK_STAGES } from "@ucch/protocol"
+import { TASK_STAGES } from "@ucch/protocol/plain"
 
 import { Skeleton } from "@/components/ui/skeleton"
 

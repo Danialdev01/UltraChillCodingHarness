@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { EyeIcon, EyeOffIcon } from "lucide-react"
-import { KEY_NAME_MAX, KEY_URL_MAX, KEY_VALUE_MAX } from "@ucch/protocol"
+import { KEY_NAME_MAX, KEY_URL_MAX, KEY_VALUE_MAX } from "@ucch/protocol/plain"
 
 import { Button } from "@/components/ui/button"
 import {

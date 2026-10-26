@@ -13,13 +13,8 @@ import {
   PlusIcon,
   XIcon,
 } from "lucide-react"
-import {
-  TASK_DESCRIPTION_MAX,
-  TASK_REFERENCES_MAX,
-  TASK_TITLE_MAX,
-  type ProjectTask,
-  type TaskReference,
-} from "@ucch/protocol"
+import { TASK_DESCRIPTION_MAX, TASK_REFERENCES_MAX, TASK_TITLE_MAX } from "@ucch/protocol/plain"
+import type { ProjectTask, TaskReference } from "@ucch/protocol"
 
 import {
   FIELD,

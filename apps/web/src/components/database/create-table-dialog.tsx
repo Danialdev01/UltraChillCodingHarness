@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react"
-import { Identifier } from "@ucch/protocol"
+import { Identifier } from "@ucch/protocol/database"
 
 import { ColumnFields, emptyColumn, specFromDraft, type ColumnDraft } from "@/components/database/column-form"
 import { errorText, useDb } from "@/components/database/db-context"
