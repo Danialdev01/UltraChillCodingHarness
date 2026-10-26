@@ -267,7 +267,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
   - **Acceptance:** 0 page refreshes caused by realtime events. A rename, profile change or preview-port change in one tab shows in another without a refresh.
   - **Verify:** standard, plus a manual two-browser check
 
-- [ ] **PF1.6 — Convert local `router.refresh()` call sites**
+- [x] **PF1.6 — Convert local `router.refresh()` call sites** — 8d01569
 
   - **Depends:** PF1.5
   - **Files:** the call sites in `solution.md` §4's table, e.g. `lib/use-new-session.ts:31`, `components/new-project-dialog.tsx:365`, `components/session-list.tsx:53`, `components/file-explorer-toggle.tsx:143,153`, `components/project-chat.tsx:817`, `components/preview-dialog.tsx:118`, `components/account-settings.tsx:52`, `components/workspace-switcher.tsx:97,335,349`, `components/invite-accept.tsx:33`, the three database dialogs, `components/nav-user.tsx:58`
@@ -277,6 +277,12 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. Keep `lib/workspace-context.tsx:58` and `components/workspace-members-settings.tsx:307`.
   - **Acceptance:** `grep -rn "router.refresh" apps/web/src` lists only the kept sites (plus `tables-column.tsx` if its grid isn't query-backed), and each converted flow updates the UI without a refresh.
   - **Verify:** standard, plus a manual pass over each converted flow
+  - **Measured:** (headless Chrome on the load image, non-prefetch RSC requests during each flow)
+    - The grep lists the two kept sites, `tables-column.tsx` (its grid reads rows outside the query cache) and the `view-transitions.tsx` wrapper. `navigation.test.ts` fails on any other.
+    - 0 RSC requests: account name → sidebar; connection settings → its page, the header and the sidebar; session rename → header, sidebar and files panel; preview port → header; session delete; workspace rename → switcher.
+    - 1 RSC request, for the page the flow opens: new session, connection remove. Logout is one full load of `/login`.
+    - Not driven: new connection, workspace archive and delete, invite accept. They use the same invalidations as the flows above.
+    - Two props the old refresh used to re-render were stale without it. The connection page now reads its connection from bootstrap. The files panel takes a newer copy of the page's project, so the session menu's Rename and Delete name the session as it is after a rename.
 
 - [x] **PF1.7 — Smooth the bootstrap herd from turn edges** — 09a321f
 
