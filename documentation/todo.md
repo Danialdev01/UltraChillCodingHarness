@@ -521,7 +521,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - In Chrome, a waiting thread read "Queued — 13 ahead" down to "2 ahead" with Stop shown, then working, then done.
     - The scheduler takes a per-request `onAhead` rather than one global `onChange(threadId, ahead)`, because only the agent knows which project to publish to.
 
-- [ ] **PF1.21 — Terminal caps in config**
+- [x] **PF1.21 — Terminal caps in config** — a202dad
 
   - **Depends:** PF1.10
   - **Files:** `apps/server/src/config.ts`, `apps/server/src/terminals.ts` (constants at lines 35 and 49, check at line 229), `apps/server/src/index.ts` (`TerminalOptions`), `apps/server/src/terminals.test.ts`, `.env.example`
@@ -530,6 +530,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     2. Over a cap, refuse with a visible notice via `#say`. No queue.
   - **Acceptance:** each cap refuses the next terminal with a readable message.
   - **Verify:** `pnpm test -- terminals`
+  - **Measured:** (`terminals.test.ts`)
+    - Over each cap the next terminal starts no shell. It prints which limit it hit, for example "You already have 5 terminals open, the most one person can. Close one to open another."
+    - Closing a terminal frees its slot, and `TERMINAL_IDLE_MINUTES` sets the idle close.
+    - The per-person cap (5) is new. Before, only the per-project cap existed.
 
 - [ ] **PF1.22 — Heavy-job semaphore for document tools**
 
