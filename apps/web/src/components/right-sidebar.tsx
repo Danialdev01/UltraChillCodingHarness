@@ -4,8 +4,8 @@ import { XIcon } from "lucide-react"
 
 import { ChatDock } from "@/components/chat-dock"
 import { Button } from "@/components/ui/button"
-import { FilesTree, useFilesPanel } from "@/components/files-panel"
-import { SearchPanel } from "@/components/on-demand"
+import { useFilesPanel } from "@/components/files-panel"
+import { FilesTree, SearchPanel } from "@/components/on-demand"
 import { cn } from "@/lib/utils"
 
 /** How long the column takes to come in or go out, and the class that says so. */

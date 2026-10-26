@@ -13,7 +13,7 @@ import {
 
 import { SidebarToggles } from "@/components/file-explorer-toggle"
 import { Button } from "@/components/ui/button"
-import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
+import { ViewModeList } from "@/components/on-demand"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useFilesPanel, type ViewMode } from "@/components/files-panel"
 import { cn } from "@/lib/utils"
@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils"
  */
 const CLOSE_ALL_AT = 10
 
-type Mode = { id: ViewMode; label: string; icon: typeof MessageSquareIcon }
+export type Mode = { id: ViewMode; label: string; icon: typeof MessageSquareIcon }
 
 const CHAT: Mode = { id: "chat", label: "Chat", icon: MessageSquareIcon }
 const FILES: Mode = { id: "file", label: "Files", icon: FolderTreeIcon }
@@ -173,26 +173,14 @@ function ViewModeSelect({
       </PopoverTrigger>
 
       <PopoverContent className="w-44 p-0">
-        <Command>
-          <CommandList>
-            <CommandGroup heading="View">
-              {modes.map(({ id, label, icon: Icon }) => (
-                <CommandItem
-                  key={id}
-                  value={id}
-                  data-checked={id === mode}
-                  onSelect={() => {
-                    onChange(id)
-                    setOpen(false)
-                  }}
-                >
-                  <Icon className="size-3.5" />
-                  {label}
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
+        <ViewModeList
+          modes={modes}
+          mode={mode}
+          onSelect={(id) => {
+            onChange(id)
+            setOpen(false)
+          }}
+        />
       </PopoverContent>
     </Popover>
   )

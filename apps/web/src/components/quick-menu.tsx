@@ -1,36 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  CodeIcon,
-  DatabaseIcon,
-  FolderGitIcon,
-  GitBranchIcon,
-  ListTodoIcon,
-  RocketIcon,
-  SearchIcon,
-  StickyNoteIcon,
-  LayersIcon,
-  MessageSquarePlusIcon,
-} from "lucide-react";
+import { SearchIcon } from "lucide-react";
 
-import { NewDatabaseDialog, NewProjectDialog, NewWorkspaceDialog } from "@/components/on-demand";
-import { ProjectStackIcon } from "@/components/project-stack-icon";
-import {
-  CommandDialog,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-  CommandShortcut,
-} from "@/components/ui/command";
+import { NewDatabaseDialog, NewProjectDialog, NewWorkspaceDialog, QuickMenuPalette } from "@/components/on-demand";
 import type { Project } from "@/lib/session";
 import type { Workspace } from "@/components/workspace-switcher";
 import { useNewSession } from "@/lib/use-new-session";
-import { countLabel } from "@/lib/workspace-api";
-import { projectHref, sectionById, sectionHref } from "@/lib/sections";
 import { useTransitionRouter } from "@/lib/view-transitions";
 
 /**
@@ -60,13 +36,11 @@ export function QuickMenu({
   const [connectingDatabase, setConnectingDatabase] = useState(false);
   const session = useNewSession(activeWorkspaceId);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
-  const sessionWorkspace = activeWorkspace?.kind === "session";
   const permissions = activeWorkspace?.permissions ?? [];
   const canCreateProject = permissions.includes("project.create");
   const canStartSession = canCreateProject && permissions.includes("session.create");
   // Archived workspaces are restored from the switcher, not jumped to.
   const switchable = workspaces.filter((w) => !w.archived);
-  const ws = activeWorkspace?.hash ?? "";
 
   // The conventional palette shortcut. Registered on the window so it works
   // wherever focus happens to be, except inside a text field.
@@ -105,111 +79,21 @@ export function QuickMenu({
         </kbd>
       </button>
 
-      <CommandDialog
+      <QuickMenuPalette
         open={open}
         onOpenChange={setOpen}
-        title="Quick menu"
-        description="Create something, or jump to a project or section."
-      >
-        <CommandInput placeholder="Type a command or search…" />
-        <CommandList>
-          <CommandEmpty>No results.</CommandEmpty>
-
-          <CommandGroup heading="Create">
-            {sessionWorkspace ? (
-              canStartSession && (
-                <CommandItem onSelect={() => run(session.start)}>
-                  <MessageSquarePlusIcon />
-                  New session
-                </CommandItem>
-              )
-            ) : (
-              canCreateProject && <CommandItem onSelect={() => run(() => setCreatingProject(true))}>
-                <FolderGitIcon />
-                New project
-                <CommandShortcut>from a repository</CommandShortcut>
-              </CommandItem>
-            )}
-            {permissions.includes("workspace.manage") && (
-              <CommandItem onSelect={() => run(() => setConnectingDatabase(true))}>
-                <DatabaseIcon />
-                New database connection
-                <CommandShortcut>MySQL or PostgreSQL</CommandShortcut>
-              </CommandItem>
-            )}
-            <CommandItem onSelect={() => run(() => setCreatingWorkspace(true))}>
-              <LayersIcon />
-              New workspace
-            </CommandItem>
-            {UNBUILT.map((item) => (
-              <CommandItem key={item.label} disabled>
-                <item.icon />
-                {item.label}
-                <CommandShortcut>{item.note}</CommandShortcut>
-              </CommandItem>
-            ))}
-          </CommandGroup>
-
-          {projects.length > 0 && (
-            <>
-              <CommandSeparator />
-              <CommandGroup heading={sessionWorkspace ? "Sessions" : "Projects"}>
-                {projects.map((project) => (
-                  <CommandItem
-                    key={project.id}
-                    value={`project ${project.name} ${project.hash}`}
-                    onSelect={() => run(() => router.push(projectHref(ws, activeWorkspace?.kind ?? "project", project.hash)))}
-                  >
-                    <ProjectStackIcon stack={project.stack} />
-                    {project.name}
-                    <CommandShortcut>{project.stack}</CommandShortcut>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </>
-          )}
-
-          {switchable.length > 1 && (
-            <>
-              <CommandSeparator />
-              <CommandGroup heading="Switch workspace">
-                {switchable.map((workspace) => (
-                  <CommandItem
-                    key={workspace.id}
-                    value={`workspace ${workspace.name}`}
-                    onSelect={() =>
-                      run(() => router.push(`/${workspace.hash}`))
-                    }
-                  >
-                    <LayersIcon />
-                    {workspace.name}
-                    <CommandShortcut>{countLabel(workspace)}</CommandShortcut>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </>
-          )}
-
-          <CommandSeparator />
-          <CommandGroup heading="Go to">
-            <CommandItem onSelect={() => run(() => router.push(sectionHref(sectionById("dashboard"), ws)))}>
-              <CodeIcon />
-              Coding
-            </CommandItem>
-            <CommandItem onSelect={() => run(() => router.push(sectionHref(sectionById("database"), ws)))}>
-              <DatabaseIcon />
-              Database
-            </CommandItem>
-            {SECTION_LINKS.map((section) => (
-              <CommandItem key={section.label} disabled>
-                <section.icon />
-                {section.label}
-                <CommandShortcut>{section.note}</CommandShortcut>
-              </CommandItem>
-            ))}
-          </CommandGroup>
-        </CommandList>
-      </CommandDialog>
+        projects={projects}
+        workspaces={switchable}
+        activeWorkspace={activeWorkspace}
+        canStartSession={canStartSession}
+        canCreateProject={canCreateProject}
+        canConnectDatabase={permissions.includes("workspace.manage")}
+        onNewSession={() => run(session.start)}
+        onNewProject={() => run(() => setCreatingProject(true))}
+        onNewDatabase={() => run(() => setConnectingDatabase(true))}
+        onNewWorkspace={() => run(() => setCreatingWorkspace(true))}
+        onGo={(href) => run(() => router.push(href))}
+      />
 
       <NewProjectDialog
         workspaceId={activeWorkspaceId}
@@ -231,16 +115,3 @@ export function QuickMenu({
     </>
   );
 }
-
-/** Create actions whose storage does not exist yet. */
-const UNBUILT = [
-  { label: "New todo", icon: ListTodoIcon, note: "with the agent core" },
-  { label: "New note", icon: StickyNoteIcon, note: "with the agent core" },
-] as const;
-
-const SECTION_LINKS = [
-  { label: "Git", icon: GitBranchIcon, note: "with git integration" },
-  { label: "Publish", icon: RocketIcon, note: "with previews" },
-  { label: "Todo", icon: ListTodoIcon, note: "with the agent core" },
-] as const;
-

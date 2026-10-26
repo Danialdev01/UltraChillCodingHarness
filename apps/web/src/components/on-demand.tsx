@@ -2,18 +2,21 @@
 
 import dynamic from "next/dynamic"
 
+import { TreeRowsSkeleton } from "@/components/page-skeletons"
 import { Skeleton } from "@/components/ui/skeleton"
 
 /**
  * The parts of the app shell that nobody sees until they ask for them: the
- * creation and settings dialogs and the search panel.
+ * creation and settings dialogs, the search panel, and the cmdk lists behind
+ * the shell's palette and pickers.
  *
  * Every page loads the shell's JavaScript before it runs, so whatever sits
  * in the shell's import graph is paid for on every first load -- and these
  * dialogs, with their forms, comboboxes and validators, were the larger part
  * of it. Imported from here instead, each becomes a chunk of its own that
  * arrives after the page is interactive. A dialog renders nothing while
- * shut, so it needs no placeholder; the search panel shows result rows.
+ * shut, so it needs no placeholder; the search panel and the picker lists,
+ * drawn inside a popover that is already open, show rows.
  * The boot preload (`lib/preload.ts`) loads them all (`ON_DEMAND`), so the
  * first click finds them there.
  *
@@ -33,6 +36,10 @@ const loaders = {
   task: () => import("@/components/tasks/task-dialog"),
   preview: () => import("@/components/preview-dialog"),
   search: () => import("@/components/search-panel"),
+  quickMenu: () => import("@/components/quick-menu-palette"),
+  workspaceList: () => import("@/components/workspace-list"),
+  viewModeList: () => import("@/components/view-mode-list"),
+  filesTree: () => import("@/components/files-tree"),
 }
 
 /** Every chunk above, for the warmup to fetch while the page is idle. */
@@ -49,6 +56,31 @@ export const RenameSessionDialog = dynamic(() => loaders.renameSession().then((m
 export const DeleteProjectDialog = dynamic(() => loaders.deleteProject().then((m) => m.DeleteProjectDialog), { ssr: false })
 export const TaskDialog = dynamic(() => loaders.task().then((m) => m.TaskDialog), { ssr: false })
 export const PreviewDialog = dynamic(() => loaders.preview().then((m) => m.PreviewDialog), { ssr: false })
+export const QuickMenuPalette = dynamic(() => loaders.quickMenu().then((m) => m.QuickMenuPalette), { ssr: false })
+
+/** Rows of a picker list while its chunk is on the way. */
+function ListSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className="flex flex-col gap-2 p-2">
+      {Array.from({ length: rows }, (_, i) => (
+        <Skeleton key={i} className="h-7 w-full" />
+      ))}
+    </div>
+  )
+}
+
+export const WorkspaceList = dynamic(() => loaders.workspaceList().then((m) => m.WorkspaceList), {
+  ssr: false,
+  loading: () => <ListSkeleton rows={4} />,
+})
+export const ViewModeList = dynamic(() => loaders.viewModeList().then((m) => m.ViewModeList), {
+  ssr: false,
+  loading: () => <ListSkeleton rows={3} />,
+})
+export const FilesTree = dynamic(() => loaders.filesTree().then((m) => m.FilesTree), {
+  ssr: false,
+  loading: () => <TreeRowsSkeleton />,
+})
 export const SearchPanel = dynamic(() => loaders.search().then((m) => m.SearchPanel), {
   ssr: false,
   loading: () => (

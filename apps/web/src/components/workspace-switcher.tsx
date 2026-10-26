@@ -4,16 +4,14 @@ import { useState } from "react";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
-  ChevronRightIcon,
   ChevronsUpDownIcon,
   MoreHorizontalIcon,
-  PlusIcon,
   Settings2Icon,
   Trash2Icon,
 } from "lucide-react";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { ManageWorkspaceDialog, NewWorkspaceDialog } from "@/components/on-demand";
+import { ManageWorkspaceDialog, NewWorkspaceDialog, WorkspaceList } from "@/components/on-demand";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,15 +19,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-} from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
 import type { Workspace } from "@/lib/session";
@@ -229,99 +218,22 @@ export function WorkspaceSwitcher({
               sideOffset={4}
               className="w-(--ucch-sidebar-width) min-w-56 p-0"
             >
-              <Command>
-                <CommandInput placeholder="Search workspaces…" />
-                <CommandList>
-                  <CommandEmpty>No workspace matches that.</CommandEmpty>
-                  <CommandGroup>
-                    {live.map((workspace) => (
-                      <CommandItem
-                        key={workspace.id}
-                        // The name is what gets matched on; the id is appended
-                        // so two same-named workspaces stay distinct rows.
-                        value={`${workspace.name} ${workspace.id}`}
-                        keywords={[workspace.slug]}
-                        // The row's own tick, which `CommandItem` renders and
-                        // this is the switch for.
-                        data-checked={workspace.id === active?.id}
-                        onSelect={() => {
-                          setOpen(false);
-                          select(workspace);
-                        }}
-                      >
-                        <div className="grid min-w-0 flex-1 leading-tight">
-                          <span className="truncate">{workspace.name}</span>
-                          <span className="text-muted-foreground truncate text-xs">
-                            {countLabel(workspace)}
-                            {workspace.shared && ` · shared by ${workspace.ownerName} · ${workspace.role}`}
-                          </span>
-                        </div>
-                        {rowMenu(workspace)}
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
-
-                  {archived.length > 0 && (
-                    <>
-                      <CommandSeparator />
-                      <CommandGroup>
-                        <CommandItem
-                          value="__archived"
-                          // A fold, not a workspace: shown whatever was typed,
-                          // and it never takes the tick.
-                          forceMount
-                          aria-expanded={showArchived}
-                          onSelect={() => setShowArchived((v) => !v)}
-                          className="text-muted-foreground text-xs"
-                        >
-                          <ChevronRightIcon
-                            className={showArchived ? "rotate-90 transition-transform" : "transition-transform"}
-                          />
-                          Archived ({archived.length})
-                        </CommandItem>
-                        {showArchived &&
-                          archived.map((workspace) => (
-                            <CommandItem
-                              key={workspace.id}
-                              value={`${workspace.name} ${workspace.id}`}
-                              keywords={[workspace.slug, "archived"]}
-                              // An archived workspace is not somewhere to go;
-                              // its menu restores it first.
-                              onSelect={() => undefined}
-                              className="text-muted-foreground"
-                            >
-                              <div className="grid min-w-0 flex-1 leading-tight">
-                                <span className="truncate">{workspace.name}</span>
-                                <span className="text-muted-foreground truncate text-xs">
-                                  {countLabel(workspace)} · archived
-                                </span>
-                              </div>
-                              {rowMenu(workspace)}
-                            </CommandItem>
-                          ))}
-                      </CommandGroup>
-                    </>
-                  )}
-
-                  <CommandSeparator />
-
-                  <CommandGroup>
-                    <CommandItem
-                      value="__add-workspace"
-                      // Always shown, whatever was typed: creating one is the
-                      // answer when the search finds nothing.
-                      forceMount
-                      onSelect={() => {
-                        setOpen(false);
-                        setCreating(true);
-                      }}
-                    >
-                      <PlusIcon />
-                      Add workspace
-                    </CommandItem>
-                  </CommandGroup>
-                </CommandList>
-              </Command>
+              <WorkspaceList
+                live={live}
+                archived={archived}
+                activeId={active?.id}
+                showArchived={showArchived}
+                onToggleArchived={() => setShowArchived((v) => !v)}
+                onSelect={(workspace) => {
+                  setOpen(false);
+                  select(workspace);
+                }}
+                onAdd={() => {
+                  setOpen(false);
+                  setCreating(true);
+                }}
+                rowMenu={rowMenu}
+              />
             </PopoverContent>
           </Popover>
         </SidebarMenuItem>
