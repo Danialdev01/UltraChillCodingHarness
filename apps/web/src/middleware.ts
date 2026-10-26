@@ -65,5 +65,5 @@ export function middleware(request: NextRequest) {
 export const config = {
   // Only paths that could be a public address: one segment, then anything.
   // Static files and the API have their own prefixes and never match.
-  matcher: ["/((?!api|_next|file-icons|favicon.ico|shared).*)"],
+  matcher: ["/((?!api|_next|file-icons|favicon.ico|manifest.webmanifest|shared).*)"],
 };

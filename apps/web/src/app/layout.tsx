@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
 import { Inter, JetBrains_Mono, Source_Serif_4 } from "next/font/google";
 import localFont from "next/font/local";
@@ -82,6 +82,17 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "UCCH",
   description: "Ultra Chill Coding Harness",
+};
+
+/**
+ * The browser's own chrome -- the tab strip on Android, an installed app's
+ * title bar -- in the page's `--background`, light or dark with the OS.
+ */
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#fafcff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b0d13" },
+  ],
 };
 
 /**
