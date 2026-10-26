@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { NextConfig } from "next";
+import { PHASE_PRODUCTION_BUILD } from "next/constants";
 import bundleAnalyzer from "@next/bundle-analyzer";
+import withSerwistInit from "@serwist/next";
 
 /**
  * Next reads `.env` only from its own directory, but UCCH keeps one `.env` at
@@ -51,6 +55,16 @@ const config: NextConfig = {
           { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'; object-src 'none'" },
         ],
       },
+      {
+        // The service worker is checked for updates on every page load; a
+        // cached copy would hide a deploy. Same headers as the edge sends
+        // (web-proxy.ts), for a `next start` with nothing in front of it.
+        source: "/sw.js",
+        headers: [
+          { key: "Cache-Control", value: "no-cache" },
+          { key: "Service-Worker-Allowed", value: "/" },
+        ],
+      },
     ];
   },
   webpack(config) {
@@ -93,4 +107,50 @@ const config: NextConfig = {
 // `ANALYZE=1 next build` writes treemaps of every bundle to `<distDir>/analyze`.
 const withBundleAnalyzer = bundleAnalyzer({ enabled: process.env.ANALYZE === "1", openAnalyzer: false });
 
-export default withBundleAnalyzer(config);
+/**
+ * The service worker (`src/app/sw.ts`), built into `public/sw.js` only when
+ * `NEXT_PUBLIC_PWA=1` -- read at build time, like every `NEXT_PUBLIC_`. The
+ * page registers it itself (`lib/pwa.ts`), so it can remove it too.
+ *
+ * The precache is cut down to what every page needs before it can draw:
+ * stylesheets, fonts, the runtime chunks, the root layout's and the offline
+ * page's. Everything else is cached as it is used; precaching all ~200 chunks
+ * would download every editor on install.
+ */
+const PRECACHE = /static\/(?:css\/.*\.css|media\/.*\.woff2|chunks\/(?:framework|main|main-app|webpack|polyfills)-[^/]*\.js|chunks\/app\/(?:layout|offline\/page)-[^/]*\.js)$/;
+
+const PWA = process.env.NEXT_PUBLIC_PWA === "1";
+
+/**
+ * A build without the flag must not ship a worker an earlier build left in
+ * public/: the server sends a self-removing one only when there is none.
+ * Only while building -- `next start` reads this file too.
+ */
+function removeStaleWorker() {
+  let names: string[] = [];
+  try {
+    names = readdirSync("public");
+  } catch {
+    // No public/ at all: nothing was left behind.
+  }
+  for (const name of names) {
+    if (/^(?:sw|swe-worker-.*)\.js(?:\.map)?$/.test(name)) rmSync(path.join("public", name), { force: true });
+  }
+}
+
+const withSerwist = withSerwistInit({
+  swSrc: "src/app/sw.ts",
+  swDest: "public/sw.js",
+  disable: !PWA,
+  register: false,
+  // A reload on reconnect would throw away whatever was being typed.
+  reloadOnOnline: false,
+  // Static, so one revision per build is exact enough.
+  additionalPrecacheEntries: [{ url: "/offline", revision: randomUUID() }],
+  manifestTransforms: [async (entries) => ({ manifest: entries.filter((entry) => PRECACHE.test(entry.url)), warnings: [] })],
+});
+
+export default function nextConfig(phase: string): NextConfig {
+  if (phase === PHASE_PRODUCTION_BUILD && !PWA) removeStaleWorker();
+  return withSerwist(withBundleAnalyzer(config));
+}

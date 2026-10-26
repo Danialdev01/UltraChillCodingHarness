@@ -15,6 +15,8 @@ import { LATENCY_BUCKETS, registry } from "./metrics.js";
  *   /metrics
  *   /_next/static/*        the build's hashed files, straight from disk and
  *                          cached forever: their names change with their bytes
+ *   /sw.js                 the build's service worker, never cached; or, when
+ *                          the build has none, one that removes itself
  *   everything else        streamed to Next on loopback
  *
  * The proxy streams both ways and buffers nothing, so React's streamed
@@ -125,8 +127,58 @@ export class WebProxy {
       void this.#serveStatic(pathname.slice("/_next/static/".length), req, res);
       return true;
     }
+    if (pathname === "/sw.js" && (req.method === "GET" || req.method === "HEAD")) {
+      this.#serveWorker(req, res);
+      return true;
+    }
     this.#proxy(req, res, kind);
     return true;
+  }
+
+  /**
+   * The service worker, with the headers a worker needs: `no-cache`, so the
+   * browser's update check always reaches here, and the root scope. A build
+   * without the PWA flag has no `sw.js`; a browser that installed one from an
+   * earlier build gets `KILL_SWITCH` instead, since a 404 would leave the old
+   * worker serving the old build indefinitely.
+   */
+  #serveWorker(req: IncomingMessage, res: ServerResponse): void {
+    const send = (status: number, body: NodeJS.ReadableStream | string) => {
+      res.writeHead(status, {
+        "content-type": TYPES[".js"]!,
+        "cache-control": "no-cache",
+        "service-worker-allowed": "/",
+        "x-content-type-options": "nosniff",
+      });
+      if (req.method === "HEAD") return void res.end();
+      if (typeof body === "string") return void res.end(body);
+      body.pipe(res);
+    };
+    const upstream = httpRequest(
+      {
+        host: this.#upstream.hostname,
+        port: this.#upstream.port || 80,
+        method: "GET",
+        path: "/sw.js",
+        agent: this.#agent,
+      },
+      (answer) => {
+        // Content type as well as status: without a file, Next routes the
+        // name like any other path and can answer 200 with a page.
+        if (answer.statusCode === 200 && /javascript/.test(answer.headers["content-type"] ?? "")) {
+          return send(200, answer);
+        }
+        answer.resume();
+        send(200, KILL_SWITCH);
+      },
+    );
+    upstream.on("error", (error) => {
+      this.#log?.error({ err: error }, "web upstream unreachable");
+      // Unreachable is not "no worker": a 503 leaves an installed one alone.
+      res.writeHead(503, { "cache-control": "no-store" });
+      res.end();
+    });
+    upstream.end();
   }
 
   async #serveStatic(rest: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -219,6 +271,17 @@ function notFound(res: ServerResponse): void {
   res.writeHead(404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   res.end("not found");
 }
+
+/** Replaces an installed worker with nothing: unregisters, then reloads its tabs from the network. */
+export const KILL_SWITCH = `self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    for (const key of await caches.keys()) await caches.delete(key);
+    await self.registration.unregister();
+    for (const client of await self.clients.matchAll({ type: "window" })) client.navigate(client.url);
+  })());
+});
+`;
 
 const UNAVAILABLE = `<!doctype html><meta charset="utf-8"><title>Starting up</title>
 <meta http-equiv="refresh" content="3">

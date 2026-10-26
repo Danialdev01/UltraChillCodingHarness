@@ -57,8 +57,12 @@ ENV NEXT_PUBLIC_TLDRAW_LICENSE_KEY=$NEXT_PUBLIC_TLDRAW_LICENSE_KEY
 # Optional: the share of page loads that report web vitals (lib/vitals.ts).
 ARG NEXT_PUBLIC_VITALS_SAMPLE_RATE=1
 ENV NEXT_PUBLIC_VITALS_SAMPLE_RATE=$NEXT_PUBLIC_VITALS_SAMPLE_RATE
+# Optional: 1 builds the service worker (src/app/sw.ts) into public/sw.js.
+ARG NEXT_PUBLIC_PWA=0
+ENV NEXT_PUBLIC_PWA=$NEXT_PUBLIC_PWA
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN cd apps/web && pnpm exec next build
+# public/ exists either way, so the stages below can copy it.
+RUN cd apps/web && mkdir -p public && pnpm exec next build
 
 # --- server build ------------------------------------------------------------
 
@@ -146,6 +150,7 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 WORKDIR /app
 COPY --from=web-build --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=web-build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=web-build --chown=node:node /app/apps/web/public ./apps/web/public
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
@@ -203,6 +208,7 @@ RUN set -eux; \
 WORKDIR /app
 COPY --from=web-build --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=web-build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=web-build --chown=node:node /app/apps/web/public ./apps/web/public
 COPY --from=server-build /out/server ./server
 COPY deploy/s6/ /etc/s6-overlay/
 COPY deploy/bin/ /usr/local/bin/

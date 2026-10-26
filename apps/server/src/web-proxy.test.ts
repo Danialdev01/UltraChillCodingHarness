@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { classifyRequest, WebProxy } from "./web-proxy.js";
+import { classifyRequest, KILL_SWITCH, WebProxy } from "./web-proxy.js";
 import { registry } from "./metrics.js";
 
 let upstream: Server;
@@ -12,6 +12,9 @@ let edge: Server;
 let proxy: WebProxy;
 let staticDir: string;
 let release: () => void;
+/** The build's service worker, or null for a build without the PWA flag. */
+let worker: string | null;
+let workerType: string;
 
 const port = (s: Server) => (s.address() as AddressInfo).port;
 
@@ -23,7 +26,14 @@ beforeEach(async () => {
   let unblock!: () => void;
   const blocked = new Promise<void>((resolve) => (unblock = resolve));
   release = unblock;
+  worker = null;
+  workerType = "application/javascript; charset=UTF-8";
   upstream = createServer(async (req, res) => {
+    if (req.url === "/sw.js") {
+      if (worker === null) res.writeHead(404).end("not found");
+      else res.writeHead(200, { "content-type": workerType }).end(worker);
+      return;
+    }
     if (req.url === "/stream") {
       res.writeHead(200, { "content-type": "text/html" });
       res.write("<p>shell</p>");
@@ -111,6 +121,33 @@ describe("WebProxy", () => {
     expect(await response.text()).toBe("console.log(1)");
     expect((await get("/_next/static/chunks/missing.js")).status).toBe(404);
     expect((await get("/_next/static/..%2f..%2fetc%2fpasswd")).status).toBe(404);
+  });
+
+  it("serves the build's service worker uncached, at the root scope", async () => {
+    worker = "/* the worker */";
+    const response = await get("/sw.js");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("service-worker-allowed")).toBe("/");
+    expect(response.headers.get("content-type")).toContain("javascript");
+    expect(await response.text()).toBe("/* the worker */");
+  });
+
+  it("answers a build without a worker with one that removes itself", async () => {
+    const response = await get("/sw.js");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-cache");
+    const body = await response.text();
+    expect(body).toBe(KILL_SWITCH);
+    expect(body).toContain("registration.unregister()");
+  });
+
+  it("does not mistake a page served at that address for a worker", async () => {
+    // What the upstream's catch-all does with a path it has no file for.
+    worker = "<!doctype html><p>a workspace page</p>";
+    workerType = "text/html; charset=utf-8";
+    const response = await get("/sw.js");
+    expect(await response.text()).toBe(KILL_SWITCH);
   });
 
   it("answers 502 when the web app is down", async () => {

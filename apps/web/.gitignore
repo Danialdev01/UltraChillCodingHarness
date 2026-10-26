@@ -1,0 +1,4 @@
+
+# Built by @serwist/next when NEXT_PUBLIC_PWA=1.
+/public/sw.js*
+/public/swe-worker-*.js*

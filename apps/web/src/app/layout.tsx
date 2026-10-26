@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono, Source_Serif_4 } from "next/font/google";
 import localFont from "next/font/local";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ServiceWorker } from "@/components/service-worker";
 import { VitalsReporter } from "@/components/vitals-reporter";
 import { ViewTransitionsProvider } from "@/lib/view-transitions";
 import { DEFAULT_SETTINGS, THEME_SCRIPT } from "@/lib/theme";
@@ -142,6 +143,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 lib/view-transitions.tsx. Above the (app) group so the login
                 page's redirect into the app gets one too. */}
             <ViewTransitionsProvider>{children}</ViewTransitionsProvider>
+            {/* Registers it, or removes one when the PWA flag is off. */}
+            <ServiceWorker />
           </TooltipProvider>
         </ThemeProvider>
         {/* Real-user timings for /metrics; see lib/vitals.ts. */}
