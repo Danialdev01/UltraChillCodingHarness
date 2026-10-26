@@ -621,7 +621,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - `project.activity` reaches the sidebar 0.30 ms p50 and 1.81 ms p99 after the thread's own `turn.started`.
     - The files panel holds the watcher while its tree or a file tab is open, and rereads the tree when shown again. The Git view and the diagram editor hold it while mounted.
 
-- [ ] **PF1.27 — Runtime: heap flags, DB pool, logging, Postgres defaults**
+- [x] **PF1.27 — Runtime: heap flags, DB pool, logging, Postgres defaults** — c2d5c1e
 
   - **Depends:** PF0.9
   - **Files:** `deploy/s6/s6-rc.d/server/run` (line 53), `deploy/s6/s6-rc.d/web/run` (lines 9–14), `deploy/s6/s6-rc.d/postgres/run` (flags at lines 64–71), `packages/db/src/index.ts` (line 24, `createDatabase`/`createClient`), `apps/server/src/config.ts` (`DB_POOL_MAX`, `LOG_LEVEL`, `LOG_SLOW_MS`), `apps/server/src/index.ts` (logger at line 550), `.env.example`, `README.md` ("Scaling")
@@ -633,6 +633,13 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     5. Document every new variable.
   - **Acceptance:** under the 50-user load, API RSS < 1.2 GB, no swap-in, cgroup `oom_kill` = 0.
   - **Verify:** `bash scripts/smoke-container.sh`, plus load
+  - **Measured:**
+    - The 50-user PF0 load (5 min, 0 errors) against the new image: API RSS peaked at 211 MB (352 MB in the baseline); the container's cgroup peaked at 536 MB; `pswpin` 0, `oom_kill` 0.
+    - The container wrote 34 log lines over the run. No request was slower than 1 s or answered with a 5xx, and requests are no longer logged one by one.
+    - Heap limits in effect: the server runs as `node --max-old-space-size=1536 …`; the web app's `heap_size_limit` is 948 MB with `WEB_HEAP_MB=900` (old space plus young generation). `NODE_OPTIONS` is unset.
+    - The embedded Postgres reports every §12 value (`shared_buffers` 1GB, `max_connections` 200, `jit` off, …), and `PG_MAX_WAL_SIZE=3GB` overrides its default.
+    - `loadConfig` refuses `ENGINE_MAX_PARALLEL > DB_POOL_MAX − 4` (`config.test.ts`); `index.ts` no longer clamps it.
+    - `bash scripts/smoke-container.sh`: all checks pass. `pnpm typecheck && pnpm test`: 1936 passed, 2 skipped.
 
 ---
 
