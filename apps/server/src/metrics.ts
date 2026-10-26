@@ -127,6 +127,24 @@ export class Histogram extends Family {
     series.count++;
   }
 
+  /**
+   * Observations per bucket across every label set, not cumulative, with
+   * the last entry past the highest bound: for a reader that compares two
+   * snapshots (watchdog.ts).
+   */
+  totals(): number[] {
+    const totals = new Array<number>(this.buckets.length + 1).fill(0);
+    for (const series of this.#series.values()) {
+      let inBuckets = 0;
+      series.counts.forEach((n, i) => {
+        totals[i]! += n;
+        inBuckets += n;
+      });
+      totals[this.buckets.length]! += series.count - inBuckets;
+    }
+    return totals;
+  }
+
   lines(): string[] {
     const out: string[] = [];
     for (const [key, series] of this.#series) {

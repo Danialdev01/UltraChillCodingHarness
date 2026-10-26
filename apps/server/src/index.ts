@@ -56,6 +56,7 @@ import {
   contentDisposition,
 } from "./uploads.js";
 import { TerminalReactor } from "./terminals.js";
+import { serverReadings, Watchdog } from "./watchdog.js";
 import { probePriorityTools, terminalPriority, unwrapped, wrapperFor } from "./child-priority.js";
 import { AuthService, DEV_USER_ID } from "./auth.js";
 import { EventBus } from "./bus.js";
@@ -861,6 +862,18 @@ const resources = new ResourceSampler({
   log: config.LOG_RESOURCE_SAMPLES ? (sample) => app.log.info(sample, "resource sample") : undefined,
 });
 resources.start().catch((error) => app.log.warn({ err: error }, "could not start the resource sampler"));
+
+// Somebody hears about memory near the limit, a lagging event loop, an OOM
+// kill or a backed-up engine, without a monitoring stack (watchdog.ts).
+const watchdog = new Watchdog({
+  read: serverReadings(
+    () => resources.cgroup,
+    registry.histogram("engine_wait_seconds", "Time a command waited in the engine queue before it started", LATENCY_BUCKETS, ["command"]),
+  ),
+  log: { error: (obj, msg) => app.log.error(obj, msg), warn: (obj, msg) => app.log.warn(obj, msg) },
+  webhookUrl: config.ALERT_WEBHOOK_URL,
+});
+watchdog.start();
 
 /**
  * The numbers, for a scraper. Who may read them is `metricsAccess`'s call:
@@ -3593,6 +3606,7 @@ if (config.DEFAULT_USER_EMAIL && config.DEFAULT_USER_PASSWORD) {
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "shutting down");
   resources.stop();
+  watchdog.stop();
   gateway.close();
   await engine.worker.stop();
   // After the engine: a command still in the queue can still queue a clone.

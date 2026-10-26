@@ -270,6 +270,7 @@ export class ResourceSampler {
   /** CPU ticks last seen per process, keyed by pid and start time so a reused pid starts afresh. */
   #lastTicks = new Map<string, number>();
   #lastOomKills: number | null = null;
+  #lastCgroup: CgroupSample | null = null;
 
   readonly #rss;
   readonly #processes;
@@ -319,6 +320,11 @@ export class ResourceSampler {
     this.#timer = null;
   }
 
+  /** The container's figures from the last sample, or null before the first. */
+  get cgroup(): CgroupSample | null {
+    return this.#lastCgroup;
+  }
+
   /** One sample into the gauges. Never throws: a missing file is a missing figure. */
   async sample(): Promise<void> {
     // A slow disk must not stack samples on top of each other.
@@ -347,6 +353,7 @@ export class ResourceSampler {
       this.#lastTicks = seen;
 
       const cgroup = await this.#readCgroup();
+      this.#lastCgroup = cgroup;
       this.#cgroupMemory.reset();
       if (cgroup.current !== null) this.#cgroupMemory.set({ type: "current" }, cgroup.current);
       if (cgroup.max !== null) this.#cgroupMemory.set({ type: "max" }, cgroup.max);

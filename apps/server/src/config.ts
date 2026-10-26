@@ -231,6 +231,14 @@ const Env = z.object({
   METRICS_TOKEN: z.string().min(16).optional(),
 
   /**
+   * Where the watchdog POSTs an alert (watchdog.ts): memory near the limit,
+   * a lagging event loop, an OOM kill, a backed-up engine. JSON with the
+   * message in `text`, for ntfy or a Slack-compatible hook. Unset, alerts
+   * are only logged, at error.
+   */
+  ALERT_WEBHOOK_URL: z.string().url().optional(),
+
+  /**
    * Log every resource sample (resource-sampler.ts: memory and CPU by
    * service and kind of child, and the cgroup's figures), one line each
    * 15 s. Off, the figures are on `/metrics` only.
