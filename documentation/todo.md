@@ -538,7 +538,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - With 10 viewers refetching as the view does, one burst of 20 file writes ran 80 git processes before and 3 after (`status`, `rev-parse`, `remote`). 20 of the 30 refetches were answered 304.
     - Load run p50/p95 for git status reads: 30.8/37.5 → 8.5/54.5 ms. The slower tail is the cold first reads. No errors.
 
-- [ ] **PF1.24 — Watch `.git` and session worktrees; `worktreeId`; burst cap**
+- [x] **PF1.24 — Watch `.git` and session worktrees; `worktreeId`; burst cap** — efadda5
 
   - **Depends:** PF1.23
   - **Files:** `apps/server/src/file-watcher.ts` (ignores at line 33, `#flush` at line 118), `apps/server/src/trees.ts` (worktree paths, lines 20–25), `apps/server/src/ws.ts` (project subscribe `tree`), `packages/protocol/src/events.ts` (`file.changed.worktreeId`, `LiveResource` `"files"`), `apps/web/src/components/files-panel.tsx`, new `apps/server/src/file-watcher.test.ts`
@@ -549,6 +549,11 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     4. Above 200 paths per burst, publish one `resource.changed { resource: "files", projectId, tree }`.
   - **Acceptance:** a `git commit` typed in a terminal appears in the Git view within 1 s. An `npm install` outside `node_modules` produces one files event, not thousands.
   - **Verify:** `pnpm test -- file-watcher`, plus manual
+  - **Measured:** (the real watcher on a git repo)
+    - `git commit` → `onGitChange` 198 ms after git exits, then the git cache's 300 ms debounce to `resource.changed{git}`: about 0.5 s, against the next 60 s poll before.
+    - 2,000 files written under `build/` plus 2,000 under `node_modules`: 1 `resource.changed{files}` and 0 `file.changed`, against 2,000 events before.
+    - One tree is watched per project subscription. When two views in a tab hold different trees, the latest one wins.
+    - A watch opened before its folder existed is retried on `project.cloned` and `thread.worktree_ready` (`rearm`).
 
 - [ ] **PF1.25 — Git view as queries; no polling**
 
