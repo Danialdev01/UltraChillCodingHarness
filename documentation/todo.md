@@ -321,7 +321,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Backfill on a copy matched the old query for all 1,220 projects. No drift after a 4-minute load run.
     - pg-top: `listProjects` mean 1.52 → 0.21 ms, but it is still #1 by total time. The cost is at its floor; the call count keeps it there, so the top-5 criterion is not met.
 
-- [ ] **PF1.9 — Trim `/api/bootstrap`**
+- [x] **PF1.9 — Trim `/api/bootstrap`** — 2613a21
 
   - **Depends:** —
   - **Files:** `apps/server/src/index.ts` (lines 708–752), `apps/server/src/workspaces.ts` (`ensureDefault`, `listProjects`), `apps/server/src/auth.ts` (`getProfile`, `hasPassword`)
@@ -332,6 +332,11 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     4. No early ETag (`solution.md` §5 explains why).
   - **Acceptance:** bootstrap issues ≤ 4 queries (a query counter in a test, or `pg_stat_statements` `calls`).
   - **Verify:** standard, plus `curl /api/bootstrap` (the shape is unchanged; the 304 still works)
+  - **Measured:** (`pg_stat_statements` calls for 100 bootstraps of one load user, the session cached)
+    - Queries per bootstrap: 7 → 4 (workspaces, the user row, projects, connections).
+    - `/api/bootstrap` and `/api/me` answer byte-identical bodies before and after, and `If-None-Match` still gets a 304.
+    - A user with no workspace gets "Personal", created once and listed in the same response.
+    - `listProjects` takes `isMember` (the membership `list` already showed) rather than a permission: `canView` checks membership, not `workspace.view`.
 
 ### Command path (`solution.md` §6)
 
