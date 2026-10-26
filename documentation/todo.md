@@ -654,6 +654,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
   - **Steps:** On push and PR: pnpm install (cached), `pnpm typecheck && pnpm test`, `pnpm --filter @ucch/web build`, `node apps/web/scripts/bundle-budget.mjs --check`.
   - **Acceptance:** a PR shows the check, and a failing test fails it.
   - **Verify:** push a branch
+  > BLOCKED: written and committed (5b16775), not yet seen running: verifying it means pushing a branch to GitHub, which waits for the owner's go-ahead. Checked locally: actionlint 1.7.7 is clean; in a clean environment (empty `HOME`, no git identity) `pnpm test` passes (1936, 2 skipped); the web build with the workflow's env succeeds; `bundle-budget.mjs --check` is within budget.
 
 - [ ] **PF2.2 — Build images in CI; Dokploy pulls them**
 
