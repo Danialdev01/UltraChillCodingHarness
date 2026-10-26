@@ -494,3 +494,96 @@ describe("input that arrives before the shell", () => {
     expect(log).toEqual(["write x", "resize 90x20"]);
   });
 });
+
+describe("how many terminals may be open", () => {
+  const PROJECTS = ["a", "b", "c"].map((c) => `${c.repeat(8)}-0000-0000-0000-000000000000`);
+  const THIRD = "33333333-0000-0000-0000-000000000000";
+
+  /** A reactor whose shells are doubles; what each terminal printed, by id. */
+  function capped(limits: { maxPerProject?: number; maxPerUser?: number; maxTotal?: number; idleMs?: number }) {
+    const said = new Map<string, string>();
+    let spawned = 0;
+    let killed = 0;
+    const spawn = (() => {
+      spawned++;
+      return {
+        write() {},
+        resize() {},
+        kill() {
+          killed++;
+        },
+        onData() {},
+        onExit() {},
+      };
+    }) as unknown as typeof import("@lydell/node-pty").spawn;
+    const terminals = new TerminalReactor(
+      { workspaceRoot: root, allowHostShell: true, spawn, ...limits },
+      (_project, event) => {
+        if (event.type === "terminal.output") said.set(event.terminalId, (said.get(event.terminalId) ?? "") + event.data);
+      },
+    );
+    let n = 0;
+    const open = (projectId: string, userId: string) => {
+      const terminalId = `00000000-0000-0000-0000-${String(++n).padStart(12, "0")}`;
+      terminals.react({ type: "terminal.create", projectId, terminalId, cols: 80, rows: 24 }, userId);
+      return terminalId;
+    };
+    return { terminals, open, said, spawned: () => spawned, killed: () => killed };
+  }
+
+  it("refuses one more in a project that has its limit, and says why", () => {
+    const { open, said, spawned } = capped({ maxPerProject: 2 });
+    open(PROJECTS[0]!, USER);
+    open(PROJECTS[0]!, OTHER);
+    const third = open(PROJECTS[0]!, THIRD);
+    expect(spawned()).toBe(2);
+    expect(said.get(third)).toBe("This project already has 2 terminals open, its limit. Close one to open another.\r\n");
+    // Another project is not affected.
+    open(PROJECTS[1]!, THIRD);
+    expect(spawned()).toBe(3);
+  });
+
+  it("refuses one more for a person who has their limit, in any project", () => {
+    const { open, said, spawned } = capped({ maxPerUser: 2 });
+    open(PROJECTS[0]!, USER);
+    open(PROJECTS[1]!, USER);
+    const third = open(PROJECTS[2]!, USER);
+    expect(spawned()).toBe(2);
+    expect(said.get(third)).toBe("You already have 2 terminals open, the most one person can. Close one to open another.\r\n");
+    open(PROJECTS[2]!, OTHER);
+    expect(spawned()).toBe(3);
+  });
+
+  it("refuses one more when the server has its limit, whoever asks", () => {
+    const { open, said, spawned } = capped({ maxTotal: 2 });
+    open(PROJECTS[0]!, USER);
+    open(PROJECTS[1]!, OTHER);
+    const third = open(PROJECTS[2]!, THIRD);
+    expect(spawned()).toBe(2);
+    expect(said.get(third)).toBe("The server already has 2 terminals open, its limit. Close one to open another.\r\n");
+  });
+
+  it("opens again once one is closed", () => {
+    const { terminals, open, spawned } = capped({ maxPerUser: 1 });
+    const first = open(PROJECTS[0]!, USER);
+    open(PROJECTS[0]!, USER);
+    expect(spawned()).toBe(1);
+    terminals.close(first, USER);
+    open(PROJECTS[0]!, USER);
+    expect(spawned()).toBe(2);
+  });
+
+  it("closes a terminal nobody typed into for the idle time it was given", () => {
+    vi.useFakeTimers();
+    try {
+      const { open, killed } = capped({ idleMs: 60_000 });
+      open(PROJECTS[0]!, USER);
+      vi.advanceTimersByTime(59_000);
+      expect(killed()).toBe(0);
+      vi.advanceTimersByTime(1_000);
+      expect(killed()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

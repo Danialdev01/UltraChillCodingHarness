@@ -355,6 +355,10 @@ const terminals = new TerminalReactor(
   {
     workspaceRoot: config.WORKSPACE_ROOT,
     allowHostShell: shellPluginEnabled(config),
+    maxPerProject: config.TERMINAL_MAX_PER_PROJECT,
+    maxPerUser: config.TERMINAL_MAX_PER_USER,
+    maxTotal: config.TERMINAL_MAX_TOTAL,
+    idleMs: config.TERMINAL_IDLE_MINUTES * 60_000,
     // A sign-in terminal: the CLI's own login flow, in the user's credential
     // directory, so what it writes is what every later turn reads.
     login: (userId, program) => {

@@ -31,8 +31,15 @@ import { sessionTree } from "./trees.js";
  * `terminalEnv`.
  */
 
-/** Terminals one project may have open at once. */
+/**
+ * Terminals open at once: in one project, for one person, on the whole
+ * server. Each is a shell and whatever runs in it, so the server's share is
+ * bounded however many people and projects there are. Over a limit the
+ * terminal says so; nothing waits for a slot. `TERMINAL_MAX_*` in config.
+ */
 const MAX_SESSIONS_PER_PROJECT = 10;
+const MAX_SESSIONS_PER_USER = 5;
+const MAX_SESSIONS_TOTAL = 40;
 
 /** Bytes sent in one `terminal.output` event; a large paste is split, not cut. */
 const MAX_EVENT_BYTES = 64 * 1024;
@@ -74,6 +81,12 @@ export interface TerminalOptions {
   workspaceRoot: string;
   /** False in production without `AGENT_ALLOW_HOST_SHELL`. */
   allowHostShell: boolean;
+  /** Terminals open at once in one project, for one person, and in all. */
+  maxPerProject?: number;
+  maxPerUser?: number;
+  maxTotal?: number;
+  /** How long a terminal nobody types into stays open. */
+  idleMs?: number;
   /**
    * How to start a provider's sign-in flow for this user: the CLI, its
    * arguments, and the environment that points it at the user's own
@@ -276,9 +289,9 @@ export class TerminalReactor {
       this.#say(projectId, terminalId, "The terminal is disabled on this server.\r\n");
       return;
     }
-    const open = [...this.#sessions.values()].filter((s) => s.projectId === projectId).length;
-    if (open >= MAX_SESSIONS_PER_PROJECT) {
-      this.#say(projectId, terminalId, "Too many terminals are open in this project.\r\n");
+    const refused = this.#overLimit(projectId, userId);
+    if (refused) {
+      this.#say(projectId, terminalId, `${refused} Close one to open another.\r\n`);
       return;
     }
 
@@ -302,7 +315,7 @@ export class TerminalReactor {
       projectId,
       userId,
       pty: child,
-      idleTimer: setTimeout(() => this.close(terminalId), IDLE_TIMEOUT_MS),
+      idleTimer: setTimeout(() => this.close(terminalId), this.#idleMs),
     };
     session.idleTimer.unref();
     this.#sessions.set(terminalId, session);
@@ -420,8 +433,28 @@ export class TerminalReactor {
 
   #touch(session: Session): void {
     clearTimeout(session.idleTimer);
-    session.idleTimer = setTimeout(() => this.close(session.id), IDLE_TIMEOUT_MS);
+    session.idleTimer = setTimeout(() => this.close(session.id), this.#idleMs);
     session.idleTimer.unref();
+  }
+
+  get #idleMs(): number {
+    return this.options.idleMs ?? IDLE_TIMEOUT_MS;
+  }
+
+  /** Which limit one more terminal would go over, as the terminal says it; null when none. */
+  #overLimit(projectId: string, userId: string): string | null {
+    const open = [...this.#sessions.values()];
+    const perProject = this.options.maxPerProject ?? MAX_SESSIONS_PER_PROJECT;
+    const perUser = this.options.maxPerUser ?? MAX_SESSIONS_PER_USER;
+    const total = this.options.maxTotal ?? MAX_SESSIONS_TOTAL;
+    if (open.filter((s) => s.projectId === projectId).length >= perProject) {
+      return `This project already has ${perProject} terminals open, its limit.`;
+    }
+    if (open.filter((s) => s.userId === userId).length >= perUser) {
+      return `You already have ${perUser} terminals open, the most one person can.`;
+    }
+    if (open.length >= total) return `The server already has ${total} terminals open, its limit.`;
+    return null;
   }
 
   #say(projectId: string, terminalId: string, data: string): void {

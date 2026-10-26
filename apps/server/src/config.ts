@@ -255,6 +255,16 @@ const Env = z.object({
    * than half of this is read from the database each turn instead.
    */
   HISTORY_CACHE_EVENTS: z.coerce.number().int().min(0).default(20_000),
+
+  /**
+   * Terminals open at once: in one project, for one person, and on the
+   * whole server. Over a limit the terminal says so; nothing queues.
+   */
+  TERMINAL_MAX_PER_PROJECT: z.coerce.number().int().positive().default(10),
+  TERMINAL_MAX_PER_USER: z.coerce.number().int().positive().default(5),
+  TERMINAL_MAX_TOTAL: z.coerce.number().int().positive().default(40),
+  /** A terminal nobody has typed into for this long is closed. */
+  TERMINAL_IDLE_MINUTES: z.coerce.number().int().positive().default(15),
 });
 
 export type Config = Readonly<z.infer<typeof Env>>;
