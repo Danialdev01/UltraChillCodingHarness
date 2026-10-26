@@ -820,7 +820,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
   - **Acceptance:** two users edit the same file live. An agent edit to that file merges into both editors without moving cursors.
   - **Verify:** `pnpm test -- collab`, plus manual
 
-- [ ] **R11 — Optimistic, per-field mutations for tasks and timeline**
+- [x] **R11 — Optimistic, per-field mutations for tasks and timeline** — ce5e248
 
   - **Depends:** —
   - **Files:** `apps/server/src/tasks-routes.ts`, `apps/server/src/tasks.ts`, `apps/server/src/timeline-routes.ts`, `apps/web/src/lib/queries/tasks.ts`, `apps/web/src/lib/queries/timeline.ts`
@@ -830,6 +830,11 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     3. Mutation hooks update optimistically.
   - **Acceptance:** two users dragging different tasks, or editing different fields of one task, never overwrite each other.
   - **Verify:** `pnpm test -- tasks timeline`
+  - **Measured:**
+    - There is no `lib/queries/tasks.ts` or `timeline.ts`: both views read through `useCachedState`, so the mutations are in `tasks-board.tsx` and `timeline-workspace.tsx`, and the bridge patch in `realtime-cache.ts` / `realtime.tsx`.
+    - A PATCH carries `base` (what the changed fields held); the row is locked and only a change to one of *those* fields is a conflict (`field-guard.ts`). `timeline.update` used to write back the dates and dependency it had read, so a rename could undo a concurrent drag; it now writes only what was sent.
+    - Throwaway database: concurrent PATCHes to different fields of one timeline task, and of one card, both 200 with both changes kept; a stale `base` is 409. In a headless browser, a dialog rename saved while another user moved the same bar kept both; a rename elsewhere showed with 0 reloads of the chart.
+    - `pnpm typecheck && pnpm test`: 1979 passed, 2 skipped.
 
 - [ ] **R12 — DB-manager row conflict detection**
 
