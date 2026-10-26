@@ -54,8 +54,10 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
       return { invalidate: [qk.timeline.all] }
     case "note.changed":
       return { invalidate: [qk.notes.all] }
+    // The git status follows from the server's own `resource.changed{git}`,
+    // once per burst rather than once per file.
     case "file.changed":
-      return { invalidate: [qk.files.all, qk.git.all] }
+      return { invalidate: [qk.files.all] }
     case "git.committed":
     case "git.pushed":
       return { invalidate: [qk.git.all] }

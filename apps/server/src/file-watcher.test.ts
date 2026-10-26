@@ -80,7 +80,10 @@ describe("FileWatcher", () => {
 
   it("hears a commit or a checkout through .git, and nothing else in it", async () => {
     watcher.retain(PROJECT);
-    await settle(300);
+    await settle(600);
+    // Once on starting: nobody watched it until now.
+    expect(gitChanges).toBe(1);
+    gitChanges = 0;
     await writeFile(join(root, PROJECT, ".git", "objects", "ab"), "x");
     await writeFile(join(root, PROJECT, ".git", "index.lock"), "x");
     await settle();
@@ -130,6 +133,22 @@ describe("FileWatcher.rearm", () => {
     await settle();
     expect(heard).toContainEqual({ path: "new.txt", change: "added", tree: late });
     expect(heard.every((h) => h.tree === late)).toBe(true);
+  });
+});
+
+describe("a repository made after the watch began", () => {
+  it("watches its .git from when `git init` makes it", async () => {
+    await rm(join(root, PROJECT, ".git"), { recursive: true, force: true });
+    watcher.retain(PROJECT);
+    await settle(600);
+    gitChanges = 0;
+    await mkdir(join(root, PROJECT, ".git"));
+    await settle();
+    expect(gitChanges).toBe(1);
+    await writeFile(join(root, PROJECT, ".git", "HEAD"), "ref: refs/heads/main");
+    await settle();
+    expect(gitChanges).toBeGreaterThan(1);
+    expect(heard.some((h) => h.path.startsWith(".git"))).toBe(false);
   });
 });
 

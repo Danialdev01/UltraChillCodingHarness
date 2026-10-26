@@ -53,7 +53,9 @@ export const qk = {
   },
   git: {
     all: ["git"] as const,
-    state: (projectHash: string, session?: string | null) => ["git", "state", projectHash, session ?? null] as const,
+    /** One tree's status, branches or first page of history: a project's checkout, or a session's worktree. */
+    read: (read: "status" | "branches" | "log", projectHash: string, session?: string | null) =>
+      ["git", read, projectHash, session ?? null] as const,
   },
   files: {
     all: ["files"] as const,

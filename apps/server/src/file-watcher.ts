@@ -43,10 +43,13 @@ export interface FileWatcherOptions {
   onError?(error: unknown): void;
 }
 
-/** Never worth a notice: version control internals, dependencies, build output. */
+/**
+ * Never worth a notice: version control internals, dependencies, build
+ * output. What is inside `.git`, not the folder itself: its appearing is
+ * how a `git init` is heard.
+ */
 const IGNORE = [
-  "**/.git",
-  "**/.git/**",
+  "**/.git/**/*",
   "**/node_modules/**",
   "**/vendor/**",
   "**/.next/**",
@@ -136,12 +139,7 @@ export class FileWatcher {
         (subscription) => subscription ?? (this.#watched.get(key) === watched ? this.#watchTree(key, watched) : null),
       );
     }
-    const git = this.#git.get(projectId);
-    if (git) {
-      git.subscription = git.subscription.then(
-        (subscription) => subscription ?? (this.#git.get(projectId) === git ? this.#watchGit(projectId, git) : null),
-      );
-    }
+    this.#gitAppeared(projectId);
   }
 
   /** Someone closed it; the last one out stops the watch after a while. */
@@ -211,14 +209,28 @@ export class FileWatcher {
     const watch: GitWatch = { trees: 1, subscription: Promise.resolve(null), timer: null };
     this.#git.set(projectId, watch);
     watch.subscription = this.#watchGit(projectId, watch);
+    // Nobody was watching: whatever git last said of the project may be out
+    // of date by now.
+    this.#gitChanged(projectId, watch);
   }
 
   #watchTree(key: string, watched: Watched): Promise<watcher.AsyncSubscription | null> {
     return this.#subscribe(
       this.options.rootOf(watched.projectId, watched.tree),
       (paths) => {
-        for (const [path, next] of paths) watched.pending.set(path, merge(watched.pending.get(path), next));
-        if (!watched.timer) watched.timer = setTimeout(() => this.#flush(key), this.options.burstMs ?? 150);
+        for (const [path, next] of paths) {
+          // A repository's folder is not a file anyone opens. The checkout's
+          // own one appearing -- `git init` in a terminal -- is a repository
+          // to watch from now on.
+          if (path === ".git" || path.endsWith("/.git")) {
+            if (path === ".git" && watched.tree === null && next !== "deleted") this.#gitAppeared(watched.projectId);
+            continue;
+          }
+          watched.pending.set(path, merge(watched.pending.get(path), next));
+        }
+        if (!watched.timer && watched.pending.size > 0) {
+          watched.timer = setTimeout(() => this.#flush(key), this.options.burstMs ?? 150);
+        }
       },
       IGNORE,
     );
@@ -228,14 +240,28 @@ export class FileWatcher {
     return this.#subscribe(
       join(this.options.rootOf(projectId, null), ".git"),
       (paths) => {
-        if (!paths.some(([path]) => isGitStatePath(path)) || watch.timer) return;
-        watch.timer = setTimeout(() => {
-          watch.timer = null;
-          this.options.onGitChange?.(projectId);
-        }, this.options.burstMs ?? 150);
+        if (paths.some(([path]) => isGitStatePath(path))) this.#gitChanged(projectId, watch);
       },
       GIT_IGNORE,
     );
+  }
+
+  /** Tells `onGitChange` once per burst. */
+  #gitChanged(projectId: string, watch: GitWatch): void {
+    if (watch.timer) return;
+    watch.timer = setTimeout(() => {
+      watch.timer = null;
+      this.options.onGitChange?.(projectId);
+    }, this.options.burstMs ?? 150);
+  }
+
+  #gitAppeared(projectId: string): void {
+    const watch = this.#git.get(projectId);
+    if (!watch) return;
+    watch.subscription = watch.subscription.then(
+      (subscription) => subscription ?? (this.#git.get(projectId) === watch ? this.#watchGit(projectId, watch) : null),
+    );
+    this.#gitChanged(projectId, watch);
   }
 
   async #releaseGit(projectId: string): Promise<void> {
