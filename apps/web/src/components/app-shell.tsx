@@ -10,6 +10,7 @@ import { RouteWarmup } from "@/components/route-warmup"
 import { ViewerProvider } from "@/components/viewer"
 import { MAIN_CONTENT_ID, SkipLink } from "@/components/skip-link"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
+import { UpdateToast } from "@/components/update-toast"
 import { LastLocation } from "@/lib/last-location"
 import { BootstrapSeed } from "@/lib/queries/bootstrap"
 import { QueryProvider } from "@/lib/query-client"
@@ -72,6 +73,8 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
       />
       <LastLocation />
       <ActiveWorkspaceProvider workspace={active} workspaces={workspaces}>
+        {/* "New version available", when a deploy lands while this tab is open. */}
+        <UpdateToast />
         <RealtimeProvider>
           <ViewerProvider name={session.name ?? session.login ?? "User"}>
             <FilesPanelProvider>

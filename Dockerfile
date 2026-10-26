@@ -57,6 +57,11 @@ ENV NEXT_PUBLIC_TLDRAW_LICENSE_KEY=$NEXT_PUBLIC_TLDRAW_LICENSE_KEY
 # Optional: the share of page loads that report web vitals (lib/vitals.ts).
 ARG NEXT_PUBLIC_VITALS_SAMPLE_RATE=1
 ENV NEXT_PUBLIC_VITALS_SAMPLE_RATE=$NEXT_PUBLIC_VITALS_SAMPLE_RATE
+# Optional: names this build (a commit sha, say). The browser bundle and the
+# server below are given the same id, and a tab running another build than
+# the server offers to reload (lib/app-update.ts). Unset, nothing compares.
+ARG BUILD_ID=""
+ENV NEXT_PUBLIC_BUILD_ID=$BUILD_ID
 # Optional: 1 builds the service worker (src/app/sw.ts) into public/sw.js.
 ARG NEXT_PUBLIC_PWA=0
 ENV NEXT_PUBLIC_PWA=$NEXT_PUBLIC_PWA
@@ -214,7 +219,10 @@ COPY deploy/s6/ /etc/s6-overlay/
 COPY deploy/bin/ /usr/local/bin/
 RUN chmod +x /etc/s6-overlay/scripts/* /etc/s6-overlay/s6-rc.d/*/run /usr/local/bin/ucch-*
 
+# The same id the web build was given (see web-build).
+ARG BUILD_ID=""
 ENV DATA_DIR=/data \
+    BUILD_ID=$BUILD_ID \
     S6_KILL_GRACETIME=60000 \
     S6_SERVICES_GRACETIME=60000 \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \

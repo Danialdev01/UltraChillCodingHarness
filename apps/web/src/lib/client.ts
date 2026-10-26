@@ -4,6 +4,7 @@ import { REPLAY_CAP, TERMINAL_INPUT_MAX } from "@ucch/protocol/plain";
 import type { ClientFrame, Command, ComposerDraft, DomainEvent, Scope, ServerFrame, StoredEvent } from "@ucch/protocol";
 import { frameBatcher } from "./next-frame";
 import { TAB_ID } from "./tab-id";
+import { reportServerBuild } from "./app-update";
 
 /**
  * Live state rather than history: delivered to `onEvent` listeners but kept
@@ -405,7 +406,7 @@ export class UcchClient {
 
     switch (frame.kind) {
       case "ready": {
-        outdatedBuild(frame.buildId);
+        reportServerBuild(frame.buildId);
         this.#attempt = 0;
         this.#userId = frame.userId;
         this.#scopes = frame.scopes;
@@ -658,36 +659,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isEvent(value: unknown): boolean {
   return isRecord(value) && typeof value.type === "string";
-}
-
-/**
- * Whether this tab runs another build than the server, and if so, what to
- * do. The update prompt (W5) is not built yet, so a tab found out of date
- * reloads -- once per build, and only while it is hidden, so nothing being
- * typed is lost to it. Without a build id on both sides (development, an
- * image built without one) there is nothing to compare.
- */
-function outdatedBuild(serverBuild: string | undefined): void {
-  const running = process.env.NEXT_PUBLIC_BUILD_ID;
-  if (!running || !serverBuild || serverBuild === running || typeof document === "undefined") return;
-  const key = `ucch:reloaded-for:${serverBuild}`;
-  try {
-    if (sessionStorage.getItem(key)) return;
-  } catch {
-    return;
-  }
-  const reload = () => {
-    if (document.visibilityState !== "hidden") return;
-    document.removeEventListener("visibilitychange", reload);
-    try {
-      sessionStorage.setItem(key, "1");
-    } catch {
-      return;
-    }
-    location.reload();
-  };
-  document.addEventListener("visibilitychange", reload);
-  reload();
 }
 
 /**

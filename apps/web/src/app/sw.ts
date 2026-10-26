@@ -2,7 +2,7 @@
 import type { PrecacheEntry, RouteMatchCallbackOptions, SerwistGlobalConfig } from "serwist";
 import { CacheFirst, ExpirationPlugin, NetworkFirst, NetworkOnly, Serwist, StaleWhileRevalidate } from "serwist";
 
-import { PAGES_CACHE } from "@/lib/pwa";
+import { PAGES_CACHE } from "@/lib/pwa-caches";
 
 /**
  * The service worker, built only when `NEXT_PUBLIC_PWA=1` (next.config.ts).

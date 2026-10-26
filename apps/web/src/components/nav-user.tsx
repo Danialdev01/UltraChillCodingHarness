@@ -1,5 +1,6 @@
 "use client"
 
+import { useSyncExternalStore } from "react"
 import {
   Avatar,
   AvatarFallback,
@@ -20,9 +21,9 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { ChevronsUpDownIcon, LogOutIcon, UserRoundCogIcon } from "lucide-react"
+import { ChevronsUpDownIcon, DownloadIcon, LogOutIcon, UserRoundCogIcon } from "lucide-react"
 
-import { clearPageCache } from "@/lib/pwa"
+import { canInstall, clearPageCache, promptInstall, subscribeInstall } from "@/lib/pwa"
 import { clearUserCache } from "@/lib/query-client"
 import { SETTINGS } from "@/lib/sections"
 import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics"
@@ -46,6 +47,9 @@ export function NavUser({
   compact?: boolean
 }) {
   const { isMobile } = useSidebar()
+  // Offered only while the browser says the app can be installed: never in
+  // an installed window, and not in browsers without the prompt at all.
+  const installable = useSyncExternalStore(subscribeInstall, canInstall, () => false)
 
   async function onLogout() {
     // The session cookie is HttpOnly, so it can only be cleared by the server.
@@ -125,6 +129,12 @@ export function NavUser({
                 <UserRoundCogIcon />
                 Account Setting
               </DropdownMenuItem>
+              {installable && (
+                <DropdownMenuItem onClick={() => void promptInstall()}>
+                  <DownloadIcon />
+                  Install app
+                </DropdownMenuItem>
+              )}
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={onLogout}>
