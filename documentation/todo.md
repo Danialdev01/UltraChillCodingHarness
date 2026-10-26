@@ -865,7 +865,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     - Chrome's `Page.getAppManifest` and `Page.getInstallabilityErrors` (the data behind DevTools' Manifest pane) on `/login` and an app page of the production build: no manifest errors, no installability errors. Both pages carry the light and dark `theme-color`.
     - `pnpm typecheck && pnpm test`: 1981 passed, 2 skipped.
 
-- [ ] **W2 — Static root layout**
+- [x] **W2 — Static root layout** — cf09cdb
 
   - **Depends:** W1
   - **Files:** `apps/web/src/app/layout.tsx`, `apps/web/src/lib/theme.ts`, `apps/web/src/components/theme-provider.tsx`, `apps/web/src/middleware.ts`
@@ -878,6 +878,11 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     2. **Don't break the hydration rules documented in `layout.tsx`.**
   - **Acceptance:** the `next build` output marks `/login` as static (○). No theme flash on a forced-dark reload.
   - **Verify:** `pnpm --filter @ucch/web build`
+  - **Measured:**
+    - Took the first option: the client paints the theme before first paint, and there is no second root layout. `THEME_SCRIPT` is an inline script inside `ThemeProvider`, ahead of the content. It is rendered by the same server tree on both sides, so `<body>` keeps one child and `<head>` stays unauthored. It paints from `ucch:theme-paint`, the mode and the worked-out variables, which `storeTheme` writes beside the choice. When storage is empty it uses the cookie's mode alone; the palette then arrives on hydration. `middleware.ts` needed no change.
+    - `next build`: `/login` is ○ and is served with `x-nextjs-cache: HIT`.
+    - Forced-dark (seeded palette) check on `/login` and an app page of the production build, over the cookie-only first visit, four reloads and a fresh navigation each. `data-theme-mode` and the body background were read at each of the first four animation frames. Every frame was dark on every pass, and the console showed no hydration errors. One cold-server first visit caught a single pre-script frame on the app page; it did not happen again.
+    - `pnpm typecheck && pnpm test`: 1985 passed, 2 skipped.
 
 - [ ] **W3 — Serwist service worker behind a flag**
 
