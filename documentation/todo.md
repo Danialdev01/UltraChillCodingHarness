@@ -884,7 +884,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     - Forced-dark (seeded palette) check on `/login` and an app page of the production build, over the cookie-only first visit, four reloads and a fresh navigation each. `data-theme-mode` and the body background were read at each of the first four animation frames. Every frame was dark on every pass, and the console showed no hydration errors. One cold-server first visit caught a single pre-script frame on the app page; it did not happen again.
     - `pnpm typecheck && pnpm test`: 1985 passed, 2 skipped.
 
-- [ ] **W3 — Serwist service worker behind a flag**
+- [x] **W3 — Serwist service worker behind a flag** — c9cdcf1
 
   - **Depends:** W2, PF1.4
   - **Files:** `apps/web/next.config.ts` (`withSerwist`, enabled only when `NEXT_PUBLIC_PWA=1`), new `apps/web/src/app/sw.ts`, `apps/web/package.json` (`@serwist/next`, `serwist`)
@@ -900,14 +900,31 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     5. The server's edge (`web-proxy.ts`) serves `sw.js` with `Cache-Control: no-cache` and `Service-Worker-Allowed: /`.
   - **Acceptance:** with the flag on, Lighthouse's PWA "installable" check passes. Turning the flag off and redeploying unregisters the worker (ship a kill-switch `sw.js`).
   - **Verify:** `NEXT_PUBLIC_PWA=1 pnpm --filter @ucch/web build && start`, plus Lighthouse
+  - **Measured:**
+    - The precache holds 35 entries: the 4 stylesheets, 23 font files (about 640 KB), the runtime chunks, the root layout's and /offline's chunks, and /offline itself. The other ~200 chunks are cached as they are used. Precaching the whole build manifest would download every editor at install. The page that registers the worker then hands it the files it already loaded, plus /offline's chunks, through `CACHE_URLS` (`lib/pwa.ts`). Without that, /offline served with no server could not hydrate.
+    - The page registers the worker itself (`register: false`), which also lets it unregister one when the flag is off. A new build waits for the page's word to take over (`skipWaiting: false`), which is W5's job. The worker's copies of pages are cleared on sign-out.
+    - In headless Chrome against the production build behind the edge (`WEB_UPSTREAM`):
+      - The worker activates and controls the page on first load.
+      - After one workspace page and one project, its caches hold 76–89 chunks, 3 file icons and 2 pages. None of them is an RSC payload or an `/api` response.
+      - `Page.getInstallabilityErrors` returns none. Lighthouse no longer has a PWA category, and this is the same installability check.
+    - With the API and Next both stopped:
+      - The visited project opens from its copy, sidebar and all.
+      - An unvisited page shows /offline, listing the recent project.
+    - `sw.js` comes from the edge with `no-cache` and `Service-Worker-Allowed: /`.
+    - Kill switch:
+      - Rebuilt without the flag, the build removes the `public/sw.js` an earlier build left behind.
+      - The edge then sends the self-removing worker. Next would otherwise answer `/sw.js` with a workspace page and a 200, so the proxy checks the content type too.
+      - In the profile that had the worker, one update check left 0 registrations and 0 caches.
+    - The shell's budget still passes. /login's first load is 176 kB (it gained the registration component) and /offline's is 174 kB. `pnpm typecheck && pnpm test`: 1988 passed, 2 skipped.
 
-- [ ] **W4 — Offline page**
+- [x] **W4 — Offline page** — 808bc94
 
   - **Depends:** W3
   - **Files:** new `apps/web/src/app/offline/page.tsx` (static)
   - **Steps:** Show the app logo, "You're offline", a retry button, and a read-only list of recent projects from the persisted query cache.
   - **Acceptance:** in DevTools offline mode, a navigation shows this page.
   - **Verify:** manual
+  - **Measured:** /offline is static (○ in `next build`) and is precached by the worker. The recent projects come from the newest bootstrap in the persisted IndexedDB cache: the workspace open last, and its projects, most recently active first, as plain links. The offline check stopped the servers instead of using DevTools' offline mode, so the worker itself had no network either. Navigating to a page it had no copy of showed "You're offline", the retry button and the project list (W3's notes).
 
 - [ ] **W5 — Update prompt and install entry**
 
