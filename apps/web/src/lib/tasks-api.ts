@@ -14,6 +14,8 @@ import type {
   TaskStage,
 } from "@ucch/protocol";
 
+import { FieldConflictError } from "./field-edit";
+
 export type { ProjectTask, TaskAutoRun, TaskReference, TaskSettings, TaskStage };
 
 export interface TaskInput {
@@ -51,14 +53,29 @@ export async function createTask(hash: string, input: TaskInput): Promise<Projec
   return (await send<{ task: ProjectTask }>(`/api/projects/${hash}/tasks`, "POST", input, "Could not add the todo.")).task;
 }
 
+/**
+ * Writes the fields in `patch`. With `base` -- what those fields held when
+ * the edit began -- a field somebody else changed meanwhile is refused as a
+ * `FieldConflictError` carrying their version (`lib/field-edit.ts`).
+ */
 export async function updateTask(
   hash: string,
   id: string,
   patch: Partial<TaskInput>,
+  base?: Partial<TaskInput>,
 ): Promise<ProjectTask> {
-  return (
-    await send<{ task: ProjectTask }>(`/api/projects/${hash}/tasks/${id}`, "PATCH", patch, "Could not save the todo.")
-  ).task;
+  const response = await fetch(`/api/projects/${hash}/tasks/${id}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: json,
+    body: JSON.stringify(base ? { ...patch, base } : patch),
+  });
+  if (response.status === 409) {
+    const body = (await response.json().catch(() => ({}))) as { task?: ProjectTask };
+    if (body.task) throw new FieldConflictError("Someone else changed this todo meanwhile; it now shows their version.", body.task);
+  }
+  if (!response.ok) await fail(response, "Could not save the todo.");
+  return ((await response.json()) as { task: ProjectTask }).task;
 }
 
 export async function moveTask(

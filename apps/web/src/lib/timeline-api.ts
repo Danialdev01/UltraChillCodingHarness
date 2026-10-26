@@ -8,6 +8,8 @@
 
 import type { TimelineColour } from "@ucch/protocol";
 
+import { FieldConflictError } from "./field-edit";
+
 export interface TimelineTask {
   id: string;
   title: string;
@@ -64,17 +66,27 @@ export async function createTimelineTask(
   return ((await response.json()) as { task: TimelineTask }).task;
 }
 
+/**
+ * Writes the fields in `patch`. With `base` -- what those fields held when
+ * the edit or the drag began -- a field somebody else changed meanwhile is
+ * refused as a `FieldConflictError` carrying their version.
+ */
 export async function updateTimelineTask(
   hash: string,
   taskId: string,
   patch: TimelineTaskPatch,
+  base?: TimelineTaskPatch,
 ): Promise<TimelineTask> {
   const response = await fetch(`/api/projects/${hash}/timeline/tasks/${taskId}`, {
     method: "PATCH",
     credentials: "include",
     headers: json,
-    body: JSON.stringify(patch),
+    body: JSON.stringify(base ? { ...patch, base } : patch),
   });
+  if (response.status === 409) {
+    const body = (await response.json().catch(() => ({}))) as { task?: TimelineTask };
+    if (body.task) throw new FieldConflictError("Someone else changed this task meanwhile; it now shows their version.", body.task);
+  }
   if (!response.ok) await fail(response, "Could not save the task.");
   return ((await response.json()) as { task: TimelineTask }).task;
 }

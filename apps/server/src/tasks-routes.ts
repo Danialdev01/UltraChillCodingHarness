@@ -53,8 +53,19 @@ const TaskPatch = z
     description: Description.optional(),
     references: References.optional(),
     ifUpdatedAt: z.string().datetime().optional(),
+    /**
+     * What the fields being changed held when the edit began. A field
+     * somebody else has changed since is a conflict; any other is not.
+     */
+    base: z
+      .object({
+        title: z.string().max(TASK_TITLE_MAX).optional(),
+        description: Description.optional(),
+        references: References.optional(),
+      })
+      .optional(),
   })
-  .refine(({ ifUpdatedAt: _, ...p }) => Object.values(p).some((v) => v !== undefined), {
+  .refine(({ ifUpdatedAt: _, base: __, ...p }) => Object.values(p).some((v) => v !== undefined), {
     message: "nothing to change",
   });
 
@@ -97,9 +108,10 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
   const notFound = { error: "project not found" };
   const noTask = { error: "task not found" };
 
+  /** Tells the other tabs; a saved card goes along whole, so they put it in place without a refetch. */
   const changed = async (
     projectId: string,
-    task: Pick<ProjectTask, "id" | "updatedAt">,
+    task: Pick<ProjectTask, "id" | "updatedAt"> | ProjectTask,
     change: TaskChangedEvent["change"],
     origin: ChangeOrigin | undefined,
   ) =>
@@ -110,6 +122,7 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
       change,
       updatedAt: task.updatedAt,
       ...(origin ? { origin } : {}),
+      ...(change !== "deleted" && "stage" in task ? { task } : {}),
     });
 
   /** Attached files outlive the upload sweep for as long as the card names them. */
@@ -151,9 +164,9 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
     const parsed = TaskPatch.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: describe(parsed.error) });
 
-    const { ifUpdatedAt, ...patch } = parsed.data;
+    const { ifUpdatedAt, base, ...patch } = parsed.data;
     await retain(project.id, patch.references);
-    const outcome = await tasks.update(project.id, request.params.taskId, patch, ifUpdatedAt);
+    const outcome = await tasks.update(project.id, request.params.taskId, patch, { ifUpdatedAt, base });
     if (outcome === null) return reply.code(404).send(noTask);
     if ("conflict" in outcome) {
       return reply.code(409).send({ error: "this task was changed elsewhere", task: outcome.conflict });

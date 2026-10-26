@@ -24,6 +24,7 @@ import {
   type ChangeOrigin,
   type Command,
   type DomainEvent,
+  type ProjectTask,
 } from "@ucch/protocol";
 import { HostProcessHost, createProviders } from "@ucch/providers";
 import { AgentTurnReactor } from "./agent.js";
@@ -2002,10 +2003,10 @@ const tasksService = new TasksService(db);
 const interruptedTasks = await tasksService.recoverInterrupted();
 if (interruptedTasks > 0) app.log.info({ count: interruptedTasks }, "marked interrupted tasks as failed");
 
-const announceTask = async (projectId: string, task: { id: string; updatedAt: string }) => {
+const announceTask = async (projectId: string, task: ProjectTask) => {
   await store
     .append({ projectId, threadId: null }, [
-      { type: "task.changed", projectId, taskId: task.id, change: "updated", updatedAt: task.updatedAt },
+      { type: "task.changed", projectId, taskId: task.id, change: "updated", updatedAt: task.updatedAt, task },
     ])
     .catch((error) => app.log.error({ err: error }, "could not announce a task change"));
 };

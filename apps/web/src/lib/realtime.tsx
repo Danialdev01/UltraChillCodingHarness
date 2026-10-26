@@ -274,7 +274,11 @@ function CacheBridge({ client }: { client: UcchClient | null }) {
     // everything on screen refetches (only what is open; the rest is marked
     // stale for when it is next shown).
     const offReconnect = client.onReconnect(() => void queryClient.invalidateQueries())
-    const off = client.onEvent(({ event }) => sink.push(cacheEffect(event)))
+    const off = client.onEvent(({ event }) => {
+      const effect = cacheEffect(event)
+      for (const { key, update } of effect.patch ?? []) queryClient.setQueriesData({ queryKey: key }, update)
+      sink.push(effect)
+    })
     return () => {
       off()
       offReconnect()

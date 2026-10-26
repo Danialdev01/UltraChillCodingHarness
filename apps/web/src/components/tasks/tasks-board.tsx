@@ -21,6 +21,7 @@ import {
   updateTask,
   type TaskInput,
 } from "@/lib/tasks-api"
+import { FieldConflictError, fieldChanges } from "@/lib/field-edit"
 import { cn } from "@/lib/utils"
 import { projectPageHref } from "@/lib/sections"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
@@ -78,6 +79,10 @@ export function TasksBoard({ project: seed, projects }: { project: Project; proj
 
   useProjectEvents(project.id, (event) => {
     if (event.type === "task.changed") {
+      // A card saved or deleted elsewhere is put in place by the cache
+      // bridge (`realtime-cache.ts`); reading the whole board again could
+      // land on top of a change of this tab's still in flight.
+      if (event.task || event.change === "deleted") return
       if (event.change === "updated" && versions.current.get(event.taskId) === event.updatedAt) return
       void reload()
     } else if (event.type === "resource.changed" && event.resource === "project_settings") {
@@ -101,11 +106,33 @@ export function TasksBoard({ project: seed, projects }: { project: Project; proj
 
   const report = (e: unknown) => setError(e instanceof Error ? e.message : String(e))
 
+  /** Puts back what `base` says the fields were, on this card only. */
+  function revert(id: string, base: Partial<ProjectTask>) {
+    setTasks((current) => (current ?? []).map((t) => (t.id === id ? { ...t, ...base } : t)))
+  }
+
   async function save(input: TaskInput, hash: string) {
+    if (dialog?.mode === "edit") {
+      // Only what this edit changed, shown at once and saved behind it.
+      // Somebody else's change to another field of the card stands.
+      const start = dialog.task
+      const { patch, base } = fieldChanges<TaskInput>(
+        { title: start.title, description: start.description, references: start.references },
+        input,
+      )
+      setDialog(null)
+      if (Object.keys(patch).length === 0) return
+      setTasks((current) => (current ?? []).map((t) => (t.id === start.id ? { ...t, ...patch } : t)))
+      updateTask(project.hash, start.id, patch, base).then(put, (e: unknown) => {
+        if (e instanceof FieldConflictError) put(e.current as ProjectTask)
+        else revert(start.id, base as Partial<ProjectTask>)
+        report(e)
+      })
+      return
+    }
     setBusy(true)
     try {
-      if (dialog?.mode === "edit") put(await updateTask(project.hash, dialog.task.id, input))
-      else if (hash === project.hash) put(await createTask(hash, input))
+      if (hash === project.hash) put(await createTask(hash, input))
       else {
         // Filed under another project: go to its board, where it now is.
         await createTask(hash, input)
@@ -141,7 +168,8 @@ export function TasksBoard({ project: seed, projects }: { project: Project; proj
     const previous = task
     put({ ...task, stage, position, ...(task.stage !== stage ? { status: "idle" as const } : {}) })
     moveTask(project.hash, task.id, stage, position).then(put, (e: unknown) => {
-      put(previous)
+      // Back where it was, without undoing what anyone else changed meanwhile.
+      revert(task.id, { stage: previous.stage, position: previous.position, status: previous.status })
       report(e)
     })
   }

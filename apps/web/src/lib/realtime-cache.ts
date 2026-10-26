@@ -1,6 +1,7 @@
 import type { DomainEvent, LiveResource } from "@ucch/protocol"
 import type { QueryKey } from "@tanstack/react-query"
 
+import { removeRow, upsertRow } from "./field-edit"
 import { qk } from "./query-keys"
 
 /**
@@ -23,6 +24,13 @@ export interface CacheEffect {
    * the events themselves (`useAgentActivity`), not from the bootstrap.
    */
   deferred?: QueryKey[]
+  /**
+   * Rows the event carries whole, put straight into every cached copy of
+   * the family (`setQueriesData`) instead of refetching the lists: a card
+   * someone else moved replaces that one card, and leaves alone the one
+   * this tab is in the middle of changing.
+   */
+  patch?: { key: QueryKey; update: (data: unknown) => unknown }[]
 }
 
 const RESOURCES: Record<LiveResource, CacheEffect> = {
@@ -48,10 +56,17 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
   switch (event.type) {
     case "resource.changed":
       return RESOURCES[event.resource] ?? NONE
+    // A new row's list is not known from the event (lists are by project
+    // hash): those refetch. A saved or deleted row is put in place.
     case "task.changed":
-      return { invalidate: [qk.tasks.all] }
-    case "timeline.changed":
-      return { invalidate: [qk.timeline.all] }
+    case "timeline.changed": {
+      const family = event.type === "task.changed" ? qk.tasks.all : qk.timeline.all
+      if (event.change === "deleted") return { invalidate: [], patch: [{ key: family, update: removeRow(event.taskId) }] }
+      if (event.change === "updated" && event.task) {
+        return { invalidate: [], patch: [{ key: family, update: upsertRow(event.task) }] }
+      }
+      return { invalidate: [family] }
+    }
     case "note.changed":
       return { invalidate: [qk.notes.all] }
     // The git status follows from the server's own `resource.changed{git}`,

@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { staleFields } from "./field-guard.js";
 import { notes, projects, projectTasks, type Database, type ProjectTaskRow } from "@ucch/db";
 import {
   DEFAULT_TASK_AUTO_RUN,
@@ -83,29 +84,45 @@ export class TasksService {
     return toTask(row!);
   }
 
-  /** The person's edits: what the card says, not where it is. */
+  /**
+   * The person's edits: what the card says, not where it is. Only the
+   * fields in `patch` are written. A conflict when the card changed since
+   * `ifUpdatedAt` (a tab from before per-field writes), or when a field
+   * being written no longer has its `base` value (`staleFields`); a change
+   * to some other field is not one.
+   */
   async update(
     projectId: string,
     taskId: string,
     patch: TaskPatch,
-    ifUpdatedAt?: string,
+    guard: { ifUpdatedAt?: string; base?: TaskPatch } = {},
   ): Promise<TaskWriteOutcome> {
-    const current = await this.get(projectId, taskId);
-    if (!current) return null;
-    if (ifUpdatedAt && new Date(current.updatedAt).getTime() !== new Date(ifUpdatedAt).getTime()) {
-      return { conflict: current };
-    }
-    const [row] = await this.db
-      .update(projectTasks)
-      .set({
-        ...(patch.title !== undefined && { title: patch.title }),
-        ...(patch.description !== undefined && { description: patch.description }),
-        ...(patch.references !== undefined && { references: patch.references }),
-        updatedAt: new Date(),
-      })
-      .where(and(eq(projectTasks.projectId, projectId), eq(projectTasks.id, taskId)))
-      .returning();
-    return row ? { task: toTask(row) } : null;
+    return this.db.transaction(async (tx) => {
+      // Locked, so the check and the write see the same card.
+      const [locked] = await tx
+        .select()
+        .from(projectTasks)
+        .where(and(eq(projectTasks.projectId, projectId), eq(projectTasks.id, taskId)))
+        .for("update");
+      if (!locked) return null;
+      const current = toTask(locked);
+      const { ifUpdatedAt, base } = guard;
+      if (ifUpdatedAt && new Date(current.updatedAt).getTime() !== new Date(ifUpdatedAt).getTime()) {
+        return { conflict: current };
+      }
+      if (staleFields(current, base).length > 0) return { conflict: current };
+      const [row] = await tx
+        .update(projectTasks)
+        .set({
+          ...(patch.title !== undefined && { title: patch.title }),
+          ...(patch.description !== undefined && { description: patch.description }),
+          ...(patch.references !== undefined && { references: patch.references }),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(projectTasks.projectId, projectId), eq(projectTasks.id, taskId)))
+        .returning();
+      return row ? { task: toTask(row) } : null;
+    });
   }
 
   /**

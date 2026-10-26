@@ -2,6 +2,11 @@ import { z } from "zod";
 import { ProjectDatabase } from "./database.js";
 import { BranchName, PreviewHash, ProjectHash, ThreadHash } from "./ids.js";
 import { PROJECT_MODES } from "./plain.js";
+import type { ProjectTask } from "./tasks.js";
+import type { TimelineTaskRecord } from "./timeline.js";
+
+/** A row carried whole in an event: checked only for being an object, its type is the server's. */
+const isRecord = (value: unknown): boolean => typeof value === "object" && value !== null;
 
 /**
  * The append-only session log.
@@ -536,6 +541,11 @@ const TimelineChanged = z.object({
   /** Lets the tab that made the change recognise its own write and skip the refetch. */
   updatedAt: z.string().datetime(),
   origin: ChangeOrigin.optional(),
+  /**
+   * The task as saved, on a create or an update: other tabs put this one
+   * row in place instead of reading the whole chart again.
+   */
+  task: z.custom<TimelineTaskRecord>(isRecord).optional(),
 });
 
 /**
@@ -549,6 +559,8 @@ const TaskChanged = z.object({
   change: z.enum(["created", "updated", "deleted"]),
   updatedAt: z.string().datetime(),
   origin: ChangeOrigin.optional(),
+  /** The card as saved, on a create or an update, like `timeline.changed`'s. */
+  task: z.custom<ProjectTask>(isRecord).optional(),
 });
 
 /**

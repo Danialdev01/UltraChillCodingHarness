@@ -24,8 +24,8 @@ describe("cacheEffect", () => {
   })
 
   it("maps each domain's events to its own cache family", () => {
-    expect(cacheEffect(ev({ type: "task.changed", projectId: P })).invalidate).toEqual([["tasks"]])
-    expect(cacheEffect(ev({ type: "timeline.changed", projectId: P })).invalidate).toEqual([["timeline"]])
+    expect(cacheEffect(ev({ type: "task.changed", projectId: P, change: "created" })).invalidate).toEqual([["tasks"]])
+    expect(cacheEffect(ev({ type: "timeline.changed", projectId: P, change: "created" })).invalidate).toEqual([["timeline"]])
     expect(cacheEffect(ev({ type: "note.changed", projectId: P })).invalidate).toEqual([["notes"]])
     expect(cacheEffect(ev({ type: "file.changed", projectId: P })).invalidate).toEqual([["files"]])
     expect(cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "files" })).invalidate).toEqual([["files"]])
@@ -34,6 +34,33 @@ describe("cacheEffect", () => {
     expect(cacheEffect(ev({ type: "git.pushed", projectId: P })).invalidate).toEqual([["git"]])
     expect(cacheEffect(ev({ type: "thread.created", projectId: P })).invalidate).toEqual([["sessions"]])
     expect(cacheEffect(ev({ type: "resource.changed", projectId: null, resource: "workspace_members" })).invalidate).toContainEqual(["members"])
+  })
+
+  it("puts a saved row in place instead of refetching its list", () => {
+    const mine = { id: "a", title: "Mine", updatedAt: "2026-10-26T10:00:00.000Z" }
+    const theirs = { id: "b", title: "Old", updatedAt: "2026-10-26T10:00:00.000Z" }
+    const saved = { id: "b", title: "Renamed", updatedAt: "2026-10-26T10:00:05.000Z" }
+    const effect = cacheEffect(ev({ type: "task.changed", projectId: P, taskId: "b", change: "updated", task: saved }))
+    expect(effect.invalidate).toEqual([])
+    expect(effect.patch?.[0]?.key).toEqual(["tasks"])
+    const update = effect.patch![0]!.update
+    expect(update([mine, theirs])).toEqual([mine, saved])
+    // A copy already newer than the event is kept; a list without the row, and settings, are untouched.
+    const newer = { ...saved, title: "Newer", updatedAt: "2026-10-26T10:00:09.000Z" }
+    expect(update([newer])).toEqual([newer])
+    const settings = { autoRun: null }
+    expect(update(settings)).toBe(settings)
+    expect(update([mine])).toEqual([mine])
+  })
+
+  it("takes a deleted row out of its list", () => {
+    const effect = cacheEffect(ev({ type: "timeline.changed", projectId: P, taskId: "b", change: "deleted" }))
+    expect(effect.invalidate).toEqual([])
+    expect(effect.patch![0]!.update([{ id: "a" }, { id: "b" }])).toEqual([{ id: "a" }])
+  })
+
+  it("refetches an update that does not carry its row", () => {
+    expect(cacheEffect(ev({ type: "task.changed", projectId: P, change: "updated" })).invalidate).toEqual([["tasks"]])
   })
 
   it("leaves the nudges their views read themselves", () => {

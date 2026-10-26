@@ -57,9 +57,23 @@ const TaskPatch = z
     dependsOnId: TaskId.nullable().optional(),
     /** The version this tab last saw; a task saved since is a conflict. */
     ifUpdatedAt: z.string().datetime().optional(),
+    /**
+     * What the fields being changed held when the edit (or the drag) began.
+     * A field somebody else has changed since is a conflict; any other is not.
+     */
+    base: z
+      .object({
+        title: z.string().max(TIMELINE_TITLE_MAX).optional(),
+        startsOn: Day.optional(),
+        endsOn: Day.optional(),
+        progress: Progress.optional(),
+        colour: Colour.optional(),
+        dependsOnId: TaskId.nullable().optional(),
+      })
+      .optional(),
   })
   .refine(
-    ({ ifUpdatedAt: _, ...p }) => Object.values(p).some((v) => v !== undefined),
+    ({ ifUpdatedAt: _, base: __, ...p }) => Object.values(p).some((v) => v !== undefined),
     { message: "nothing to change" },
   );
 
@@ -129,8 +143,8 @@ export function registerTimelineRoutes(app: FastifyInstance, deps: TimelineRoute
       const parsed = TaskPatch.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: describe(parsed.error) });
 
-      const { ifUpdatedAt, ...patch } = parsed.data;
-      const outcome = await timeline.update(project.id, request.params.taskId, patch, ifUpdatedAt);
+      const { ifUpdatedAt, base, ...patch } = parsed.data;
+      const outcome = await timeline.update(project.id, request.params.taskId, patch, { ifUpdatedAt, base });
       if (outcome === null) return reply.code(404).send(noTask);
       if ("error" in outcome) return reply.code(400).send({ error: outcome.error });
       const origin = await originOf(request);
@@ -151,6 +165,8 @@ export function registerTimelineRoutes(app: FastifyInstance, deps: TimelineRoute
         change: "updated",
         updatedAt: outcome.task.updatedAt,
         ...(origin ? { origin } : {}),
+        // Whole, so the other tabs put this row in place without a refetch.
+        task: outcome.task,
       });
       void audit({
         ...by(project.id, origin),

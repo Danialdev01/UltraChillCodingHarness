@@ -1,20 +1,9 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { timelineTasks, type Database, type TimelineTask } from "@ucch/db";
-import type { TimelineColour } from "@ucch/protocol";
+import type { TimelineColour, TimelineTaskRecord } from "@ucch/protocol";
+import { staleFields } from "./field-guard.js";
 
-/** A task as the API carries it: dates as `YYYY-MM-DD`, instants as ISO strings. */
-export interface TimelineTaskRecord {
-  id: string;
-  title: string;
-  startsOn: string;
-  endsOn: string;
-  progress: number;
-  colour: TimelineColour;
-  position: number;
-  dependsOnId: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
+export type { TimelineTaskRecord };
 
 export interface TimelineTaskInput {
   title: string;
@@ -30,7 +19,7 @@ export type TimelineTaskPatch = Partial<TimelineTaskInput>;
 /** A write that did not happen, and why -- worded for the person who asked. */
 export type TimelineWriteOutcome =
   | { task: TimelineTaskRecord }
-  /** Saved by somebody else since `ifUpdatedAt`; `task` is what they saved. */
+  /** A field being written was changed by somebody else; `conflict` is what they saved. */
   | { conflict: TimelineTaskRecord }
   | { error: "end before start" | "unknown dependency" | "dependency cycle" }
   | null;
@@ -97,40 +86,48 @@ export class TimelineService {
     projectId: string,
     taskId: string,
     patch: TimelineTaskPatch,
-    ifUpdatedAt?: string,
+    guard: { ifUpdatedAt?: string; base?: TimelineTaskPatch } = {},
   ): Promise<TimelineWriteOutcome> {
     return this.db.transaction(async (tx) => {
-      const rows = await tx
+      // The task itself locked first: the checks below and the write must
+      // see the same row, or a drag landing between them would be undone.
+      const [locked] = await tx
         .select()
         .from(timelineTasks)
-        .where(eq(timelineTasks.projectId, projectId));
-      const current = rows.find((t) => t.id === taskId);
-      if (!current) return null;
-      if (ifUpdatedAt && current.updatedAt.getTime() !== new Date(ifUpdatedAt).getTime()) {
-        return { conflict: toRecord(current) };
+        .where(and(eq(timelineTasks.projectId, projectId), eq(timelineTasks.id, taskId)))
+        .for("update");
+      if (!locked) return null;
+      const { ifUpdatedAt, base } = guard;
+      if (ifUpdatedAt && locked.updatedAt.getTime() !== new Date(ifUpdatedAt).getTime()) {
+        return { conflict: toRecord(locked) };
       }
+      if (staleFields(toRecord(locked), base).length > 0) return { conflict: toRecord(locked) };
 
-      const startsOn = patch.startsOn ?? current.startsOn;
-      const endsOn = patch.endsOn ?? current.endsOn;
+      const startsOn = patch.startsOn ?? locked.startsOn;
+      const endsOn = patch.endsOn ?? locked.endsOn;
       if (endsOn < startsOn) return { error: "end before start" };
 
-      const dependsOnId = patch.dependsOnId === undefined ? current.dependsOnId : patch.dependsOnId;
-      if (dependsOnId !== null) {
-        if (dependsOnId === taskId || !rows.some((t) => t.id === dependsOnId)) {
+      if (patch.dependsOnId) {
+        const rows = await tx
+          .select({ id: timelineTasks.id, dependsOnId: timelineTasks.dependsOnId })
+          .from(timelineTasks)
+          .where(eq(timelineTasks.projectId, projectId));
+        if (patch.dependsOnId === taskId || !rows.some((t) => t.id === patch.dependsOnId)) {
           return { error: "unknown dependency" };
         }
-        if (wouldCycle(rows, taskId, dependsOnId)) return { error: "dependency cycle" };
+        if (wouldCycle(rows, taskId, patch.dependsOnId)) return { error: "dependency cycle" };
       }
 
+      // Only what was sent: a rename never writes back the dates it read.
       const [row] = await tx
         .update(timelineTasks)
         .set({
           ...(patch.title !== undefined && { title: patch.title }),
-          startsOn,
-          endsOn,
+          ...(patch.startsOn !== undefined && { startsOn: patch.startsOn }),
+          ...(patch.endsOn !== undefined && { endsOn: patch.endsOn }),
           ...(patch.progress !== undefined && { progress: patch.progress }),
           ...(patch.colour !== undefined && { colour: patch.colour }),
-          dependsOnId,
+          ...(patch.dependsOnId !== undefined && { dependsOnId: patch.dependsOnId }),
           updatedAt: new Date(),
         })
         .where(and(eq(timelineTasks.projectId, projectId), eq(timelineTasks.id, taskId)))

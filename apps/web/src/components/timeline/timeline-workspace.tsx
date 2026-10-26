@@ -21,6 +21,7 @@ import {
   type TimelineTaskInput,
   type TimelineTaskPatch,
 } from "@/lib/timeline-api"
+import { FieldConflictError, fieldChanges } from "@/lib/field-edit"
 import { cn } from "@/lib/utils"
 
 const ZOOMS: { id: Zoom; label: string }[] = [
@@ -60,12 +61,15 @@ export function TimelineWorkspace({ project: seed }: { project: Project }) {
   }, [loadState.error])
 
   // Other tabs, and other people: a `timeline.changed` on the project
-  // topic reloads the chart, unless it names a version this tab wrote.
+  // topic reloads the chart, unless it names a version this tab wrote. A
+  // task saved or deleted elsewhere comes in the event, and the cache bridge
+  // puts that one bar in place (`realtime-cache.ts`).
   const versions = React.useRef(new Map<string, string>())
   versions.current = new Map((tasks ?? []).map((t) => [t.id, t.updatedAt]))
 
   useProjectEvents(project.id, (event) => {
     if (event.type !== "timeline.changed") return
+    if (event.task || event.change === "deleted") return
     if (event.change === "updated" && versions.current.get(event.taskId) === event.updatedAt) return
     void reload()
   })
@@ -75,15 +79,37 @@ export function TimelineWorkspace({ project: seed }: { project: Project }) {
     setTasks((current) => (current ?? []).map((t) => (t.id === task.id ? task : t)))
   }
 
+  /** Puts back what `base` says the fields were, on this task only. */
+  function revert(id: string, base: TimelineTaskPatch) {
+    setTasks((current) => (current ?? []).map((t) => (t.id === id ? { ...t, ...base } : t)))
+  }
+
+  /**
+   * Shown at once, saved behind it: only the fields that changed, each
+   * with what it held before, so somebody else's change to another field
+   * of the same task -- a rename while this tab drags the bar -- stands.
+   */
+  function write(task: TimelineTask, next: TimelineTaskPatch) {
+    const { patch, base } = fieldChanges<TimelineTaskPatch>(task, next)
+    if (Object.keys(patch).length === 0) return
+    setTasks((current) => (current ?? []).map((t) => (t.id === task.id ? { ...t, ...patch } : t)))
+    updateTimelineTask(project.hash, task.id, patch, base).then(put, (e: unknown) => {
+      if (e instanceof FieldConflictError) put(e.current as TimelineTask)
+      else revert(task.id, base)
+      setError(e instanceof Error ? e.message : String(e))
+    })
+  }
+
   async function save(input: TimelineTaskInput) {
+    if (dialog?.mode === "edit") {
+      write(dialog.task, input)
+      setDialog(null)
+      return
+    }
     setBusy(true)
     try {
-      if (dialog?.mode === "edit") {
-        put(await updateTimelineTask(project.hash, dialog.task.id, input))
-      } else {
-        const created = await createTimelineTask(project.hash, input)
-        setTasks((current) => [...(current ?? []), created])
-      }
+      const created = await createTimelineTask(project.hash, input)
+      setTasks((current) => [...(current ?? []), created])
       setDialog(null)
     } finally {
       setBusy(false)
@@ -109,11 +135,7 @@ export function TimelineWorkspace({ project: seed }: { project: Project }) {
 
   /** A drag's result: shown at once, saved behind it, undone if refused. */
   function commit(task: TimelineTask, patch: TimelineTaskPatch) {
-    put({ ...task, ...patch })
-    updateTimelineTask(project.hash, task.id, patch).then(put, (e: unknown) => {
-      put(task)
-      setError(e instanceof Error ? e.message : String(e))
-    })
+    write(task, patch)
   }
 
   const pxPerDay = PX_PER_DAY[zoom]
