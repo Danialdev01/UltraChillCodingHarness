@@ -683,7 +683,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - The boot probe passed in the image (no fallback warning). A failing probe, a missing tool, and a command not on PATH all run bare, and a missing program still fails with `spawn … ENOENT` (`child-priority.test.ts`).
     - `pnpm typecheck && pnpm test`: 1944 passed, 2 skipped.
 
-- [ ] **PF2.4 — In-process alerts**
+- [x] **PF2.4 — In-process alerts** — ce7108d
 
   - **Depends:** PF0.2
   - **Files:** new `apps/server/src/watchdog.ts` and `watchdog.test.ts`, `apps/server/src/config.ts` (`ALERT_WEBHOOK_URL`)
@@ -696,6 +696,14 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     2. Each alert logs at error and POSTs JSON to `ALERT_WEBHOOK_URL`, at most once per 15 min per condition.
   - **Acceptance:** a test fires each condition once and rate-limits the repeat.
   - **Verify:** `pnpm test -- watchdog`
+  - **Measured:**
+    - `watchdog.test.ts`, 16 tests:
+      - each condition fires once when it has held its time (memory 2 min, event loop 1 min, engine wait 1 min, an OOM kill at once), and not a check sooner;
+      - memory dropping in between restarts the 2 minutes;
+      - a repeat within 15 min is held back, and one 15 min later is sent;
+      - the webhook gets JSON with the message in `text`; a webhook that answers 500 or cannot be reached is logged as a warning.
+    - In the image under `--memory=3g`, with `ALERT_WEBHOOK_URL` at a local listener: the PF2.3 runaway's OOM kill produced one error-level `alert` log line and one POST, `{"alert":"oom_kill","text":"The kernel killed 1 process in the container for memory.",…}`, within one check.
+    - `pnpm typecheck && pnpm test`: 1960 passed, 2 skipped.
 
 ---
 
