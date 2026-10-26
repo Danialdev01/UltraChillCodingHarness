@@ -1,0 +1,50 @@
+# Every push and pull request: types, tests, the web build, and the bundle
+# budget against apps/web/e2e/results/bundle-baseline.json. The same steps
+# documentation/todo.md asks of every change.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch makes the older run moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version comes from package.json's `packageManager`.
+      - uses: pnpm/action-setup@v4
+
+      # The image's Node (Dockerfile: node:22-bookworm-slim).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      # As the image builds it: the API on the container's loopback, and the
+      # browser's WebSocket on the page's own host.
+      - run: pnpm --filter @ucch/web build
+        env:
+          SERVER_ORIGIN: http://127.0.0.1:3000
+          NEXT_PUBLIC_WS_ORIGIN: ""
+
+      - run: node scripts/bundle-budget.mjs --check
+        working-directory: apps/web
