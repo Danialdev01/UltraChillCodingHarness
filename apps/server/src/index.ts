@@ -10,6 +10,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, inArray, lt, notLike, sql } from "drizzle-orm";
 import { createDatabase, DB_POOL_MAX, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
+import { HeavyJobGate } from "@ucch/agent";
 import {
   AgentPermissionMode,
   can,
@@ -222,6 +223,7 @@ const turnScheduler = new TurnScheduler({
  * The container, checkpoint and preview reactors still arrive in later
  * phases; the agent one is here, so a user message is answered.
  */
+const documents = documentsBackends(config);
 const agentTurns = new AgentTurnReactor(
   db,
   store,
@@ -233,7 +235,8 @@ const agentTurns = new AgentTurnReactor(
     maxIterations: config.AGENT_MAX_ITERATIONS,
     uploads,
     research: researchBackends(config),
-    documents: documentsBackends(config),
+    documents,
+    heavyJobs: new HeavyJobGate(config.DOC_JOBS_MAX, documents.kitDir),
     // Decided once, at boot: in production the shell plugin loads only when
     // it has been asked for explicitly.
     registry: { allowHostShell: shellPluginEnabled(config) },

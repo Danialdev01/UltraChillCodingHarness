@@ -6,6 +6,7 @@ import { projects, threads, turns, users, workspaces, type Database } from "@ucc
 import {
   HostExecutor,
   invalidateTree,
+  type HeavyJobGate,
   runTurn,
   type ApprovalDecision,
   type ApprovalRequest,
@@ -67,6 +68,11 @@ export interface AgentOptions {
    * vision model -- for a turn sent in documentation mode.
    */
   documents: DocumentsBackends;
+  /**
+   * Where the native loop's document renders wait for one another: one gate
+   * for the whole server, so `DOC_JOBS_MAX` holds across every turn.
+   */
+  heavyJobs?: HeavyJobGate;
   /**
    * The CLI providers. Optional so a harness can run with the native loop
    * alone; a turn that asks for one then fails with a message saying so.
@@ -616,7 +622,7 @@ export class AgentTurnReactor {
         supportsImages: canSeeImages,
         searchModel: this.options.searchModel,
         maxIterations: this.options.maxIterations,
-        executor: new HostExecutor(workspace),
+        executor: new HostExecutor(workspace, { heavyJobs: this.options.heavyJobs }),
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
         complete: streamCompletion,
         signal: controller.signal,
@@ -895,7 +901,7 @@ export class AgentTurnReactor {
       supportsImages: canSeeImages,
       searchModel: this.options.searchModel,
       maxIterations: this.options.maxIterations,
-      executor: new HostExecutor(input.workspace),
+      executor: new HostExecutor(input.workspace, { heavyJobs: this.options.heavyJobs }),
       complete: streamCompletion,
       signal: input.signal,
       conclude: false,
@@ -974,7 +980,7 @@ export class AgentTurnReactor {
         supportsImages: canSeeImages,
         searchModel: this.options.searchModel,
         maxIterations: this.options.maxIterations,
-        executor: new HostExecutor(workspace),
+        executor: new HostExecutor(workspace, { heavyJobs: this.options.heavyJobs }),
         complete: streamCompletion,
         signal: input.signal,
         conclude: false,

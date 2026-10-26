@@ -115,6 +115,11 @@ const Env = z.object({
   DOC_KIT_DIR: z.string().optional(),
   DOC_PYTHON: z.string().default("python3"),
   DOC_VISION_MODEL: z.string().default("google/gemini-2.5-flash"),
+  /**
+   * Document renders run at once, across all turns: an office suite or a
+   * headless browser each, so on a small server the rest wait their turn.
+   */
+  DOC_JOBS_MAX: z.coerce.number().int().positive().default(1),
 
   /**
    * The hard stop on the agent loop. A model that keeps calling tools without

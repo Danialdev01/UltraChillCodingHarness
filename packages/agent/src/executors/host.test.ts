@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ExecInterruptedError } from "../executor.js";
-import { HostExecutor } from "./host.js";
+import { HeavyJobGate, HostExecutor } from "./host.js";
 
 let root: string;
 let executor: HostExecutor;
@@ -202,5 +202,80 @@ describe("exec", () => {
 
     await new Promise((r) => setTimeout(r, 1_500));
     await expect(readFile(marker, "utf8")).rejects.toThrow();
+  });
+});
+
+describe("document renders", () => {
+  /** A kit with one script that prints when it started and ended, in ms, and takes `seconds`. */
+  async function kit() {
+    const dir = join(root, "kit", "scripts");
+    await mkdir(dir, { recursive: true });
+    const script = join(dir, "render.sh");
+    await writeFile(script, 'echo "$(date +%s%3N)"; sleep "$1"; echo "$(date +%s%3N)"\n', "utf8");
+    await chmod(script, 0o755);
+    return { kitDir: join(root, "kit"), script };
+  }
+  const span = (stdout: string) => stdout.trim().split("\n").map(Number) as [number, number];
+
+  it("knows a render by its program or by the kit", () => {
+    const gate = new HeavyJobGate(1, "/opt/doc-kit");
+    for (const argv of [["soffice", "--headless"], ["/usr/bin/libreoffice"], ["mmdc", "-i", "a.mmd"], ["/usr/lib/chromium"], ["/opt/doc-venv/bin/python", "/opt/doc-kit/scripts/doc_render.py", "a.md"]]) {
+      expect(gate.isHeavy(argv), argv.join(" ")).toBe(true);
+    }
+    for (const argv of [["bash", "-c", "soffice"], ["python", "build.py"], ["rg", "soffice"], ["/opt/doc-kit-other/x"], ["python", "/opt/doc-kitten/scripts/x.py"]]) {
+      expect(gate.isHeavy(argv), argv.join(" ")).toBe(false);
+    }
+  });
+
+  it("runs two at once one after the other, and both succeed", async () => {
+    const { kitDir, script } = await kit();
+    const gate = new HeavyJobGate(1, kitDir);
+    const a = new HostExecutor(root, { heavyJobs: gate });
+    const b = new HostExecutor(root, { heavyJobs: gate });
+    const [first, second] = await Promise.all([
+      a.exec(["/bin/sh", script, "0.3"], { timeoutMs: 10_000 }),
+      b.exec(["/bin/sh", script, "0.3"], { timeoutMs: 10_000 }),
+    ]);
+    expect([first.exitCode, second.exitCode]).toEqual([0, 0]);
+    const [x, y] = [span(first.stdout), span(second.stdout)].sort((p, q) => p[0] - q[0]) as [[number, number], [number, number]];
+    expect(y[0]).toBeGreaterThanOrEqual(x[1]);
+    expect(gate.stats).toEqual({ running: 0, waiting: 0 });
+  });
+
+  it("starts the timeout when the render starts, not while it waits", async () => {
+    const { kitDir, script } = await kit();
+    const executor = new HostExecutor(root, { heavyJobs: new HeavyJobGate(1, kitDir) });
+    const long = executor.exec(["/bin/sh", script, "0.6"], { timeoutMs: 10_000 });
+    // Waits 0.6 s for the slot, then needs 0.1 s of its 1 s.
+    const short = await executor.exec(["/bin/sh", script, "0.1"], { timeoutMs: 1_000 });
+    expect(short.exitCode).toBe(0);
+    await long;
+  });
+
+  it("stops waiting when the turn is cancelled, and takes no slot", async () => {
+    const { kitDir, script } = await kit();
+    const gate = new HeavyJobGate(1, kitDir);
+    const executor = new HostExecutor(root, { heavyJobs: gate });
+    const running = executor.exec(["/bin/sh", script, "0.3"], { timeoutMs: 10_000 });
+    const controller = new AbortController();
+    const waiting = executor.exec(["/bin/sh", script, "0.1"], { timeoutMs: 10_000, signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(gate.stats).toEqual({ running: 1, waiting: 1 });
+    controller.abort();
+    await expect(waiting).rejects.toMatchObject({ reason: "aborted" });
+    expect(gate.stats).toEqual({ running: 1, waiting: 0 });
+    await running;
+    expect(gate.stats).toEqual({ running: 0, waiting: 0 });
+  });
+
+  it("lets anything else run while a render holds the slot", async () => {
+    const { kitDir, script } = await kit();
+    const executor = new HostExecutor(root, { heavyJobs: new HeavyJobGate(1, kitDir) });
+    const render = executor.exec(["/bin/sh", script, "0.5"], { timeoutMs: 10_000 });
+    const started = Date.now();
+    const echo = await executor.exec(["echo", "hi"], { timeoutMs: 5_000 });
+    expect(echo.stdout.trim()).toBe("hi");
+    expect(Date.now() - started).toBeLessThan(400);
+    await render;
   });
 });

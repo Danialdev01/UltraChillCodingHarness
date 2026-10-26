@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve as resolvePath, sep } from "node:path";
+import { basename, dirname, isAbsolute, resolve as resolvePath, sep } from "node:path";
 import { normalizeWorkspacePath } from "@ucch/protocol";
 import {
   ExecInterruptedError,
@@ -19,6 +19,99 @@ const DEFAULT_MAX_READ_BYTES = 1024 * 1024;
 /** How long a process gets to exit on SIGTERM before SIGKILL follows. */
 const KILL_GRACE_MS = 2_000;
 
+/** Programs that render documents: an office suite, a headless browser, the Mermaid CLI. */
+const HEAVY_PROGRAMS = new Set(["soffice", "libreoffice", "mmdc", "chromium"]);
+
+/**
+ * How many document renders run at once, across every workspace.
+ *
+ * A render is an office suite or a headless browser: hundreds of MB and a
+ * core for seconds. Two agents rendering at once on a small server would
+ * each take twice as long and could take the box down with them, so they
+ * queue instead. A render counts as one when the program is one of
+ * `HEAVY_PROGRAMS`, or when it runs something from the document kit, whose
+ * scripts start those programs themselves. Shared by every executor, which
+ * is why it is its own object: the server makes one.
+ */
+export class HeavyJobGate {
+  readonly #kitDir: string | null;
+  #running = 0;
+  readonly #waiting: Array<() => void> = [];
+
+  constructor(
+    readonly max: number,
+    kitDir?: string | null,
+  ) {
+    this.#kitDir = kitDir ? resolvePath(kitDir) : null;
+  }
+
+  isHeavy(argv: readonly string[]): boolean {
+    const [command] = argv;
+    if (command && HEAVY_PROGRAMS.has(basename(command))) return true;
+    const kit = this.#kitDir;
+    // The interpreter and its script: `python <kit>/scripts/doc_render.py`.
+    return kit !== null && argv.slice(0, 2).some((arg) => isAbsolute(arg) && resolvePath(arg).startsWith(kit + sep));
+  }
+
+  /**
+   * Waits for a slot, first come first served, and gives back what frees
+   * it. A cancelled turn stops waiting and takes no slot.
+   */
+  acquire(signal?: AbortSignal): Promise<() => void> {
+    const release = () => {
+      const next = this.#waiting.shift();
+      if (next) next();
+      else this.#running--;
+    };
+    if (signal?.aborted) return Promise.reject(cancelledWhileWaiting());
+    if (this.#running < this.max) {
+      this.#running++;
+      return Promise.resolve(once(release));
+    }
+    return new Promise((resolve, reject) => {
+      // Handed over without decrementing: the slot passes straight to the next in line.
+      const take = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(once(release));
+      };
+      const onAbort = () => {
+        const at = this.#waiting.indexOf(take);
+        if (at !== -1) this.#waiting.splice(at, 1);
+        reject(cancelledWhileWaiting());
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.#waiting.push(take);
+    });
+  }
+
+  /** Renders running now, and waiting for a slot. */
+  get stats(): { running: number; waiting: number } {
+    return { running: this.#running, waiting: this.#waiting.length };
+  }
+}
+
+function once(run: () => void): () => void {
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    run();
+  };
+}
+
+function cancelledWhileWaiting(): ExecInterruptedError {
+  return new ExecInterruptedError(
+    "aborted",
+    { stdout: "", stderr: "", exitCode: -1, truncated: false },
+    "cancelled while waiting for another document render to finish",
+  );
+}
+
+export interface HostExecutorOptions {
+  /** Where document renders wait their turn; none means they never wait. */
+  heavyJobs?: HeavyJobGate;
+}
+
 /**
  * Runs tools on the host, in the project's workspace directory.
  *
@@ -32,7 +125,10 @@ const KILL_GRACE_MS = 2_000;
 export class HostExecutor implements Executor {
   readonly #root: string;
 
-  constructor(root: string) {
+  constructor(
+    root: string,
+    private readonly options: HostExecutorOptions = {},
+  ) {
     // Normalised once so every later comparison is against a canonical
     // absolute path with no trailing separator.
     this.#root = resolvePath(root);
@@ -97,10 +193,23 @@ export class HostExecutor implements Executor {
   }
 
   async exec(argv: string[], options: ExecOptions): Promise<ExecResult> {
-    const [command, ...args] = argv;
+    const [command] = argv;
     if (!command) throw new Error("exec requires a command");
 
     const cwd = options.cwd ? this.resolve(options.cwd) : this.#root;
+    const gate = this.options.heavyJobs;
+    if (!gate?.isHeavy(argv)) return this.#run(command, argv.slice(1), cwd, options);
+    // The timeout is the command's own, so it starts once the render does,
+    // not while it waits behind another.
+    const release = await gate.acquire(options.signal);
+    try {
+      return await this.#run(command, argv.slice(1), cwd, options);
+    } finally {
+      release();
+    }
+  }
+
+  #run(command: string, args: string[], cwd: string, options: ExecOptions): Promise<ExecResult> {
     const cap = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
     return new Promise<ExecResult>((settle, fail) => {
