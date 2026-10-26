@@ -550,6 +550,27 @@
     line-height: 1.65;
     min-height: 40vh;
   }
+  /* Another person's caret in a shared page: a bar with their name above. */
+  .ucch-note-editor .collaboration-carets__caret {
+    position: relative;
+    margin-inline: -1px;
+    border-inline: 1px solid;
+    word-break: normal;
+    pointer-events: none;
+  }
+  .ucch-note-editor .collaboration-carets__label {
+    position: absolute;
+    bottom: 100%;
+    left: -1px;
+    border-radius: 3px 3px 3px 0;
+    padding: 0 0.25rem;
+    color: white;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
+    user-select: none;
+  }
   .ucch-note-editor > * + * {
     margin-top: 0.5rem;
   }

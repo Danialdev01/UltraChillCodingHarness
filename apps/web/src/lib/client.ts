@@ -667,7 +667,7 @@ function isEvent(value: unknown): boolean {
  * rewrites do not proxy WebSocket upgrades, so the server origin is passed in
  * explicitly.
  */
-function websocketOrigin(): string {
+export function websocketOrigin(): string {
   const configured = process.env.NEXT_PUBLIC_WS_ORIGIN;
   if (configured) return configured.replace(/^http/, "ws").replace(/\/$/, "");
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";

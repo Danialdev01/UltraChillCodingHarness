@@ -13,6 +13,7 @@ import {
   MoreHorizontalIcon,
   SmilePlusIcon,
   Trash2Icon,
+  WifiOffIcon,
 } from "lucide-react"
 
 import { EmojiPicker } from "@/components/notes/emoji-picker"
@@ -22,6 +23,7 @@ import { NoteBubbleMenu } from "@/components/notes/extensions/bubble-menu"
 import { buildExtensions } from "@/components/notes/extensions"
 import { SlashMenu, type SlashMenuState } from "@/components/notes/extensions/slash-command"
 import { useNotes } from "@/components/notes/notes-context"
+import { NotePageSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -33,15 +35,12 @@ import {
 import { classifyEmbedUrl, isBareUrl } from "@/lib/embed-url"
 import { markdownFileName, markdownWithTitle, splitMarkdownTitle } from "@/lib/markdown-file"
 import { looksLikeMarkdown } from "@/lib/markdown-paste"
+import { NOTE_FIELD, useNoteCollab, type NoteCollab } from "@/lib/note-collab"
 import { createAutosave, type Autosave, type SaveStatus } from "@/lib/note-autosave"
-import {
-  NoteConflictError,
-  updateNote,
-  uploadNoteImage,
-  type Note,
-  type NoteSummary,
-} from "@/lib/notes-api"
-import { useToast } from "@/lib/realtime"
+import { updateNote, uploadNoteImage, type Note, type NoteSummary } from "@/lib/notes-api"
+import { personColor } from "@/lib/person-color"
+import { useMe } from "@/lib/queries/bootstrap"
+import { useRealtime } from "@/lib/realtime"
 import { cn } from "@/lib/utils"
 
 export interface NoteEditorProps {
@@ -56,25 +55,37 @@ export interface NoteEditorProps {
 }
 
 /**
- * One page, open for writing.
+ * One page, open for writing -- with whoever else has it open.
  *
+ * The body is the page's shared Yjs document (`useNoteCollab`): until the
+ * server's copy has arrived there is nothing true to show, so the page's
+ * skeleton stands in for it.
+ */
+export function NoteEditorImpl(props: NoteEditorProps) {
+  const collab = useNoteCollab(props.note.id)
+  if (!collab?.synced) return <NotePageSkeleton />
+  return <NotePage {...props} collab={collab} />
+}
+
+/**
  * The title is a field above the document rather than a node inside it: the
  * tree needs it without parsing the body, and a page's name should not be
  * something a stray backspace can merge into a paragraph. The icon and the
- * cover are fields too, for the same reason. Everything else is the Tiptap
- * document, saved as it changes.
+ * cover are fields too, for the same reason, and are saved over REST as they
+ * change. The body is the Tiptap document bound to the shared one, which the
+ * collab service saves.
  */
-export function NoteEditorImpl({
+function NotePage({
   hash,
   note,
   onSummaryChange,
   onEditingChange,
   presence,
-}: NoteEditorProps) {
+  collab,
+}: NoteEditorProps & { collab: NoteCollab }) {
   const { createPage } = useNotes()
-  const toast = useToast()
-  const toastRef = React.useRef(toast)
-  toastRef.current = toast
+  const me = useMe()
+  const userId = useRealtime().client?.userId ?? null
   const [status, setStatus] = React.useState<SaveStatus>("saved")
   const [saveError, setSaveError] = React.useState<string | null>(null)
   const [title, setTitle] = React.useState(note.title)
@@ -92,42 +103,9 @@ export function NoteEditorImpl({
   onSummaryChangeRef.current = onSummaryChange
 
   const autosave = React.useRef<Autosave | null>(null)
-  /** The version of the page the editor currently shows. */
-  const shown = React.useRef(note.updatedAt)
 
-  /** The body last put into the editor from outside, so a title-only change does not reset it. */
-  const appliedContent = React.useRef<Note["content"]>(note.content)
-
-  const editing = status === "dirty" || status === "saving"
+  const editing = status === "dirty" || status === "saving" || collab.unsynced > 0
   React.useEffect(() => onEditingChange?.(editing), [editing, onEditingChange])
-
-  /**
-   * Puts a version saved elsewhere on screen: another window's edit as it
-   * lands, or the winner of a conflict this tab lost.
-   *
-   * The caret stays where it was, clamped to the new document: a remote
-   * paragraph appearing above should not throw the reader to the top.
-   */
-  const applyRemote = React.useCallback((next: Note) => {
-    shown.current = next.updatedAt
-    autosave.current?.accept(next.updatedAt)
-    setTitle(next.title)
-    setIcon(next.icon)
-    setCover(next.cover)
-    const editor = editorRef.current
-    if (!editor || next.content === appliedContent.current) return
-    appliedContent.current = next.content
-    const { from, to } = editor.state.selection
-    editor.commands.setContent(next.content as JSONContent, { emitUpdate: false })
-    const size = editor.state.doc.content.size
-    try {
-      editor.commands.setTextSelection({ from: Math.min(from, size), to: Math.min(to, size) })
-    } catch {
-      // A position inside a node that no longer exists: leave the default.
-    }
-  }, [])
-  const applyRemoteRef = React.useRef(applyRemote)
-  applyRemoteRef.current = applyRemote
 
   // Created and disposed together, in one effect: React may run the pair
   // more than once for a single mount (strict mode does), and an autosave
@@ -136,37 +114,19 @@ export function NoteEditorImpl({
   // which unmounts this, or by closing the tab, which does not.
   React.useEffect(() => {
     const instance = createAutosave({
-      // Short, so another window sees the words nearly as they are typed --
-      // and the window in which two people can collide stays small.
+      // Short, so another window sees the title nearly as it is typed.
       delayMs: 250,
       updatedAt: note.updatedAt,
-      save: async (patch) => {
+      // Sent without the version check: the collab service moves
+      // `updatedAt` every time it saves the body, so a check would turn
+      // every rename made while someone types into a conflict. Each of
+      // these fields is one value, and the last one written stands.
+      save: async ({ ifUpdatedAt: _ifUpdatedAt, ...patch }) => {
         const saved = await updateNote(hash, note.id, patch)
-        shown.current = saved.updatedAt
         onSummaryChangeRef.current({ updatedAt: saved.updatedAt })
         return saved
       },
-      isConflict: (error) => error instanceof NoteConflictError,
       onStatus: (next, error) => {
-        if (next === "conflict" && error instanceof NoteConflictError) {
-          // The other window's save stands. Show it, drop what this tab had
-          // not yet saved, and say so -- a silent revert reads as lost work.
-          applyRemoteRef.current(error.note)
-          onSummaryChangeRef.current({
-            title: error.note.title,
-            icon: error.note.icon,
-            cover: error.note.cover,
-            updatedAt: error.note.updatedAt,
-          })
-          toastRef.current({
-            tone: "error",
-            title: "This page was changed in another window",
-            description: "Your latest edits clashed with theirs and were reverted to their version.",
-          })
-          setStatus("saved")
-          setSaveError(null)
-          return
-        }
         setStatus(next)
         setSaveError(next === "error" && error instanceof Error ? error.message : null)
       },
@@ -183,20 +143,18 @@ export function NoteEditorImpl({
       if (autosave.current === instance) autosave.current = null
       void instance.flush().finally(() => instance.dispose())
     }
-    // The version to check against is the one shown, which may by now be a
-    // remote one accepted below rather than the one this page opened with.
-    instance.accept(shown.current)
     // Once per page: the parent keys this component on the note id.
   }, [hash, note.id])
 
-  // The same page, saved elsewhere and refetched by the workspace. Applied
-  // only while nothing here is waiting to go out -- a remote version must
-  // not land under a half-typed sentence, and a pending save will either
-  // win or come back as a conflict, both of which say what happened.
+  // The fields, renamed elsewhere and passed down by the workspace. Applied
+  // only while nothing here is waiting to go out, so a remote title never
+  // lands under a half-typed one. The body needs nothing: it is shared.
   React.useEffect(() => {
-    if (!editorRef.current || note.updatedAt === shown.current || autosave.current?.pending) return
-    applyRemote(note)
-  }, [note, applyRemote])
+    if (autosave.current?.pending) return
+    setTitle(note.title)
+    setIcon(note.icon)
+    setCover(note.cover)
+  }, [note.title, note.icon, note.cover])
 
   const fail = React.useCallback((error: unknown, fallback: string) => {
     setStatus("error")
@@ -247,8 +205,17 @@ export function NoteEditorImpl({
     [createPage, note.id],
   )
 
+  /** Who this tab is to the others: the name and colour of its caret. */
+  const caretUser = React.useMemo(
+    () => ({ name: me?.name ?? me?.login ?? "Someone", color: personColor(userId ?? "") }),
+    [me?.name, me?.login, userId],
+  )
+  const caretUserRef = React.useRef(caretUser)
+  caretUserRef.current = caretUser
+
   // Built once per page: a new extension list on every render would have
   // Tiptap reconfigure the view -- and its plugins -- on every keystroke.
+  const { provider } = collab
   const extensions = React.useMemo(
     () =>
       buildExtensions(
@@ -258,16 +225,18 @@ export function NoteEditorImpl({
           onKeyDown: (event) => slashKeydown.current(event),
         },
         { onHover: setHover },
+        { provider, field: NOTE_FIELD, user: caretUserRef.current },
       ),
-    [slashContext],
+    [slashContext, provider],
   )
 
   const editor = useEditor(
     {
       immediatelyRender: false,
       extensions,
-      // The API's document type is opaque on purpose; here it meets the schema.
-      content: note.content as JSONContent,
+      // No `content`: the body comes from the shared document, which the
+      // service seeded from the saved one.
+      editable: !collab.readOnly,
       editorProps: {
         attributes: { class: "ucch-note-editor", spellcheck: "true" },
         handleKeyDown: (_view, event) => {
@@ -314,12 +283,19 @@ export function NoteEditorImpl({
           return true
         },
       },
-      onUpdate: ({ editor: e }) =>
-        autosave.current?.update({ content: e.getJSON() as Note["content"] }),
     },
-    [slashContext],
+    [extensions],
   )
   editorRef.current = editor
+
+  React.useEffect(() => {
+    editor?.setEditable(!collab.readOnly)
+  }, [editor, collab.readOnly])
+
+  // A name or avatar change made while the page is open.
+  React.useEffect(() => {
+    if (editor && !editor.isDestroyed) editor.commands.updateUser(caretUser)
+  }, [editor, caretUser])
   const band = useBlockBand(editor, pageRef)
 
   const exportMarkdown = () => {
@@ -366,9 +342,13 @@ export function NoteEditorImpl({
         </div>
       )}
       <div className="group/head mx-auto w-full max-w-[var(--ucch-doc-width,48rem)] px-8 pt-6 pb-32 md:px-12">
+        <ReconnectBanner connected={collab.connected} />
         <div className="mb-2 flex h-5 items-center justify-end gap-2">
           {presence}
-          <SaveStatusPill status={status} error={saveError} />
+          <SaveStatusPill
+            status={status === "saved" && collab.unsynced > 0 ? "saving" : status}
+            error={saveError}
+          />
           <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="ghost" size="icon-xs" title="Page options" />}
@@ -504,6 +484,33 @@ function downloadText(name: string, text: string) {
 function imageFiles(data: DataTransfer | null): File[] {
   if (!data) return []
   return Array.from(data.files).filter((file) => file.type.startsWith("image/"))
+}
+
+/**
+ * Says so when the page's connection has been down for more than a moment.
+ * Typing goes on: the edits stay in the shared document and are sent when
+ * the connection is back, so this is a banner, not a lock.
+ */
+function ReconnectBanner({ connected }: { connected: boolean }) {
+  const [down, setDown] = React.useState(false)
+  React.useEffect(() => {
+    if (connected) {
+      setDown(false)
+      return
+    }
+    const timer = window.setTimeout(() => setDown(true), 2000)
+    return () => window.clearTimeout(timer)
+  }, [connected])
+  if (!down) return null
+  return (
+    <div
+      role="status"
+      className="bg-muted text-muted-foreground mb-3 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs"
+    >
+      <WifiOffIcon className="size-3.5 shrink-0" />
+      Offline — reconnecting. Your edits are kept here and will sync when the connection is back.
+    </div>
+  )
 }
 
 function SaveStatusPill({ status, error }: { status: SaveStatus; error: string | null }) {

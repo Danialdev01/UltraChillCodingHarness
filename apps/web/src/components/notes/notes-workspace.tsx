@@ -169,29 +169,14 @@ export function NotesWorkspace({
     if (event.type !== "note.changed" || isOwnChange(event.origin)) return
 
     if (event.change === "updated" && event.fields) {
-      const { content, contentOmitted, ...summary } = event.fields
+      // The body is not taken from here: the open page shares it live
+      // through the collab service, which is also what saved it.
+      const { content: _content, contentOmitted: _contentOmitted, ...summary } = event.fields
       setNotes((current) =>
         current.map((n) => (n.id === event.noteId ? { ...n, ...summary, updatedAt: event.updatedAt } : n)),
       )
-      if (event.noteId !== activeRef.current) return
-      if (contentOmitted) {
-        fetchNote(project.hash, event.noteId).then(
-          (loaded) => {
-            if (activeRef.current === loaded.id) setNote(loaded)
-          },
-          () => {},
-        )
-        return
-      }
       setNote((current) =>
-        current && current.id === event.noteId
-          ? {
-              ...current,
-              ...summary,
-              ...(content !== undefined ? { content: content as Note["content"] } : {}),
-              updatedAt: event.updatedAt,
-            }
-          : current,
+        current && current.id === event.noteId ? { ...current, ...summary, updatedAt: event.updatedAt } : current,
       )
       return
     }
