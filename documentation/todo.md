@@ -748,7 +748,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     - `/(app)/(home)`: 297 → 274 kB gz, 13% below the 315 kB baseline. Every app route dropped 20–25 kB. `bundle-budget.mjs --check`: within budget.
     - `pnpm typecheck && pnpm test`: 1960 passed, 2 skipped.
 
-- [ ] **R5 (rest) — Fill missing events**
+- [x] **R5 (rest) — Fill missing events** — 85320a9
 
   > PARTIAL (from the previous list): done -- git remote PUT/DELETE and fetch, diagram jobs, files panel takes agent/git writes, task routes in SELF_AUDITED. `worktreeId` on `file.changed` is now PF1.24.
   >
@@ -761,6 +761,12 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     3. Add the cache-bridge mappings for every new event.
   - **Acceptance:** publishing a preview, a port opening or closing, and deleting an upload each appear live in a second browser without a refresh.
   - **Verify:** `pnpm test`, plus a manual two-browser check
+  - **Measured:**
+    - Port detection did not exist, so it is new: `port-watcher.ts` probes the preview port of each project with a project-topic subscriber, every 3 s on the server, and publishes `port.opened` / `port.closed` on a change. The preview dialog asks `/preview/status` once, then follows the events.
+    - `UploadStore` reports attach and discard from every caller (chat, attach route, the agent's `attach_upload`) as a new transient `upload.changed`; the chat drops a chip whose upload left staging. The attach route's `file.changed` carries the requester's origin: `ChangeOrigin` is `{ userId, clientId }`, so `origin: "system"` does not fit the schema, and no origin reads as "the agent wrote it".
+    - `preview.published` is still not emitted. It describes a commit snapshot (`commitSha`, `expiresAt`, a `previews` row), and nothing builds one. Saving a preview port is what the app calls publishing, and its existing `resource.changed{project_settings}` already reaches other tabs.
+    - Two headless browser contexts, throwaway database: both dialogs showed "Listening" 2.1 s after a server bound the port and "Nothing on port" 3.0 s after it stopped, with one status request per tab. A port saved elsewhere reached the other tab's header in 333 ms. A deleted upload's chip left the other tab in 17 ms.
+    - `pnpm typecheck && pnpm test`: 1969 passed, 2 skipped.
 
 - [ ] **R8 — Hocuspocus server on `/collab`, as its own service**
 
