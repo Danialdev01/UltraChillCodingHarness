@@ -768,7 +768,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     - Two headless browser contexts, throwaway database: both dialogs showed "Listening" 2.1 s after a server bound the port and "Nothing on port" 3.0 s after it stopped, with one status request per tab. A port saved elsewhere reached the other tab's header in 333 ms. A deleted upload's chip left the other tab in 17 ms.
     - `pnpm typecheck && pnpm test`: 1969 passed, 2 skipped.
 
-- [ ] **R8 — Hocuspocus server on `/collab`, as its own service**
+- [x] **R8 — Hocuspocus server on `/collab`, as its own service** — 88a36e3
 
   - **Depends:** PF3.1
   - **Files:**
@@ -792,6 +792,31 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
        - a server-side write reaches connected clients.
   - **Acceptance:** two headless Yjs clients editing the same note converge, and `notes.content` reflects the merge within 10 s. Under the PF0 load plus 20 co-editors, the API's event-loop p99 is unchanged.
   - **Verify:** `pnpm test -- collab`, plus load
+  - **Measured:**
+    - Shape:
+      - `apps/server/src/collab.ts` is a second entry point of the server package. It ships as `dist/collab.mjs` (43 kB) and runs as the s6 service `collab` with `--max-old-space-size=${COLLAB_HEAP_MB:-512}`.
+      - The API passes `/collab` upgrades through byte for byte (`collab-link.ts`).
+      - The two processes call each other on loopback with a secret derived from `SECRET_KEY`. The collab service calls in for `authorize` (redeem the ticket, check membership, read-only for viewers) and `saved` (`note.changed` without content, plus the activity line). The API calls out to apply content and for stats.
+      - Locally, `pnpm dev` now also runs `dev:collab`.
+    - Deviations from the steps:
+      - `notes.content` is ProseMirror JSON, not Markdown, so seeding and projection convert JSON to and from the Yjs XML tree. `collab/prosemirror-y.ts` writes y-tiptap's encoding without a schema, so the service imports no editor extensions; tests check both directions against `@tiptap/y-tiptap` with StarterKit, which is a devDependency only.
+      - The agent has no note-writing tools, so the REST content PATCH is the only server-side writer to route through `openDirectConnection`. If the service cannot be reached, the PATCH writes the row and drops the note's Yjs state, so it is seeded again.
+      - The 30 s unload holds a direct connection after the last editor leaves.
+    - Tests (`collab.test.ts`), with real providers over WebSockets:
+      - seeding;
+      - two editors converge;
+      - the merge is projected to `content` and announced;
+      - a forged ticket and a bad name are refused;
+      - a viewer cannot write;
+      - an API write reaches open editors and is saved;
+      - unload after idle, saved first;
+      - the internal endpoints require the secret.
+    - Live, through the API's `/collab` with real tickets against Postgres:
+      - Two headless Yjs clients converged 52 ms after typing at either end of the same paragraph, and `notes.content` held the merge 2.1 s later.
+      - A REST content PATCH reached both editors.
+      - `/metrics` showed `collab_open_documents 1` and `collab_connections 3`. After the last disconnect, the open-document count fell to 0 within the hold.
+    - Load, without PF3.1's full PF0 profile (unchecked): 20 co-editors on one note typed about 100 keystrokes/s through the API's proxy for 30 s, about 3,000 keystrokes in all. API event-loop p99 was 10.5 ms idle and 10.9 ms with the co-editors; ELU went from 1% to 6% for piping the sockets. All 20 editors ended identical. The PF0-load half of the acceptance is still to be run once PF3.1 exists.
+    - `pnpm typecheck && pnpm test`: 2006 passed, 2 skipped.
 
 - [ ] **R9 — Notes editor co-editing**
 
