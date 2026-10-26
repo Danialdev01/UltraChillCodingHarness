@@ -285,7 +285,26 @@ The `dev` user may create as many databases as you like on both servers; add the
 
 ### Scaling
 
-**One container, one replica.** Live terminals, project files, the event bus behind every WebSocket, the background workers and the database all live in it. Scale it vertically: give the VPS (or the application, under **Advanced → Resources**) more CPU and RAM. Agent turns are mostly waiting on model APIs, so one container handles many concurrent sessions. Tune the embedded PostgreSQL with `PG_SHARED_BUFFERS`, `PG_EFFECTIVE_CACHE_SIZE` and `PG_WORK_MEM`, or move it out with `DATABASE_URL`.
+**One container, one replica.** Live terminals, project files, the event bus behind every WebSocket, the background workers and the database all live in it. Scale it vertically: give the VPS (or the application, under **Advanced → Resources**) more CPU and RAM. Agent turns are mostly waiting on model APIs, so one container handles many concurrent sessions. Tune the embedded PostgreSQL, or move it out with `DATABASE_URL`.
+
+**Runtime settings.** Each has a default for an 8 GB VPS and is set in the application's environment:
+
+| Variable | Default | What it is |
+|---|---|---|
+| `SERVER_HEAP_MB` / `WEB_HEAP_MB` | `1536` / `1024` | The server's and the web app's heap limits, given to `node` as `--max-old-space-size` (never through `NODE_OPTIONS`, which would reach users' shells). About twice the peak under load; set too low, the process restarts in a loop. |
+| `DB_POOL_MAX` | `20` | Database connections the server opens at most. |
+| `ENGINE_MAX_PARALLEL` | `8` | Commands handled at once, each on a different project. At most `DB_POOL_MAX − 4`, or the server refuses to start. |
+| `LOG_LEVEL` | `info` (`debug` outside production) | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`. |
+| `LOG_SLOW_MS` | `1000` | Requests are not logged one by one: only those slower than this, and every 5xx. `/metrics` counts them all. |
+| `PG_SHARED_BUFFERS` | `1GB` | On a 2–4 GB VPS, `256MB`. |
+| `PG_EFFECTIVE_CACHE_SIZE` | `3GB` | A planner hint; on a 2–4 GB VPS, `768MB`. |
+| `PG_WORK_MEM` | `8MB` | Per sort or hash, per connection. |
+| `PG_MAINTENANCE_WORK_MEM` | `128MB` | Index builds and vacuum. |
+| `PG_MAX_CONNECTIONS` | `200` | Shared with the projects' dev servers. |
+| `PG_RANDOM_PAGE_COST` / `PG_EFFECTIVE_IO_CONCURRENCY` | `1.1` / `200` | For an SSD. |
+| `PG_JIT` | `off` | Short queries pay JIT's start-up for nothing. |
+| `PG_WAL_COMPRESSION` / `PG_MAX_WAL_SIZE` / `PG_CHECKPOINT_COMPLETION_TARGET` | `on` / `2GB` / `0.9` | Fewer, smoother checkpoints. |
+| `PG_IDLE_IN_TRANSACTION_TIMEOUT` | `5min` | A transaction left open this long (a stuck dev server's) is ended. |
 
 **Seeing where the time goes.** `/metrics` reports the server's own numbers in the Prometheus text format: event-loop delay, memory and GC, the engine queue, WebSocket connections, subscriptions and frames, HTTP latency by route, requests to the web app by kind (`document`, `rsc`, `rsc_prefetch`, `static`) with Next's latency, `/api/bootstrap` calls from server renders and from browsers, Postgres connections, and every 15 s the container's memory and CPU by service (`server`, `web`, `postgres`, `mysqld`) and by kind of process the server started (`claude`, `shell`, `git`, `other` for dev servers, …) beside the cgroup's own figures and OOM kills. Browsers add what people actually waited for, by page template (`web_vital_seconds`, `web_vital_cls`): LCP, INP, CLS and TTFB, a link click to the new page painted (`nav-skeleton`) and to its skeletons gone (`nav-content`), a streamed token to its paint (`frame-to-paint`) and a terminal key to its echo (`keystroke-to-echo`). Only those numbers are kept, never who sent them; the image's build argument `NEXT_PUBLIC_VITALS_SAMPLE_RATE` (0–1, default 1) is the share of page loads that report. `LOG_RESOURCE_SAMPLES=true` also logs each of those samples. Without `METRICS_TOKEN` it answers only from inside the container (`docker exec <container> curl -s localhost:3000/metrics`); with it, any caller presenting `Authorization: Bearer <token>`. The embedded PostgreSQL loads `pg_stat_statements` and logs every statement slower than `PG_LOG_MIN_DURATION_MS` (default `500`; `-1` turns the log off) to the container's log. `bash scripts/pg-top.sh` prints the top 20 statements by total time and by calls (`--reset` zeroes the counts first, so reset, do the thing, then read). With `DATABASE_URL` pointing at a server of your own, enable the same once by hand: start that server with `shared_preload_libraries=pg_stat_statements` (plus, optionally, `pg_stat_statements.track=top`, `track_io_timing=on` and `log_min_duration_statement=500`), restart it, then as a superuser, in the harness's database:
 

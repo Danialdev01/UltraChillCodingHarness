@@ -48,6 +48,10 @@ export HOME=/home/node
 echo "[server] first sign-in: ${DEFAULT_USER_EMAIL} (password: DEFAULT_USER_PASSWORD, or" \
   "'docker exec <container> cat $secrets/default_user_password' if you left it blank)" >&2
 
+# The heap limit goes on the command line, never in NODE_OPTIONS: the
+# server passes its environment on to every terminal, dev server and CLI.
+# About twice the peak measured under load; set too low, s6 restarts the
+# server in a loop.
 exec setpriv --reuid=node --regid=node --init-groups \
   --inh-caps=-all --bounding-set=-all --no-new-privs \
-  node --enable-source-maps /app/server/dist/server.mjs
+  node --max-old-space-size="${SERVER_HEAP_MB:-1536}" --enable-source-maps /app/server/dist/server.mjs

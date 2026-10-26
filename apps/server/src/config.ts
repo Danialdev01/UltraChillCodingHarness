@@ -241,11 +241,28 @@ const Env = z.object({
     .transform((v) => v === "true" || v === "1"),
 
   /**
+   * Connections the server's database pool may open. Postgres allows 200 by
+   * default here (deploy/s6/s6-rc.d/postgres/run), shared with the projects'
+   * dev servers.
+   */
+  DB_POOL_MAX: z.coerce.number().int().min(5).default(20),
+
+  /**
    * Commands the engine handles at once, each on a different project (one
-   * project's run in order). Every one can hold a database connection, so
-   * the server keeps it at least 4 below the pool whatever is set here.
+   * project's run in order). Every one can hold a database connection, so it
+   * must stay at least 4 below `DB_POOL_MAX`, leaving room for the routes and
+   * reactors; a larger value is refused at boot.
    */
   ENGINE_MAX_PARALLEL: z.coerce.number().int().positive().default(8),
+
+  /** The server log's level. Unset: `info` in production, `debug` otherwise. */
+  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).optional(),
+
+  /**
+   * Requests are not logged one by one; only those slower than this (ms),
+   * and every 5xx. `/metrics` counts the rest.
+   */
+  LOG_SLOW_MS: z.coerce.number().int().min(0).default(1000),
 
   /**
    * How long a turn's streamed tokens are held to go out together, in ms:
@@ -281,6 +298,11 @@ function csvLower(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** The server log's level: `LOG_LEVEL`, or `info` in production and `debug` otherwise. */
+export function logLevel(config: Config): NonNullable<Config["LOG_LEVEL"]> {
+  return config.LOG_LEVEL ?? (config.NODE_ENV === "production" ? "info" : "debug");
+}
+
 /** The origin the browser reaches the web app on. */
 export function webOrigin(config: Config): string {
   return config.PUBLIC_WEB_ORIGIN ?? `${config.PUBLIC_SCHEME}://${config.ROOT_DOMAIN}`;
@@ -304,6 +326,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   // The bypass has to be asked for in an environment that says what it is.
   if (config.DEV_AUTH_BYPASS && source.NODE_ENV !== "development" && source.NODE_ENV !== "test") {
     throw new Error("DEV_AUTH_BYPASS is only allowed when NODE_ENV is explicitly development or test");
+  }
+  // Every command in flight can hold a connection for its transaction; the
+  // routes and reactors need the rest of the pool.
+  if (config.ENGINE_MAX_PARALLEL > config.DB_POOL_MAX - 4) {
+    throw new Error(
+      `ENGINE_MAX_PARALLEL (${config.ENGINE_MAX_PARALLEL}) must be at most DB_POOL_MAX - 4 (${config.DB_POOL_MAX - 4})`,
+    );
   }
   // The server needs at least one way to authenticate somebody. Password
   // login, GitHub, or the development bypass all qualify; none of them does

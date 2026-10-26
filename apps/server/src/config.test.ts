@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cliProvidersEnabled, loadConfig, shellPluginEnabled, webOrigin } from "./config.js";
+import { cliProvidersEnabled, loadConfig, logLevel, shellPluginEnabled, webOrigin } from "./config.js";
 
 const base = {
   DATABASE_URL: "postgres://u:p@localhost:5432/ucch",
@@ -125,5 +125,29 @@ describe("DEV_AUTH_BYPASS", () => {
     expect(() => loadConfig(withoutEnv)).toThrow(/DEV_AUTH_BYPASS/);
     expect(() => load({ NODE_ENV: "production" })).toThrow(/DEV_AUTH_BYPASS/);
     expect(load({ NODE_ENV: "development" }).DEV_AUTH_BYPASS).toBe(true);
+  });
+});
+
+describe("runtime settings", () => {
+  it("opens 20 database connections unless told otherwise", () => {
+    expect(load().DB_POOL_MAX).toBe(20);
+    expect(load({ DB_POOL_MAX: "40" }).DB_POOL_MAX).toBe(40);
+    expect(() => load({ DB_POOL_MAX: "4" })).toThrow(/DB_POOL_MAX/);
+  });
+
+  // Every command in flight can hold a connection; the routes need the rest.
+  it("refuses more engine commands at once than the pool leaves room for", () => {
+    expect(load({ DB_POOL_MAX: "12", ENGINE_MAX_PARALLEL: "8" }).ENGINE_MAX_PARALLEL).toBe(8);
+    expect(() => load({ DB_POOL_MAX: "11", ENGINE_MAX_PARALLEL: "8" })).toThrow(/ENGINE_MAX_PARALLEL \(8\) must be at most DB_POOL_MAX - 4 \(7\)/);
+    expect(() => load({ ENGINE_MAX_PARALLEL: "17" })).toThrow(/ENGINE_MAX_PARALLEL/);
+  });
+
+  it("logs at info in production and debug otherwise, unless told", () => {
+    const production = { NODE_ENV: "production", DEV_AUTH_BYPASS: "false", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "s" };
+    expect(logLevel(load(production))).toBe("info");
+    expect(logLevel(load())).toBe("debug");
+    expect(logLevel(load({ LOG_LEVEL: "warn" }))).toBe("warn");
+    expect(() => load({ LOG_LEVEL: "loud" })).toThrow(/LOG_LEVEL/);
+    expect(load().LOG_SLOW_MS).toBe(1000);
   });
 });

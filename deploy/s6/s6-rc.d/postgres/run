@@ -53,6 +53,12 @@ SQL
   echo "[postgres] initialised" >&2
 fi
 
+# Tuned for an 8 GB box, each setting overridable from the environment:
+# an SSD (random_page_cost, effective_io_concurrency), short OLTP queries
+# that JIT only slows down, and room for the projects' dev servers, which
+# share this server (max_connections). A dev server's transaction left open
+# is ended after idle_in_transaction_session_timeout.
+#
 # System V shared memory for parallel queries rather than /dev/shm, which a
 # platform-run container gets only 64 MB of and cannot be told otherwise.
 # Ready once it answers on the address the server connects to.
@@ -75,9 +81,18 @@ SQL
 exec 3>&- s6-setuidgid postgres "$bin/postgres" -D "$data" \
   -c listen_addresses=127.0.0.1 \
   -c unix_socket_directories=/run/postgresql \
-  -c shared_buffers="${PG_SHARED_BUFFERS:-256MB}" \
-  -c effective_cache_size="${PG_EFFECTIVE_CACHE_SIZE:-768MB}" \
+  -c shared_buffers="${PG_SHARED_BUFFERS:-1GB}" \
+  -c effective_cache_size="${PG_EFFECTIVE_CACHE_SIZE:-3GB}" \
   -c work_mem="${PG_WORK_MEM:-8MB}" \
+  -c maintenance_work_mem="${PG_MAINTENANCE_WORK_MEM:-128MB}" \
+  -c max_connections="${PG_MAX_CONNECTIONS:-200}" \
+  -c random_page_cost="${PG_RANDOM_PAGE_COST:-1.1}" \
+  -c effective_io_concurrency="${PG_EFFECTIVE_IO_CONCURRENCY:-200}" \
+  -c jit="${PG_JIT:-off}" \
+  -c wal_compression="${PG_WAL_COMPRESSION:-on}" \
+  -c max_wal_size="${PG_MAX_WAL_SIZE:-2GB}" \
+  -c checkpoint_completion_target="${PG_CHECKPOINT_COMPLETION_TARGET:-0.9}" \
+  -c idle_in_transaction_session_timeout="${PG_IDLE_IN_TRANSACTION_TIMEOUT:-5min}" \
   -c dynamic_shared_memory_type=sysv \
   -c log_min_messages=warning \
   -c shared_preload_libraries=pg_stat_statements \

@@ -9,7 +9,7 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, inArray, lt, notLike, sql } from "drizzle-orm";
-import { createDatabase, DB_POOL_MAX, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
+import { createDatabase, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
 import { HeavyJobGate } from "@ucch/agent";
 import {
   AgentPermissionMode,
@@ -58,7 +58,7 @@ import {
 import { TerminalReactor } from "./terminals.js";
 import { AuthService, DEV_USER_ID } from "./auth.js";
 import { EventBus } from "./bus.js";
-import { cliProvidersEnabled, loadConfig, shellPluginEnabled, webOrigin } from "./config.js";
+import { cliProvidersEnabled, loadConfig, logLevel, shellPluginEnabled, webOrigin } from "./config.js";
 import { BASELINE_HEADERS, originAllowed } from "./http-guards.js";
 import { admitGithubUser } from "./github-admission.js";
 import { ProviderService, workspaceSubject } from "./providers.js";
@@ -128,7 +128,7 @@ setOpenRouterBase(config.OPENROUTER_BASE_URL);
 // boot and a fresh deployment needs no separate migration step.
 await runMigrations(config.DATABASE_URL);
 
-const db = createDatabase(config.DATABASE_URL);
+const db = createDatabase(config.DATABASE_URL, { max: config.DB_POOL_MAX });
 
 // A turn lives in this process, so nothing that was running before the
 // restart is running now. Left alone, those threads would sit in `running`
@@ -402,9 +402,9 @@ const engine = new OrchestrationEngine(
     app.log.error({ err: error, command: command.type }, "command failed");
   },
   {
-    // Under the pool, with room left for the routes and reactors: every
-    // command in flight can hold a connection for its transaction.
-    maxParallel: Math.min(config.ENGINE_MAX_PARALLEL, DB_POOL_MAX - 4),
+    // Under the pool, with room left for the routes and reactors (loadConfig
+    // holds it there): every command in flight can hold a connection.
+    maxParallel: config.ENGINE_MAX_PARALLEL,
     projectOfThread: (threadId) => access.projectOfThread(threadId),
   },
 );
@@ -622,7 +622,10 @@ const web = config.WEB_UPSTREAM
   : null;
 
 const app = Fastify({
-  logger: { level: config.NODE_ENV === "production" ? "info" : "debug" },
+  logger: { level: logLevel(config) },
+  // One line per request drowned the log; the slow ones and the failures
+  // are logged below, and /metrics counts every one.
+  disableRequestLogging: true,
   trustProxy: true,
   serverFactory: (handler) =>
     createServer((req, res) => {
@@ -695,6 +698,17 @@ app.addHook("onResponse", async (request, reply) => {
     { route: request.routeOptions.url ?? "unmatched", method: request.method, status: String(reply.statusCode) },
     reply.elapsedTime / 1000,
   );
+  if (reply.statusCode >= 500 || reply.elapsedTime >= config.LOG_SLOW_MS) {
+    // The route's pattern, not the URL: a URL can carry a share slug or a token.
+    const fields = {
+      method: request.method,
+      route: request.routeOptions.url ?? "unmatched",
+      status: reply.statusCode,
+      ms: Math.round(reply.elapsedTime),
+    };
+    if (reply.statusCode >= 500) request.log.warn(fields, "request answered with a server error");
+    else request.log.info(fields, "slow request");
+  }
 });
 
 // Fastify's default answer to a thrown error includes its message, which for

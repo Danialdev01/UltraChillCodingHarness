@@ -3,7 +3,8 @@
 # through the server, which owns the public port (apps/server/src/web-proxy.ts).
 #
 # Server-side rendering asks the API who is signed in; the API is the server
-# on this same container's loopback.
+# on this same container's loopback. The heap limit is a flag rather than
+# NODE_OPTIONS, which would reach every process the server starts too.
 set -euo pipefail
 cd /app/apps/web
 exec s6-setuidgid node env \
@@ -11,4 +12,4 @@ exec s6-setuidgid node env \
   HOSTNAME=127.0.0.1 \
   PORT="${WEB_PORT:-3100}" \
   SERVER_ORIGIN="http://127.0.0.1:${PORT:-3000}" \
-  node server.js
+  node --max-old-space-size="${WEB_HEAP_MB:-1024}" server.js

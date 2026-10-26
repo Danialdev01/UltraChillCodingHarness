@@ -21,16 +21,21 @@ export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
  * server does not hold Postgres slots it is not using and a connection never
  * outlives a failover or a proxy's own idle cut-off by much.
  */
-const POOL = { max: 10, idle_timeout: 60, max_lifetime: 30 * 60, onnotice: () => {} } as const;
+const POOL = { idle_timeout: 60, max_lifetime: 30 * 60, onnotice: () => {} } as const;
 
-/** Connections each client may open: what anything running queries side by side must stay under. */
-export const DB_POOL_MAX = POOL.max;
+/** Connections a client opens unless told otherwise (the server's `DB_POOL_MAX`). */
+export const DEFAULT_POOL_MAX = 20;
 
-export function createDatabase(url: string) {
-  const sql = postgres(url, POOL);
+export interface PoolOptions {
+  /** Connections this client may open: what anything running queries side by side must stay under. */
+  max?: number;
+}
+
+export function createDatabase(url: string, { max = DEFAULT_POOL_MAX }: PoolOptions = {}) {
+  const sql = postgres(url, { ...POOL, max });
   return drizzle(sql, { schema });
 }
 
-export function createClient(url: string) {
-  return postgres(url, POOL);
+export function createClient(url: string, { max = DEFAULT_POOL_MAX }: PoolOptions = {}) {
+  return postgres(url, { ...POOL, max });
 }
