@@ -38,6 +38,7 @@ const ROOTS = ["(app)", "shared"]
 /** Pages outside those trees, each with why it needs no boundary. */
 const OUTSIDE: Record<string, string> = {
   "login/page.tsx": "static, so prefetched whole",
+  "offline/page.tsx": "static, and served by the service worker rather than navigated to",
   "dev/themes/page.tsx": "a developer's swatch page, not part of the app",
 }
 
