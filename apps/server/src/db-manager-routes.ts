@@ -24,7 +24,7 @@ import {
 } from "@ucch/protocol";
 import { decryptSecret } from "./crypto.js";
 import type { DatabaseConnectionService } from "./database-connections.js";
-import { DbConnectError, DbQueryError, DbRefusal, type DbAdapter, type DbTarget } from "./db-manager/index.js";
+import { DbConnectError, DbQueryError, DbRefusal, RowConflictError, type DbAdapter, type DbTarget } from "./db-manager/index.js";
 import { parseCsv } from "./db-manager/csv.js";
 import { csvDump, sqlDump } from "./db-manager/dump.js";
 import { splitStatements } from "./db-manager/sql-split.js";
@@ -217,7 +217,12 @@ export function registerDbManagerRoutes(app: FastifyInstance, deps: DbManagerRou
   app.patch<{ Params: TableParams }>(`${base}/tables/:table/rows`, (request, reply) =>
     withAdapter(request, reply, async (adapter) => {
       const body = RowUpdateBody.parse(request.body);
-      await adapter.updateRow(ExistingName.parse(request.params.table), body.key, body.values);
+      try {
+        await adapter.updateRow(ExistingName.parse(request.params.table), body.key, body.values, body.original);
+      } catch (error) {
+        if (error instanceof RowConflictError) return reply.code(409).send({ error: error.message, row: error.row });
+        throw error;
+      }
       return { ok: true };
     }),
   );

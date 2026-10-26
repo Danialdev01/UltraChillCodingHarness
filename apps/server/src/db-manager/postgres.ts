@@ -20,9 +20,11 @@ import { PG_PRIVILEGES } from "@ucch/protocol";
 import {
   DbQueryError,
   DbRefusal,
+  guardedColumns,
   preview,
   requireColumns,
   requireKey,
+  RowConflictError,
   toDbError,
   withDeadline,
   type ConnOpts,
@@ -351,20 +353,38 @@ export class PostgresAdapter implements DbAdapter {
     });
   }
 
-  async updateRow(table: string, key: Record<string, Cell>, values: Record<string, Cell>): Promise<void> {
+  async updateRow(
+    table: string,
+    key: Record<string, Cell>,
+    values: Record<string, Cell>,
+    original: Record<string, Cell> = {},
+  ): Promise<void> {
     await this.#run(async (sql) => {
       const detail = await this.#describe(sql, table);
       const pk = requireKey(detail, key);
       const names = Object.keys(values);
       requireColumns(detail, names, "values");
       if (names.length === 0) return;
-      const sets = names.map((n, i) => `${quoteIdent("postgresql", n)} = $${i + 1}`);
-      const where = pk.map((n, i) => `${quoteIdent("postgresql", n)} is not distinct from $${names.length + i + 1}`);
-      const result = await sql.unsafe(`update ${this.#q(table)} set ${sets.join(", ")} where ${where.join(" and ")}`, [
-        ...names.map((n) => bindValue(values[n]!)),
-        ...pk.map((n) => bindValue(key[n]!)),
-      ] as never[]);
-      if (result.count !== 1) throw new DbQueryError(result.count === 0 ? "row not found" : "key matched more than one row");
+      const guarded = guardedColumns(detail, original);
+      const params: unknown[] = [];
+      const bind = (cell: Cell) => `$${params.push(bindValue(cell))}`;
+      const sets = names.map((n) => `${quoteIdent("postgresql", n)} = ${bind(values[n]!)}`);
+      const keyed = pk.map((n) => `${quoteIdent("postgresql", n)} is not distinct from ${bind(key[n]!)}`);
+      const unchanged = guarded.map((n) => `${quoteIdent("postgresql", n)} is not distinct from ${bind(original[n]!)}`);
+      const result = await sql.unsafe(
+        `update ${this.#q(table)} set ${sets.join(", ")} where ${[...keyed, ...unchanged].join(" and ")}`,
+        params as never[],
+      );
+      if (result.count === 1) return;
+      if (result.count > 1) throw new DbQueryError("key matched more than one row");
+      // Nothing matched: the row is gone, or one of its cells moved on.
+      const current = guarded.length
+        ? await sql
+            .unsafe(`select * from ${this.#q(table)} where ${pk.map((n, i) => `${quoteIdent("postgresql", n)} is not distinct from $${i + 1}`).join(" and ")}`, pk.map((n) => bindValue(key[n]!)) as never[])
+            .values()
+        : [];
+      if (current[0]) throw new RowConflictError((current[0] as unknown[]).map(serializeCell));
+      throw new DbQueryError("row not found");
     });
   }
 

@@ -7,4 +7,4 @@ export function adapterFor(target: DbTarget, db: string | null): DbAdapter {
 }
 
 export type { DbAdapter, DbTarget } from "./adapter.js";
-export { DbConnectError, DbQueryError, DbRefusal } from "./adapter.js";
+export { DbConnectError, DbQueryError, DbRefusal, RowConflictError } from "./adapter.js";

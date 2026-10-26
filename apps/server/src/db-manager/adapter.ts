@@ -53,6 +53,18 @@ export class DbQueryError extends Error {
   }
 }
 
+/**
+ * A row update whose `original` values no longer match: somebody changed
+ * one of those cells since the grid read them. `row` is the row as it is
+ * now, in `columns` order, so the grid can show it: 409.
+ */
+export class RowConflictError extends Error {
+  constructor(public readonly row: Cell[]) {
+    super("this row was changed by someone else");
+    this.name = "RowConflictError";
+  }
+}
+
 /** We would not run it: no primary key, wrong shape, and so on: 422. */
 export class DbRefusal extends Error {
   constructor(message: string) {
@@ -72,7 +84,12 @@ const CONNECT_CODES = new Set([
  * the whole dialog.
  */
 export function toDbError(error: unknown, phase: "connect" | "query"): DbConnectError | DbQueryError {
-  if (error instanceof DbConnectError || error instanceof DbQueryError || error instanceof DbRefusal) {
+  if (
+    error instanceof DbConnectError ||
+    error instanceof DbQueryError ||
+    error instanceof DbRefusal ||
+    error instanceof RowConflictError
+  ) {
     return error as DbConnectError;
   }
   const code = typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : undefined;
@@ -135,7 +152,18 @@ export interface DbAdapter {
   browse(table: string, query: RowsQuery): Promise<RowPage>;
 
   insertRow(table: string, values: Record<string, Cell>): Promise<{ row?: Cell[]; insertId?: string }>;
-  updateRow(table: string, key: Record<string, Cell>, values: Record<string, Cell>): Promise<void>;
+  /**
+   * Writes `values` to the row `key` names. With `original` -- what the
+   * changed cells held when they were read -- the update also requires
+   * them to still hold it, and a `RowConflictError` with the current row
+   * says somebody else got there first.
+   */
+  updateRow(
+    table: string,
+    key: Record<string, Cell>,
+    values: Record<string, Cell>,
+    original?: Record<string, Cell>,
+  ): Promise<void>;
   deleteRows(table: string, keys: Record<string, Cell>[]): Promise<{ affected: number }>;
   runSql(text: string, opts: SqlRunOpts): Promise<StatementResult[]>;
 
@@ -169,6 +197,17 @@ export function requireColumns(detail: TableDetail, names: Iterable<string>, wha
   for (const name of names) {
     if (!known.has(name)) throw new DbQueryError(`${what}: unknown column "${name}"`);
   }
+}
+
+/**
+ * The columns of `original` an update may require to be unchanged. Not
+ * bytes: the grid holds only a preview of those, which would never match.
+ */
+export function guardedColumns(detail: TableDetail, original: Record<string, Cell>): string[] {
+  const names = Object.keys(original);
+  requireColumns(detail, names, "original");
+  const bytes = new Set(detail.columns.filter((c) => c.kind === "bytes").map((c) => c.name));
+  return names.filter((n) => !bytes.has(n));
 }
 
 export function requireKey(detail: TableDetail, key: Record<string, Cell>): string[] {

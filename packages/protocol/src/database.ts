@@ -180,7 +180,12 @@ const CellRecord = z.record(z.string().max(64), CellSchema);
 
 export const RowInsertBody = z.object({ values: CellRecord });
 export type RowInsertBody = z.infer<typeof RowInsertBody>;
-export const RowUpdateBody = z.object({ key: CellRecord, values: CellRecord });
+/**
+ * `original` is what the changed cells held when the grid read them: the
+ * update goes through only while they still do, so two people editing one
+ * cell see a conflict instead of the second silently winning.
+ */
+export const RowUpdateBody = z.object({ key: CellRecord, values: CellRecord, original: CellRecord.optional() });
 export type RowUpdateBody = z.infer<typeof RowUpdateBody>;
 export const RowDeleteBody = z.object({ keys: z.array(CellRecord).min(1).max(500) });
 export type RowDeleteBody = z.infer<typeof RowDeleteBody>;

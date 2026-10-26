@@ -25,7 +25,7 @@ import { RowFormDialog } from "@/components/database/row-form-dialog"
 import { TableRowsSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { deleteRows, fetchRows, insertRow, updateRow } from "@/lib/database-api"
+import { RowConflict, deleteRows, fetchRows, insertRow, updateRow } from "@/lib/database-api"
 import { editText, isEditable, keyOf, parseCellInput, rowId } from "@/lib/db-cells"
 import { cn } from "@/lib/utils"
 
@@ -36,6 +36,18 @@ interface Query {
   dir: "asc" | "desc"
   q: string
   where: string
+}
+
+/**
+ * An edit refused because somebody else changed the cell first: what this
+ * tab meant to write, and the row as they left it.
+ */
+interface Conflict {
+  key: Record<string, Cell>
+  column: string
+  index: number
+  mine: Cell
+  theirs: Cell[]
 }
 
 /** A cell being typed into: which row, which column, and the text so far. */
@@ -68,6 +80,7 @@ export function BrowseTab({ table, detail }: { table: string; detail: TableDetai
   const [editing, setEditing] = React.useState<Editing | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [conflict, setConflict] = React.useState<Conflict | null>(null)
   const [inserting, setInserting] = React.useState(false)
   const [editingRow, setEditingRow] = React.useState<Cell[] | null>(null)
   const [deleting, setDeleting] = React.useState<Record<string, Cell>[] | null>(null)
@@ -80,6 +93,7 @@ export function BrowseTab({ table, detail }: { table: string; detail: TableDetai
     setSelected(new Set())
     setEditing(null)
     setError(null)
+    setConflict(null)
   }, [table])
 
   React.useEffect(() => {
@@ -108,7 +122,8 @@ export function BrowseTab({ table, detail }: { table: string; detail: TableDetai
 
   // Rows changed in another tab. Held while something here is mid-edit or
   // selected -- a refetch would drop it -- and taken as soon as it is not.
-  const busyHere = editing !== null || editingRow !== null || deleting !== null || selected.size > 0
+  const busyHere =
+    editing !== null || editingRow !== null || deleting !== null || conflict !== null || selected.size > 0
   const [behind, setBehind] = React.useState(false)
   React.useEffect(() => {
     if (change && (change.table === table || change.table === "")) setBehind(true)
@@ -149,11 +164,52 @@ export function BrowseTab({ table, detail }: { table: string; detail: TableDetai
     if (before === next || (before !== null && next !== null && String(before) === String(next))) return setEditing(null)
     setSaving(true)
     setError(null)
+    const key = keyOf(row, columns, primaryKey)
     try {
-      await updateRow(ref, table, keyOf(row, columns, primaryKey), { [column.name]: next })
+      // With what the cell showed: if somebody changed it since, the
+      // engine matches no row and this is a conflict, not an overwrite.
+      await updateRow(ref, table, key, { [column.name]: next }, { [column.name]: before })
       setEditing(null)
       reload()
     } catch (caught) {
+      if (caught instanceof RowConflict) {
+        setEditing(null)
+        setConflict({ key, column: column.name, index: editing.column, mine: next, theirs: caught.row })
+      } else setError(errorText(caught))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** Keep the other person's value: their row goes on screen, this edit is dropped. */
+  function useTheirs() {
+    if (!conflict) return
+    setData((current) =>
+      current.state !== "loaded"
+        ? current
+        : {
+            state: "loaded",
+            data: {
+              ...current.data,
+              rows: current.data.rows.map((row) =>
+                JSON.stringify(keyOf(row, columns, primaryKey)) === JSON.stringify(conflict.key) ? conflict.theirs : row,
+              ),
+            },
+          },
+    )
+    setConflict(null)
+  }
+
+  /** Write this tab's value over theirs, knowingly. */
+  async function overwrite() {
+    if (!conflict) return
+    setSaving(true)
+    try {
+      await updateRow(ref, table, conflict.key, { [conflict.column]: conflict.mine })
+      setConflict(null)
+      reload()
+    } catch (caught) {
+      setConflict(null)
       setError(errorText(caught))
     } finally {
       setSaving(false)
@@ -237,6 +293,22 @@ export function BrowseTab({ table, detail }: { table: string; detail: TableDetai
           )}
         </div>
       </form>
+
+      {conflict && (
+        <div role="alert" className="bg-warning/10 flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 text-xs">
+          <p className="min-w-0 flex-1">
+            Someone else changed <span className="font-medium">{conflict.column}</span> in this row to{" "}
+            <CellValue cell={conflict.theirs[conflict.index] ?? null} className="font-mono" />{" "}
+            while you were editing it.
+          </p>
+          <Button variant="outline" size="sm" className="h-6 text-xs" onClick={useTheirs} disabled={saving}>
+            Use theirs
+          </Button>
+          <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => void overwrite()} disabled={saving}>
+            Overwrite
+          </Button>
+        </div>
+      )}
 
       {(error || readOnly) && (
         <div className="shrink-0 border-b px-3 py-1.5 text-xs">

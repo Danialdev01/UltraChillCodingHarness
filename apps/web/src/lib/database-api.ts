@@ -140,8 +140,40 @@ export function insertRow(ref: DbRef, table: string, values: Record<string, Cell
   return call(`${t(ref, table)}/rows`, { method: "POST", body: json({ values }) }, "Could not insert the row.");
 }
 
-export async function updateRow(ref: DbRef, table: string, key: Record<string, Cell>, values: Record<string, Cell>): Promise<void> {
-  await call(`${t(ref, table)}/rows`, { method: "PATCH", body: json({ key, values }) }, "Could not update the row.");
+/** A cell somebody else changed since it was read: `row` is the row as it is now. */
+export class RowConflict extends Error {
+  constructor(
+    message: string,
+    readonly row: Cell[],
+  ) {
+    super(message);
+    this.name = "RowConflict";
+  }
+}
+
+/**
+ * Writes `values` to the row `key` names. With `original` -- what those
+ * cells showed when the edit began -- a cell somebody else has changed
+ * meanwhile is refused as a `RowConflict` rather than silently overwritten.
+ */
+export async function updateRow(
+  ref: DbRef,
+  table: string,
+  key: Record<string, Cell>,
+  values: Record<string, Cell>,
+  original?: Record<string, Cell>,
+): Promise<void> {
+  const response = await fetch(`${t(ref, table)}/rows`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: json(original ? { key, values, original } : { key, values }),
+  });
+  if (response.status === 409) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string; row?: Cell[] };
+    if (body.row) throw new RowConflict(body.error ?? "this row was changed by someone else", body.row);
+  }
+  if (!response.ok) await fail(response, "Could not update the row.");
 }
 
 export function deleteRows(ref: DbRef, table: string, keys: Record<string, Cell>[]): Promise<{ affected: number }> {
