@@ -362,7 +362,7 @@ export class WorkspaceService {
 
   /**
    * Projects in a workspace, for the sidebar and the project tables.
-   * Ownership is checked first.
+   * Membership is checked first, unless the caller has (`isMember`).
    *
    * The counts and sums are `project_stats`, kept by the projection as
    * threads and turns come and go, so this reads one row per project rather
@@ -372,8 +372,14 @@ export class WorkspaceService {
    * Ordered by name, which is what the sidebar reads; the tables re-sort in
    * the browser, where the reader can change their mind.
    */
-  async listProjects(workspaceId: string, userId: string): Promise<ProjectRow[] | null> {
-    if (!(await this.canView(workspaceId, userId))) return null;
+  async listProjects(
+    workspaceId: string,
+    userId: string,
+    // The caller has already seen the membership -- the workspace came from
+    // `list(userId)` -- so the check would only read it again.
+    isMember = false,
+  ): Promise<ProjectRow[] | null> {
+    if (!isMember && !(await this.canView(workspaceId, userId))) return null;
 
     return this.db
       .select({
@@ -771,11 +777,16 @@ export class WorkspaceService {
    * The first workspace for a new account. Named after the person rather than
    * left blank, so the switcher has something meaningful in it on first load.
    */
-  async ensureDefault(userId: string, name = "Personal"): Promise<WorkspaceSummary> {
+  async ensureDefault(
+    userId: string,
+    name = "Personal",
+    listed?: WorkspaceSummary[],
+  ): Promise<WorkspaceSummary> {
     // An archived workspace does not count: someone who archived every one
     // they had still needs somewhere to land. Nor does one shared with them,
-    // which they can be removed from.
-    const existing = (await this.list(userId)).filter((w) => !w.archived && !w.shared);
+    // which they can be removed from. `listed` is the caller's own read of
+    // `list(userId)`, when it has one: asking again would only repeat it.
+    const existing = (listed ?? (await this.list(userId))).filter((w) => !w.archived && !w.shared);
     if (existing.length > 0) return existing[0]!;
 
     const created = await this.create(userId, name);

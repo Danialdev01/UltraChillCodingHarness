@@ -902,12 +902,13 @@ app.get<{ Querystring: { ws?: string; hint?: string } }>("/api/bootstrap", async
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
 
-  await workspaceService.ensureDefault(principal.userId);
-  const [profile, hasPassword, workspaces] = await Promise.all([
+  const [profile, listed] = await Promise.all([
     auth.getProfile(principal.userId),
-    auth.hasPassword(principal.userId),
     workspaceService.list(principal.userId),
   ]);
+  // Read again only when there was nothing to land in and one was made.
+  const landing = await workspaceService.ensureDefault(principal.userId, undefined, listed);
+  const workspaces = listed.some((w) => w.id === landing.id) ? listed : await workspaceService.list(principal.userId);
   const live = workspaces.filter((w) => !w.archived);
   const active =
     (request.query.ws ? workspaces.find((w) => w.hash === request.query.ws) : undefined) ??
@@ -916,7 +917,8 @@ app.get<{ Querystring: { ws?: string; hint?: string } }>("/api/bootstrap", async
     workspaces[0];
   const [projects, connections] = active
     ? await Promise.all([
-        workspaceService.listProjects(active.id, principal.userId),
+        // Listed for this user, so a member: no need to ask again.
+        workspaceService.listProjects(active.id, principal.userId, true),
         active.permissions.includes("workspace.view") ? databaseConnections.list(active.id) : [],
       ])
     : [[], []];
@@ -930,7 +932,7 @@ app.get<{ Querystring: { ws?: string; hint?: string } }>("/api/bootstrap", async
       name: profile?.name ?? null,
       email: profile?.email ?? null,
       avatarUrl: profile?.avatarUrl ?? null,
-      hasPassword,
+      hasPassword: profile?.hasPassword ?? false,
     },
     workspaces,
     activeWorkspaceId: active?.id ?? null,
@@ -959,7 +961,7 @@ app.get("/api/me", async (request, reply) => {
     // Whether the account signs in with a password, which decides both
     // whether the settings form asks for the current one and whether it
     // offers "change" or "set".
-    hasPassword: await auth.hasPassword(principal.userId),
+    hasPassword: profile?.hasPassword ?? false,
   };
 });
 

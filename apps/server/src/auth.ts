@@ -133,13 +133,15 @@ export class AuthService {
   /**
    * Display fields for the signed-in user. Deliberately narrow: the password
    * hash and the encrypted GitHub token are never selected, so they cannot
-   * reach a response by accident.
+   * reach a response by accident. Whether there is a password is asked of
+   * the database, in the same read.
    */
   async getProfile(userId: string): Promise<{
     login: string;
     name: string | null;
     email: string | null;
     avatarUrl: string | null;
+    hasPassword: boolean;
   } | null> {
     const [row] = await this.db
       .select({
@@ -147,6 +149,7 @@ export class AuthService {
         name: users.name,
         email: users.email,
         avatarUrl: users.avatarUrl,
+        hasPassword: sql<boolean>`coalesce(${users.passwordHash}, '') <> ''`,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -159,7 +162,7 @@ export class AuthService {
     // then vanished: the row changed and the response did not.
     if (row) return row;
     if (this.config.DEV_AUTH_BYPASS && userId === DEV_USER_ID) {
-      return { login: "dev", name: "Local Developer", email: null, avatarUrl: null };
+      return { login: "dev", name: "Local Developer", email: null, avatarUrl: null, hasPassword: false };
     }
     return null;
   }
@@ -280,16 +283,6 @@ export class AuthService {
     if (dataUrl !== null && !isAvatarDataUrl(dataUrl)) return false;
     await this.db.update(users).set({ avatarUrl: dataUrl }).where(eq(users.id, userId));
     return true;
-  }
-
-  /** Whether the account can sign in with a password at all. */
-  async hasPassword(userId: string): Promise<boolean> {
-    const [row] = await this.db
-      .select({ passwordHash: users.passwordHash })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-    return Boolean(row?.passwordHash);
   }
 
     async verifyCredentials(email: string, password: string): Promise<string | null> {
