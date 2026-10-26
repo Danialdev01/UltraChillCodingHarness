@@ -9,7 +9,7 @@ import {
   type DomainEvent,
 } from "@ucch/protocol";
 import { textDelta, type AuditInput } from "./audit.js";
-import type { NotesService } from "./notes.js";
+import type { NoteRecord, NotesService, NoteWriteOutcome } from "./notes.js";
 import { PathError, type UploadStore } from "./uploads.js";
 import type { ProjectSummary } from "./workspaces.js";
 
@@ -41,6 +41,13 @@ export interface NoteRouteDeps {
   originOf(request: ProjectRequest): Promise<ChangeOrigin | undefined>;
   /** Writes a line to the project's activity log. Never throws. */
   audit(input: AuditInput): Promise<unknown>;
+  /**
+   * Replaces a page's body through the collab service, so every open editor
+   * receives it as an ordinary edit and it is saved before this returns.
+   * False when the service could not be reached: the body is then written
+   * here, and the page's collaborative state is dropped to be seeded again.
+   */
+  writeContent?(noteId: string, content: z.infer<typeof NoteDoc>): Promise<boolean>;
 }
 
 const NoteId = z.string().uuid();
@@ -101,7 +108,7 @@ function changedFields(patch: Record<string, unknown>): string[] {
  * once the app's own services exist.
  */
 export function registerNoteRoutes(app: FastifyInstance, deps: NoteRouteDeps): void {
-  const { projectFor, notes, uploads, announce, originOf, audit } = deps;
+  const { projectFor, notes, uploads, announce, originOf, audit, writeContent } = deps;
 
   /** The activity-log fields every entry here shares. */
   const by = (projectId: string, origin: ChangeOrigin | undefined) => ({
@@ -226,8 +233,9 @@ export function registerNoteRoutes(app: FastifyInstance, deps: NoteRouteDeps): v
       });
     }
 
-    const outcome = await notes.update(project.id, request.params.noteId, parsed.data);
+    const outcome = await writeNote(project.id, request.params.noteId, parsed.data);
     if (!outcome) return reply.code(404).send({ error: "that page does not exist" });
+    const viaCollab = "viaCollab" in outcome && outcome.viaCollab;
     const origin = await originOf(request);
     if ("conflict" in outcome) {
       // Logged too: a revert the person saw should be in the history, so
@@ -246,7 +254,9 @@ export function registerNoteRoutes(app: FastifyInstance, deps: NoteRouteDeps): v
     if (parsed.data.title !== undefined) fields.title = note.title;
     if (parsed.data.icon !== undefined) fields.icon = note.icon;
     if (parsed.data.cover !== undefined) fields.cover = note.cover;
-    if (parsed.data.content !== undefined) {
+    // Through the collab service, open editors already have the body, and
+    // its save announced it.
+    if (parsed.data.content !== undefined && !viaCollab) {
       if (Buffer.byteLength(JSON.stringify(note.content)) <= PUSHED_CONTENT_MAX_BYTES) {
         fields.content = note.content;
       } else {
@@ -282,6 +292,33 @@ export function registerNoteRoutes(app: FastifyInstance, deps: NoteRouteDeps): v
     const { content: _content, ...summary } = outcome.note;
     return { note: summary };
   });
+
+  /**
+   * A PATCH's writes: the body through the collab service when there is one
+   * (`writeContent`), everything else -- and the body when the service is
+   * down -- straight to the row.
+   */
+  async function writeNote(
+    projectId: string,
+    noteId: string,
+    patch: z.infer<typeof NotePatch>,
+  ): Promise<NoteWriteOutcome | { note: NoteRecord; before: { title: string; text: string }; viaCollab: true }> {
+    if (patch.content === undefined || !writeContent) return notes.update(projectId, noteId, patch);
+    const current = await notes.get(projectId, noteId);
+    if (!current) return null;
+    if (patch.ifUpdatedAt && current.updatedAt !== new Date(patch.ifUpdatedAt).toISOString()) {
+      return { conflict: current };
+    }
+    if (!(await writeContent(noteId, patch.content))) return notes.update(projectId, noteId, patch);
+
+    const before = { title: current.title, text: noteText(current.content) };
+    const { content: _content, ifUpdatedAt: _ifUpdatedAt, ...rest } = patch;
+    const others = rest.title !== undefined || rest.icon !== undefined || rest.cover !== undefined;
+    const written = others ? await notes.update(projectId, noteId, rest) : null;
+    if (written && "conflict" in written) return written;
+    const note = written?.note ?? (await notes.get(projectId, noteId));
+    return note ? { note, before, viaCollab: true } : null;
+  }
 
   app.post<{ Params: HashAndNote }>(
     "/api/projects/:hash/notes/:noteId/move",

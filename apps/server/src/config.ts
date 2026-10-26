@@ -46,6 +46,13 @@ const Env = z.object({
   WEB_UPSTREAM: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
   WEB_STATIC_DIR: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
 
+  /**
+   * The collab service (collab.ts, its own process) on loopback: `/collab`
+   * upgrades are passed to it, and note bodies written over REST go through
+   * it. Its port is `COLLAB_PORT` on its side.
+   */
+  COLLAB_UPSTREAM: z.string().url().default("http://127.0.0.1:3002"),
+
   /** Host path bind-mounted into project containers as /workspace. */
   WORKSPACE_ROOT: z.string().default("/srv/ucch/workspaces"),
   PREVIEW_ROOT: z.string().default("/srv/ucch/previews"),

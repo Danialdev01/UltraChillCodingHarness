@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
-import { notes, type Database, type Note, type Transaction } from "@ucch/db";
+import { noteYdocs, notes, type Database, type Note, type Transaction } from "@ucch/db";
 import { NOTE_TITLE_MAX, noteText, snippetAround, type NoteDoc } from "@ucch/protocol";
 
 /**
@@ -175,6 +175,11 @@ export class NotesService {
       .where(and(eq(notes.projectId, projectId), eq(notes.id, noteId)))
       .limit(1);
     const [row] = await this.db.update(notes).set(set).where(and(...conditions)).returning();
+    if (row && patch.content !== undefined) {
+      // Written past the collab service (it was down): its stored state no
+      // longer matches, and is seeded again from this body when next opened.
+      await this.db.delete(noteYdocs).where(eq(noteYdocs.noteId, noteId));
+    }
     if (row) return { note: record(row), before: before ?? { title: row.title, text: "" } };
 
     const current = await this.get(projectId, noteId);

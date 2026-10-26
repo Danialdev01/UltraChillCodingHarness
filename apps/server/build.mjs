@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Bundles the server into `dist/server.mjs` for production.
+ * Bundles the server into `dist/server.mjs` -- and the collab service into
+ * `dist/collab.mjs` -- for production.
  *
  * The workspace packages (`@ucch/*`) are TypeScript sources, so they are
  * compiled in. Everything from npm stays an ordinary `import` resolved from
@@ -22,8 +23,10 @@ const out = join(here, "dist");
 rmSync(out, { recursive: true, force: true });
 
 await build({
-  entryPoints: [join(here, "src/index.ts")],
-  outfile: join(out, "server.mjs"),
+  // The API, and the collab service: its own process (deploy/s6/s6-rc.d/collab).
+  entryPoints: { server: join(here, "src/index.ts"), collab: join(here, "src/collab.ts") },
+  outdir: out,
+  outExtension: { ".js": ".mjs" },
   bundle: true,
   platform: "node",
   target: "node22",

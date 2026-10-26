@@ -44,6 +44,8 @@ const quoted = (value: unknown, fallback: string): string => {
 
 /** Routes that write their own, richer entries. Not logged twice. */
 export const SELF_AUDITED = new Set([
+  // A collab save, logged as the edit it is (index.ts).
+  "POST /api/internal/collab/saved",
   "POST /api/projects/:hash/notes",
   "PATCH /api/projects/:hash/notes/:noteId",
   "POST /api/projects/:hash/notes/:noteId/move",
@@ -69,6 +71,8 @@ export const SELF_AUDITED = new Set([
 /** Writes that change nothing anyone would call a change. */
 const IGNORED = new Set([
   "POST /api/ws-ticket",
+  // The collab service redeeming a ticket.
+  "POST /api/internal/collab/authorize",
   "POST /api/auth/login",
   "POST /api/auth/logout",
   // Staging an attachment or an image is part of the message or page it is

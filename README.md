@@ -294,6 +294,8 @@ The `dev` user may create as many databases as you like on both servers; add the
 | Variable | Default | What it is |
 |---|---|---|
 | `SERVER_HEAP_MB` / `WEB_HEAP_MB` | `1536` / `1024` | The server's and the web app's heap limits, given to `node` as `--max-old-space-size` (never through `NODE_OPTIONS`, which would reach users' shells). About twice the peak under load; set too low, the process restarts in a loop. |
+| `COLLAB_HEAP_MB` / `COLLAB_MAX_DOCS` | `512` / `200` | The collab service's heap limit, and how many documents it holds open at once; past that, opening another is refused until one unloads (30 s after its last editor leaves). |
+| `COLLAB_PORT` | `3002` | The collab service's loopback port. The server passes `/collab` to it, at `COLLAB_UPSTREAM` (`http://127.0.0.1:3002`). |
 | `DB_POOL_MAX` | `20` | Database connections the server opens at most. |
 | `ENGINE_MAX_PARALLEL` | `8` | Commands handled at once, each on a different project. At most `DB_POOL_MAX − 4`, or the server refuses to start. |
 | `LOG_LEVEL` | `info` (`debug` outside production) | `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`. |

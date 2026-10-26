@@ -9,7 +9,7 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, inArray, lt, notLike, sql } from "drizzle-orm";
-import { createDatabase, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
+import { createDatabase, notes, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
 import { HeavyJobGate } from "@ucch/agent";
 import {
   AgentPermissionMode,
@@ -96,6 +96,8 @@ import { GitService } from "./git.js";
 import { registerGitRoutes } from "./git-routes.js";
 import { FILE_READS, GitCache } from "./git-cache.js";
 import { registerPublicRoutes } from "./public-routes.js";
+import { CollabLink } from "./collab-link.js";
+import { COLLAB_SECRET_HEADER, collabSecret } from "./collab/secret.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import {
   GithubError,
@@ -1968,6 +1970,85 @@ setInterval(() => {
 }, 5 * 60_000).unref();
 const notesService = new NotesService(db);
 
+const collabSecretValue = collabSecret();
+const collab = collabSecretValue
+  ? new CollabLink({ upstream: config.COLLAB_UPSTREAM, secret: collabSecretValue, log: app.log })
+  : null;
+if (!collab) app.log.error("no SECRET_KEY: the collab service is off, and notes are edited without it");
+
+/**
+ * The collab service's calls in, on loopback with the shared secret: never
+ * a browser's, which reach this port from outside and know neither.
+ */
+function fromCollab(request: { socket: { remoteAddress?: string }; headers: Record<string, unknown> }): boolean {
+  const address = request.socket.remoteAddress ?? "";
+  const loopback = address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+  return loopback && !!collabSecretValue && request.headers[COLLAB_SECRET_HEADER] === collabSecretValue;
+}
+
+const CollabAuthorize = z.object({
+  token: z.string().min(1).max(512),
+  document: z.object({ kind: z.literal("note"), noteId: z.string().uuid() }),
+});
+
+/** Redeems an editor's ticket for the document it opens: the API stays the judge of who may edit what. */
+app.post("/api/internal/collab/authorize", async (request, reply) => {
+  if (!fromCollab(request)) return reply.code(403).send({ error: "forbidden" });
+  const parsed = CollabAuthorize.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "bad request" });
+  const principal = auth.redeemTicket(parsed.data.token);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const [row] = await db
+    .select({ projectId: notes.projectId, workspaceId: projects.workspaceId })
+    .from(notes)
+    .innerJoin(projects, eq(projects.id, notes.projectId))
+    .where(eq(notes.id, parsed.data.document.noteId))
+    .limit(1);
+  if (!row || !(await workspaceService.canView(row.workspaceId, principal.userId))) {
+    return reply.code(404).send({ error: "not found" });
+  }
+  const member = await workspaceService.membership(row.workspaceId, principal.userId);
+  return {
+    userId: principal.userId,
+    projectId: row.projectId,
+    // A viewer, or a token without write: sees the edits, makes none.
+    readOnly: !principal.scopes.includes("write") || member?.role === "viewer",
+  };
+});
+
+const CollabSaved = z.object({ projectId: z.string().uuid(), noteId: z.string().uuid(), userId: z.string().uuid().optional() });
+
+/** A note's body was saved by the collab service: tell the project's tabs, and log the edit. */
+app.post("/api/internal/collab/saved", async (request, reply) => {
+  if (!fromCollab(request)) return reply.code(403).send({ error: "forbidden" });
+  const parsed = CollabSaved.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "bad request" });
+  const { projectId, noteId, userId } = parsed.data;
+  const [note] = await db
+    .select({ title: notes.title, updatedAt: notes.updatedAt })
+    .from(notes)
+    .where(and(eq(notes.id, noteId), eq(notes.projectId, projectId)))
+    .limit(1);
+  if (!note) return reply.code(404).send({ error: "not found" });
+  await store
+    .append({ projectId, threadId: null }, [
+      // No body: the open editors have it already, through the document.
+      { type: "note.changed", projectId, noteId, change: "updated", updatedAt: note.updatedAt.toISOString(), fields: {} },
+    ])
+    .catch((error) => app.log.error({ err: error }, "could not announce a note change"));
+  void audit.record({
+    projectId,
+    userId: userId ?? null,
+    clientId: null,
+    targetType: "note",
+    targetId: noteId,
+    action: "note.update",
+    summary: `Edited “${note.title}”`,
+    coalesce: true,
+  });
+  return { ok: true };
+});
+
 registerNoteRoutes(app, {
   projectFor,
   originOf,
@@ -1980,6 +2061,7 @@ registerNoteRoutes(app, {
       .append({ projectId: event.projectId, threadId: null }, [event])
       .catch((error) => app.log.error({ err: error }, "could not announce a note change"));
   },
+  ...(collab ? { writeContent: (noteId, content) => collab.writeNote(noteId, content) } : {}),
 });
 
 registerTimelineRoutes(app, {
@@ -3578,6 +3660,9 @@ app.post("/api/auth/logout", async (request, reply) => {
 app.server.on("upgrade", (request, socket, head) => {
   // A preview host's upgrades (Vite HMR, say) belong to the dev server.
   if (preview.handleUpgrade(request, socket, head)) return;
+
+  // Editors' documents: the collab service's (collab-link.ts).
+  if (collab?.handleUpgrade(request, socket, head)) return;
 
   const url = new URL(request.url ?? "/", "http://localhost");
   if (url.pathname !== "/ws") {

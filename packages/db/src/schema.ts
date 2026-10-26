@@ -2,6 +2,7 @@ import { relations, sql } from "drizzle-orm";
 import {
   bigserial,
   boolean,
+  customType,
   date,
   doublePrecision,
   index,
@@ -585,6 +586,27 @@ export const notes = pgTable(
       .where(sql`${t.parentId} is null`),
   ],
 );
+
+/** Raw bytes: what drizzle has no column type for in Postgres. */
+const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
+  dataType: () => "bytea",
+  toDriver: (value) => Buffer.from(value),
+  fromDriver: (value) => new Uint8Array(value),
+});
+
+/**
+ * A note's collaborative document (the collab service, apps/server/src/collab):
+ * the whole Yjs state, as one update. `notes.content` stays the readable copy
+ * -- search, the public site, the agent -- projected from this on every save.
+ * A note without a row is seeded from `content` the first time it is opened.
+ */
+export const noteYdocs = pgTable("note_ydocs", {
+  noteId: uuid("note_id")
+    .primaryKey()
+    .references(() => notes.id, { onDelete: "cascade" }),
+  state: bytea("state").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 /**
  * The tasks on a project's timeline page, drawn there as a Gantt chart.

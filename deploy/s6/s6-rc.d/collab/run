@@ -1,0 +1,31 @@
+#!/command/with-contenv bash
+# The collab service: Hocuspocus, merging everyone's edits to a note
+# (apps/server/src/collab.ts). On loopback only; browsers reach it through
+# the server's /collab upgrade, and the server calls in for content writes.
+#
+# Its own process so a burst of keystrokes never queues behind the API, and
+# the API's restarts never drop a document mid-edit. Reads the same secrets
+# as the server: the database, and SECRET_KEY, from which the two derive
+# the secret they share.
+set -euo pipefail
+data=${DATA_DIR:-/data}
+secrets=$data/secrets
+
+if [ -z "${SECRET_KEY:-}" ] && [ -s "$secrets/secret_key" ]; then
+  export SECRET_KEY="$(cat "$secrets/secret_key")"
+fi
+if [ -z "${DATABASE_URL:-}" ]; then
+  export DATABASE_URL="postgres://ucch:$(cat "$secrets/postgres_password")@127.0.0.1:5432/ucch"
+fi
+unset POSTGRES_PASSWORD DEV_DB_PASSWORD DEFAULT_USER_PASSWORD
+
+export NODE_ENV=production
+export COLLAB_PORT="${COLLAB_PORT:-3002}"
+# The server, for redeeming tickets and announcing saves.
+export COLLAB_API_ORIGIN="http://127.0.0.1:${PORT:-3000}"
+
+# The heap limit on the command line, as for the server: it holds every open
+# document, and COLLAB_MAX_DOCS caps how many.
+exec setpriv --reuid=node --regid=node --init-groups \
+  --inh-caps=-all --bounding-set=-all --no-new-privs \
+  node --max-old-space-size="${COLLAB_HEAP_MB:-512}" --enable-source-maps /app/server/dist/collab.mjs
