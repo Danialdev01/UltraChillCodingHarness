@@ -535,7 +535,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Closing a terminal frees its slot, and `TERMINAL_IDLE_MINUTES` sets the idle close.
     - The per-person cap (5) is new. Before, only the per-project cap existed.
 
-- [ ] **PF1.22 — Heavy-job semaphore for document tools**
+- [x] **PF1.22 — Heavy-job semaphore for document tools** — 97bc20b
 
   - **Depends:** —
   - **Files:** `packages/agent/src/executors/host.ts` (`exec`, line 99), `apps/server/src/config.ts` (`DOC_JOBS_MAX`), `packages/agent/src/executors/host.test.ts`
@@ -544,6 +544,12 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     2. Acquire `DOC_JOBS_MAX` (default 1), honouring the abort signal. The tool timeout starts after acquisition.
   - **Acceptance:** two concurrent document renders run one after the other, and both succeed.
   - **Verify:** `pnpm test -- host`
+  - **Measured:**
+    - Two renders started together run one after the other, and both succeed (`host.test.ts`, "document renders"). The second starts only after the first exits.
+    - A render's timeout starts once it holds the slot: a 300 ms-timeout render waiting behind a 400 ms one still completes.
+    - A render cancelled while waiting rejects at once, takes no slot, and the next waiter runs.
+    - Commands that are not renders (and CLI provider shells, search) are never gated; they run while a render holds the slot.
+    - `pnpm typecheck && pnpm test`: 152 files, 1933 passed, 2 skipped.
 
 ### Git (`solution.md` §10)
 
