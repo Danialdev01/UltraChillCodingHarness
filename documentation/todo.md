@@ -836,7 +836,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     - Throwaway database: concurrent PATCHes to different fields of one timeline task, and of one card, both 200 with both changes kept; a stale `base` is 409. In a headless browser, a dialog rename saved while another user moved the same bar kept both; a rename elsewhere showed with 0 reloads of the chart.
     - `pnpm typecheck && pnpm test`: 1979 passed, 2 skipped.
 
-- [ ] **R12 — DB-manager row conflict detection**
+- [x] **R12 — DB-manager row conflict detection** — caeeeb1
 
   - **Depends:** —
   - **Files:** `apps/server/src/db-manager/adapter.ts`, `apps/server/src/database-routes.ts`, `apps/web/src/components/database/browse-tab.tsx`
@@ -847,6 +847,11 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     4. A successful update publishes `resource.changed{database_data, table}` to the workspace topic.
   - **Acceptance:** concurrent edits of one cell produce a visible conflict, not a silent overwrite.
   - **Verify:** `pnpm test -- database`
+  - **Measured:**
+    - The routes are in `db-manager-routes.ts` (not `database-routes.ts`). Step 4 already held: route-audit publishes `resource.changed{database_data, conn/db/table}` to the workspace for every row write. The conflict UI is a bar above the grid rather than a toast, since the app's toasts carry no actions.
+    - Throwaway Postgres 16 and MySQL 8.4, through the adapters: a stale write is refused with the current row on both; a different column of the same row, and rewriting the value already there, go through.
+    - Two headless browser contexts: an edit saved after another user's save showed "Someone else changed qty in this row to 7"; "Use theirs" showed 7; "Overwrite" saved 11; the other tab followed each save.
+    - `pnpm typecheck && pnpm test`: 1981 passed, 2 skipped.
 
 - [ ] **W1 — Manifest, icons, theme colour**
 
