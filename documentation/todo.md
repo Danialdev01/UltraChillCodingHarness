@@ -486,7 +486,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     - Shell routes 314–322 → 297–305 kB (−17 kB, zod plus the barrel's schemas). Session 407 → 400 kB, tasks 385 → 364 kB. `/login` unchanged. `--check` is within budget.
     - The enums the web read at runtime became plain arrays the zod enums are built from (`DATABASE_ENGINES`, `PROJECT_MODES`), and `DevDatabaseName.safeParse` became `DEV_DATABASE_NAME.test`.
 
-- [ ] **PF1.19 — Bounded `threadHistory`**
+- [x] **PF1.19 — Bounded `threadHistory`** — 0938a0e
 
   - **Depends:** —
   - **Files:** `apps/server/src/eventstore.ts` (lines 137–168), `apps/server/src/config.ts` (`HISTORY_CACHE_EVENTS`), `apps/server/src/metrics.ts`
@@ -496,6 +496,10 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. Add a gauge for the cached event count.
   - **Acceptance:** API heap stays flat across 50 different thread opens under load.
   - **Verify:** `pnpm test -- eventstore`, plus load
+  - **Measured:** (load image, 50 threads of 2,485 events each, built from two copies of a real 1,245-event thread at about 4.5 MB of JSON, one native turn on each in turn, heap read after a full GC through the inspector)
+    - Retained heap before: 60 → 200 MB, +5.2 MB per thread until the 32-thread cap. That ceiling grows with thread length.
+    - After: 70.1–70.5 MB, flat from the 10th thread to the 50th. `history_cache_events` holds 17,521 (7 threads) and never exceeds 20,000.
+    - Heap sampled without a GC is no guide here. A turn on an evicted thread parses its whole history again, which is more garbage, but none of it is kept.
 
 ### Global caps (`solution.md` §9)
 
