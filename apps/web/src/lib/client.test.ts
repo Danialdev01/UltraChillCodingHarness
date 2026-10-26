@@ -65,9 +65,9 @@ async function readyClient() {
   // What is sent from here on, as `kind topic-flags`.
   const sent = () =>
     socket.sent.map((frame) => {
-      const topic = frame.topic as { quiet?: boolean; files?: boolean } | undefined
+      const topic = frame.topic as { quiet?: boolean; files?: boolean; tree?: string } | undefined
       if (!topic) return `${frame.kind as string} ${frame.id as string}`
-      return `${frame.kind as string} ${frame.id as string}${topic.quiet ? " quiet" : ""}${topic.files ? " files" : ""}`
+      return `${frame.kind as string} ${frame.id as string}${topic.quiet ? " quiet" : ""}${topic.files ? " files" : ""}${topic.tree ? ` tree=${topic.tree}` : ""}`
     })
   return { client, socket, sent }
 }
@@ -107,6 +107,17 @@ describe("UcchClient.holdFiles", () => {
     const release = client.holdFiles(PROJECT)
     release()
     expect(sent()).toEqual(["subscribe 0", "unsubscribe 0", "subscribe 1 files", "unsubscribe 1", "subscribe 2"])
+  })
+
+  it("watches a session's worktree, the latest view's tree when two disagree", async () => {
+    const { client, sent } = await readyClient()
+    const releaseSession = client.holdFiles(PROJECT, "abc123")
+    const releaseCheckout = client.holdFiles(PROJECT)
+    expect(sent()).toEqual(["subscribe 0 quiet files tree=abc123", "unsubscribe 0", "subscribe 1 quiet files"])
+    releaseCheckout()
+    expect(sent().slice(3)).toEqual(["unsubscribe 1", "subscribe 2 quiet files tree=abc123"])
+    releaseSession()
+    expect(sent().slice(5)).toEqual(["unsubscribe 2"])
   })
 })
 

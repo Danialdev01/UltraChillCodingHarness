@@ -325,10 +325,11 @@ export class UcchClient {
    * server -- a terminal, a dev server, git -- then arrive as
    * `file.changed`. The watcher goes off when the last such view calls the
    * returned function, and the project's subscription stays, as quiet as it
-   * was.
+   * was. `tree` is a session's hash, to watch its worktree rather than the
+   * project's checkout.
    */
-  holdFiles(projectId: string): () => void {
-    const held = this.hold({ name: "project", projectId, quiet: true, files: true });
+  holdFiles(projectId: string, tree?: string | null): () => void {
+    const held = this.hold({ name: "project", projectId, quiet: true, files: true, ...(tree ? { tree } : {}) });
     held.ready.catch(() => {});
     return held.release;
   }
@@ -744,17 +745,31 @@ function toRow(seq: number | null, event: DomainEvent, at: number, projectId?: s
 /**
  * One subscription that gives both views what they asked for: loud if
  * either is, watching files if either does. Only project topics differ.
+ * One tree is watched per project; views that disagree -- rare, since a
+ * page shows one session -- get the latest one's.
  */
 function mergeTopic(existing: SubscribeTopic, wanted: SubscribeTopic): SubscribeTopic {
   if (existing.name !== "project" || wanted.name !== "project") return existing;
   const quiet = existing.quiet === true && wanted.quiet === true;
   const files = existing.files === true || wanted.files === true;
-  return { name: "project", projectId: existing.projectId, ...(quiet ? { quiet } : {}), ...(files ? { files } : {}) };
+  const tree = wanted.files === true ? wanted.tree : existing.tree;
+  return {
+    name: "project",
+    projectId: existing.projectId,
+    ...(quiet ? { quiet } : {}),
+    ...(files ? { files } : {}),
+    ...(files && tree ? { tree } : {}),
+  };
 }
 
 function sameTopic(a: SubscribeTopic, b: SubscribeTopic): boolean {
   if (a.name !== "project" || b.name !== "project") return topicKey(a) === topicKey(b);
-  return a.projectId === b.projectId && (a.quiet === true) === (b.quiet === true) && (a.files === true) === (b.files === true);
+  return (
+    a.projectId === b.projectId &&
+    (a.quiet === true) === (b.quiet === true) &&
+    (a.files === true) === (b.files === true) &&
+    (a.tree ?? null) === (b.tree ?? null)
+  );
 }
 
 function topicKey(topic: SubscribeTopic): string {
@@ -774,7 +789,7 @@ function topicKey(topic: SubscribeTopic): string {
 
 export type SubscribeTopic =
   | { name: "thread"; threadId: string }
-  | { name: "project"; projectId: string; quiet?: boolean; files?: boolean }
+  | { name: "project"; projectId: string; quiet?: boolean; files?: boolean; tree?: string }
   | { name: "terminal"; terminalId: string }
   | { name: "user" }
   | { name: "workspace"; workspaceId: string };

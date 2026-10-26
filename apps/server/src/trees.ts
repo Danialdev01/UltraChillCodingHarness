@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 
 /**
  * Where a project's files are on disk.
@@ -34,6 +34,17 @@ export type TreeTarget = string | { projectId: string; tree: string };
 /** The project a target belongs to, for the events and checks keyed by it. */
 export function projectOf(target: TreeTarget): string {
   return typeof target === "string" ? target : target.projectId;
+}
+
+/**
+ * The session whose worktree a target is, by its hash, for `file.changed`'s
+ * `worktreeId`; undefined for the project's checkout -- which a session
+ * whose worktree is not ready yet also works in.
+ */
+export function worktreeIdOf(workspaceRoot: string, target: TreeTarget): string | undefined {
+  if (typeof target === "string") return undefined;
+  const hash = relative(sessionTreesOf(workspaceRoot, target.projectId), target.tree);
+  return hash && !hash.startsWith("..") && !hash.includes(sep) ? hash : undefined;
 }
 
 /** The parts of a thread row that decide which folder it works in. */

@@ -32,7 +32,7 @@ import { researchBackends } from "./research.js";
 import { DIAGRAM_FILES, diagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
 import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.js";
 import { WorktreeReactor } from "./worktrees.js";
-import { sessionTreesOf, treeFor, type TreeTarget } from "./trees.js";
+import { projectOf, projectRoot, sessionTree, sessionTreesOf, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
 import {
   ConflictError,
   PathError,
@@ -408,16 +408,33 @@ const engine = new OrchestrationEngine(
  */
 const watcherEvents = new WeakSet<object>();
 const fileWatcher = new FileWatcher({
-  rootOf: (projectId) => join(config.WORKSPACE_ROOT, projectId),
-  publish: (projectId, path, change) => {
-    const event: DomainEvent = { type: "file.changed", projectId, path, change };
+  rootOf: (projectId, tree) =>
+    tree ? sessionTree(config.WORKSPACE_ROOT, projectId, tree) : projectRoot(config.WORKSPACE_ROOT, projectId),
+  publish: (projectId, path, change, tree) => {
+    const event: DomainEvent = { type: "file.changed", projectId, path, change, ...(tree ? { worktreeId: tree } : {}) };
     watcherEvents.add(event);
     bus.publish({ seq: null, projectId, threadId: null, event });
   },
+  // An install or a build: one notice for the tree, which its viewers reread.
+  publishMany: (projectId, tree) => {
+    gitCache.invalidate(projectId, FILE_READS);
+    bus.publish({
+      seq: null,
+      projectId,
+      threadId: null,
+      event: { type: "resource.changed", projectId, resource: "files", ...(tree ? { id: tree } : {}) },
+    });
+  },
+  // A commit, a checkout, a fetch from a terminal: only `.git` changed.
+  onGitChange: (projectId) => gitCache.invalidate(projectId),
   onError: (error) => app.log.debug({ err: error }, "file watcher"),
 });
 bus.tap(({ projectId, event }) => {
-  if (event.type === "file.changed" && !watcherEvents.has(event)) fileWatcher.noteOwnWrite(projectId, event.path);
+  if (event.type === "file.changed" && !watcherEvents.has(event)) {
+    fileWatcher.noteOwnWrite(projectId, event.path, event.worktreeId ?? null);
+  }
+  // A viewer may have opened the project, or the session, before its folder existed.
+  if (event.type === "project.cloned" || event.type === "thread.worktree_ready") fileWatcher.rearm(projectId);
 });
 // Turn edges and new stacks, to the workspace topic every sidebar holds.
 new ProjectActivityPublisher(
@@ -427,8 +444,8 @@ new ProjectActivityPublisher(
 ).start();
 
 const gateway = new WebSocketGateway(auth, engine, store, bus, {
-  onProjectWatch: (projectId, delta) =>
-    delta === 1 ? fileWatcher.retain(projectId) : fileWatcher.release(projectId),
+  onProjectWatch: (projectId, delta, tree) =>
+    delta === 1 ? fileWatcher.retain(projectId, tree) : fileWatcher.release(projectId, tree),
   access,
   composer,
   presence,
@@ -1740,14 +1757,16 @@ app.get<{ Querystring: { before?: string; limit?: string; action?: string } }>(
  * and the disk is the state.
  */
 async function announceFileChange(
-  projectId: string,
+  target: TreeTarget,
   path: string,
   change: "added" | "modified" | "deleted",
   origin?: ChangeOrigin,
 ): Promise<void> {
+  const projectId = projectOf(target);
+  const worktreeId = worktreeIdOf(config.WORKSPACE_ROOT, target);
   await store
     .append({ projectId, threadId: null }, [
-      { type: "file.changed", projectId, path, change, ...(origin ? { origin } : {}) },
+      { type: "file.changed", projectId, path, change, ...(origin ? { origin } : {}), ...(worktreeId ? { worktreeId } : {}) },
     ])
     .catch((error) => app.log.error({ err: error }, "could not record a file change"));
 }
@@ -2054,6 +2073,7 @@ registerGitRoutes(app, {
   git: gitService,
   cache: gitCache,
   credentialsFor: ownerCredentials,
+  worktreeIdOf: (tree) => worktreeIdOf(config.WORKSPACE_ROOT, tree),
   remoteChanged: (projectId, url) => workspaceService.setRepoUrl(projectId, url),
   announce: async (projectId, events) => {
     await store
@@ -2199,7 +2219,7 @@ app.put<{ Params: { hash: string } }>("/api/projects/:hash/file", async (request
   const before = await workspaceFiles.read(tree, path).catch(() => null);
   try {
     const change = await workspaceFiles.write(tree, path, content, ifVersion);
-    await announceFileChange(project.id, path, change, origin);
+    await announceFileChange(tree, path, change, origin);
     void audit.record({
       projectId: project.id,
       userId: origin?.userId ?? null,
@@ -2271,7 +2291,7 @@ async function runDiagramJob(
     const source = extractMermaid(outcome.text, kind);
     const path = DIAGRAM_FILES[kind];
     const change = await workspaceFiles.write(tree, path, source);
-    await announceFileChange(project.id, path, change);
+    await announceFileChange(tree, path, change);
     return { state: "done", path, source, model: outcome.model };
   } catch (error) {
     if (controller.signal.aborted) {
@@ -2347,7 +2367,7 @@ app.post<{ Params: { hash: string } }>("/api/projects/:hash/file", async (reques
     await workspaceFiles.create(tree, parsed.data.path, parsed.data.kind);
     const origin = await originOf(request);
     // A new directory holds nothing, so there is no file to announce.
-    if (parsed.data.kind === "file") await announceFileChange(project.id, parsed.data.path, "added", origin);
+    if (parsed.data.kind === "file") await announceFileChange(tree, parsed.data.path, "added", origin);
     void audit.record({
       projectId: project.id,
       userId: origin?.userId ?? null,
@@ -2376,7 +2396,7 @@ app.delete<{ Params: { hash: string }; Querystring: { path?: string } }>(
       const removed = await workspaceFiles.remove(tree, request.query.path);
       if (!removed) return reply.code(404).send({ error: "file not found" });
       const origin = await originOf(request);
-      await announceFileChange(project.id, request.query.path, "deleted", origin);
+      await announceFileChange(tree, request.query.path, "deleted", origin);
       void audit.record({
         projectId: project.id,
         userId: origin?.userId ?? null,
@@ -2413,8 +2433,8 @@ app.patch<{ Params: { hash: string } }>("/api/projects/:hash/file", async (reque
     // A move is a departure and an arrival to everyone else: the two events
     // that already exist say exactly that, so there is no third kind.
     const origin = await originOf(request);
-    await announceFileChange(project.id, parsed.data.from, "deleted", origin);
-    await announceFileChange(project.id, parsed.data.to, "added", origin);
+    await announceFileChange(tree, parsed.data.from, "deleted", origin);
+    await announceFileChange(tree, parsed.data.to, "added", origin);
     void audit.record({
       projectId: project.id,
       userId: origin?.userId ?? null,

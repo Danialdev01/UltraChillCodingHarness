@@ -43,6 +43,14 @@ const Subscribe = z.object({
        * watch on the server.
        */
       files: z.boolean().optional(),
+      /**
+       * The session whose worktree `files` watches, by its hash; absent, the
+       * project's checkout.
+       */
+      tree: z
+        .string()
+        .regex(/^[0-9a-z]{1,32}$/)
+        .optional(),
     }),
     z.object({ name: z.literal("terminal"), terminalId: z.string() }),
     /** The caller's own account: settings and other things without a project. */

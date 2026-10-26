@@ -42,6 +42,8 @@ export interface GitRouteDeps {
   cache: GitCache;
   /** Resolved per request: a token is decrypted for the one push that needs it. */
   credentialsFor(projectId: string): Promise<GitCredentials>;
+  /** The session hash of a session's worktree, for `file.changed`; undefined for the checkout. */
+  worktreeIdOf?(tree: GitTarget): string | undefined;
   /** Tells the project's other open views something changed. Never throws. */
   announce(projectId: string, events: DomainEvent[]): Promise<void>;
   /** Records where the code now lives: on adding, moving or removing `origin`. */
@@ -76,18 +78,25 @@ const AUTH_FAULT = /Authentication failed|could not read Username|Permission den
  * with an `ETag`; every git action through here invalidates it.
  */
 export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): void {
-  const { projectFor, treeFor, git, cache, credentialsFor, announce, remoteChanged } = deps;
+  const { projectFor, treeFor, git, cache, credentialsFor, worktreeIdOf, announce, remoteChanged } = deps;
 
   type Hash = { hash: string };
   type HashAndSha = { hash: string; sha: string };
 
   const notFound = { error: "project not found" };
 
-  async function fileEvents(projectId: string, changed: GitChangedPath[]): Promise<void> {
+  async function fileEvents(projectId: string, tree: GitTarget, changed: GitChangedPath[]): Promise<void> {
     if (changed.length === 0) return;
+    const worktreeId = worktreeIdOf?.(tree);
     await announce(
       projectId,
-      changed.map((c) => ({ type: "file.changed" as const, projectId, path: c.path, change: c.change })),
+      changed.map((c) => ({
+        type: "file.changed" as const,
+        projectId,
+        path: c.path,
+        change: c.change,
+        ...(worktreeId ? { worktreeId } : {}),
+      })),
     );
   }
 
@@ -239,7 +248,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     const paths = "all" in body.data ? "all" : body.data.paths;
     return attempt(reply, async (): Promise<GitStatus> => {
       const changed = await git.discard(tree, paths);
-      await fileEvents(project.id, changed);
+      await fileEvents(project.id, tree, changed);
       return fresh(project.id, tree);
     });
   });
@@ -279,7 +288,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!body.success) return reply.code(400).send({ error: "a branch is required" });
     return attempt(reply, async (): Promise<GitStatus> => {
       const changed = await git.checkout(tree, body.data.branch, body.data.remote ?? false);
-      await fileEvents(project.id, changed);
+      await fileEvents(project.id, tree, changed);
       return fresh(project.id, tree);
     });
   });
@@ -321,7 +330,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     return attempt(reply, async () => {
       const { token, author } = await remoteCredentials(project);
       const { conflicts, changed } = await git.pull(tree, token, author);
-      await fileEvents(project.id, changed);
+      await fileEvents(project.id, tree, changed);
       return { conflicts, status: await fresh(project.id, tree) };
     });
   });
@@ -354,7 +363,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
       const token = tokenAppliesTo(url) ? credentials.token : null;
       const { mergedFrom, conflicts, changed } = await git.connectRemote(tree, url, token, credentials.author);
       await remoteChanged(project.id, url);
-      await fileEvents(project.id, changed);
+      await fileEvents(project.id, tree, changed);
       return { mergedFrom, conflicts, status: await fresh(project.id, tree) };
     });
   });
@@ -417,7 +426,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!body.success) return reply.code(400).send({ error: "a path and strategy are required" });
     return attempt(reply, async (): Promise<GitStatus> => {
       await git.resolve(tree, body.data.path, body.data.strategy);
-      await fileEvents(project.id, [{ path: body.data.path, change: "modified" }]);
+      await fileEvents(project.id, tree, [{ path: body.data.path, change: "modified" }]);
       return fresh(project.id, tree);
     });
   });
@@ -429,7 +438,7 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!tree) return reply.code(404).send({ error: "session not found" });
     return attempt(reply, async (): Promise<GitStatus> => {
       const changed = await git.abortMerge(tree);
-      await fileEvents(project.id, changed);
+      await fileEvents(project.id, tree, changed);
       return fresh(project.id, tree);
     });
   });

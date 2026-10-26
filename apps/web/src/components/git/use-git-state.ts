@@ -142,7 +142,8 @@ export function useGitState(project: Project): GitState {
     projectId,
     (event) => {
       const changed =
-        event.type === "file.changed" ||
+        // A file in this tree; another session's worktree is another status.
+        (event.type === "file.changed" && (event.worktreeId ?? null) === sessionHash) ||
         event.type === "git.committed" ||
         event.type === "git.pushed" ||
         // Staging, a checkout, a branch: the index and refs, from another tab.
@@ -154,7 +155,7 @@ export function useGitState(project: Project): GitState {
         void refresh()
       }, DEBOUNCE_MS)
     },
-    { files: true },
+    { files: true, tree: sessionHash },
   )
 
   // The diff follows the selection. Keyed on its parts rather than the

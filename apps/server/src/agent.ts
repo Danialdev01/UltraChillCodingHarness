@@ -34,7 +34,7 @@ import { ensureProjectInfo, readProjectKnowledge } from "./dev-database.js";
 import { workspaceSubject, type ProviderService } from "./providers.js";
 import { toPolicy } from "./workspaces.js";
 import { applyProjection } from "./engine.js";
-import { treeFor } from "./trees.js";
+import { treeFor, worktreeIdOf } from "./trees.js";
 import type { EventStore } from "./eventstore.js";
 import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter.js";
 import { documentationPrompt } from "./documents.js";
@@ -414,9 +414,14 @@ export class AgentTurnReactor {
     // A project session works in its own worktree; every other thread in
     // the project's checkout.
     const workspace = treeFor(this.options.workspaceRoot, thread.projectId, thread);
+    // Its writes name the worktree, so a view of another tree skips them.
+    const worktreeId = worktreeIdOf(this.options.workspaceRoot, { projectId: thread.projectId, tree: workspace });
 
-    const write = (events: readonly DomainEvent[]) => {
-      if (events.length === 0) return Promise.resolve([]);
+    const write = (batch: readonly DomainEvent[]) => {
+      if (batch.length === 0) return Promise.resolve([]);
+      const events = worktreeId
+        ? batch.map((event) => (event.type === "file.changed" ? { ...event, worktreeId } : event))
+        : batch;
       // The prompt's file tree is cached between turns, and this is the half
       // of its invalidation that is exact: everything the agent itself
       // writes, deletes or attaches passes through here. The tree's own TTL

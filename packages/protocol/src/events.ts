@@ -490,6 +490,11 @@ const FileChanged = z.object({
   change: z.enum(["added", "modified", "deleted"]),
   /** Absent when the agent wrote it rather than a person. */
   origin: ChangeOrigin.optional(),
+  /**
+   * The session whose worktree the file is in, by its hash; absent for the
+   * project's own checkout. A view shows one tree and skips the rest.
+   */
+  worktreeId: z.string().optional(),
 });
 
 /**
@@ -659,6 +664,12 @@ export const LiveResource = z.enum([
   "workspace_members",
   /** A diagram's generation started or ended; `id` is the diagram kind. */
   "diagrams",
+  /**
+   * So many files changed at once -- an install, a build -- that they are one
+   * notice instead of one `file.changed` each; `id` is the session's hash,
+   * absent for the project's checkout.
+   */
+  "files",
 ]);
 export type LiveResource = z.infer<typeof LiveResource>;
 

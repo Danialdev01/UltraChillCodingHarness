@@ -37,6 +37,9 @@ const RESOURCES: Record<LiveResource, CacheEffect> = {
   project_settings: { invalidate: [qk.tasks.all, qk.bootstrap(), qk.project.all] },
   // The diagram view follows its job itself (diagram-editor.tsx).
   diagrams: { invalidate: [] },
+  // Too many files changed to name: every tree read again. The git status
+  // follows from the server's own `git` notice.
+  files: { invalidate: [qk.files.all] },
 }
 
 const NONE: CacheEffect = { invalidate: [] }

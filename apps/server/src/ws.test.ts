@@ -101,7 +101,7 @@ beforeEach(async () => {
       threadProject: async (_userId, threadId) => (threadId === THREAD ? PROJECT : null),
       projectOfThread: async () => null,
     },
-    onProjectWatch: (projectId, delta) => watches.push(`${delta > 0 ? "+" : "-"}${projectId}`),
+    onProjectWatch: (projectId, delta, tree) => watches.push(`${delta > 0 ? "+" : "-"}${projectId}${tree ? `/${tree}` : ""}`),
     buildId: "build-7",
     queuedAhead: (threadId) => (threadId === THREAD ? queued : null),
     composer: { get: () => ({ rev: 0, draft: { text: "" }, origin: null }) } as unknown as ComposerStore,
@@ -295,6 +295,23 @@ describe("project subscriptions and the file watcher", () => {
     alice.send({ kind: "unsubscribe", id: "1" });
     await alice.settle();
     expect(watches).toEqual([`+${PROJECT}`, `-${PROJECT}`]);
+  });
+
+  it("watch a session's worktree when the subscription names it", async () => {
+    const alice = await connect();
+    alice.send({ kind: "subscribe", id: "1", topic: { name: "project", projectId: PROJECT, quiet: true, files: true, tree: "abc123def456" } });
+    await alice.settle();
+    alice.send({ kind: "unsubscribe", id: "1" });
+    await alice.settle();
+    expect(watches).toEqual([`+${PROJECT}/abc123def456`, `-${PROJECT}/abc123def456`]);
+  });
+
+  it("refuse a tree that is not a session hash", async () => {
+    const alice = await connect();
+    alice.send({ kind: "subscribe", id: "1", topic: { name: "project", projectId: PROJECT, files: true, tree: "../../etc" } });
+    const frames = await alice.settle();
+    expect(frames).toContainEqual(expect.objectContaining({ kind: "error", code: "invalid" }));
+    expect(watches).toEqual([]);
   });
 
   it("let it go when the socket closes", async () => {

@@ -844,14 +844,24 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   // reported only while the tree or a file is showing. Shown again, the
   // tree is reread for whatever changed meanwhile.
   const showsFiles = project !== null && (sidebar === "files" || tabs.length > 0)
+  // Every tree of the project shares its topic: a change in another session's
+  // worktree, or in the checkout while a session is shown, is not this one.
+  const refreshTreeRef = React.useRef(refreshTree)
+  refreshTreeRef.current = refreshTree
   useProjectEvents(
     project?.id,
     (event) => {
+      // Too many to name -- an install, a build: read the tree again.
+      if (event.type === "resource.changed" && event.resource === "files") {
+        if ((event.id ?? null) === sessionHash) refreshTreeRef.current()
+        return
+      }
       // Any writer but this tab: another person, the agent, a git checkout.
       if (event.type !== "file.changed" || isOwnChange(event.origin)) return
+      if ((event.worktreeId ?? null) !== sessionHash) return
       noteChangedRef.current(event.path, event.change)
     },
-    { files: showsFiles },
+    { files: showsFiles, tree: sessionHash },
   )
   const showedFiles = React.useRef(showsFiles)
   React.useEffect(() => {

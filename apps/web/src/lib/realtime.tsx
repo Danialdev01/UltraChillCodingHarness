@@ -126,7 +126,8 @@ export function useToast(): Realtime["toast"] {
  * `files: true` is for views that show files: while it is set, the server
  * watches the project's directory, so changes made outside it -- a
  * terminal, a dev server, git -- arrive as `file.changed` too. Without it,
- * only the changes the server and the agent make themselves do.
+ * only the changes the server and the agent make themselves do. `tree`, a
+ * session's hash, watches that session's worktree instead of the checkout.
  *
  * The handler is read through a ref, so passing a new function each render
  * does not resubscribe.
@@ -134,18 +135,19 @@ export function useToast(): Realtime["toast"] {
 export function useProjectEvents(
   projectId: string | null | undefined,
   handler: (event: DomainEvent, row: ClientEvent) => void,
-  options: { files?: boolean } = {},
+  options: { files?: boolean; tree?: string | null } = {},
 ): UcchClient | null {
   const { client } = useRealtime()
   const ref = React.useRef(handler)
   ref.current = handler
   const files = options.files === true
+  const tree = options.tree ?? null
 
   React.useEffect(() => {
     if (!client || !projectId) return
     // Files first, so a first subscription asks for them at once rather
     // than being upgraded straight after.
-    const release = files ? client.holdFiles(projectId) : undefined
+    const release = files ? client.holdFiles(projectId, tree) : undefined
     void client.subscribe({ name: "project", projectId, quiet: true }).catch(() => {})
     const off = client.onEvent((row) => {
       const event = row.event
@@ -156,7 +158,7 @@ export function useProjectEvents(
       off()
       release?.()
     }
-  }, [client, projectId, files])
+  }, [client, projectId, files, tree])
 
   return client
 }

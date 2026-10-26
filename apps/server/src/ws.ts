@@ -73,8 +73,8 @@ interface Connection {
   subscriptionProjects: Map<string, string>;
   /** The workspace each workspace subscription is for, likewise. */
   subscriptionWorkspaces: Map<string, string>;
-  /** Project subscriptions with `files: true` only, for `onProjectWatch`. */
-  watching: Map<string, string>;
+  /** Project subscriptions with `files: true` only, for `onProjectWatch`: the project and the tree. */
+  watching: Map<string, { projectId: string; tree: string | null }>;
   alive: boolean;
   /**
    * What this socket has already been allowed to open, so the prompt box,
@@ -111,8 +111,12 @@ export interface GatewayOptions {
   presence: PresenceStore;
   /** A person's display name and picture, for presence. */
   profileOf?: (userId: string) => Promise<{ name: string; avatarUrl: string | null } | null>;
-  /** A project subscription with `files: true` opened (+1) or closed (-1): drives the file watcher. */
-  onProjectWatch?: (projectId: string, delta: 1 | -1) => void;
+  /**
+   * A project subscription with `files: true` opened (+1) or closed (-1):
+   * drives the file watcher, on the project's checkout or (`tree`) a
+   * session's worktree.
+   */
+  onProjectWatch?: (projectId: string, delta: 1 | -1, tree: string | null) => void;
   /** Whether a user may watch a terminal's output; see `TerminalReactor.mayWatch`. */
   mayWatchTerminal?: (userId: string, terminalId: string) => boolean;
   /** Where `terminal_input` and `terminal_resize` frames go. Absent, they are refused. */
@@ -371,8 +375,9 @@ export class WebSocketGateway {
         // Only a view that shows files keeps the watcher going: a sidebar or
         // a board listening to the project has no use for changes on disk.
         if (frame.topic.name === "project" && frame.topic.files === true) {
-          conn.watching.set(subscriptionId, frame.topic.projectId);
-          this.options.onProjectWatch?.(frame.topic.projectId, 1);
+          const tree = frame.topic.tree ?? null;
+          conn.watching.set(subscriptionId, { projectId: frame.topic.projectId, tree });
+          this.options.onProjectWatch?.(frame.topic.projectId, 1, tree);
         }
 
         if (frame.topic.name === "thread") {
@@ -653,7 +658,7 @@ export class WebSocketGateway {
     const watched = conn.watching.get(subscriptionId);
     if (watched) {
       conn.watching.delete(subscriptionId);
-      this.options.onProjectWatch?.(watched, -1);
+      this.options.onProjectWatch?.(watched.projectId, -1, watched.tree);
     }
   }
 
