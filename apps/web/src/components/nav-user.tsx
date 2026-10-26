@@ -25,7 +25,7 @@ import { ChevronsUpDownIcon, LogOutIcon, UserRoundCogIcon } from "lucide-react"
 import { clearUserCache } from "@/lib/query-client"
 import { SETTINGS } from "@/lib/sections"
 import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics"
-import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
+import { TransitionLink } from "@/lib/view-transitions"
 
 export function NavUser({
   user,
@@ -45,14 +45,13 @@ export function NavUser({
   compact?: boolean
 }) {
   const { isMobile } = useSidebar()
-  const router = useTransitionRouter()
 
   async function onLogout() {
     // The session cookie is HttpOnly, so it can only be cleared by the server.
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" })
     await clearUserCache()
-    router.replace("/login")
-    router.refresh()
+    // A full load: nothing of this account's router state or cache survives.
+    window.location.replace("/login")
   }
   return (
     <SidebarMenu>

@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import {
   ArchiveIcon,
@@ -37,6 +36,8 @@ import type { Workspace } from "@/lib/session";
 import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics";
 import { useToast } from "@/lib/realtime";
 import { useTransitionRouter } from "@/lib/view-transitions";
+import { qk } from "@/lib/query-keys";
+import { useInvalidate } from "@/lib/use-invalidate";
 import { countLabel, deleteWorkspace, updateWorkspace } from "@/lib/workspace-api";
 
 export type { Workspace };
@@ -60,8 +61,8 @@ export function WorkspaceSwitcher({
   workspaces: Workspace[];
   activeWorkspaceId: string;
 }) {
-  const router = useRouter();
   const transitionRouter = useTransitionRouter();
+  const invalidate = useInvalidate();
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -94,7 +95,7 @@ export function WorkspaceSwitcher({
     try {
       await updateWorkspace(workspace.id, { archived: archive });
       if (archive) leave(workspace);
-      router.refresh();
+      invalidate(qk.bootstrap());
       toast({
         title: archive ? `Archived ${workspace.name}` : `Restored ${workspace.name}`,
         description: archive ? "Find it under Archived in the workspace list." : undefined,
@@ -332,7 +333,7 @@ export function WorkspaceSwitcher({
         workspace={managing}
         open={managing !== null}
         onOpenChange={(next) => !next && setManaging(null)}
-        onSaved={() => router.refresh()}
+        onSaved={() => invalidate(qk.bootstrap())}
         onArchive={(workspace, archive) => void setArchived(workspace, archive)}
         onDelete={setDeleting}
       />
@@ -346,7 +347,7 @@ export function WorkspaceSwitcher({
           if (!deleting) return;
           await deleteWorkspace(deleting.id);
           leave(deleting);
-          router.refresh();
+          invalidate(qk.bootstrap());
         }}
       />
     </>

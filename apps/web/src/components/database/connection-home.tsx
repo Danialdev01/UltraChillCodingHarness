@@ -15,7 +15,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { announceDatabasesChanged, dropDatabase, exportUrl, fetchDatabaseDetails } from "@/lib/database-api"
 import { databaseHref } from "@/lib/sections"
-import { useWorkspaceHash } from "@/lib/workspace-context"
+import { useActiveWorkspace, useWorkspaceHash } from "@/lib/workspace-context"
+import { useBootstrap } from "@/lib/queries/bootstrap"
 import { formatBytes } from "@/lib/stats-format"
 import { TransitionLink } from "@/lib/view-transitions"
 import { useCachedState } from "@/lib/queries/cached-state"
@@ -27,8 +28,12 @@ import { qk } from "@/lib/query-keys"
  * drop it, or make another. What phpMyAdmin shows when you click the
  * server rather than a database.
  */
-export function ConnectionHome({ connection }: { connection: DatabaseConnectionSummary }) {
+export function ConnectionHome({ connection: rendered }: { connection: DatabaseConnectionSummary }) {
   const ws = useWorkspaceHash()
+  // The shell's copy once it has one: an edit in the settings dialog
+  // invalidates bootstrap, and the page shows the new name and address.
+  const live = useBootstrap(useActiveWorkspace()?.hash ?? null).data?.connections.find((c) => c.id === rendered.id)
+  const connection = live ?? rendered
   // Cached: the server's databases show at once on a return visit.
   const [listed, , reload, listState] = useCachedState(
     qk.database.databases(connection.id),

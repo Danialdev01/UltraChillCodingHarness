@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { CheckIcon, CopyIcon, ExternalLinkIcon, FileCodeIcon, ServerIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -19,6 +18,8 @@ import { Input } from "@/components/ui/input";
 import { fetchPreviewStatus, setPreviewPort, setStaticPreview } from "@/lib/preview-api";
 import type { Project } from "@/lib/session";
 import { cn } from "@/lib/utils";
+import { qk } from "@/lib/query-keys";
+import { useInvalidate } from "@/lib/use-invalidate";
 
 const STATUS_POLL_MS = 3000;
 
@@ -51,7 +52,7 @@ export function PreviewDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const router = useRouter();
+  const invalidate = useInvalidate();
   // The saved state, kept locally so the URLs appear the moment the save
   // returns rather than after the layout's project list has refreshed.
   const [saved, setSaved] = useState<Project>(project);
@@ -115,7 +116,7 @@ export function PreviewDialog({
         updated.previewPort && updated.previewStaticDir == null ? String(updated.previewPort) : "",
       );
       setDir(updated.previewStaticDir ?? "");
-      router.refresh();
+      invalidate(qk.bootstrap(), qk.sessions.list(updated.hash), qk.project(updated.hash));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the preview.");
     } finally {

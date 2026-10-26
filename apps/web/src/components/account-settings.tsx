@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
 import {
   KeyRoundIcon,
   Loader2Icon,
@@ -25,6 +24,8 @@ import {
 } from "@/lib/account-api"
 import { Outcome, useOutcome } from "@/components/settings-outcome"
 import { fileToAvatar } from "@/lib/avatar-image"
+import { qk } from "@/lib/query-keys"
+import { useInvalidate } from "@/lib/use-invalidate"
 
 /**
  * The account tab: who you are, how you sign in, and what you look like.
@@ -35,7 +36,7 @@ import { fileToAvatar } from "@/lib/avatar-image"
  * was refused, or block a picture on an unrelated password mistake.
  */
 export function AccountSettings() {
-  const router = useRouter()
+  const invalidate = useInvalidate()
   const [account, setAccount] = React.useState<Account | null>(null)
   const [loadError, setLoadError] = React.useState<string | null>(null)
 
@@ -49,8 +50,8 @@ export function AccountSettings() {
   /** The sidebar renders the same profile, so it has to be told too. */
   const refresh = React.useCallback(() => {
     load()
-    router.refresh()
-  }, [load, router])
+    invalidate(qk.bootstrap())
+  }, [load, invalidate])
 
   if (loadError) {
     return (

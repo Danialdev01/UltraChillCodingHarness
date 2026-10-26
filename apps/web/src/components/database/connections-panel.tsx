@@ -54,6 +54,8 @@ import {
 } from "@/lib/sections"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
+import { qk } from "@/lib/query-keys"
+import { useInvalidate } from "@/lib/use-invalidate"
 
 /**
  * The Database section's sidebar column: every saved server, each unfolding
@@ -82,6 +84,7 @@ export function ConnectionsPanel({
 }) {
   const pathname = usePathname()
   const router = useTransitionRouter()
+  const invalidate = useInvalidate()
   const ws = useWorkspaceHash()
   const current = databasePathFromPath(pathname)
   // On a connection's own page, or inside one of its databases.
@@ -97,7 +100,7 @@ export function ConnectionsPanel({
   async function remove(connection: DatabaseConnectionSummary) {
     await deleteConnection(connection.id)
     if (currentConnectionId === connection.id) router.push(sectionHref(sectionById("database"), ws))
-    router.refresh()
+    invalidate(qk.bootstrap(), qk.connections.all)
   }
 
   return (

@@ -1,13 +1,14 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
 import { Loader2Icon, UsersRoundIcon } from "lucide-react"
 
 import { ROLE_BLURBS, ROLE_LABELS } from "@/components/workspace-members-settings"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useTransitionRouter } from "@/lib/view-transitions"
+import { qk } from "@/lib/query-keys"
+import { useInvalidate } from "@/lib/use-invalidate"
 import { acceptInvite, previewInvite, type InvitePreview } from "@/lib/workspace-api"
 
 /**
@@ -16,8 +17,8 @@ import { acceptInvite, previewInvite, type InvitePreview } from "@/lib/workspace
  * -- or by a preview bot -- does not quietly add anyone to anything.
  */
 export function InviteAccept({ token }: { token: string }) {
-  const router = useRouter()
   const transitionRouter = useTransitionRouter()
+  const invalidate = useInvalidate()
   const [invite, setInvite] = React.useState<InvitePreview | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [joining, setJoining] = React.useState(false)
@@ -26,11 +27,11 @@ export function InviteAccept({ token }: { token: string }) {
     previewInvite(token).then(setInvite, (e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }, [token])
 
-  // The shell follows the workspace in the address; the refresh is what
-  // lists a workspace just joined in its switcher.
+  // The shell follows the workspace in the address; a fresh bootstrap is
+  // what lists a workspace just joined in its switcher.
   const enter = (workspaceHash: string) => {
     transitionRouter.push(`/${workspaceHash}`)
-    router.refresh()
+    invalidate(qk.bootstrap())
   }
 
   return (

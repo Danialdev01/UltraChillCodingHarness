@@ -26,9 +26,8 @@ export function useNewSession(workspaceId: string): { start: () => void; pending
     setPending(true);
     void createProject({ workspaceId, name: NEW_SESSION_NAME })
       .then((created) => {
+        // The sidebar hears of the new project as `resource.changed{projects}`.
         router.push(hrefOf(created.hash));
-        // The sidebar's list is rendered on the server.
-        router.refresh();
       })
       .catch((e: unknown) => {
         toast({

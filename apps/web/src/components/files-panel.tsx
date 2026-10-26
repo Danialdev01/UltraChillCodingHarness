@@ -97,6 +97,8 @@ interface FilesPanelContextValue {
   closeChatSidebar: () => void
   /** Names the project a page is showing, without opening the tree for it. */
   setCurrentProject: (project: Project) => void
+  /** A newer copy of the project already named (a rename, a preview port), changing nothing else. */
+  updateCurrentProject: (project: Project) => void
 
   mode: ViewMode
   setMode: (mode: ViewMode) => void
@@ -512,6 +514,10 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         // left over from the last project would open on nothing.
         setMode("chat")
       },
+      updateCurrentProject: (next) =>
+        setProject((current) =>
+          current?.id === next.id && current.sessionHash === next.sessionHash ? next : current,
+        ),
 
       mode,
       setMode: (next) => {
@@ -900,7 +906,9 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
  * it writes state a parent owns.
  */
 export function useCurrentProject(project: Project) {
-  const { setCurrentProject, closeFiles, closeSearch } = useFilesPanel()
+  const { setCurrentProject, updateCurrentProject, closeFiles, closeSearch } = useFilesPanel()
+  // The same project, read again: the header's menus name it as it is now.
+  React.useEffect(() => updateCurrentProject(project), [project, updateCurrentProject])
   React.useEffect(() => {
     setCurrentProject(project)
     // Leaving the project's page -- for another project, its notes, the

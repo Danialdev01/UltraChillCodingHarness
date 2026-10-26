@@ -25,6 +25,8 @@ import { parseDatabaseUrl } from "@/lib/database-url";
 import { cn } from "@/lib/utils";
 import { sectionById, sectionHref } from "@/lib/sections";
 import { useTransitionRouter } from "@/lib/view-transitions";
+import { qk } from "@/lib/query-keys";
+import { useInvalidate } from "@/lib/use-invalidate";
 import { useWorkspaceHash } from "@/lib/workspace-context";
 
 type Mode = "fields" | "url";
@@ -55,6 +57,7 @@ export function NewDatabaseDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const router = useTransitionRouter();
+  const invalidate = useInvalidate();
   const ws = useWorkspaceHash();
   const [mode, setMode] = React.useState<Mode>("fields");
   const [engine, setEngineState] = React.useState<DatabaseEngine>("mysql");
@@ -133,7 +136,7 @@ export function NewDatabaseDialog({
       await createConnection(workspaceId, draft);
       onOpenChange(false);
       router.push(sectionHref(sectionById("database"), ws));
-      router.refresh();
+      invalidate(qk.bootstrap(), qk.connections.all);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not reach the server.");
     } finally {

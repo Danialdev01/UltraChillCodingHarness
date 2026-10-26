@@ -120,6 +120,25 @@ describe("navigation goes through view transitions", () => {
       [],
     )
   })
+
+  /**
+   * Re-rendering the whole page is for when the shell itself changes. After
+   * a change of data, invalidate the queries that show it (`useInvalidate`).
+   */
+  const REFRESH_ALLOWED: Record<string, string> = {
+    "lib/view-transitions.tsx": "the wrapper itself",
+    "lib/workspace-context.tsx": "the address names another workspace: the shell is another one",
+    "components/workspace-members-settings.tsx": "you left the workspace on screen",
+    "components/database/tables-column.tsx": "the emptied table's grid reads its rows outside the query cache",
+  }
+
+  it("refreshes the page only where the shell changes", () => {
+    const hits = sources
+      .filter(({ path }) => !(path in REFRESH_ALLOWED))
+      .filter(({ text }) => /[rR]outer\.refresh\(/.test(text))
+      .map(({ path }) => path)
+    expect(hits, "invalidate the queries instead (useInvalidate from @/lib/use-invalidate)").toEqual([])
+  })
 })
 
 describe("loading states are skeletons", () => {

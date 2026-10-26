@@ -17,7 +17,8 @@ import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { updateConnection } from "@/lib/database-api"
 import { cn } from "@/lib/utils"
-import { useTransitionRouter } from "@/lib/view-transitions"
+import { qk } from "@/lib/query-keys"
+import { useInvalidate } from "@/lib/use-invalidate"
 
 /**
  * A saved connection's settings, filled in with what is stored. The one
@@ -34,7 +35,7 @@ export function ConnectionSettingsDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const router = useTransitionRouter()
+  const invalidate = useInvalidate()
   const [name, setName] = React.useState(connection.name)
   const [engine, setEngineState] = React.useState<DatabaseEngine>(connection.engine)
   const [host, setHost] = React.useState(connection.host)
@@ -90,9 +91,9 @@ export function ConnectionSettingsDialog({
     try {
       await updateConnection(connection.id, patch)
       onOpenChange(false)
-      // The sidebar and the header name the connection from the layout's
-      // list; a refresh re-reads it.
-      router.refresh()
+      // The sidebar and the header name the connection from the shell's
+      // lists; a fresh bootstrap re-reads them.
+      invalidate(qk.bootstrap(), qk.connections.all)
     } catch (caught) {
       setError(errorText(caught))
       setPending(false)

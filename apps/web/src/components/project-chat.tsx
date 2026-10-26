@@ -121,10 +121,11 @@ import { createComposerSync, type ComposerSync } from "@/lib/composer-sync";
 import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents, useRealtime } from "@/lib/realtime";
 import { isTaskThreadTitle } from "@/lib/tasks-api";
 import { NEW_SESSION_NAME, renameProject, sessionTitleFrom } from "@/lib/create-project";
-import { useRouter } from "next/navigation";
 import { keepSession, removeWhenLeft, startProjectSession } from "@/lib/project-sessions";
 import { projectHref } from "@/lib/sections";
 import { useTransitionRouter } from "@/lib/view-transitions";
+import { qk } from "@/lib/query-keys";
+import { useInvalidate } from "@/lib/use-invalidate";
 import { afterNextPaint, reportVital } from "@/lib/vitals";
 import { useViewerFirstName } from "@/components/viewer";
 
@@ -892,10 +893,10 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   /**
    * A session is called "New session" until its first message, and then
    * after that message -- the way a thread list titles a conversation. Once
-   * per mount: the prop keeps the old name until the refresh lands, and a
-   * second message in that window must not rename it again.
+   * per mount: the prop keeps the old name until the project's query is
+   * read again, and a second message in that window must not rename it again.
    */
-  const plainRouter = useRouter();
+  const invalidate = useInvalidate();
   const sessionNamed = useRef(false);
   const nameSession = useCallback(
     (message: string) => {
@@ -904,14 +905,14 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       if (!title) return;
       sessionNamed.current = true;
       void renameProject(project.hash, title)
-        .then(() => plainRouter.refresh())
+        .then(() => invalidate(qk.bootstrap(), qk.sessions.list(project.hash), qk.project(project.hash)))
         // A failed title is cosmetic: the session still works, and the next
         // message gets another go.
         .catch(() => {
           sessionNamed.current = false;
         });
     },
-    [project.hash, project.name, plainRouter],
+    [project.hash, project.name, invalidate],
   );
 
   const send = useCallback(async () => {

@@ -19,7 +19,10 @@ enforces the mechanical parts.
   `documentation/layout.tsx` and `database/[connectionId]/[db]/layout.tsx`).
 - **Navigate only with `TransitionLink` / `useTransitionRouter`** from
   `src/lib/view-transitions.tsx`. Never use `next/link`, or `useRouter().push` from
-  `next/navigation`. `router.refresh()` on the plain router is fine.
+  `next/navigation`. Don't `router.refresh()` after changing data: invalidate
+  the queries that show it (`useInvalidate` from `src/lib/use-invalidate.ts`).
+  Refresh only where the shell itself changes (the allowlist in
+  `navigation.test.ts`).
 - **Link to the final URL, not a redirect stub.** A server `redirect()` costs a
   second round trip. Keep redirect pages for old bookmarks, and give them a
   `loading.tsx` that renders the *destination's* skeleton.

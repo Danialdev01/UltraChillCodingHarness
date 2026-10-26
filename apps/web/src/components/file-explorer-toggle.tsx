@@ -24,6 +24,8 @@ import { projectPageHref } from "@/lib/sections"
 import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
+import { qk } from "@/lib/query-keys"
+import { useInvalidate } from "@/lib/use-invalidate"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 
 /**
@@ -106,6 +108,8 @@ function ProjectSettingsLink({ project }: { project: Project }) {
 function SessionSettingsMenu({ session }: { session: Project }) {
   const { openFiles, closeFiles } = useFilesPanel()
   const router = useTransitionRouter()
+  const invalidate = useInvalidate()
+  const refreshSession = () => invalidate(qk.bootstrap(), qk.sessions.list(session.hash), qk.project(session.hash))
   const ws = useWorkspaceHash()
   const [renaming, setRenaming] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
@@ -140,7 +144,7 @@ function SessionSettingsMenu({ session }: { session: Project }) {
       <RenameSessionDialog
         session={renaming ? session : null}
         onOpenChange={setRenaming}
-        onRenamed={() => router.refresh()}
+        onRenamed={refreshSession}
       />
       <DeleteProjectDialog
         project={deleting ? session : null}
@@ -150,7 +154,7 @@ function SessionSettingsMenu({ session }: { session: Project }) {
           // The page on screen is the session that no longer exists.
           closeFiles()
           router.push(`/${ws}`)
-          router.refresh()
+          refreshSession()
         }}
       />
     </>

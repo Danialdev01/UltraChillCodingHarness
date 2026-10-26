@@ -5,7 +5,9 @@ import { BotIcon, CheckIcon, GitBranchIcon } from "lucide-react"
 
 import { useFilesPanel } from "@/components/files-panel"
 import { SidebarGroup, SidebarGroupContent, SidebarGroupLabel } from "@/components/ui/sidebar"
+import { qk } from "@/lib/query-keys"
 import { useAgentActivity, useToast } from "@/lib/realtime"
+import { useInvalidate } from "@/lib/use-invalidate"
 import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
 import { uptime, useMinuteClock } from "@/lib/uptime"
@@ -33,6 +35,7 @@ export function SessionList({
   const agentStatusOf = useAgentActivity()
   const { project: openProject, closeFiles } = useFilesPanel()
   const router = useTransitionRouter()
+  const invalidate = useInvalidate()
   const ws = useWorkspaceHash()
   const hrefOf = useProjectHref()
   const [settling, setSettling] = React.useState<string | null>(null)
@@ -50,7 +53,7 @@ export function SessionList({
   function afterDelete(deleted: Project) {
     if (openProject?.id === deleted.id) closeFiles()
     if (deleted.hash === activeProjectHash) router.push(`/${ws}`)
-    router.refresh()
+    invalidate(qk.bootstrap(), qk.sessions.list(deleted.hash), qk.project(deleted.hash))
   }
 
   /**

@@ -360,9 +360,8 @@ export function NewProjectDialog({
       }
 
       onOpenChange(false);
+      // The sidebar hears of the new project as `resource.changed{projects}`.
       router.push(hrefOf(created.hash));
-      // The sidebar's project list is rendered on the server.
-      router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStage("idle");
