@@ -15,6 +15,7 @@ import {
   resolveTokens,
   serialiseThemeCookie,
   storeTheme,
+  THEME_SCRIPT,
   themeToStyle,
   themeVars,
   THEME_STORAGE_KEY,
@@ -265,5 +266,53 @@ describe("themeToStyle", () => {
     applyTheme(SEEDED, element);
     expect(Object.keys(style).every((name) => name.startsWith("--"))).toBe(true);
     expect(Object.fromEntries(props)).toEqual(style);
+  });
+});
+
+describe("the pre-paint script", () => {
+  /** Runs `THEME_SCRIPT` the way the parser would, against stand-ins. */
+  function run(cookie = "") {
+    const html = root();
+    vi.stubGlobal("document", { documentElement: html.element, cookie });
+    new Function(THEME_SCRIPT)();
+    return html;
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("paints exactly what applyTheme would, from the saved choice", () => {
+    store();
+    storeTheme(SEEDED);
+    const painted = run();
+    const applied = root();
+    applyTheme(SEEDED, applied.element);
+    expect(painted.attrs.get("data-theme-mode")).toBe("dark");
+    expect(painted.classes.has("dark")).toBe(true);
+    expect(Object.fromEntries(painted.props)).toEqual(Object.fromEntries(applied.props));
+  });
+
+  it("takes the mode from the cookie when storage is empty", () => {
+    store();
+    const painted = run(`other=1; ucch_theme=${serialiseThemeCookie(SEEDED)}`);
+    expect(painted.attrs.get("data-theme-mode")).toBe("dark");
+    expect(painted.props.size).toBe(0);
+  });
+
+  it("leaves the page alone with nothing saved, or anything broken", () => {
+    store();
+    expect(run().attrs.size).toBe(0);
+    store().set("ucch:theme-paint", "{not json");
+    expect(run("ucch_theme=%7B").attrs.size).toBe(0);
+    store().set("ucch:theme-paint", JSON.stringify({ mode: "dark;x", vars: {} }));
+    expect(run().attrs.size).toBe(0);
+    store().set("ucch:theme-paint", JSON.stringify({ mode: "light", vars: { "a;b": "red", ok: 1 } }));
+    expect(run().props.size).toBe(0);
+  });
+
+  it("forgets the paint when the choice goes back to the default", () => {
+    const data = store();
+    storeTheme(SEEDED);
+    storeTheme(DEFAULT_SETTINGS);
+    expect(data.size).toBe(0);
   });
 });

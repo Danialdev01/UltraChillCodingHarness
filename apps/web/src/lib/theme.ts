@@ -340,13 +340,11 @@ export function coerceSettings(value: unknown): ThemeSettings | null {
 // -- The cookie --------------------------------------------------------------
 
 /**
- * Where the choice is kept so the server can paint it.
+ * Where the choice is kept besides storage.
  *
- * A cookie because only it is readable while the HTML is being generated. The
- * root layout reads it and renders the variables straight onto <html>, which
- * is what makes the first paint already themed -- with no blocking script, and
- * nothing that depends on JavaScript having run. `localStorage` holds a copy
- * so other tabs hear about a change.
+ * A cookie so the mode survives cleared storage: `THEME_SCRIPT` falls back to
+ * it before the first paint. `localStorage` holds the full choice, so other
+ * tabs hear about a change, and the worked-out paint (`THEME_PAINT_KEY`).
  */
 export const THEME_COOKIE = "ucch_theme"
 
@@ -407,15 +405,45 @@ export function storeTheme(settings: ThemeSettings | null): void {
   try {
     if (!settings || isDefaultSettings(settings)) {
       globalThis.localStorage?.removeItem(THEME_STORAGE_KEY)
+      globalThis.localStorage?.removeItem(THEME_PAINT_KEY)
       return
     }
     globalThis.localStorage?.setItem(THEME_STORAGE_KEY, JSON.stringify(settings))
+    globalThis.localStorage?.setItem(THEME_PAINT_KEY, JSON.stringify(themePaint(settings)))
   } catch {
     /* nothing to do: the theme simply is not remembered */
   }
 }
 
 // -- Painting ----------------------------------------------------------------
+
+/**
+ * The choice already worked out into what goes onto <html>: the mode and the
+ * variables. `THEME_SCRIPT` paints from this before the first frame, and it
+ * has to be finished values -- the colour engine is far too big to inline.
+ */
+export const THEME_PAINT_KEY = "ucch:theme-paint"
+
+export interface ThemePaint {
+  mode: ThemeMode
+  vars: Record<string, string>
+}
+
+export function themePaint(settings: ThemeSettings): ThemePaint {
+  return { mode: settings.mode, vars: needsInlineVars(settings) ? themeVars(settings) : {} }
+}
+
+/**
+ * Paints the saved choice onto <html> while the page is still being parsed,
+ * so the first frame is already in it.
+ *
+ * The root layout cannot read the cookie any more -- that would make every
+ * page, /login included, dynamic -- so the HTML arrives in the stylesheet's
+ * own palette and this runs ahead of the content. It reads the cached paint,
+ * and falls back to the cookie's mode alone (a palette needs the engine; the
+ * provider paints that a moment later). Any surprise leaves the page as it was.
+ */
+export const THEME_SCRIPT = `(function(){try{var d=document.documentElement,p=null;try{p=JSON.parse(localStorage.getItem(${JSON.stringify(THEME_PAINT_KEY)})||"null")}catch(e){}if(!p){var m=document.cookie.match(/(?:^|; )${THEME_COOKIE}=([^;]*)/);if(m)p={mode:JSON.parse(decodeURIComponent(m[1])).mode,vars:{}}}if(!p||!/^(light|dark|system)$/.test(p.mode))return;d.setAttribute("data-theme-mode",p.mode);if(p.mode==="dark")d.classList.add("dark");var v=p.vars||{};for(var k in v)if(/^[a-z0-9-]+$/.test(k)&&typeof v[k]==="string")d.style.setProperty("--"+k,v[k])}catch(e){}})()`
 
 /** Every variable name the engine writes, for stripping them again. */
 const ALL_VARS = Object.keys(defaultTokens("light"))

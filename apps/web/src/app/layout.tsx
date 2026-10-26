@@ -1,18 +1,11 @@
 import type { Metadata, Viewport } from "next";
-import { cookies } from "next/headers";
 import { Inter, JetBrains_Mono, Source_Serif_4 } from "next/font/google";
 import localFont from "next/font/local";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { VitalsReporter } from "@/components/vitals-reporter";
 import { ViewTransitionsProvider } from "@/lib/view-transitions";
-import {
-  DEFAULT_SETTINGS,
-  needsInlineVars,
-  parseThemeCookie,
-  THEME_COOKIE,
-  themeToStyle,
-} from "@/lib/theme";
+import { DEFAULT_SETTINGS, THEME_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 /**
@@ -98,16 +91,17 @@ export const viewport: Viewport = {
 /**
  * The chrome every page renders into, and the palette it renders in.
  *
- * The theme is read from a cookie here and painted straight onto <html> as
- * inline custom properties, each a `light-dark(<light>, <dark>)` pair, with
+ * Nothing here reads the request: no cookies, no headers. That is what lets
+ * a page with nothing per-user in it -- /login, /offline -- be built once as
+ * static HTML instead of rendered for every visit. The theme reaches the
+ * first paint anyway, from `THEME_SCRIPT`: an inline script ahead of the
+ * content, which the parser runs before it reaches any content, painting the
+ * saved mode and variables onto <html> (`light-dark()` pairs, with
  * `data-theme-mode` choosing the side through `color-scheme` in the
- * stylesheet. Three things follow from doing it server-side that did not hold
- * when a blocking script did it in the browser:
- *
- * The first paint is already correct -- there is no moment, however short, when
- * a dark theme shows the stylesheet's white, and it holds with JavaScript
- * disabled or still downloading. System needs no script either: the browser
- * resolves `light-dark()` against the OS preference itself.
+ * stylesheet). System needs nothing at all: the browser resolves
+ * `light-dark()` against the OS itself. <html> is rendered with
+ * `suppressHydrationWarning` because the script has changed its attributes
+ * by the time React looks.
  *
  * `<body>` has exactly one child. That reads like a detail and is not: `useId`
  * is derived from the tree path, which encodes how many children each ancestor
@@ -118,43 +112,31 @@ export const viewport: Viewport = {
  * file. A `<script>` element as body's first child was exactly such a thing:
  * React may treat scripts as hoistable, and in development a client still
  * holding an older copy of this module is enough on its own. One child cannot
- * disagree with one child. Keep it that way.
+ * disagree with one child. Keep it that way -- the theme script sits inside
+ * the provider, rendered by the same server tree on both sides, never as a
+ * sibling of it.
  *
  * And <head> stays unauthored, which was the other version of the same bug: the
  * App Router owns that element -- metadata, preloads, and the style tags Fast
  * Refresh injects all land there -- so writing one puts a host element at the
  * very root whose children React and Next manage between them.
  */
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const jar = await cookies();
-  // User-controlled input: `parseThemeCookie` returns null for anything that is
-  // not a valid theme, and the shipped palette stands.
-  const theme = parseThemeCookie(jar.get(THEME_COOKIE)?.value);
-  const settings = theme ?? DEFAULT_SETTINGS;
-
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
-      // `dark` marks a forced Dark so Tailwind's `dark:` variants agree with
-      // the palette; on System they follow the OS through a media query.
-      className={[
-        inter.variable,
-        sourceSerif.variable,
-        iaWriterMono.variable,
-        jetbrainsMono.variable,
-        settings.mode === "dark" ? "dark" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      data-theme-mode={settings.mode}
-      style={needsInlineVars(settings) ? themeToStyle(settings) : undefined}
+      className={[inter.variable, sourceSerif.variable, iaWriterMono.variable, jetbrainsMono.variable].join(" ")}
+      data-theme-mode={DEFAULT_SETTINGS.mode}
       suppressHydrationWarning
     >
       <body>
         {/* TooltipProvider is optional in this Base UI version -- Tooltip
             works without it -- but it centralises the open/close delays so
             every tooltip in the app behaves the same. */}
-        <ThemeProvider initial={theme}>
+        <ThemeProvider>
+          {/* Before any content, so the parser has painted the theme by the
+              time there is anything to show in it. */}
+          <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
           <TooltipProvider>
             {/* Every in-app navigation runs as a view transition; see
                 lib/view-transitions.tsx. Above the (app) group so the login

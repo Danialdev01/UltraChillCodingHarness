@@ -7,11 +7,13 @@ import {
   applyTheme,
   DEFAULT_SETTINGS,
   isDefaultSettings,
+  parseThemeCookie,
   readStoredTheme,
   resolveMode,
   resolveTokens,
   storeTheme,
   storeThemeCookie,
+  THEME_COOKIE,
   THEME_STORAGE_KEY,
   type Mode,
   type Theme,
@@ -97,26 +99,18 @@ function markSwitching() {
 /**
  * Holds the theme for the app.
  *
- * The first paint is already themed, and not by this: the root layout reads the
- * theme cookie and renders the variables onto <html> itself, server-side, as
- * `light-dark()` pairs that follow `color-scheme`. So there is no blocking
- * script, no flash, and System tracks the OS with nothing here running.
+ * The first paint is already themed, and not by this: `THEME_SCRIPT`, in the
+ * root layout, paints the saved mode and variables onto <html> while the page
+ * is still being parsed. The server knows nothing of the choice (so a page can
+ * be static), which is why this starts on the default like the HTML it is
+ * hydrating, and picks the saved choice up on mount.
  *
- * `initial` is that same server-read choice, handed down so this starts in
- * agreement with the HTML it is hydrating. What the provider adds on top is
- * live editing -- every setter paints onto <html> immediately -- and the mode
- * as a value for the few consumers that need it in JavaScript (the terminal,
- * the diagram embeds).
+ * What the provider adds on top is live editing -- every setter paints onto
+ * <html> immediately -- and the mode as a value for the few consumers that
+ * need it in JavaScript (the terminal, the diagram embeds).
  */
-export function ThemeProvider({
-  initial = null,
-  children,
-}: {
-  /** The choice the server painted, from the cookie. */
-  initial?: ThemeSettings | null
-  children: React.ReactNode
-}) {
-  const [settings, setSettingsState] = React.useState<ThemeSettings>(initial ?? DEFAULT_SETTINGS)
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const [settings, setSettingsState] = React.useState<ThemeSettings>(DEFAULT_SETTINGS)
   const [prefersDark, setPrefersDark] = React.useState(false)
   // Client-only state: the editor that reads the code colours is never
   // server-rendered, so nothing is lost by picking these up after mount, and
@@ -130,17 +124,16 @@ export function ThemeProvider({
     applySyntaxTheme(storedSyntax)
     setPresets(readStoredPresets())
 
-    const stored = readStoredTheme()
+    // Storage first; the cookie when storage was cleared on its own.
+    const stored = readStoredTheme() ?? parseThemeCookie(cookieValue(THEME_COOKIE))
     if (stored) {
       setSettingsState(stored)
       applyTheme(stored)
-      // Repairs a cookie that was cleared, and carries an old three-colour
-      // theme over to the new cookie shape.
+      // Each repairs whichever of the two went missing, carries an old
+      // three-colour theme over to the new shape, and refreshes the paint the
+      // pre-paint script reads, should the engine have changed since.
+      storeTheme(stored)
       storeThemeCookie(stored)
-    } else if (initial) {
-      // The cookie says there is a theme and storage does not -- a second
-      // browser, or cleared site data. Storage follows the cookie.
-      storeTheme(initial)
     }
 
     // The OS preference, for the JavaScript side of System. The CSS side
@@ -163,9 +156,6 @@ export function ThemeProvider({
       media?.removeEventListener("change", onMedia)
       globalThis.removeEventListener?.("storage", onStorage)
     }
-    // Mount only: `initial` is the server's snapshot, and re-running this
-    // against a later render of it would undo an edit made since.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const resolvedMode = resolveMode(settings.mode, prefersDark)
@@ -247,6 +237,13 @@ export function ThemeProvider({
   }, [settings, resolvedMode, built, syntax, selection, presets])
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
+}
+
+function cookieValue(name: string): string | undefined {
+  for (const part of globalThis.document?.cookie.split("; ") ?? []) {
+    if (part.startsWith(`${name}=`)) return part.slice(name.length + 1)
+  }
+  return undefined
 }
 
 /** Reads the current theme. Throws outside the provider, which is a bug. */
