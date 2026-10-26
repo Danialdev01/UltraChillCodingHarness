@@ -667,7 +667,7 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
   - **Acceptance:** a push to `main` deploys without any build running on the VPS.
   - **Verify:** one real deploy
 
-- [ ] **PF2.3 — Container limits and child priorities**
+- [x] **PF2.3 — Container limits and child priorities** — 9e7557b
 
   - **Depends:** PF0.2
   - **Files:** new `apps/server/src/child-priority.ts` (argv prefix helper), `packages/providers/src/process.ts` (line 113), `packages/agent/src/executors/host.ts` (line 99), `apps/server/src/terminals.ts` (line 242), `apps/server/src/config.ts` (`CHILD_OOM_ADJ`, `CHILD_NICE`), `README.md`
@@ -677,6 +677,11 @@ PF1.1 and PF1.2 fix existing bugs and may run during PF0.
     3. README: Dokploy → Advanced → Resources: memory limit 7168 MB, reservation 4096 MB, no CPU limit.
   - **Acceptance:** a deliberately runaway dev server (`node -e "a=[];setInterval(()=>a.push(Buffer.alloc(1e8)),10)"` in a terminal) is OOM-killed while the API and Postgres keep running.
   - **Verify:** `pnpm test`, plus that manual check
+  - **Measured:**
+    - In the image under `--memory=3g --memory-swap=3g`, with the embedded Postgres: a terminal's shell reports `oom_score_adj` 500, nice 5, `best-effort: prio 7`. The server, Postgres and the web app stay at 0.
+    - The acceptance's command as written never fills memory. `Buffer.alloc` zero-fills through calloc, so its pages are never touched: 266 GB virtual, 73 MB resident after 20 s, and no OOM. With pages written (`Buffer.alloc(1e8,1)`), the cgroup reached its 3 GB limit within seconds. The kernel killed the runaway (the shell printed `Killed`; `oom_kill` 0 → 1). The server, Postgres and web kept their pids, `/health` stayed ok, and the container did not restart.
+    - The boot probe passed in the image (no fallback warning). A failing probe, a missing tool, and a command not on PATH all run bare, and a missing program still fails with `spawn … ENOENT` (`child-priority.test.ts`).
+    - `pnpm typecheck && pnpm test`: 1944 passed, 2 skipped.
 
 - [ ] **PF2.4 — In-process alerts**
 
