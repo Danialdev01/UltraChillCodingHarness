@@ -7,9 +7,12 @@
  *     [--viewers 10] [--files 20] [--container ucch-load] [--metrics-token T]
  *
  * Each viewer does what `components/git/use-git-state.ts` does: a quiet
- * subscription to the project topic, a first read of status, branches and
- * the first log page, and the same read again 300 ms after the last
- * `file.changed` / `git.*` event of a burst. The burst is --files files
+ * subscription to the project topic that holds its file watcher
+ * (`files: true`), a first read of status, branches and the first log page,
+ * and the same reads again -- status, then the other two -- on every
+ * `resource.changed{git}`, `git.committed` or `git.pushed`. Each read sends
+ * the ETag it last got back, as the browser revalidates a `no-cache`
+ * response, and counts the 304s. The burst is --files files
  * written into the project's checkout inside the container, 20 ms apart,
  * as an agent writes them. The count is the server's own
  * (`git_processes_total`, read from /metrics), from just before the burst
@@ -32,7 +35,6 @@ const { values: args } = parseArgs({
 const seeded = JSON.parse(await readFile(args.sessions, "utf8"));
 const base = seeded.base;
 const viewers = seeded.users.slice(0, Number(args.viewers));
-const DEBOUNCE_MS = 300;
 
 async function gitCount() {
   const response = await fetch(`${base}/metrics`, {
@@ -55,35 +57,47 @@ const project = projects[0];
 const git = `${base}/api/projects/${project.hash}/git`;
 
 let refreshes = 0;
+let notModified = 0;
 const sockets = await Promise.all(
   viewers.map(async (user) => {
+    const etags = new Map();
+    const read = async (url) => {
+      const etag = etags.get(url);
+      const response = await fetch(url, { headers: { cookie: user.cookie, ...(etag ? { "if-none-match": etag } : {}) } });
+      await response.arrayBuffer();
+      if (response.status === 304) notModified++;
+      if (response.headers.get("etag")) etags.set(url, response.headers.get("etag"));
+    };
     const refresh = async () => {
       refreshes++;
-      await Promise.all(
-        [`${git}/status`, `${git}/branches`, `${git}/log?skip=0&limit=50`].map((url) =>
-          fetch(url, { headers: { cookie: user.cookie } }).then((r) => r.arrayBuffer()),
-        ),
-      );
+      await read(`${git}/status`);
+      await Promise.all([read(`${git}/branches`), read(`${git}/log?skip=0&limit=50`)]);
     };
     const ticket = await fetch(`${base}/api/ws-ticket`, { method: "POST", headers: { cookie: user.cookie, origin: base } });
     const ws = new WebSocket(`${base.replace(/^http/, "ws")}/ws?ticket=${(await ticket.json()).ticket}`);
-    let pending = null;
     ws.addEventListener("message", (message) => {
       const frame = JSON.parse(String(message.data));
       if (frame.kind !== "push" || frame.event.projectId !== project.id) return;
-      const type = frame.event.type;
-      if (type !== "file.changed" && type !== "git.committed" && type !== "git.pushed") return;
-      clearTimeout(pending);
-      pending = setTimeout(() => void refresh(), DEBOUNCE_MS);
+      const { type, resource } = frame.event;
+      if (!(type === "resource.changed" && resource === "git") && type !== "git.committed" && type !== "git.pushed") return;
+      void refresh();
     });
     await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
-    ws.send(JSON.stringify({ kind: "subscribe", id: "s", topic: { name: "project", projectId: project.id, quiet: true } }));
+    ws.send(
+      JSON.stringify({
+        kind: "subscribe",
+        id: "s",
+        topic: { name: "project", projectId: project.id, quiet: true, files: true },
+      }),
+    );
     await refresh();
     return ws;
   }),
 );
+// A watch that starts fresh invalidates the git cache once: let that settle.
 await new Promise((resolve) => setTimeout(resolve, 3000));
 const mounted = refreshes;
+const mountedNotModified = notModified;
 
 const before = await gitCount();
 execFileSync("docker", [
@@ -108,6 +122,7 @@ console.log(
     viewers: viewers.length,
     files: Number(args.files),
     refreshesAfterBurst: refreshes - mounted,
+    notModifiedAfterBurst: notModified - mountedNotModified,
     gitProcesses: Object.values(delta).reduce((a, b) => a + b, 0),
     byCommand: delta,
   }),
