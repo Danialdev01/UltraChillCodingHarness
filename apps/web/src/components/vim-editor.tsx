@@ -15,7 +15,10 @@ import {
   rectangularSelection,
 } from "@codemirror/view"
 import { indentationMarkers } from "@replit/codemirror-indentation-markers"
-import { getCM, Vim, vim } from "@replit/codemirror-vim"
+import { CodeMirror, getCM, Vim, vim } from "@replit/codemirror-vim"
+import { yCollab, yUndoManagerKeymap } from "y-codemirror.next"
+import * as Y from "yjs"
+import type { Awareness } from "y-protocols/awareness"
 
 import { replacement } from "@/lib/doc-sync"
 import { languageFor } from "@/lib/languages"
@@ -84,6 +87,46 @@ function fontSizeFor(px: number): Extension {
 }
 
 /**
+ * A file shared live: its text in the collab service's document, and the
+ * others' cursors. The text is the document's, not the buffer's.
+ */
+export interface EditorCollab {
+  ytext: Y.Text
+  awareness: Awareness | null
+}
+
+/**
+ * Undo and redo for each editor bound to a shared document: Yjs's, which
+ * undoes only this tab's edits. CodeMirror's own history would record a
+ * collaborator's typing as it arrived and undo that too.
+ */
+const sharedHistory = new WeakMap<EditorView, Y.UndoManager>()
+let vimHistoryPatched = false
+
+/**
+ * Vim's `u` and Ctrl-r run CodeMirror's undo through the adapter's command
+ * table, one for every editor; an editor with a shared document is sent to
+ * its own undo manager instead.
+ */
+function patchVimHistory(): void {
+  if (vimHistoryPatched) return
+  vimHistoryPatched = true
+  type Command = (cm: { cm6: EditorView }) => void
+  const commands = CodeMirror.commands as unknown as Record<"undo" | "redo", Command>
+  const { undo, redo } = commands
+  commands.undo = (cm) => {
+    const manager = sharedHistory.get(cm.cm6)
+    if (manager) manager.undo()
+    else undo(cm)
+  }
+  commands.redo = (cm) => {
+    const manager = sharedHistory.get(cm.cm6)
+    if (manager) manager.redo()
+    else redo(cm)
+  }
+}
+
+/**
  * Everything CodeMirror gets, in order.
  *
  * The modal layer must come first: vim installs its own keymap at the highest
@@ -95,6 +138,7 @@ function extensions(
   onChange: (text: string) => void,
   onSave: () => void,
   readOnly: boolean,
+  shared: { collab: EditorCollab; undoManager: Y.UndoManager } | null,
 ): Extension[] {
   const language = languageFor(path)
   // Mappings live on a keymap shared by every editor, so they are installed
@@ -118,8 +162,10 @@ function extensions(
     rectangularSelection(),
     bracketMatching(),
     // `u` and Ctrl-r are CodeMirror's undo/redo underneath, so vim has no
-    // history to walk without this.
-    history(),
+    // history to walk without this -- or, shared, Yjs's (`patchVimHistory`).
+    shared
+      ? yCollab(shared.collab.ytext, shared.collab.awareness, { undoManager: shared.undoManager })
+      : history(),
     search(),
     // Coloured by the `--syn-*` variables the theme settings own, so the
     // reader's own palette applies here without a second copy of it.
@@ -163,7 +209,7 @@ function extensions(
 
     // Below the modal layer in precedence: these only see keys it did not
     // claim -- which, with none chosen, is all of them.
-    keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+    keymap.of([...defaultKeymap, ...(shared ? yUndoManagerKeymap : historyKeymap), ...searchKeymap, indentWithTab]),
 
     EditorView.updateListener.of((update) => {
       if (update.docChanged) onChange(update.state.doc.toString())
@@ -338,6 +384,7 @@ export function VimEditor({
   reveal,
   autoFocus = true,
   readOnly = false,
+  collab,
   className,
 }: {
   path: string
@@ -373,6 +420,11 @@ export function VimEditor({
   autoFocus?: boolean
   /** Shows the text without letting it change: while the AI is rewriting it, say. */
   readOnly?: boolean
+  /**
+   * Bound to a shared document: the text is its, `initialText` and `text`
+   * are not used, and `onChange` reports what it now holds.
+   */
+  collab?: EditorCollab
   className?: string
 }) {
   const host = React.useRef<HTMLDivElement>(null)
@@ -393,6 +445,7 @@ export function VimEditor({
     if (!parent) return
 
     registerExCommands()
+    patchVimHistory()
     // `:w`, `:chat` and the leader keys are shared by every editor, so they
     // follow whichever one was opened or focused last.
     const claim = () => {
@@ -403,16 +456,19 @@ export function VimEditor({
     claim()
     parent.addEventListener("focusin", claim)
 
+    const undoManager = collab ? new Y.UndoManager(collab.ytext) : null
     const view = new EditorView({
-      doc: initialText,
+      doc: collab ? collab.ytext.toString() : initialText,
       parent,
       extensions: extensions(
         path,
         (text) => latest.current(text),
         () => latestSave.current(),
         readOnly,
+        collab && undoManager ? { collab, undoManager } : null,
       ),
     })
+    if (undoManager) sharedHistory.set(view, undoManager)
     editor.current = view
     if (autoFocus) view.focus()
 
@@ -454,9 +510,11 @@ export function VimEditor({
       detach()
       editor.current = null
       view.destroy()
+      undoManager?.destroy()
     }
-    // Mounted once per file: the component is keyed by path, so a different
-    // file is a different instance rather than a document swap.
+    // Mounted once per file -- and per shared copy of it: the component is
+    // keyed by path, so a different file is a different instance rather
+    // than a document swap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -471,7 +529,8 @@ export function VimEditor({
    */
   React.useEffect(() => {
     const view = editor.current
-    if (!view) return
+    // Shared, the document brings such changes itself.
+    if (!view || collab) return
     const change = replacement(view.state.doc.toString(), text)
     if (!change) return
     view.dispatch({ changes: change })

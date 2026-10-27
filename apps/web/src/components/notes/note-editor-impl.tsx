@@ -63,7 +63,7 @@ export interface NoteEditorProps {
  */
 export function NoteEditorImpl(props: NoteEditorProps) {
   const collab = useNoteCollab(props.note.id)
-  if (!collab?.synced) return <NotePageSkeleton />
+  if (!collab) return <NotePageSkeleton />
   return <NotePage {...props} collab={collab} />
 }
 

@@ -8,6 +8,7 @@ import { MermaidPreview } from "@/components/diagrams/mermaid-preview"
 import { PresenceBadge } from "@/components/presence-badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { FILE_FIELD, fileDocumentName, useCollabDocument, useCollabUser } from "@/lib/collab"
 import {
   DIAGRAM_FILES,
   awaitDiagram,
@@ -17,6 +18,7 @@ import {
   generateDiagram,
   saveDiagram,
 } from "@/lib/diagrams-api"
+import { replacement } from "@/lib/doc-sync"
 import { FileConflictError } from "@/lib/files-api"
 import {
   isOwnChange,
@@ -104,7 +106,10 @@ type SaveState = "saved" | "saving" | "unsaved" | { error: string }
  * it from the codebase.
  *
  * The source is the kind's file in `.ucch/diagrams/` in the project's
- * repository, saved a moment after typing stops. "Update with AI" has the
+ * repository. Once the file exists it is shared live, like any open file
+ * (`code-editor.tsx`): everyone with it open types into one document, which
+ * the collab service writes back. Before that -- or without the service --
+ * it is saved a moment after typing stops. "Update with AI" has the
  * server run the account's default model over the checkout; the server
  * saves the result, and it replaces the draft here. The source it replaced
  * is kept for one undo, until the next edit.
@@ -126,13 +131,45 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
   // The version `saved` is, so a save cannot overwrite a write made since.
   // Null while the file does not exist: the first save creates it.
   const version = React.useRef<string | null>(null)
+  // Only a file on disk has a shared document: the starter is not one yet.
+  const [exists, setExists] = React.useState(false)
   const toast = useToast()
+
+  const collab = useCollabDocument(exists ? fileDocumentName(project.id, null, PATH) : null, {
+    fresh: true,
+    giveUpAfterMs: 5000,
+  })
+  const shown = collab.shown
+  const liveRef = React.useRef(false)
+  liveRef.current = shown !== null
+  const user = useCollabUser()
+  React.useEffect(() => {
+    shown?.provider.setAwarenessField("user", user)
+  }, [shown?.provider, user])
+
+  // Live, the draft is the document's text: whoever typed it, or the agent's
+  // rewrite reread from disk. It is on disk, or about to be, so never unsaved.
+  const provider = shown?.provider
+  React.useEffect(() => {
+    if (!provider) return
+    const ytext = provider.document.getText(FILE_FIELD)
+    const take = () => {
+      const text = ytext.toString()
+      saved.current = text
+      setDraft(text)
+      setSave("saved")
+    }
+    take()
+    ytext.observe(take)
+    return () => ytext.unobserve(take)
+  }, [provider])
 
   const load = React.useCallback(async () => {
     try {
       const file = await fetchDiagram(project.hash, kind)
       saved.current = file?.source ?? STARTER
       version.current = file?.version ?? null
+      setExists(file !== null)
       setDraft(file?.source ?? STARTER)
       setLoadError(null)
     } catch (error) {
@@ -149,7 +186,7 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
   // Ctrl-S and `:w` in the editor: the pending save, now rather than after the pause.
   const saveNow = React.useRef<() => void>(() => {})
   React.useEffect(() => {
-    if (draft === null || draft === saved.current) return
+    if (draft === null || draft === saved.current || liveRef.current) return
     setSave("unsaved")
     const run = async () => {
       setSave("saving")
@@ -157,6 +194,7 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
         version.current = await saveDiagram(project.hash, kind, draft, version.current)
         saved.current = draft
         setSave("saved")
+        setExists(true)
       } catch (error) {
         if (error instanceof FileConflictError) {
           // Someone else's write won: show it, and say this edit is gone.
@@ -197,6 +235,8 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
     project.id,
     (event) => {
       if (event.type !== "file.changed" || event.path !== PATH || isOwnChange(event.origin)) return
+      // Live, the document brings the change itself.
+      if (liveRef.current) return
       // Unsaved typing here is not thrown away: its save will be refused and
       // reverted with a notice instead, so nothing is lost silently.
       if (draftRef.current !== saved.current) return
@@ -231,11 +271,15 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
       try {
         const result = await job(controller.signal)
         // The server has written it already; its version is read back so
-        // the next save here is checked against it.
-        saved.current = result.source
-        version.current = (await fetchDiagram(project.hash, kind).catch(() => null))?.version ?? null
-        setDraft(result.source)
-        setSave("saved")
+        // the next save here is checked against it. Live, the document
+        // rereads it from disk and brings it to every editor.
+        if (!liveRef.current) {
+          saved.current = result.source
+          version.current = (await fetchDiagram(project.hash, kind).catch(() => null))?.version ?? null
+          setDraft(result.source)
+          setSave("saved")
+        }
+        setExists(true)
         setBeforeAi(previous)
       } catch (error) {
         if (controller.signal.aborted) return
@@ -287,7 +331,20 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
 
   const undoAi = () => {
     if (beforeAi === null) return
-    setDraft(beforeAi)
+    if (shown) {
+      // Into the document, as one edit, so everyone's cursor stays put.
+      const document = shown.provider.document
+      const ytext = document.getText(FILE_FIELD)
+      const change = replacement(ytext.toString(), beforeAi)
+      if (change) {
+        document.transact(() => {
+          if (change.to > change.from) ytext.delete(change.from, change.to - change.from)
+          if (change.insert) ytext.insert(change.from, change.insert)
+        })
+      }
+    } else {
+      setDraft(beforeAi)
+    }
     setBeforeAi(null)
   }
 
@@ -339,13 +396,25 @@ export function DiagramEditor({ project, kind }: { project: Project; kind: Built
           <MermaidPreview code={draft} className={generating ? "opacity-50" : undefined} />
           <section aria-label={`${name} diagram source`} className="flex min-h-0 flex-col border-t md:border-t-0 md:border-l">
             <VimEditor
+              // A new instance when a shared copy is bound: the text is then the document's.
+              key={shown ? shown.generation : "own"}
               path={PATH}
               initialText={draft}
               text={draft}
               onChange={edit}
               onSave={() => saveNow.current()}
               autoFocus={false}
-              readOnly={generating}
+              collab={
+                shown
+                  ? { ytext: shown.provider.document.getText(FILE_FIELD), awareness: shown.provider.awareness }
+                  : undefined
+              }
+              // Waiting for the shared copy, out of touch with it, or a viewer:
+              // shown, not changed (see `LiveFile` in code-editor.tsx).
+              readOnly={
+                generating ||
+                (shown ? !shown.connected || shown.readOnly : exists && !collab.failed)
+              }
             />
           </section>
         </div>

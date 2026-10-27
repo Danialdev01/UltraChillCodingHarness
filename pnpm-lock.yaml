@@ -294,6 +294,9 @@ importers:
       web-vitals:
         specifier: ^6.2.3
         version: 6.2.3
+      y-codemirror.next:
+        specifier: 0.3.5
+        version: 0.3.5(@codemirror/state@6.7.2)(@codemirror/view@6.43.10)(yjs@13.6.33)
       y-protocols:
         specifier: 1.0.7
         version: 1.0.7(yjs@13.6.33)
@@ -5872,6 +5875,13 @@ packages:
   xtend@4.0.2:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
+
+  y-codemirror.next@0.3.5:
+    resolution: {integrity: sha512-VluNu3e5HfEXybnypnsGwKAj+fKLd4iAnR7JuX1Sfyydmn1jCBS5wwEL/uS04Ch2ib0DnMAOF6ZRR/8kK3wyGw==}
+    peerDependencies:
+      '@codemirror/state': ^6.0.0
+      '@codemirror/view': ^6.0.0
+      yjs: ^13.5.6
 
   y-protocols@1.0.7:
     resolution: {integrity: sha512-YSVsLoXxO67J6eE/nV4AtFtT3QEotZf5sK5BHxFBXso7VDUT3Tx07IfA6hsu5Q5OmBdMkQVmFZ9QOA7fikWvnw==}
@@ -11577,6 +11587,13 @@ snapshots:
       powershell-utils: 0.1.0
 
   xtend@4.0.2: {}
+
+  y-codemirror.next@0.3.5(@codemirror/state@6.7.2)(@codemirror/view@6.43.10)(yjs@13.6.33):
+    dependencies:
+      '@codemirror/state': 6.7.2
+      '@codemirror/view': 6.43.10
+      lib0: 0.2.119
+      yjs: 13.6.33
 
   y-protocols@1.0.7(yjs@13.6.33):
     dependencies:

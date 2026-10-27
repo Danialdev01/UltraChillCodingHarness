@@ -4,7 +4,9 @@
  * never shares an event loop with the API. See `collab/server.ts`.
  *
  * Listens on loopback only (`COLLAB_PORT`); browsers reach it through the
- * API's `/collab` upgrade, and the API calls in for content writes.
+ * API's `/collab` upgrade, and the API calls in for content writes. Files
+ * are read and written through the API too, which owns the path rules and
+ * tells the project's other viewers.
  */
 import { createDatabase } from "@ucch/db";
 
@@ -50,6 +52,18 @@ const collab = createCollab({
       return null;
     }
     return (await response.json()) as Awaited<ReturnType<Parameters<typeof createCollab>[0]["authorize"]>>;
+  },
+  files: {
+    async read({ projectId, worktreeId, path }) {
+      const response = await callApi("/api/internal/collab/files/read", { projectId, worktreeId, path });
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`the API answered ${response.status}`);
+      return ((await response.json()) as { content: string }).content;
+    },
+    async write({ projectId, worktreeId, path }, content, userId) {
+      const response = await callApi("/api/internal/collab/files/write", { projectId, worktreeId, path, content, userId });
+      if (!response.ok) throw new Error(`the API answered ${response.status}`);
+    },
   },
   async announce(projectId, noteId, userId) {
     const response = await callApi("/api/internal/collab/saved", { projectId, noteId, userId });

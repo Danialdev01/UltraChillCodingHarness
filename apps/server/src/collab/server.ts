@@ -3,7 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import * as Y from "yjs";
 import type { NoteDoc } from "@ucch/protocol";
 
-import { NOTE_FIELD, noteDocumentName, parseDocumentName, type DocumentRef } from "./documents.js";
+import { FILE_FIELD, NOTE_FIELD, noteDocumentName, parseDocumentName, type DocumentRef } from "./documents.js";
+import { rebase } from "./file-merge.js";
 import { readDocFromFragment, writeDocToFragment } from "./prosemirror-y.js";
 import { COLLAB_SECRET_HEADER } from "./secret.js";
 
@@ -24,12 +25,30 @@ export interface NoteDocuments {
   store(noteId: string, state: Uint8Array, content: NoteDoc): Promise<{ projectId: string } | null>;
 }
 
+export type FileRef = Extract<DocumentRef, { kind: "file" }>;
+
+/**
+ * Where files' documents come from: the project's tree on disk, read and
+ * written through the API, which owns the path rules and tells everyone else
+ * about the write. Nothing about a file's document is stored: the disk is
+ * the state.
+ */
+export interface FileDocuments {
+  /** The file's text; null when it is missing, not text, too large, or refused. */
+  read(ref: FileRef): Promise<string | null>;
+  /** Writes the document's text back, as `userId`'s edit. */
+  write(ref: FileRef, text: string, userId: string | undefined): Promise<void>;
+}
+
 export interface CollabOptions {
   port?: number;
   address?: string;
   /** Redeems the client's ticket for the document it names; null refuses it. */
   authorize(token: string, ref: DocumentRef): Promise<CollabAccess | null>;
   notes: NoteDocuments;
+  files?: FileDocuments;
+  /** How long after the last keystroke a file is written back. */
+  fileWriteMs?: number;
   /** A note's body was saved, last edited by `userId`: tell its project's other viewers. */
   announce(projectId: string, noteId: string, userId: string | undefined): Promise<void>;
   /** For the API's calls in: content writes, the open-document count. */
@@ -70,6 +89,13 @@ export function createCollab(options: CollabOptions) {
    * editor's would, and must not start another hold.
    */
   const releasing = new Set<string>();
+  /** Each open file's text as last read from or written to disk. */
+  const disk = new Map<string, string>();
+  /** Files waiting to be written back, and who last typed in each. */
+  const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const lastEditor = new Map<string, string | undefined>();
+  /** One write or reload per file at a time, in order. */
+  const fileQueue = new Map<string, Promise<void>>();
 
   const server = new Server<{ access?: CollabAccess; system?: boolean }>({
     port: options.port ?? 0,
@@ -95,6 +121,13 @@ export function createCollab(options: CollabOptions) {
 
     async onLoadDocument({ documentName, document }) {
       const ref = parseDocumentName(documentName);
+      if (ref?.kind === "file") {
+        const text = options.files ? await options.files.read(ref) : null;
+        if (text === null) throw new Error("no such file");
+        document.getText(FILE_FIELD).insert(0, text);
+        disk.set(documentName, text);
+        return document;
+      }
       if (ref?.kind !== "note") throw new Error("no such document");
       const row = await options.notes.load(ref.noteId);
       if (!row) throw new Error("no such note");
@@ -112,8 +145,26 @@ export function createCollab(options: CollabOptions) {
       return document;
     },
 
+    async onChange({ documentName, context }) {
+      if (parseDocumentName(documentName)?.kind !== "file" || context?.system) return;
+      lastEditor.set(documentName, context?.access?.userId);
+      clearTimeout(writeTimers.get(documentName));
+      const timer = setTimeout(() => {
+        writeTimers.delete(documentName);
+        void writeFile(documentName);
+      }, options.fileWriteMs ?? 1000);
+      timer.unref?.();
+      writeTimers.set(documentName, timer);
+    },
+
     async onStoreDocument({ documentName, document, lastContext }) {
       const ref = parseDocumentName(documentName);
+      // Before an unload too: whatever the timer has not written yet goes now.
+      if (ref?.kind === "file") {
+        clearTimeout(writeTimers.get(documentName));
+        writeTimers.delete(documentName);
+        return writeFile(documentName, document);
+      }
       if (ref?.kind !== "note") return;
       const vector = Y.encodeStateVector(document);
       if (sameBytes(saved.get(documentName), vector)) return;
@@ -134,6 +185,10 @@ export function createCollab(options: CollabOptions) {
 
     async afterUnloadDocument({ documentName }) {
       saved.delete(documentName);
+      disk.delete(documentName);
+      lastEditor.delete(documentName);
+      clearTimeout(writeTimers.get(documentName));
+      writeTimers.delete(documentName);
     },
 
     async onRequest({ request, response }) {
@@ -189,6 +244,78 @@ export function createCollab(options: CollabOptions) {
     }
   }
 
+  /** Runs `job` after whatever is already queued for the file. */
+  function queued(documentName: string, job: () => Promise<void>): Promise<void> {
+    const next = (fileQueue.get(documentName) ?? Promise.resolve()).then(job).catch((error: unknown) => {
+      options.log?.error({ err: error, documentName }, "file document write-back failed");
+    });
+    fileQueue.set(documentName, next);
+    void next.finally(() => {
+      if (fileQueue.get(documentName) === next) fileQueue.delete(documentName);
+    });
+    return next;
+  }
+
+  /** Writes the file's document to disk, unless the disk already holds it. */
+  function writeFile(documentName: string, loaded?: Document): Promise<void> {
+    return queued(documentName, async () => {
+      const ref = parseDocumentName(documentName);
+      const document = loaded ?? instance.documents.get(documentName);
+      if (ref?.kind !== "file" || !document || !options.files) return;
+      const text = document.getText(FILE_FIELD).toString();
+      if (text === disk.get(documentName)) return;
+      await options.files.write(ref, text, lastEditor.get(documentName));
+      disk.set(documentName, text);
+    });
+  }
+
+  /**
+   * The file changed on disk under an open document -- the agent, a
+   * terminal, git. The change goes into the document as one edit, so every
+   * editor's cursor stays where it was; edits typed here and not yet
+   * written are kept where they do not overlap it (`rebase`).
+   */
+  function reloadFile(documentName: string): Promise<void> {
+    return queued(documentName, async () => {
+      const ref = parseDocumentName(documentName);
+      if (ref?.kind !== "file" || !options.files || !instance.documents.has(documentName)) return;
+      const text = await options.files.read(ref);
+      const before = disk.get(documentName);
+      // Deleted, or our own write coming back: nothing to take.
+      if (text === null || before === undefined || text === before) return;
+      disk.set(documentName, text);
+      const connection = await instance.openDirectConnection(documentName, { system: true });
+      try {
+        await connection.transact((document) => {
+          const ytext = document.getText(FILE_FIELD);
+          const change = rebase(before, ytext.toString(), text);
+          if (!change) return;
+          if (change.to > change.from) ytext.delete(change.from, change.to - change.from);
+          if (change.insert) ytext.insert(change.from, change.insert);
+        });
+      } finally {
+        // Not awaited: closing it stores the document, and that write queues
+        // behind this very job.
+        void release(documentName, connection);
+      }
+    });
+  }
+
+  /** The open documents of one tree's files: all of them, or those at `paths`. */
+  function reloadFiles(projectId: string, worktreeId: string, paths: readonly string[] | null): Promise<void> {
+    const wanted = paths ? new Set(paths) : null;
+    const names = [...instance.documents.keys()].filter((name) => {
+      const ref = parseDocumentName(name);
+      return (
+        ref?.kind === "file" &&
+        ref.projectId === projectId &&
+        ref.worktreeId === worktreeId &&
+        (!wanted || wanted.has(ref.path))
+      );
+    });
+    return Promise.all(names.map(reloadFile)).then(() => {});
+  }
+
   async function internal(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.headers[COLLAB_SECRET_HEADER] !== options.secret) {
       response.writeHead(403).end();
@@ -211,6 +338,20 @@ export function createCollab(options: CollabOptions) {
       response.writeHead(204).end();
       return;
     }
+    if (request.method === "POST" && url.pathname === "/internal/files/changed") {
+      const body = JSON.parse(await readBody(request)) as { projectId?: unknown; worktreeId?: unknown; paths?: unknown };
+      if (
+        typeof body.projectId !== "string" ||
+        typeof body.worktreeId !== "string" ||
+        !(body.paths === null || (Array.isArray(body.paths) && body.paths.every((p) => typeof p === "string")))
+      ) {
+        response.writeHead(400).end();
+        return;
+      }
+      await reloadFiles(body.projectId, body.worktreeId, body.paths as string[] | null);
+      response.writeHead(204).end();
+      return;
+    }
     response.writeHead(404).end();
   }
 
@@ -218,6 +359,7 @@ export function createCollab(options: CollabOptions) {
     server,
     instance,
     applyNote,
+    reloadFiles,
     async listen(): Promise<number> {
       await server.listen();
       return server.address.port;
@@ -230,6 +372,7 @@ export function createCollab(options: CollabOptions) {
       });
       holds.clear();
       await Promise.all(released);
+      for (const timer of writeTimers.values()) clearTimeout(timer);
       await server.destroy();
     },
   };

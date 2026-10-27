@@ -169,6 +169,13 @@ export interface FilesPanelContextValue {
   treeError: string | null
   treeTruncated: boolean
   refreshTree: () => void
+  /**
+   * Open files bound to their shared document (`code-editor.tsx`): the
+   * collab service writes them back, so they have nothing to save here and
+   * are not reread when they change -- the document brings the change.
+   */
+  live: ReadonlySet<string>
+  setLive: (path: string, live: boolean) => void
   /** Paths written since this project was opened, from `file.changed`. */
   changed: ReadonlySet<string>
   noteChanged: (path: string, change: "added" | "modified" | "deleted") => void
@@ -262,10 +269,28 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
   // itself or the whole value would change on every keystroke.
   const buffersRef = React.useRef(buffers)
   buffersRef.current = buffers
+  const [live, setLiveSet] = React.useState<ReadonlySet<string>>(new Set())
+  const liveRef = React.useRef(live)
+  liveRef.current = live
+  const setLive = React.useCallback((path: string, on: boolean) => {
+    // What a live buffer holds is on disk, or about to be: it was never
+    // "modified", and stops being live in step with what was written.
+    if (!on && buffersRef.current[path] !== undefined) {
+      const text = buffersRef.current[path]!
+      setSaved((current) => (current[path] === text ? current : { ...current, [path]: text }))
+    }
+    setLiveSet((current) => {
+      if (current.has(path) === on) return current
+      const next = new Set(current)
+      if (on) next.add(path)
+      else next.delete(path)
+      return next
+    })
+  }, [])
   const dirty = useStableSet(
     React.useMemo(
-      () => Object.keys(buffers).filter((path) => buffers[path] !== saved[path]),
-      [buffers, saved],
+      () => Object.keys(buffers).filter((path) => buffers[path] !== saved[path] && !live.has(path)),
+      [buffers, saved, live],
     ),
   )
   /**
@@ -565,7 +590,8 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       saving: savingFiles,
       save: async (path) => {
         const text = buffersRef.current[path]
-        if (!target || text === undefined) return
+        // A live file is written back by the collab service as it is typed.
+        if (!target || text === undefined || liveRef.current.has(path)) return
         setSavingFiles((current) => new Set(current).add(path))
         try {
           versions.current[path] = await saveFile(target, path, text, versions.current[path])
@@ -660,6 +686,8 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       treeError,
       treeTruncated,
       refreshTree,
+      live,
+      setLive,
       changed,
       noteChanged: (path, change) => {
         setChanged((current) => new Set(current).add(path))
@@ -673,7 +701,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         const current = buffersRef.current
         const open = current[path] !== undefined
         const isDirty = open && current[path] !== saved[path]
-        if (change !== "deleted" && open && !isDirty) readFile(path)
+        if (change !== "deleted" && open && !isDirty && !liveRef.current.has(path)) readFile(path)
       },
 
       creating,
@@ -803,6 +831,8 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     treeLoadedFor,
     treeError,
     treeTruncated,
+    live,
+    setLive,
     changed,
     creating,
     createTarget,

@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
-import { FileIcon, Loader2Icon, SaveIcon, XIcon } from "lucide-react"
+import { FileIcon, Loader2Icon, RadioIcon, SaveIcon, XIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { useFileBuffers, useFilesPanel } from "@/components/files-panel"
@@ -10,6 +10,8 @@ import { FilePreview } from "@/components/file-preview"
 import { FileTypeIcon } from "@/components/file-type-icon"
 import { LeaderPicker, type PickerItem } from "@/components/leader-picker"
 import { CodeLinesSkeleton } from "@/components/page-skeletons"
+import type { VimEditor as VimEditorType } from "@/components/vim-editor"
+import { FILE_FIELD, fileDocumentName, useCollabDocument, useCollabUser } from "@/lib/collab"
 import { flattenTree } from "@/lib/file-tree"
 import { basename } from "@/lib/files-api"
 import { targetOf } from "@/lib/project-target"
@@ -40,10 +42,12 @@ const VimEditor = dynamic(
 /**
  * The file view: a tab per open file, and the active one's contents.
  *
- * The text comes from the project's workspace on disk and goes back to it:
- * `:w`, ctrl-S and the Save button all write through the server, which is
- * confined to that project's directory. A tab is marked modified while the
- * buffer differs from what was last read or written.
+ * The text comes from the project's workspace on disk and goes back to it.
+ * An open file is shared live with everyone else who has it open
+ * (`LiveFile`), and the collab service writes it back as it is typed. Without
+ * the service, `:w`, ctrl-S and the Save button write through the server,
+ * which is confined to that project's directory, and a tab is marked
+ * modified while the buffer differs from what was last read or written.
  */
 export function CodeEditor() {
   const {
@@ -63,10 +67,12 @@ export function CodeEditor() {
     openFile,
     openSearch,
     tree,
+    dirty: dirtyFiles,
+    live,
   } = useFilesPanel()
   const { buffers, setBuffer } = useFileBuffers()
   // Where this person is, for everyone else's presence stack.
-  const dirty = activeTab !== null && buffers[activeTab] !== undefined && buffers[activeTab] !== saved[activeTab]
+  const dirty = activeTab !== null && dirtyFiles.has(activeTab)
   usePresenceLocation(project?.id, activeTab ? `file:${activeTab}` : "code", dirty)
   const strip = React.useRef<HTMLDivElement>(null)
 
@@ -179,7 +185,7 @@ export function CodeEditor() {
             >
               {basename(path)}
             </button>
-            {buffers[path] !== undefined && buffers[path] !== saved[path] && (
+            {dirtyFiles.has(path) && (
               <span
                 className="bg-ucch-active size-1.5 shrink-0 rounded-full"
                 title="Modified"
@@ -220,6 +226,13 @@ export function CodeEditor() {
               <span className="ml-auto shrink-0 text-xs">
                 {previewKindFor(activeTab) === "pdf" ? "PDF" : "Image"} preview
               </span>
+            ) : live.has(activeTab) ? (
+              <span
+                className="ml-auto flex shrink-0 items-center gap-1 text-xs"
+                title="Shared live with everyone who has this file open, and saved as you type"
+              >
+                <RadioIcon className="size-3.5" /> Live
+              </span>
             ) : (
               <Button
                 variant="ghost"
@@ -256,7 +269,7 @@ export function CodeEditor() {
               {fileErrors[activeTab] ?? "This file could not be opened."}
             </div>
           ) : (
-            <VimEditor
+            <LiveFile
               key={activeTab}
               path={activeTab}
               initialText={buffers[activeTab]!}
@@ -305,6 +318,51 @@ export function CodeEditor() {
         />
       )}
     </div>
+  )
+}
+
+/**
+ * One open file, bound to its shared document: everyone with the file open
+ * types into the same text and sees each other's cursors, and the collab
+ * service writes it back to disk a moment after typing stops. A change on
+ * disk -- the agent, a terminal -- arrives through the document too, as an
+ * edit that leaves every cursor where it was.
+ *
+ * Until the document has synced, the file is shown as read, unchangeable,
+ * so opening it never flashes a skeleton. A document the service refuses or
+ * cannot be reached for is edited the old way: saved with `:w`, over the
+ * version it was opened at.
+ */
+function LiveFile({
+  path,
+  ...props
+}: React.ComponentProps<typeof VimEditorType>) {
+  const { project, setLive } = useFilesPanel()
+  const name = project ? fileDocumentName(project.id, project.sessionHash, path) : null
+  const { shown, failed } = useCollabDocument(name, { fresh: true, giveUpAfterMs: 5000 })
+  const user = useCollabUser()
+  const isLive = shown !== null
+
+  React.useEffect(() => {
+    setLive(path, isLive)
+    return () => setLive(path, false)
+  }, [path, isLive, setLive])
+
+  React.useEffect(() => {
+    shown?.provider.setAwarenessField("user", user)
+  }, [shown?.provider, user])
+
+  if (!shown) return <VimEditor key="read" path={path} {...props} readOnly={!failed} />
+  return (
+    <VimEditor
+      key={shown.generation}
+      path={path}
+      {...props}
+      collab={{ ytext: shown.provider.document.getText(FILE_FIELD), awareness: shown.provider.awareness }}
+      // Out of touch: paused rather than kept, since a copy typed into
+      // offline could not be merged back into one reopened from disk.
+      readOnly={!shown.connected || shown.readOnly}
+    />
   )
 }
 

@@ -12,7 +12,8 @@ import { registry, type Gauge } from "./metrics.js";
  * - browsers' `/collab` WebSocket upgrades, passed through to it byte for
  *   byte, the way the rest of the public port is passed to the web app;
  * - content written from outside an editor, sent into the document there
- *   (`writeNote`);
+ *   (`writeNote`), and files changed on disk, which an open document of
+ *   them rereads (`filesChanged`);
  * - its open-document count, for `/metrics`.
  */
 export class CollabLink {
@@ -81,6 +82,45 @@ export class CollabLink {
     } catch (error) {
       this.#log?.error({ err: error, noteId }, "could not write a note through the collab service");
       return false;
+    }
+  }
+
+  /** By tree: the paths changed in this beat, or null for "too many to name". */
+  readonly #changed = new Map<string, { projectId: string; worktreeId: string; paths: Set<string> | null }>();
+  #flushTimer: ReturnType<typeof setTimeout> | null = null;
+  #unreachableLogged = 0;
+
+  /**
+   * A file changed on disk -- or, with `path` null, more of the tree than
+   * was named. Collected for a beat and sent as one call per tree: an agent
+   * turn or a checkout changes files by the dozen.
+   */
+  filesChanged(projectId: string, worktreeId: string, path: string | null): void {
+    const key = `${projectId}\0${worktreeId}`;
+    const entry = this.#changed.get(key) ?? { projectId, worktreeId, paths: new Set<string>() };
+    if (path === null) entry.paths = null;
+    else entry.paths?.add(path);
+    this.#changed.set(key, entry);
+    this.#flushTimer ??= setTimeout(() => this.#flushChanged(), 50);
+  }
+
+  #flushChanged(): void {
+    this.#flushTimer = null;
+    const batches = [...this.#changed.values()];
+    this.#changed.clear();
+    for (const { projectId, worktreeId, paths } of batches) {
+      void fetch(new URL("/internal/files/changed", this.#upstream), {
+        method: "POST",
+        headers: { "content-type": "application/json", [COLLAB_SECRET_HEADER]: this.#secret },
+        body: JSON.stringify({ projectId, worktreeId, paths: paths ? [...paths] : null }),
+        signal: AbortSignal.timeout(10_000),
+      }).catch((error: unknown) => {
+        // The service is down: its documents are gone with it, and reopened
+        // from disk. Said once a minute, not once per file the agent writes.
+        if (Date.now() - this.#unreachableLogged < 60_000) return;
+        this.#unreachableLogged = Date.now();
+        this.#log?.error({ err: error, projectId }, "could not tell the collab service a file changed");
+      });
     }
   }
 

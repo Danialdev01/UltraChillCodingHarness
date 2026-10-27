@@ -1986,10 +1986,39 @@ function fromCollab(request: { socket: { remoteAddress?: string }; headers: Reco
   return loopback && !!collabSecretValue && request.headers[COLLAB_SECRET_HEADER] === collabSecretValue;
 }
 
+const CollabFile = z.object({
+  projectId: z.string().uuid(),
+  /** A session's worktree by its hash, or "" for the project's checkout. */
+  worktreeId: z.union([z.literal(""), ThreadHash]),
+  path: z.string().min(1).max(1024),
+});
+
 const CollabAuthorize = z.object({
   token: z.string().min(1).max(512),
-  document: z.object({ kind: z.literal("note"), noteId: z.string().uuid() }),
+  document: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("note"), noteId: z.string().uuid() }),
+    CollabFile.extend({ kind: z.literal("file") }),
+  ]),
 });
+
+/**
+ * The tree a file document is in: the checkout, or a session's worktree that
+ * exists. A session still working in the checkout -- its worktree not ready
+ * -- has no documents of its own: changes there are told as the checkout's,
+ * so a document named for the session would never hear of them. Its editor
+ * saves the old way instead.
+ */
+async function collabTree(projectId: string, worktreeId: string): Promise<TreeTarget | null> {
+  if (!worktreeId) return projectId;
+  const [thread] = await db
+    .select({ projectId: threads.projectId, hash: threads.hash, worktreeState: threads.worktreeState })
+    .from(threads)
+    .where(and(eq(threads.hash, worktreeId), eq(threads.projectId, projectId)))
+    .limit(1);
+  if (!thread) return null;
+  const tree = { projectId, tree: treeFor(config.WORKSPACE_ROOT, projectId, thread) };
+  return worktreeIdOf(config.WORKSPACE_ROOT, tree) === worktreeId ? tree : null;
+}
 
 /** Redeems an editor's ticket for the document it opens: the API stays the judge of who may edit what. */
 app.post("/api/internal/collab/authorize", async (request, reply) => {
@@ -1998,13 +2027,24 @@ app.post("/api/internal/collab/authorize", async (request, reply) => {
   if (!parsed.success) return reply.code(400).send({ error: "bad request" });
   const principal = auth.redeemTicket(parsed.data.token);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
-  const [row] = await db
-    .select({ projectId: notes.projectId, workspaceId: projects.workspaceId })
-    .from(notes)
-    .innerJoin(projects, eq(projects.id, notes.projectId))
-    .where(eq(notes.id, parsed.data.document.noteId))
-    .limit(1);
+  const { document } = parsed.data;
+  const [row] =
+    document.kind === "note"
+      ? await db
+          .select({ projectId: notes.projectId, workspaceId: projects.workspaceId })
+          .from(notes)
+          .innerJoin(projects, eq(projects.id, notes.projectId))
+          .where(eq(notes.id, document.noteId))
+          .limit(1)
+      : await db
+          .select({ projectId: projects.id, workspaceId: projects.workspaceId })
+          .from(projects)
+          .where(eq(projects.id, document.projectId))
+          .limit(1);
   if (!row || !(await workspaceService.canView(row.workspaceId, principal.userId))) {
+    return reply.code(404).send({ error: "not found" });
+  }
+  if (document.kind === "file" && !(await collabTree(document.projectId, document.worktreeId))) {
     return reply.code(404).send({ error: "not found" });
   }
   const member = await workspaceService.membership(row.workspaceId, principal.userId);
@@ -2047,6 +2087,91 @@ app.post("/api/internal/collab/saved", async (request, reply) => {
     coalesce: true,
   });
   return { ok: true };
+});
+
+/**
+ * A file's text for the collab service to open as a document; 404 for
+ * anything an editor could not open either: missing, not text, too large,
+ * or a path the workspace rules refuse.
+ */
+app.post("/api/internal/collab/files/read", async (request, reply) => {
+  if (!fromCollab(request)) return reply.code(403).send({ error: "forbidden" });
+  const parsed = CollabFile.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "bad request" });
+  const tree = await collabTree(parsed.data.projectId, parsed.data.worktreeId);
+  if (!tree) return reply.code(404).send({ error: "not found" });
+  const result = await workspaceFiles.read(tree, parsed.data.path).catch((error: unknown) => {
+    if (error instanceof PathError) return null;
+    throw error;
+  });
+  if (result?.kind !== "text") return reply.code(404).send({ error: "not found" });
+  return { content: result.content };
+});
+
+const CollabFileWrite = CollabFile.extend({ content: z.string(), userId: z.string().uuid().optional() });
+
+/**
+ * A co-edited file written back by the collab service: on disk, told to the
+ * project's other views as the person who typed it, and logged like a save.
+ * No version check -- the document is the merge of everyone's edits, and a
+ * change on disk reaches it before the next write (`notifyCollab`).
+ */
+app.post("/api/internal/collab/files/write", { bodyLimit: 8 * 1024 * 1024 }, async (request, reply) => {
+  if (!fromCollab(request)) return reply.code(403).send({ error: "forbidden" });
+  const parsed = CollabFileWrite.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "bad request" });
+  const { projectId, worktreeId, path, content, userId } = parsed.data;
+  const tree = await collabTree(projectId, worktreeId);
+  if (!tree) return reply.code(404).send({ error: "not found" });
+  const before = await workspaceFiles.read(tree, path).catch(() => null);
+  try {
+    collabWrites.set(`${projectId}\0${worktreeId}\0${path}`, Date.now() + 2000);
+    const change = await workspaceFiles.write(tree, path, content);
+    await announceFileChange(tree, path, change, userId ? { userId, clientId: "collab" } : undefined);
+    void audit.record({
+      projectId,
+      userId: userId ?? null,
+      clientId: null,
+      action: change === "added" ? "file.create" : "file.write",
+      targetType: "file",
+      targetId: path,
+      summary: change === "added" ? `Created ${path}` : `Edited ${path}`,
+      details: textDelta(before?.kind === "text" ? before.content : "", content),
+      coalesce: change === "modified",
+    });
+    return { change };
+  } catch (error) {
+    return fileFailure(error, reply);
+  }
+});
+
+/**
+ * Files the collab service just wrote, by tree and path, until when: their
+ * `file.changed` coming back is not a change for it to read again.
+ */
+const collabWrites = new Map<string, number>();
+
+/**
+ * A file changed on disk by anything but the collab service -- the agent, a
+ * terminal, git, a save from an editor without it: an open document of it
+ * takes the change. Bursts are batched in `CollabLink`.
+ */
+function notifyCollab(projectId: string, worktreeId: string, path: string | null): void {
+  if (!collab) return;
+  if (path !== null) {
+    const key = `${projectId}\0${worktreeId}\0${path}`;
+    const until = collabWrites.get(key);
+    if (until !== undefined) {
+      collabWrites.delete(key);
+      if (until >= Date.now()) return;
+    }
+  }
+  collab.filesChanged(projectId, worktreeId, path);
+}
+bus.tap(({ projectId, event }) => {
+  if (!projectId) return;
+  if (event.type === "file.changed") notifyCollab(projectId, event.worktreeId ?? "", event.path);
+  else if (event.type === "resource.changed" && event.resource === "files") notifyCollab(projectId, event.id ?? "", null);
 });
 
 registerNoteRoutes(app, {

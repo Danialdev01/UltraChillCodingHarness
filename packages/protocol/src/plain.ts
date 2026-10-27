@@ -22,6 +22,7 @@ export * from "./note-text.js";
 export * from "./timeline.js";
 export * from "./tasks.js";
 export * from "./keys.js";
+export * from "./text-replacement.js";
 
 // --- Projects ----------------------------------------------------------------
 

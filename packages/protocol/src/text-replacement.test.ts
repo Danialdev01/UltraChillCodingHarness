@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { replacement } from "./doc-sync.js";
+import { replacement } from "./text-replacement.js";
 
 const apply = (text: string, r: { from: number; to: number; insert: string }) =>
   text.slice(0, r.from) + r.insert + text.slice(r.to);

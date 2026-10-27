@@ -3,9 +3,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import type { NoteDoc } from "@ucch/protocol";
 
-import { NOTE_FIELD } from "./documents.js";
+import { FILE_FIELD, NOTE_FIELD, fileDocumentName } from "./documents.js";
 import { readDocFromFragment } from "./prosemirror-y.js";
-import { createCollab, type Collab, type CollabAccess, type NoteDocuments } from "./server.js";
+import { createCollab, type Collab, type CollabAccess, type FileDocuments, type NoteDocuments } from "./server.js";
 
 const NOTE = "11111111-1111-4111-8111-111111111111";
 const PROJECT = "22222222-2222-4222-8222-222222222222";
@@ -49,6 +49,20 @@ let collab: Collab;
 let port: number;
 let memory: ReturnType<typeof memoryNotes>;
 let announced: { projectId: string; noteId: string; userId?: string }[];
+/** A project's tree on disk, in memory, with every write-back recorded. */
+let disk: Map<string, string>;
+let fileWrites: { path: string; text: string; userId?: string }[];
+const FILE = fileDocumentName(PROJECT, "", "src/app.ts");
+
+const memoryFiles = (): FileDocuments => ({
+  async read(ref) {
+    return disk.get(ref.path) ?? null;
+  },
+  async write(ref, text, userId) {
+    disk.set(ref.path, text);
+    fileWrites.push({ path: ref.path, text, userId });
+  },
+});
 const providers: HocuspocusProvider[] = [];
 
 /** Tickets that redeem: "good" for an editor, "viewer" for read-only. */
@@ -87,10 +101,14 @@ function typeAt(doc: Y.Doc, index: number, text: string) {
 beforeEach(async () => {
   memory = memoryNotes(paragraph("hello"));
   announced = [];
+  disk = new Map([["src/app.ts", "const a = 1;\nconst b = 2;\n"]]);
+  fileWrites = [];
   collab = createCollab({
     secret: "s",
     authorize,
     notes: memory.notes,
+    files: memoryFiles(),
+    fileWriteMs: 50,
     announce: async (projectId, noteId, userId) => void announced.push({ projectId, noteId, userId }),
     debounceMs: 50,
     maxDebounceMs: 200,
@@ -185,5 +203,61 @@ describe("the collab service", () => {
     });
     expect(write.status).toBe(204);
     expect(memory.row.content).toEqual(paragraph("over http"));
+  });
+});
+
+describe("a file's document", () => {
+  const fileText = (doc: Y.Doc) => doc.getText(FILE_FIELD).toString();
+
+  it("opens on the file's text and writes typing back a beat later, as who typed it", async () => {
+    const a = client("good", FILE);
+    await a.synced();
+    expect(fileText(a.document)).toBe("const a = 1;\nconst b = 2;\n");
+    a.document.getText(FILE_FIELD).insert(0, "// hi\n");
+    await until(() => disk.get("src/app.ts")!.startsWith("// hi\n"));
+    expect(fileWrites).toEqual([{ path: "src/app.ts", text: "// hi\nconst a = 1;\nconst b = 2;\n", userId: USER }]);
+  });
+
+  it("refuses a file that cannot be read", async () => {
+    const a = client("good", fileDocumentName(PROJECT, "", "missing.ts"));
+    await until(() => a.failed() || a.provider.isSynced === false, 2000);
+    expect(a.provider.isSynced).toBe(false);
+  });
+
+  it("takes a change on disk into every open editor as one edit, and does not write it back", async () => {
+    const a = client("good", FILE);
+    const b = client("good", FILE);
+    await a.synced();
+    await b.synced();
+    disk.set("src/app.ts", "const a = 1;\nconst b = 3;\n");
+    await collab.reloadFiles(PROJECT, "", ["src/app.ts"]);
+    await until(() => fileText(a.document).includes("b = 3") && fileText(b.document).includes("b = 3"));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(fileWrites).toEqual([]);
+  });
+
+  it("keeps typing not yet written when the disk changes elsewhere in the file", async () => {
+    const a = client("good", FILE);
+    await a.synced();
+    // Typed, and the disk changes before the write-back runs.
+    a.document.getText(FILE_FIELD).insert(0, "// typed\n");
+    disk.set("src/app.ts", "const a = 1;\nconst b = 20;\n");
+    await until(() => collab.instance.documents.get(FILE)?.getText(FILE_FIELD).toString().startsWith("// typed") ?? false);
+    await collab.reloadFiles(PROJECT, "", null);
+    const merged = "// typed\nconst a = 1;\nconst b = 20;\n";
+    await until(() => fileText(a.document) === merged && disk.get("src/app.ts") === merged);
+  });
+
+  it("hears of changes over HTTP, for the API", async () => {
+    const a = client("good", FILE);
+    await a.synced();
+    disk.set("src/app.ts", "changed\n");
+    const notice = await fetch(`http://127.0.0.1:${port}/internal/files/changed`, {
+      method: "POST",
+      headers: { "x-ucch-collab": "s", "content-type": "application/json" },
+      body: JSON.stringify({ projectId: PROJECT, worktreeId: "", paths: ["src/app.ts"] }),
+    });
+    expect(notice.status).toBe(204);
+    await until(() => fileText(a.document) === "changed\n");
   });
 });
