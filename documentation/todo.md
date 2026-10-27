@@ -838,7 +838,7 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     - Manual (headless Chrome): a rename in one window while the other types kept both, with 0 409s. With collab stopped, the banner appeared, typing went on, and the offline edit reached the other window 3.7 s after collab restarted.
     - Web build OK; `pnpm typecheck && pnpm test`: 2006 passed, 2 skipped.
 
-- [ ] **R10 — Code and diagram co-editing**
+- [x] **R10 — Code and diagram co-editing** — e75f37b
 
   - **Depends:** R9, PF1.24
   - **Files:** the collab service (file documents), `apps/server/src/files.ts`, `apps/server/src/file-watcher.ts`, `apps/web/src/lib/doc-sync.ts` (move `replacement()` into `packages/protocol` and re-export), `apps/web/src/components/code-editor.tsx`, `components/diagrams/diagram-editor.tsx`, `y-codemirror.next`
@@ -850,6 +850,26 @@ These are unchanged in substance. Their dependencies on completed tasks are drop
     5. Client: a `yCollab` extension in CodeMirror, with vim mode still working. Remove `ifVersion` save conflicts for co-edited files.
   - **Acceptance:** two users edit the same file live. An agent edit to that file merges into both editors without moving cursors.
   - **Verify:** `pnpm test -- collab`, plus manual
+  - **Measured:**
+    - Shape:
+      - The collab service reads and writes files through the API (`/api/internal/collab/files/read|write`), which owns the path rules, tells the project's other views (`file.changed` as the person who typed) and logs the save. Nothing about a file's document is stored.
+      - Every `file.changed` and `resource.changed{files}` on the bus, except the echo of the service's own write, is batched by `CollabLink.filesChanged` and sent to the service, which rereads the open documents of those paths. The change goes in as one edit; typing not yet written back is kept where it does not overlap the disk's change (`collab/file-merge.ts`), and the disk wins where it does.
+      - `lib/collab.ts` (`useCollabDocument`) is shared by notes and files. A file's provider is replaced by a fresh one on every reconnect (`fresh`): the service reopens the document from disk, and an old copy merged into it would double the text. The editor is read-only while out of touch.
+      - CodeMirror gets `yCollab` with a per-tab `Y.UndoManager`; vim's `u` / Ctrl-r are routed to it, so undo never takes back someone else's typing.
+    - Deviations from the steps:
+      - A diagram goes live only once its file exists: the starter is saved over REST the first time, as before.
+      - A session whose worktree is not ready works in the checkout, whose changes are told as the checkout's; its documents are refused, and its editor saves the old way. So is a document that does not sync within 5 s (the service is down).
+    - Live, dev API + collab + Postgres:
+      - Two Yjs clients through the API's `/collab` converged in 27 ms; the file held the merge 991 ms later.
+      - A write to the file on disk (as the agent's) reached both; each client's relative cursor resolved to the same text before and after. A REST save reached both. Typing not yet written plus a disk change elsewhere were both kept, and written back.
+      - In a real session worktree: typing reached the worktree's file, and a disk change there reached both editors. The checkout's document of a worktree-only file, and a session whose worktree is not ready, were refused.
+    - `e2e/coedit-file.spec.ts`, two browser contexts in vim mode:
+      - both typed at once at either end of a file; both ended identical, each with one remote cursor, and the merge was on disk;
+      - a REST rewrite of the line between the two cursors reached both, and the next key each pressed landed where they had stopped;
+      - a diagram: the starter typed into and saved, then live in a second context; A's `u` removed A's line only, in both editors and on disk.
+      - With `coedit.spec.ts`, 3 of 3 repeats passed.
+    - With collab stopped, a file opened read-only, became editable after 5 s, and `:w` saved it.
+    - `pnpm typecheck && pnpm test`: 2017 passed, 2 skipped. Web build OK; bundle budget within budget.
 
 - [x] **R11 — Optimistic, per-field mutations for tasks and timeline** — ce5e248
 
