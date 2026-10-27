@@ -96,7 +96,7 @@ describe("GitCache", () => {
     expect((await fresh).value).toBe("fresh");
   });
 
-  it("tells a project's viewers once per window however many changes came", async () => {
+  it("tells a project's viewers once per burst however many changes came", async () => {
     cache.invalidate(PROJECT, FILE_READS);
     cache.invalidate(PROJECT, FILE_READS);
     cache.invalidate(OTHER);
@@ -106,5 +106,27 @@ describe("GitCache", () => {
     cache.invalidate(PROJECT);
     vi.advanceTimersByTime(300);
     expect(notified).toEqual([PROJECT, OTHER, PROJECT]);
+  });
+
+  it("waits for a burst longer than the debounce to end before telling anyone", async () => {
+    // An agent writing files: the watcher's slices of it, 150 ms apart.
+    for (let i = 0; i < 4; i++) {
+      cache.invalidate(PROJECT, FILE_READS);
+      vi.advanceTimersByTime(150);
+    }
+    expect(notified).toEqual([]);
+    vi.advanceTimersByTime(149);
+    expect(notified).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(notified).toEqual([PROJECT]);
+  });
+
+  it("tells viewers at least once a second while changes never stop", async () => {
+    for (let i = 0; i < 20; i++) {
+      cache.invalidate(PROJECT, FILE_READS);
+      vi.advanceTimersByTime(100);
+    }
+    // Two seconds of changes 100 ms apart: told at 1 s and 2 s, not never.
+    expect(notified).toEqual([PROJECT, PROJECT]);
   });
 });

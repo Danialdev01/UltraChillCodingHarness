@@ -17,8 +17,13 @@ import { randomBytes } from "node:crypto";
  *
  * Nothing is recomputed until someone asks. Two who ask at once share the
  * one computation. After an invalidation the project's viewers are told,
- * once per `debounceMs` however many changes came, that their git state is
- * stale (`onInvalidated`); the state itself is never pushed, since a status
+ * once per burst however many changes came, that their git state is stale
+ * (`onInvalidated`): `debounceMs` after the last change, or `maxWaitMs`
+ * after the first while changes keep coming. Told sooner, a burst -- an
+ * agent writing twenty files -- made every viewer read twice: the OS
+ * watcher hands over a burst's first change at once and the rest together
+ * once writing stops, and that gap alone came to almost half a second. The
+ * state itself is never pushed, since a status
  * can list thousands of files and a project's topic reaches every quiet
  * subscriber.
  *
@@ -37,12 +42,14 @@ export const FILE_READS: readonly GitRead[] = ["status"];
 const MAX_TREES = 500;
 
 export interface GitCacheOptions {
-  /** Told, at most once per `debounceMs`, that a project's git state is stale. */
+  /** Told, once per burst of changes, that a project's git state is stale. */
   onInvalidated(projectId: string): void;
   /** How long a read is kept with nothing to say it changed. 5 minutes when absent. */
   maxAgeMs?: number;
-  /** 300 ms when absent. */
+  /** Quiet this long after a change before viewers are told. 500 ms when absent. */
   debounceMs?: number;
+  /** The longest viewers wait while changes keep coming. 1 s when absent. */
+  maxWaitMs?: number;
   now?: () => number;
 }
 
@@ -61,7 +68,8 @@ interface Tree {
 export class GitCache {
   /** By working-tree directory, least recently read first. */
   readonly #trees = new Map<string, Tree>();
-  readonly #pending = new Map<string, ReturnType<typeof setTimeout>>();
+  /** By project: the notice waiting to go, and when the first change it covers came. */
+  readonly #pending = new Map<string, { timer: ReturnType<typeof setTimeout>; since: number }>();
   /**
    * Different on every boot, so an `ETag` a browser kept from before a
    * restart never matches a version counted again from 1.
@@ -71,12 +79,14 @@ export class GitCache {
   readonly #options: GitCacheOptions;
   readonly #maxAgeMs: number;
   readonly #debounceMs: number;
+  readonly #maxWaitMs: number;
   readonly #now: () => number;
 
   constructor(options: GitCacheOptions) {
     this.#options = options;
     this.#maxAgeMs = options.maxAgeMs ?? 5 * 60_000;
-    this.#debounceMs = options.debounceMs ?? 300;
+    this.#debounceMs = options.debounceMs ?? 500;
+    this.#maxWaitMs = options.maxWaitMs ?? 1_000;
     this.#now = options.now ?? Date.now;
   }
 
@@ -127,18 +137,26 @@ export class GitCache {
         if (tree.reads.has(read)) tree.reads.set(read, { version: ++this.#version, at: 0 });
       }
     }
-    if (this.#pending.has(projectId)) return;
-    const timer = setTimeout(() => {
-      this.#pending.delete(projectId);
-      this.#options.onInvalidated(projectId);
-    }, this.#debounceMs);
+    // The wall clock, as the timers keep it -- not `now`, which tests move by
+    // hand for the reads' ages. A clock jump only shortens one wait.
+    const at = Date.now();
+    const pending = this.#pending.get(projectId);
+    if (pending) clearTimeout(pending.timer);
+    const since = pending?.since ?? at;
+    const timer = setTimeout(
+      () => {
+        this.#pending.delete(projectId);
+        this.#options.onInvalidated(projectId);
+      },
+      Math.max(0, Math.min(this.#debounceMs, since + this.#maxWaitMs - at)),
+    );
     timer.unref?.();
-    this.#pending.set(projectId, timer);
+    this.#pending.set(projectId, { timer, since });
   }
 
   /** Stops the pending notices: shutdown and tests. */
   dispose(): void {
-    for (const timer of this.#pending.values()) clearTimeout(timer);
+    for (const { timer } of this.#pending.values()) clearTimeout(timer);
     this.#pending.clear();
   }
 
