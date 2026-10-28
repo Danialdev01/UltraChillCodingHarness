@@ -1,0 +1,40 @@
+{
+  "at": "2026-10-26T06:23:02.736Z",
+  "baseURL": "http://127.0.0.1:3397",
+  "cpuThrottle": 1,
+  "outcome": "completed",
+  "streamMs": 66706,
+  "firstDeltaMs": 374,
+  "deltas": 1334,
+  "received": {
+    "frames": 1365,
+    "bytes": 448973
+  },
+  "kept": true,
+  "longTasks": {
+    "count": 0,
+    "totalMs": 0,
+    "maxMs": 0,
+    "atMs": []
+  },
+  "inp": {
+    "interactions": 132,
+    "measured": 68,
+    "ms": 40
+  },
+  "frameToPaintMs": {
+    "count": 1334,
+    "p50": 9.1,
+    "p95": 17.6,
+    "p99": 25.6,
+    "max": 37.6
+  },
+  "frameGapMs": {
+    "count": 4022,
+    "p50": 16.7,
+    "p95": 16.8,
+    "p99": 16.8,
+    "max": 33.3,
+    "over50": 0
+  }
+}

@@ -1,0 +1,151 @@
+{
+  "at": "2026-10-27T14:58:20.487Z",
+  "baseURL": "http://127.0.0.1:3397",
+  "firstLoad": 587,
+  "p95": {
+    "paint": 81.09999999962747,
+    "content": 734.2999999998137
+  },
+  "hops": [
+    {
+      "name": "session A",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/ymm9lxuzvg8d",
+      "paint": 77.3000000002794,
+      "content": 199.89999999990687,
+      "via": "link"
+    },
+    {
+      "name": "session B",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/0u4yu06tve9i",
+      "paint": 41,
+      "content": 63.700000000186265,
+      "via": "link"
+    },
+    {
+      "name": "tasks",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/tasks",
+      "paint": 45.700000000186265,
+      "content": 394.3000000002794,
+      "via": "link"
+    },
+    {
+      "name": "documentation",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/documentation",
+      "paint": 49.6999999997206,
+      "content": 734.2999999998137,
+      "via": "router"
+    },
+    {
+      "name": "timeline",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/timeline",
+      "paint": 39.89999999990687,
+      "content": 343.5,
+      "via": "link"
+    },
+    {
+      "name": "settings account",
+      "href": "/setting/account",
+      "paint": 20.899999999906868,
+      "content": 346.89999999990687,
+      "via": "router"
+    },
+    {
+      "name": "settings theme",
+      "href": "/setting/theme",
+      "paint": 45.8000000002794,
+      "content": 345,
+      "via": "link"
+    },
+    {
+      "name": "workspace settings",
+      "href": "/2atsgvziymr0/workspace-settings/general",
+      "paint": 59,
+      "content": 392.60000000009313,
+      "via": "link"
+    },
+    {
+      "name": "workspace members",
+      "href": "/2atsgvziymr0/workspace-settings/members",
+      "paint": 25.40000000037253,
+      "content": 372.8000000002794,
+      "via": "link"
+    },
+    {
+      "name": "dashboard again",
+      "href": "/2atsgvziymr0",
+      "paint": 60.6999999997206,
+      "content": 76.39999999990687,
+      "via": "link"
+    },
+    {
+      "name": "session A (again)",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/ymm9lxuzvg8d",
+      "paint": 33.10000000009313,
+      "content": 140.89999999990687,
+      "via": "link"
+    },
+    {
+      "name": "session B (again)",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/0u4yu06tve9i",
+      "paint": 56.299999999813735,
+      "content": 100.60000000009313,
+      "via": "link"
+    },
+    {
+      "name": "tasks (again)",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/tasks",
+      "paint": 55.10000000009313,
+      "content": 63,
+      "via": "link"
+    },
+    {
+      "name": "documentation (again)",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/documentation",
+      "paint": 21.800000000279397,
+      "content": 80.20000000018626,
+      "via": "router"
+    },
+    {
+      "name": "timeline (again)",
+      "href": "/2atsgvziymr0/p/t2k6fi9uhc25/timeline",
+      "paint": 48.40000000037253,
+      "content": 66,
+      "via": "link"
+    },
+    {
+      "name": "settings account (again)",
+      "href": "/setting/account",
+      "paint": 17.199999999720603,
+      "content": 41.6999999997206,
+      "via": "router"
+    },
+    {
+      "name": "settings theme (again)",
+      "href": "/setting/theme",
+      "paint": 81.09999999962747,
+      "content": 103.1999999997206,
+      "via": "link"
+    },
+    {
+      "name": "workspace settings (again)",
+      "href": "/2atsgvziymr0/workspace-settings/general",
+      "paint": 51.10000000009313,
+      "content": 62.5,
+      "via": "link"
+    },
+    {
+      "name": "workspace members (again)",
+      "href": "/2atsgvziymr0/workspace-settings/members",
+      "paint": 44.799999999813735,
+      "content": 67.20000000018626,
+      "via": "link"
+    },
+    {
+      "name": "dashboard again (again)",
+      "href": "/2atsgvziymr0",
+      "paint": 35.89999999990687,
+      "content": 57.59999999962747,
+      "via": "link"
+    }
+  ]
+}

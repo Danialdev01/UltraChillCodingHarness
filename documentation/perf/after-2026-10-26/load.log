@@ -1,0 +1,23 @@
+load: 50 users for 10 min (+30 s ramp) against http://127.0.0.1:3397
+  30 s: 0 turns, 1054 keystrokes, 0 errors
+  60 s: 1 turns, 3140 keystrokes, 0 errors
+  90 s: 8 turns, 5228 keystrokes, 0 errors
+  120 s: 11 turns, 7321 keystrokes, 0 errors
+  150 s: 13 turns, 9414 keystrokes, 0 errors
+  180 s: 18 turns, 11507 keystrokes, 0 errors
+  210 s: 23 turns, 13600 keystrokes, 0 errors
+  240 s: 26 turns, 15686 keystrokes, 0 errors
+  270 s: 29 turns, 17774 keystrokes, 0 errors
+  300 s: 35 turns, 19864 keystrokes, 0 errors
+  330 s: 39 turns, 21960 keystrokes, 0 errors
+  360 s: 44 turns, 24051 keystrokes, 0 errors
+  390 s: 48 turns, 26145 keystrokes, 0 errors
+  420 s: 51 turns, 28238 keystrokes, 0 errors
+  450 s: 55 turns, 30318 keystrokes, 0 errors
+  480 s: 58 turns, 32409 keystrokes, 0 errors
+  510 s: 63 turns, 34505 keystrokes, 0 errors
+  540 s: 64 turns, 36595 keystrokes, 0 errors
+  570 s: 69 turns, 38691 keystrokes, 0 errors
+  600 s: 73 turns, 40781 keystrokes, 0 errors
+  630 s: 77 turns, 42863 keystrokes, 0 errors
+wrote documentation/perf/after-2026-10-26/load.json and its .md summary

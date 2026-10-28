@@ -1,0 +1,13 @@
+load: 50 users for 5 min (+30 s ramp) against http://127.0.0.1:3397
+  30 s: 0 turns, 1054 keystrokes, 0 errors
+  60 s: 0 turns, 3140 keystrokes, 0 errors
+  90 s: 0 turns, 5228 keystrokes, 0 errors
+  120 s: 4 turns, 7321 keystrokes, 0 errors
+  150 s: 10 turns, 9414 keystrokes, 0 errors
+  180 s: 11 turns, 11507 keystrokes, 0 errors
+  210 s: 12 turns, 13600 keystrokes, 0 errors
+  240 s: 14 turns, 15689 keystrokes, 0 errors
+  270 s: 18 turns, 17783 keystrokes, 0 errors
+  300 s: 22 turns, 19864 keystrokes, 0 errors
+  330 s: 23 turns, 21960 keystrokes, 0 errors
+wrote documentation/perf/after-2026-10-26/load-4000.json and its .md summary

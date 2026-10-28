@@ -1,0 +1,51 @@
+
+== top 20 by total execution time ==
+ calls | total_ms | mean_ms |  rows  |                                                     query                                                      
+-------+----------+---------+--------+----------------------------------------------------------------------------------------------------------------
+  7522 |   1454.2 |    0.19 | 150440 | select "projects"."id", "projects"."hash", "projects"."name", "projects"."stack", "projects"."container_state"
+  7535 |    737.8 |    0.10 |  15219 | select "workspaces"."id", "workspaces"."slug", "workspaces"."hash", "workspaces"."name", "workspaces"."kind", 
+  1047 |    336.3 |    0.32 |   1047 | select coalesce(sum(("turns"."usage" ->> $1)::double precision), $6), coalesce(sum(("turns"."usage" ->> $2)::d
+  4199 |    221.4 |    0.05 |   4199 | select "projects"."id", "projects"."hash", "projects"."name", "projects"."stack", "projects"."container_state"
+  7524 |    128.4 |    0.02 |   7524 | select "login", "name", "email", "avatar_url", coalesce("password_hash", $3) <> $4 from "users" where "users".
+   435 |     84.0 |    0.19 |    435 | insert into "events" ("id", "project_id", "thread_id", "seq", "type", "payload", "created_at") values (default
+  7463 |     63.5 |    0.01 |      0 | select "id", "workspace_id", "name", "engine", "host", "port", "username", "password_encrypted", "database", "
+   326 |     60.3 |    0.19 |    326 | insert into "audit_log" ("id", "project_id", "user_id", "client_id", "action", "target_type", "target_id", "su
+  1047 |     58.7 |    0.06 |   1047 | select count(*)::int, count(*) filter (where exists ( select $2 from "threads" where "project_id" = "projects"
+    94 |     39.9 |    0.42 |    376 | insert into "events" ("id", "project_id", "thread_id", "seq", "type", "payload", "created_at") values (default
+  1219 |     37.2 |    0.03 |   1219 | select "id", "user_id", "scopes", "expires_at", "created_at" from "sessions" where "sessions"."id" = $1 limit 
+  1482 |     36.9 |    0.02 |   4211 | select "id", "hash", "title", "status", "provider", "base_branch", "branch", "worktree_state", "worktree_error
+   128 |     35.0 |    0.27 |    256 | select coalesce(state, $1) as state, count(*)::int as n from pg_stat_activity where datname = current_database
+   485 |     30.0 |    0.06 |     13 | insert into "notes" ("id", "project_id", "parent_id", "title", "icon", "cover", "content", "search_text", "pos
+   155 |     24.7 |    0.16 |   1957 | select "seq", "project_id", "created_at", "payload"::text from "events" where ("events"."thread_id" = $1 and "
+  1267 |     19.6 |    0.02 |   1267 | select "role", "can_create_project", "can_create_session" from "workspace_members" where ("workspace_members".
+    91 |     19.2 |    0.21 |     91 | update "project_stats" set "last_turn_failed" = coalesce((select ("t".error is not null or "t".stop_reason in 
+    46 |     18.7 |    0.41 |     92 | select "turns"."model", coalesce(sum("turns"."cost_usd")::double precision, $6), count(*)::int, coalesce(sum((
+    94 |     17.4 |    0.19 |     94 | insert into "turns" ("id", "thread_id", "seq", "checkpoint_before", "checkpoint_after", "usage", "cost_usd", "
+   527 |     15.8 |    0.03 |    527 | select max("seq") from "events" where "events"."thread_id" = $1
+(20 rows)
+
+== top 20 by calls ==
+ calls | total_ms | mean_ms |  rows  |                                                     query                                                      
+-------+----------+---------+--------+----------------------------------------------------------------------------------------------------------------
+  7535 |    737.8 |    0.10 |  15219 | select "workspaces"."id", "workspaces"."slug", "workspaces"."hash", "workspaces"."name", "workspaces"."kind", 
+  7524 |    128.4 |    0.02 |   7524 | select "login", "name", "email", "avatar_url", coalesce("password_hash", $3) <> $4 from "users" where "users".
+  7522 |   1454.2 |    0.19 | 150440 | select "projects"."id", "projects"."hash", "projects"."name", "projects"."stack", "projects"."container_state"
+  7463 |     63.5 |    0.01 |      0 | select "id", "workspace_id", "name", "engine", "host", "port", "username", "password_encrypted", "database", "
+  4199 |    221.4 |    0.05 |   4199 | select "projects"."id", "projects"."hash", "projects"."name", "projects"."stack", "projects"."container_state"
+  1482 |     36.9 |    0.02 |   4211 | select "id", "hash", "title", "status", "provider", "base_branch", "branch", "worktree_state", "worktree_error
+  1267 |     19.6 |    0.02 |   1267 | select "role", "can_create_project", "can_create_session" from "workspace_members" where ("workspace_members".
+  1219 |     37.2 |    0.03 |   1219 | select "id", "user_id", "scopes", "expires_at", "created_at" from "sessions" where "sessions"."id" = $1 limit 
+  1047 |     58.7 |    0.06 |   1047 | select count(*)::int, count(*) filter (where exists ( select $2 from "threads" where "project_id" = "projects"
+  1047 |    336.3 |    0.32 |   1047 | select coalesce(sum(("turns"."usage" ->> $1)::double precision), $6), coalesce(sum(("turns"."usage" ->> $2)::d
+  1047 |      6.0 |    0.01 |   1047 | select count(*)::int, count(*) filter ( where "previews"."container_state" = $2 and "previews"."expires_at" > 
+   531 |      0.6 |    0.00 |      0 | begin
+   529 |      2.8 |    0.01 |    529 | select pg_advisory_xact_lock(hashtextextended($1, $2))
+   527 |     15.8 |    0.03 |    527 | select max("seq") from "events" where "events"."thread_id" = $1
+   485 |      8.9 |    0.02 |    485 | select "id", "parent_id", "title", "icon", "cover", "position", "updated_at" from "notes" where ("notes"."proj
+   485 |      8.1 |    0.02 |    485 | select "id", "parent_id", "title", "icon", "cover", "position", "updated_at" from "notes" where "notes"."proje
+   485 |     30.0 |    0.06 |     13 | insert into "notes" ("id", "project_id", "parent_id", "title", "icon", "cover", "content", "search_text", "pos
+   435 |     84.0 |    0.19 |    435 | insert into "events" ("id", "project_id", "thread_id", "seq", "type", "payload", "created_at") values (default
+   422 |      5.7 |    0.01 |    422 | select "openrouter_key_encrypted" from "users" where "users"."id" = $1 limit $2
+   405 |     14.4 |    0.04 |    405 | select "preview_port", "preview_static_dir" from "projects" where "projects"."id" = $1 limit $2
+(20 rows)
+

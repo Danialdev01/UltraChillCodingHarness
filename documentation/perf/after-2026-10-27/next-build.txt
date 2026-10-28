@@ -1,0 +1,75 @@
+
+> @ucch/web@0.0.0 build /srv/http/git/work/UltraChillCodingHarness/apps/web
+> next build
+
+   ▲ Next.js 15.5.25
+   - Experiments (use with caution):
+     · staleTimes
+     · optimizePackageImports
+
+   Creating an optimized production build ...
+ ○ (serwist) Serwist is disabled.
+ ○ (serwist) Serwist is disabled.
+ ✓ Compiled successfully in 9.9s
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/14) ...
+   Generating static pages (3/14) 
+   Generating static pages (6/14) 
+   Generating static pages (10/14) 
+ ✓ Generating static pages (14/14)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                                     Size  First Load JS
+┌ ƒ /                                                          217 B         106 kB
+├ ○ /_not-found                                                 1 kB         107 kB
+├ ƒ /[workspaceHash]                                           192 B         129 kB
+├ ƒ /[workspaceHash]/[...legacy]                               853 B         106 kB
+├ ƒ /[workspaceHash]/code                                      186 B         129 kB
+├ ƒ /[workspaceHash]/database                                  853 B         106 kB
+├ ƒ /[workspaceHash]/database/[connectionId]                 6.65 kB         233 kB
+├ ƒ /[workspaceHash]/database/[connectionId]/[db]             7.6 kB         249 kB
+├ ƒ /[workspaceHash]/database/[connectionId]/[db]/[table]    13.2 kB         225 kB
+├ ƒ /[workspaceHash]/p/[projectHash]                         4.76 kB         149 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/[sessionHash]             259 B         399 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/activity                  853 B         106 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/documentation             217 B         106 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/documentation/[noteId]    853 B         106 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/keys                      853 B         106 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/manage                    246 B         243 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/tasks                   24.3 kB         283 kB
+├ ƒ /[workspaceHash]/p/[projectHash]/timeline                8.45 kB         179 kB
+├ ƒ /[workspaceHash]/publish                                   853 B         106 kB
+├ ƒ /[workspaceHash]/s/[sessionHash]                           254 B         399 kB
+├ ƒ /[workspaceHash]/todo                                      853 B         106 kB
+├ ƒ /[workspaceHash]/workspace-settings                        853 B         106 kB
+├ ƒ /[workspaceHash]/workspace-settings/[page]               11.3 kB         229 kB
+├ ○ /apple-icon.png                                              0 B            0 B
+├ ○ /dev/themes                                              5.67 kB         111 kB
+├ ƒ /file-icons                                                217 B         106 kB
+├ ƒ /file-icons/resolve                                        217 B         106 kB
+├ ƒ /file-icons/svg/[id]                                       217 B         106 kB
+├ ○ /healthz                                                   217 B         106 kB
+├ ○ /icon.svg                                                    0 B            0 B
+├ ƒ /invite/[token]                                          4.12 kB         172 kB
+├ ○ /login                                                   6.17 kB         128 kB
+├ ○ /manifest.webmanifest                                      217 B         106 kB
+├ ○ /offline                                                  8.9 kB         126 kB
+├ ƒ /setting                                                   853 B         106 kB
+├ ƒ /setting/[page]                                          17.5 kB         237 kB
+├ ƒ /shared/[slug]                                             217 B         106 kB
+├ ƒ /shared/[slug]/documents                                  221 kB         341 kB
+├ ƒ /shared/[slug]/notes/[[...noteId]]                       5.76 kB         125 kB
+└ ƒ /shared/[slug]/timeline                                  6.06 kB         125 kB
++ First Load JS shared by all                                 106 kB
+  ├ chunks/4311-d03d0bd220ed457c.js                          46.5 kB
+  ├ chunks/a84df75d-58e941d883b123b4.js                      54.2 kB
+  └ other shared chunks (total)                              4.91 kB
+
+
+ƒ Middleware                                                 34.7 kB
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
