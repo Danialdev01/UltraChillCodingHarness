@@ -22,27 +22,13 @@
 - add manage project function
   - add function share with other users.
   - add storage usage metrics and git repo settings
-  - 
-- inside the search function, add replace multiple keyword feature
+- 
 
 ################### Low priority
 
-- add auto queueing for tasks: for example "my limits finish at 400pm so it will auto run the queued task in the next 4 hours after the limit resets." the system will run it in the background. the system will only run the auto queue if the session qouta is under 50% usage.
 - add function to switch theme based on time of day. the switch will transition within 30 seconds. the user can set when is the time to transition.
 - Add notification alert for completing task.
-- Add function i can ctrl + z to undo file draggingOFOF
-
-########## additional
-
-<!-- - add function for document editting (pandoc) -->
-
-- add function for project management
-- add function for timeline management
-- add multi claude code subscription connection
-
-####### integration
-
-add integration with DWA
+- Add function i can ctrl + z to undo file dragging inside the sidebar file tree
 
 ######## SYSTEM
 
@@ -55,3 +41,17 @@ create a system prompt for the AI agent to make sure that its using the best of 
 - alt + k = open menu
 - alt + w close current editor tab
 - alt + r
+
+############## Low
+
+- inside the search function, add replace multiple keyword feature
+
+- 
+
+############## High
+
+- refer OMP for how to make the agent more efficent
+- add colaboration management section
+- add multi claude code subscription connection
+- add auto queueing for tasks: for example "my limits finish at 400pm so it will auto run the queued task in the next 4 hours after the limit resets." the system will run it in the background. the system will only run the auto queue if the session qouta is under 50% usage.
+- add framework template
