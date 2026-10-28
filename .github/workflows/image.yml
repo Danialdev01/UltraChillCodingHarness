@@ -1,0 +1,82 @@
+# Optional: the production image built here rather than on the VPS. The
+# default deploy has Dokploy build the Dockerfile itself; this is for an
+# application that pulls a prebuilt image instead (README.md, "Alternative:
+# a prebuilt image from CI"). Every commit to main that passes CI is built
+# (the Dockerfile's `app` stage), pushed to GitHub's registry as
+# ghcr.io/<owner>/ucch:<sha> and :main, and then, if DOKPLOY_DEPLOY_WEBHOOK
+# is set, Dokploy is told to pull :main and redeploy.
+#
+# After CI rather than beside it, so a commit whose tests fail is never
+# deployed. Run it by hand (Actions -> Image -> Run workflow) to rebuild
+# and redeploy the branch's current commit.
+name: Image
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# A newer commit's image replaces an older one's: only the latest matters.
+concurrency:
+  group: image
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # The commit CI passed, not whatever main is now.
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+
+      # Registry paths must be lower case; owners need not be.
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ucch" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # BUILD_ID names the build to the browser bundle and the server alike,
+      # so open tabs offer to reload onto it (lib/app-update.ts). The tldraw
+      # licence is optional: a repository variable, if there is one.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: app
+          push: true
+          build-args: |
+            BUILD_ID=${{ env.SHA }}
+            NEXT_PUBLIC_TLDRAW_LICENSE_KEY=${{ vars.NEXT_PUBLIC_TLDRAW_LICENSE_KEY }}
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ env.SHA }}
+            ${{ steps.name.outputs.image }}:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The application's deploy webhook (Dokploy -> Deployments). Without
+      # the secret the image is still pushed, for a deploy pressed by hand.
+      - name: Deploy
+        env:
+          DOKPLOY_DEPLOY_WEBHOOK: ${{ secrets.DOKPLOY_DEPLOY_WEBHOOK }}
+        run: |
+          if [ -z "$DOKPLOY_DEPLOY_WEBHOOK" ]; then
+            echo "::warning::DOKPLOY_DEPLOY_WEBHOOK is not set: pushed, not deployed"
+            exit 0
+          fi
+          curl -fsS -X POST "$DOKPLOY_DEPLOY_WEBHOOK"

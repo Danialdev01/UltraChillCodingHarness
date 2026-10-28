@@ -216,7 +216,7 @@ Two different things share the word "preview":
 
 ## Deploying on Dokploy
 
-UCCH deploys as **one container**: a Dokploy **Application** built from the [`Dockerfile`](Dockerfile), with one port, one volume and one click to deploy. Inside it, [s6-overlay](https://github.com/just-containers/s6-overlay) starts and supervises:
+UCCH deploys as **one container**: a Dokploy **Application** that Dokploy builds from the [`Dockerfile`](Dockerfile), with one port, one volume and one click to deploy. Inside it, [s6-overlay](https://github.com/just-containers/s6-overlay) starts and supervises:
 
 | Service | What it is | Where |
 | --- | --- | --- |
@@ -229,19 +229,30 @@ Everything stateful lives under **`/data`**: `postgres/`, `mysql/`, `workspaces/
 
 ### 1. Before you start
 
-- A VPS with Dokploy installed (`curl -sSL https://dokploy.com/install.sh | sh`), ports 80 and 443 open. 2 vCPU / 4 GB RAM is comfortable (the first build compiles Next.js).
+- An **x86_64** VPS with Dokploy installed (`curl -sSL https://dokploy.com/install.sh | sh`), ports 80 and 443 open. 2 vCPU / 4 GB RAM is comfortable (the build compiles Next.js). ARM hosts are not supported: the image downloads amd64 builds of pandoc, typst and s6-overlay, and the build stops early on anything else.
 - A domain for UCCH, e.g. `ucch.example.com`, with a DNS **A record** pointing at the VPS. For live previews also add `*.ucch.example.com` (see [Live previews](#live-previews-optional-one-time)). On Cloudflare, set both to **DNS only** (grey cloud).
 - This repository on GitHub (or any Git URL Dokploy can reach).
 
 ### 2. Deploy
 
 1. **Projects → Create Project** → `ucch`.
-2. Inside it: **Create Service → Application**. **Provider**: this repository, branch `main`. **Build Type**: **Dockerfile**, path `Dockerfile`. The last stage, `app`, is the default; set **Docker Build Stage** to `app` if your Dokploy version asks.
+2. Inside it: **Create Service → Application**. **Provider**: this repository, branch `main`. **Build Type**: **Dockerfile**, path `Dockerfile`, context `.`. The last stage, `app`, is the default; leave **Docker Build Stage** empty or set it to `app`.
+   Optional **Build-time Arguments**, compiled into the image (changing one needs a rebuild, not a restart): `NEXT_PUBLIC_TLDRAW_LICENSE_KEY` (the notes whiteboard's licence), `BUILD_ID` (any build name, e.g. a commit sha: open tabs offer to reload when it changes), `NEXT_PUBLIC_PWA=1` (the service worker).
 3. **Environment**: paste [`.env.example`](.env.example) and set **`ROOT_DOMAIN`**. That is the only required value. Setting `DEFAULT_USER_EMAIL` / `DEFAULT_USER_PASSWORD` for your first login is recommended.
 4. **Domains**: add `ROOT_DOMAIN` → container port **3000**, HTTPS on, certificate Let's Encrypt.
 5. **Advanced → Volumes**: a volume mounted at **`/data`**.
 6. **Advanced → Swarm Settings → Update Config**: set **`Order` to `stop-first`**. **This matters**: the default start-first rollout would run two containers, so two PostgreSQL servers, on one data directory, and corrupt it.
-7. **Deploy**. The first build takes ~10 minutes; later ones reuse the cache.
+7. **Deploy**. The first build takes ~10 minutes; later ones reuse BuildKit's cache. Turn on **Auto Deploy** (or add Dokploy's webhook to the GitHub repository) to deploy on every push to `main`.
+
+`docker build .` builds the same image anywhere else.
+
+#### Alternative: a prebuilt image from CI
+
+To keep builds off the VPS, [`image.yml`](.github/workflows/image.yml) builds the image on every commit to `main` that passes CI ([`ci.yml`](.github/workflows/ci.yml)) and pushes it as `ghcr.io/<owner>/ucch:<sha>` and `:main` (the owner in lower case). Run **Actions → Image → Run workflow** once so the first image exists, then:
+
+- In step 2, choose **Provider: Docker**, image `ghcr.io/<owner>/ucch:main`, with registry credentials: **Registry URL** `ghcr.io`, your GitHub username, and a [personal access token](https://github.com/settings/tokens) with only `read:packages`. Build-time arguments become the repository variable `NEXT_PUBLIC_TLDRAW_LICENSE_KEY`; `BUILD_ID` is set to the commit.
+- Copy the application's deploy webhook (**Deployments → Webhook**) into the GitHub Actions secret **`DOKPLOY_DEPLOY_WEBHOOK`**, so every pushed image is deployed. Without it the image is pushed and you press **Deploy**.
+- To roll back, point the application at an older `ghcr.io/<owner>/ucch:<sha>`.
 
 Check it:
 
@@ -373,7 +384,7 @@ Other DNS providers work the same way with their own [Traefik provider name](htt
 
 ### Day-to-day
 
-- **Update**: push to `main`, press **Deploy** (or enable Dokploy's auto-deploy webhook). The container gets `SIGTERM`; s6 stops the server first, with up to 60 s to finish and record in-flight work, then the UI and the databases.
+- **Update**: push to `main` and Dokploy rebuilds and redeploys (with Auto Deploy on; otherwise press **Deploy**). To go back, revert the commit on `main` (or point the application at an older branch or tag) and deploy. The container gets `SIGTERM`; s6 stops the server first, with up to 60 s to finish and record in-flight work, then the UI and the databases.
 - **Logs**: the application's **Logs** tab; every line is prefixed by its service.
 - **Backups**: `docker exec <container> ucch-backup` writes a consistent `pg_dump` of the harness's database (and `dev`) plus `secret_key` to `/data/backups/<timestamp>/`, keeping the newest `BACKUP_KEEP` (7). Schedule it in Dokploy (**Schedules**) and copy `/data/backups` and `/data/workspaces` off the box. `/data/creds` holds per-user Claude/Codex CLI logins; don't copy it off the box. Restore with `ucch-restore /data/backups/<timestamp>`.
 - **Security**: anyone who can sign in gets a shell inside the container (`AGENT_ALLOW_HOST_SHELL=true`). Only give accounts to people you trust. The Docker socket is deliberately not mounted.

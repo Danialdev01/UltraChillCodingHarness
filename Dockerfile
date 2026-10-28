@@ -9,8 +9,11 @@
 #            One port (3000), one volume (/data). See "Deploying on Dokploy"
 #            in README.md, and documentation/plan.md, Part A.
 #
-# Deprecated, kept for one release for the old multi-container compose stack:
-#   server   the API alone (3001)       web   the UI alone (3000)
+# Dokploy builds it on the VPS from this file (Build Type: Dockerfile). CI's
+# .github/workflows/image.yml can build the same image instead and push it
+# to GHCR, for an application that pulls it; see README.md.
+#
+# x86_64 only: pandoc, typst and s6-overlay are downloaded as amd64 builds.
 #
 # Debian rather than Alpine in every stage: `@lydell/node-pty` ships a
 # glibc-linked prebuilt, and node_modules are copied between stages, so the
@@ -44,8 +47,7 @@ COPY packages/protocol ./packages/protocol
 COPY apps/web ./apps/web
 # Both are read when the build compiles next.config.ts's rewrite table, so
 # they have to be known here. SERVER_ORIGIN is where the API is from the web
-# app's side: the server on the container's own loopback in `app` (the
-# deprecated compose stack passes http://server:3001). NEXT_PUBLIC_WS_ORIGIN
+# app's side: the server on the container's own loopback. NEXT_PUBLIC_WS_ORIGIN
 # is *empty* on purpose: unset, next.config.ts would fall back to
 # SERVER_ORIGIN and bake an internal address into the browser bundle; empty,
 # the client opens its WebSocket on the page's own host.
@@ -98,7 +100,6 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 #   php + composer          -- `php artisan serve` for Laravel projects
 #   postgresql/mariadb clients -- psql / mysql against the dev databases
 #   ca-certificates, curl   -- HTTPS from inside the terminal
-#   tini                    -- PID 1 of the deprecated `server` target
 # And the document pipeline behind the composer's Documentation mode
 # (packages/agent/doc-kit). It is most of this image's size -- LibreOffice
 # and Chromium alone are several hundred MB:
@@ -116,9 +117,12 @@ ENV NODE_ENV=production
 ARG TYPST_VERSION=0.13.1
 ARG PANDOC_VERSION=3.6
 ARG MERMAID_CLI_VERSION=11.4.2
+# Fail with a reason, not a 404 or an exec format error further down.
+RUN [ "$(dpkg --print-architecture)" = amd64 ] \
+  || { echo "UCCH's image is x86_64 only (pandoc, typst and s6-overlay are amd64 downloads)" >&2; exit 1; }
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl git ripgrep xz-utils tini \
+    bash ca-certificates curl git ripgrep xz-utils \
     postgresql-client default-mysql-client \
     php-cli php-mbstring php-xml php-curl php-zip php-sqlite3 php-pgsql php-mysql php-bcmath php-intl php-gd unzip \
     python3 python3-venv poppler-utils libreoffice-writer-nogui graphviz chromium \
@@ -147,42 +151,6 @@ RUN set -e; dir=/home/node/.cache/typst/packages/preview; \
   chown -R node:node /home/node/.cache
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 ENV SHELL=/bin/bash
-
-# --- web (deprecated) --------------------------------------------------------
-
-FROM node:22-bookworm-slim AS web
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
-WORKDIR /app
-COPY --from=web-build --chown=node:node /app/apps/web/.next/standalone ./
-COPY --from=web-build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=web-build --chown=node:node /app/apps/web/public ./apps/web/public
-USER node
-EXPOSE 3000
-HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
-CMD ["node", "apps/web/server.js"]
-
-# --- server (deprecated) -----------------------------------------------------
-
-FROM toolchain AS server
-COPY --from=deps /app ./
-# NODE_ENV=production above would make pnpm skip devDependencies, and tsx
-# (a root devDependency) is what runs the server.
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    NODE_ENV=development pnpm install --frozen-lockfile --store-dir /pnpm/store --filter @ucch/server...
-COPY tsconfig.base.json ./
-COPY packages/protocol ./packages/protocol
-COPY packages/db ./packages/db
-COPY packages/agent ./packages/agent
-COPY packages/providers ./packages/providers
-COPY apps/server ./apps/server
-COPY deploy/server-entrypoint.sh ./deploy/server-entrypoint.sh
-ENV UCCH_RUN_AS=node
-EXPOSE 3001
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
-  CMD curl -fsS http://127.0.0.1:3001/health >/dev/null || exit 1
-ENTRYPOINT ["/usr/bin/tini", "--", "bash", "/app/deploy/server-entrypoint.sh"]
-CMD ["node", "--import", "tsx", "apps/server/src/index.ts"]
 
 # --- app: the single container ----------------------------------------------
 

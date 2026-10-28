@@ -6,7 +6,6 @@
 # embedded databases, then drops to the unprivileged `node` user for the
 # server and everything it spawns: every terminal, agent turn and dev server.
 # This runs as root only so it can read the secrets, which `node` cannot.
-# (The container's version of deploy/server-entrypoint.sh.)
 set -euo pipefail
 data=${DATA_DIR:-/data}
 secrets=$data/secrets
