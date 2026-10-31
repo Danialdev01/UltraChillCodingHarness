@@ -649,6 +649,7 @@ export class ClaudeProvider implements AgentProvider {
       workspace: input.ctx.cwd,
     });
     return runCli({
+      provider: "claude",
       ctx: input.ctx,
       spec: {
         argv: claudeArgv({

@@ -4,6 +4,7 @@ import type {
   DomainEvent,
   ReasoningEffort,
 } from "@ucch/protocol";
+import { isOmpCredentialEnv } from "./omp-credentials.js";
 import type { ProcessHost } from "./process.js";
 
 /**
@@ -131,5 +132,30 @@ export const FORBIDDEN_ENV = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_
 
 export function forbiddenEnvPresent(env: Record<string, string>): string | null {
   for (const name of FORBIDDEN_ENV) if (name in env) return name;
+  return null;
+}
+
+/**
+ * The credential variables each provider's process may hold.
+ *
+ * The CLIs hold none: they bill a subscription login, and a key would
+ * outrank it. OMP is the opposite case -- it bills the workspace's
+ * OpenRouter key, handed over in `OPENROUTER_API_KEY` -- so for it the rule
+ * is not "these three are forbidden" but "this one is allowed": every other
+ * variable OMP would read as a credential refuses the run (`omp-credentials.ts`).
+ */
+export const ALLOWED_CREDENTIAL_ENV: Record<CliProviderId, readonly string[]> = {
+  claude: [],
+  codex: [],
+  omp: ["OPENROUTER_API_KEY"],
+};
+
+/** The first variable in `env` that `id`'s process must not have, or null. */
+export function forbiddenEnvFor(id: CliProviderId, env: Record<string, string>): string | null {
+  if (id !== "omp") return forbiddenEnvPresent(env);
+  const allowed = ALLOWED_CREDENTIAL_ENV.omp;
+  for (const name of Object.keys(env)) {
+    if (isOmpCredentialEnv(name) && !allowed.includes(name)) return name;
+  }
   return null;
 }

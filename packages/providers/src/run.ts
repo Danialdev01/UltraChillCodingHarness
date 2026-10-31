@@ -1,7 +1,7 @@
-import type { DomainEvent } from "@ucch/protocol";
+import type { CliProviderId, DomainEvent } from "@ucch/protocol";
 import type { ChildHandle, ExitStatus, SpawnSpec } from "./process.js";
 import {
-  forbiddenEnvPresent,
+  forbiddenEnvFor,
   type AgentRun,
   type PermissionReply,
   type RunContext,
@@ -54,11 +54,13 @@ const STDERR_TAIL_BYTES = 4 * 1024;
  * twice and drift.
  */
 export function runCli(input: {
+  /** Whose credential rules the environment is held to (`forbiddenEnvFor`). */
+  provider: CliProviderId;
   ctx: RunContext;
   spec: Omit<SpawnSpec, "cwd" | "env">;
   normaliser: Normaliser;
 }): AgentRun {
-  const forbidden = forbiddenEnvPresent(input.ctx.env);
+  const forbidden = forbiddenEnvFor(input.provider, input.ctx.env);
   if (forbidden) {
     throw new Error(
       `${forbidden} is set in the provider environment; refusing to run on API billing`,

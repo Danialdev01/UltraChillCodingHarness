@@ -409,6 +409,7 @@ export class CodexProvider implements AgentProvider {
       workspace: input.ctx.cwd,
     });
     return runCli({
+      provider: "codex",
       ctx: input.ctx,
       spec: {
         argv: codexArgv({

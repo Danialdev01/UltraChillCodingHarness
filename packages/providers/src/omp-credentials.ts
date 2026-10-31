@@ -1,0 +1,148 @@
+/**
+ * The credential variables OMP reads, from its [env](https://omp.sh/docs/env)
+ * reference and the names compiled into the pinned binary (18.14.1).
+ *
+ * OMP resolves a model provider's key from the environment before any login
+ * it holds, so any one of these in an OMP process's environment can move a
+ * turn onto a bill nobody chose: an operator's own Anthropic key, a cloud
+ * account's Bedrock role. Only the variables in `ALLOWED_CREDENTIAL_ENV`
+ * (`types.ts`) may be present, and `forbiddenEnvFor` refuses the rest.
+ *
+ * A list goes stale when OMP adds a provider, so the rule is wider than the
+ * list: any `*_API_KEY` or `*_OAUTH_TOKEN` counts too (`isOmpCredentialEnv`),
+ * which is how most providers' keys are named, and how OMP builds the names
+ * of the ones it derives from a provider id.
+ */
+export const OMP_CREDENTIAL_ENV = [
+  // Model providers
+  "ABLITERATION_API_KEY",
+  "AIAND_API_KEY",
+  "AIMLAPI_API_KEY",
+  "AI_GATEWAY_API_KEY",
+  "ALIBABA_CODING_PLAN_API_KEY",
+  "ALIBABA_TOKEN_PLAN_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_OAUTH_TOKEN",
+  "BAILIAN_TOKEN_PLAN_API_KEY",
+  "BASETEN_API_KEY",
+  "CEREBRAS_API_KEY",
+  "CHARM_HYPER_API_KEY",
+  "CLINE_API_KEY",
+  "CLOUDFLARE_AI_GATEWAY_API_KEY",
+  "COMMAND_CODE_API_KEY",
+  "COPILOT_GITHUB_TOKEN",
+  "COREWEAVE_API_KEY",
+  "CURSOR_ACCESS_TOKEN",
+  "CURSOR_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "DEVIN_API_KEY",
+  "FIREPASS_API_KEY",
+  "FIREWORKS_API_KEY",
+  "FUGU_API_KEY",
+  "GEMINI_API_KEY",
+  "GITLAB_TOKEN",
+  "GMI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GROQ_API_KEY",
+  "HELMCODE_API_KEY",
+  "HF_TOKEN",
+  "HUGGINGFACE_HUB_TOKEN",
+  "KILO_API_KEY",
+  "KIMI_API_KEY",
+  "LITELLM_API_KEY",
+  "LLAMA_CPP_API_KEY",
+  "LM_STUDIO_API_KEY",
+  "META_API_KEY",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CODE_API_KEY",
+  "MINIMAX_CODE_CN_API_KEY",
+  "MISTRAL_API_KEY",
+  "MODEL_API_KEY",
+  "MOONSHOT_API_KEY",
+  "NANO_GPT_API_KEY",
+  "NOVITA_API_KEY",
+  "NVIDIA_API_KEY",
+  "OLLAMA_API_KEY",
+  "OLLAMA_CLOUD_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_CODEX_OAUTH_TOKEN",
+  "OPENCODE_API_KEY",
+  "OPENROUTER_API_KEY",
+  "QIANFAN_API_KEY",
+  "QWEN_OAUTH_TOKEN",
+  "QWEN_PORTAL_API_KEY",
+  "SAKANA_API_KEY",
+  "SILICONFLOW_API_KEY",
+  "SILICONFLOW_CN_API_KEY",
+  "SINGULARITYAPI_DEV_API_KEY",
+  "SINGULARITYAPI_TECH_API_KEY",
+  "STENCIL_API_KEY",
+  "STEPFUN_API_KEY",
+  "SYNTHETIC_API_KEY",
+  "TOGETHER_API_KEY",
+  "TYPESAFE_API_KEY",
+  "UMANS_AI_CODING_PLAN_API_KEY",
+  "VENICE_API_KEY",
+  "VERCEL_AI_GATEWAY_API_KEY",
+  "VLLM_API_KEY",
+  "WAFER_SERVERLESS_API_KEY",
+  "WANDB_API_KEY",
+  "XAI_API_KEY",
+  "XAI_OAUTH_TOKEN",
+  "XIAOMI_API_KEY",
+  "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+  "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+  "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+  "YOLO_AUTO_API_KEY",
+  "ZAI_API_KEY",
+  "ZENMUX_API_KEY",
+  "ZHIPU_API_KEY",
+  // Remote auth broker, custom headers and mTLS
+  "OMP_AUTH_BROKER_TOKEN",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "CLAUDE_CODE_CLIENT_KEY",
+  // Amazon Bedrock
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+  // Azure OpenAI and Google Vertex
+  "AZURE_OPENAI_API_KEY",
+  "GOOGLE_CLOUD_API_KEY",
+  "GOOGLE_CLOUD_ACCESS_TOKEN",
+  "CLOUDSDK_AUTH_ACCESS_TOKEN",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  // Web search, memory and other services billed to a key
+  "ANTHROPIC_SEARCH_API_KEY",
+  "BRAVE_API_KEY",
+  "EXA_API_KEY",
+  "FIRECRAWL_API_KEY",
+  "JINA_API_KEY",
+  "KAGI_API_KEY",
+  "KIMI_SEARCH_API_KEY",
+  "MOONSHOT_SEARCH_API_KEY",
+  "PARALLEL_API_KEY",
+  "PERPLEXITY_API_KEY",
+  "PERPLEXITY_COOKIES",
+  "SEARXNG_BASIC_PASSWORD",
+  "SEARXNG_BASIC_USERNAME",
+  "SEARXNG_TOKEN",
+  "TAVILY_API_KEY",
+  "TINYFISH_API_KEY",
+  "HINDSIGHT_API_TOKEN",
+  "MNEMOPI_EMBEDDING_API_KEY",
+  "MNEMOPI_LLM_API_KEY",
+  "CMUX_RELAY_TOKEN",
+  "PI_AUTO_QA_PUSH_TOKEN",
+  "SMITHERY_API_KEY",
+] as const;
+
+const LISTED: ReadonlySet<string> = new Set(OMP_CREDENTIAL_ENV);
+
+/** Whether OMP could read this variable as a credential. */
+export function isOmpCredentialEnv(name: string): boolean {
+  return LISTED.has(name) || /_API_KEY$|_OAUTH_TOKEN$/.test(name);
+}
