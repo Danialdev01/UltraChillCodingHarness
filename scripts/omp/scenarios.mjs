@@ -192,6 +192,44 @@ export const scenarios = [
     },
   },
   {
+    // A host tool that fails (OM3.2): `isError` beside `result`, as the
+    // rpc docs place it, and how OMP reports it.
+    name: "host-tool-error",
+    script: [
+      { toolCalls: [{ name: "write", arguments: { i: "ask the host", path: "xd://ucch_echo", content: JSON.stringify({ text: "boom" }) } }] },
+      { text: "The host tool failed." },
+    ],
+    onFrame(f) {
+      if (f.type !== "host_tool_call") return null;
+      return { type: "host_tool_result", id: f.id, isError: true, result: { content: [{ type: "text", text: "ucch_echo failed: boom" }] } };
+    },
+    async run(ctx) {
+      await command(ctx, { type: "set_host_tools", tools: [ECHO_TOOL] });
+      await turn(ctx, "Call ucch_echo with boom.");
+    },
+  },
+  {
+    // A host tool that is still running when the turn is stopped (OM3.2):
+    // what OMP sends the host, and what it makes of a result that comes
+    // after. The host never answers until the abort has been sent.
+    name: "host-tool-cancel",
+    script: [
+      { toolCalls: [{ name: "write", arguments: { i: "ask the host", path: "xd://ucch_echo", content: JSON.stringify({ text: "slow" }) } }] },
+      { text: "Not reached." },
+    ],
+    async run(ctx) {
+      await command(ctx, { type: "set_host_tools", tools: [ECHO_TOOL] });
+      await command(ctx, { type: "prompt", message: "Call ucch_echo with slow." });
+      const call = await ctx.waitFor((f) => f.type === "host_tool_call", 30000, "host_tool_call");
+      ctx.send({ id: id(), type: "abort" });
+      await ctx.waitFor(terminalEnd, 30000, "agent_end");
+      await ctx.waitFor(promptDone, 30000, "prompt_result");
+      // Late, after the turn ended: accepted, refused, or ignored?
+      ctx.send({ type: "host_tool_result", id: call.id, result: { content: [{ type: "text", text: "echo: slow" }] } });
+      await command(ctx, { type: "get_state" });
+    },
+  },
+  {
     name: "resume",
     script: [{ text: "First session answer." }, { text: "Resumed answer." }],
     async run(ctx) {

@@ -49,7 +49,7 @@ const everything: OmpOverlayInput = {
   trusted: true,
   webSearch: true,
   memoryDbPath: "/creds/u/omp/memories/p/mnemopi.db",
-  hostTools: [{ name: "ucch_research_search", tier: "read" }],
+  hostTools: ["research_search", "doc_render"],
 };
 
 const MODES: (AgentPermissionMode | undefined)[] = [undefined, "strict", "normal", "allow_all"];
@@ -71,11 +71,18 @@ describe("ompOverlay", () => {
     }
   });
 
+  it("allows the host tools under every mode, since runTool's gate asks for them", () => {
+    for (const permissionMode of ["strict", "normal", "allow_all"] as const) {
+      const approvals = ompApprovals({ ...everything, permissionMode });
+      expect([approvals.research_search, approvals.doc_render]).toEqual(["allow", "allow"]);
+    }
+  });
+
   it("names every tool the pinned binary registers, and every host tool", () => {
     expect(BINARY_TOOLS).toContain("bash");
     expect(BINARY_TOOLS).toContain("update_notes");
     const named = Object.keys(ompApprovals(everything));
-    for (const tool of [...BINARY_TOOLS, "ucch_research_search", "report_issue", "ast_edit", "lsp", "debug"]) {
+    for (const tool of [...BINARY_TOOLS, "research_search", "doc_render", "report_issue", "ast_edit", "lsp", "debug"]) {
       expect(named).toContain(tool);
     }
   });

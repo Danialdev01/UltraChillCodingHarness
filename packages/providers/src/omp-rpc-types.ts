@@ -120,6 +120,17 @@ export interface OmpHostToolCall extends OmpFrame {
   arguments: Record<string, unknown>;
 }
 
+/**
+ * OMP no longer wants a host call's result: the turn was stopped. `targetId`
+ * is the call's `id`. OMP has already ended the call itself, and ignores a
+ * result sent after this (spike report, OM3.2).
+ */
+export interface OmpHostToolCancel extends OmpFrame {
+  type: "host_tool_cancel";
+  id: string;
+  targetId: string;
+}
+
 /** A command; the client adds the `id`. */
 export type OmpCommand =
   | { type: "prompt"; message: string; [key: string]: unknown }

@@ -271,3 +271,52 @@ export function toolByName(
 ): AnyTool | undefined {
   return toolsFor(preset, options).find((tool) => tool.name === name);
 }
+
+/**
+ * The tools an OMP turn is offered as host tools (solution §3.7): the ones
+ * OMP has nothing of its own for. Its own `read`, `write`, `edit`, `glob`,
+ * `grep` and `bash` stand in for the file, search and shell tools, so
+ * those are never offered twice.
+ */
+const HOST_TOOLS: readonly string[] = [
+  "current_time",
+  "attach_upload",
+  ...RESEARCH_ONLY,
+  ...DOCUMENTATION_ONLY,
+];
+
+/** What a preset hands OMP to take over: research writes nothing. */
+const HOST_PRESET_DENIED: Partial<Record<ToolPreset, readonly string[]>> = {
+  research: ["attach_upload"],
+};
+
+/**
+ * A preset's host tools, in `ALL`'s order: each one a member of the
+ * preset, so `toolByName(preset, name)` -- and with it `runTool` -- finds
+ * every one, and a host call can never reach a tool the preset lacks.
+ */
+export function hostToolsFor(preset: ToolPreset, options: RegistryOptions = {}): readonly AnyTool[] {
+  const denied = HOST_PRESET_DENIED[preset] ?? [];
+  return toolsFor(preset, options).filter((tool) => HOST_TOOLS.includes(tool.name) && !denied.includes(tool.name));
+}
+
+/** A host tool as OMP's `set_host_tools` takes it. */
+export interface HostToolSchema {
+  name: string;
+  label: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** `hostToolsFor`, with the same JSON Schema a native turn sends for each. */
+export function hostToolSchemas(preset: ToolPreset, options: RegistryOptions = {}): HostToolSchema[] {
+  return hostToolsFor(preset, options).map((tool) => {
+    const schema = SCHEMAS.get(tool.name)!;
+    return {
+      name: tool.name,
+      label: tool.name,
+      description: tool.description,
+      parameters: schema.function.parameters,
+    };
+  });
+}

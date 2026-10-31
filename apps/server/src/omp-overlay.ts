@@ -142,8 +142,12 @@ export interface OmpOverlayInput {
   webSearch: boolean;
   /** The project's mnemopi database; required when memory is on (§7.1). */
   memoryDbPath?: string;
-  /** UCCH's host tools (OM3.2), named so a project cannot relax them. */
-  hostTools?: readonly { name: string; tier: OmpTier }[];
+  /**
+   * UCCH's host tools (OM3.2), named so a project cannot set them. Allowed:
+   * a host call runs through `runTool`, whose own approval gate asks a
+   * person exactly as for a native turn, so OMP asking first would ask twice.
+   */
+  hostTools?: readonly string[];
 }
 
 /** What a tier gets under each mode: OMP's own table (`approvalFor`), written out. */
@@ -156,12 +160,8 @@ function tierPolicy(tier: OmpTier, mode: AgentPermissionMode | undefined): Polic
 
 /** The `tools.approval` record: every tool, in a stable order. */
 export function ompApprovals(input: OmpOverlayInput): Record<string, Policy> {
-  const tiers: [string, OmpTier][] = [
-    ...Object.entries(OMP_TOOL_TIERS),
-    ...(input.hostTools ?? []).map(({ name, tier }) => [name, tier] as [string, OmpTier]),
-  ];
   const approvals: Record<string, Policy> = {};
-  for (const [name, tier] of tiers) {
+  for (const [name, tier] of Object.entries(OMP_TOOL_TIERS)) {
     const denied =
       ALWAYS_DENIED.has(name) ||
       PRESET_DENIED[input.preset].has(name) ||
@@ -170,6 +170,7 @@ export function ompApprovals(input: OmpOverlayInput): Record<string, Policy> {
       (name === "debug" && !input.trusted);
     approvals[name] = denied ? "deny" : tierPolicy(tier, input.permissionMode);
   }
+  for (const name of input.hostTools ?? []) approvals[name] = "allow";
   return approvals;
 }
 

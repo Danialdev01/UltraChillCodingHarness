@@ -398,6 +398,8 @@ interface FakeOptions {
   deaf?: boolean;
   /** Answer `prompt` with this failure. */
   refusePrompt?: string;
+  /** Answer `set_host_tools` with this failure. */
+  refuseHostTools?: string;
 }
 
 /** The frames a recording streamed for its first prompt, up to its `prompt_result`. */
@@ -411,8 +413,9 @@ function promptFrames(name: string): OmpFrame[] {
 /**
  * OMP as 18.14.1 behaves on the wire: ready, v2, answers by id, a prompt
  * that streams `turn`, an approval that holds the stream until answered,
- * an `abort` that is held while a dialog is open (OM2.4), and an exit when
- * stdin closes.
+ * an `abort` that is held while a dialog is open (OM2.4), a host call that
+ * holds the stream until its result and is cancelled by an `abort` (OM3.2),
+ * and an exit when stdin closes.
  */
 function fakeOmp(options: FakeOptions = {}) {
   let stats = 0;
@@ -422,6 +425,7 @@ function fakeOmp(options: FakeOptions = {}) {
       emit({ id: frame.id, type: "response", command: frame.type, success: true, ...(data === undefined ? {} : { data }), ...extra });
     let queue: OmpFrame[] = [];
     let waitingOn: string | null = null;
+    let waitingOnHost = false;
     let heldAbort: Record<string, unknown> | null = null;
     let aborted = false;
     const pump = () => {
@@ -429,12 +433,22 @@ function fakeOmp(options: FakeOptions = {}) {
         const frame = queue.shift()!;
         emit(frame);
         if (frame.type === "extension_ui_request" && frame.method === "select") waitingOn = String(frame.id);
+        if (frame.type === "host_tool_call") {
+          waitingOn = String(frame.id);
+          waitingOnHost = true;
+        }
       }
     };
     const abort = (frame: Record<string, unknown>) => {
       respond(frame);
       if (aborted) return;
       aborted = true;
+      if (waitingOnHost && waitingOn) {
+        // OMP ends a running host call itself and tells the host so.
+        emit({ type: "host_tool_cancel", id: "cancel-1", targetId: waitingOn });
+        waitingOn = null;
+        waitingOnHost = false;
+      }
       queue = [
         { type: "message_end", message: { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Interrupted by user" } },
         { type: "agent_end", isTerminal: true },
@@ -459,9 +473,17 @@ function fakeOmp(options: FakeOptions = {}) {
           return pump();
         case "abort":
           if (options.deaf) return;
-          if (waitingOn) heldAbort = frame;
+          if (waitingOn && !waitingOnHost) heldAbort = frame;
           else abort(frame);
           return;
+        case "set_host_tools":
+          if (options.refuseHostTools) return respond(frame, undefined, { success: false, error: options.refuseHostTools });
+          return respond(frame, { toolNames: (frame.tools as { name: string }[]).map((tool) => tool.name) });
+        case "host_tool_result":
+          if (frame.id !== waitingOn || !waitingOnHost) return;
+          waitingOn = null;
+          waitingOnHost = false;
+          return pump();
         case "extension_ui_response":
           if (frame.id !== waitingOn) return;
           waitingOn = null;
@@ -698,6 +720,93 @@ describe("OmpProvider", () => {
     expect(closing(events)).toEqual([
       { type: "agent.turn_failed", ...pick(ids), error: expect.stringMatching(/^omp sent a frame that could not be read/) },
     ]);
+  });
+});
+
+describe("OmpProvider host tools", () => {
+  const ECHO = {
+    name: "ucch_echo",
+    label: "Echo",
+    description: "Echo text back from the host.",
+    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+  };
+  /** The recorded call's id in omp-host-tool-xd. */
+  const CALL = "15bb4c8a9cfd4836";
+
+  it("registers them, runs a call through the runner, and answers it; OMP's own rows are the events", async () => {
+    const host = fakeOmp({ turn: promptFrames("omp-host-tool-xd") });
+    const calls: unknown[] = [];
+    const events = await drain(
+      startTurn(host, {
+        hostTools: [ECHO],
+        onHostToolCall: async (call) => {
+          calls.push(call);
+          return { content: `echo: ${String(call.arguments.text)}`, isError: false };
+        },
+      }),
+    );
+    const frames = host.children[0]!.frames;
+    expect(frames.map((f) => f.type).slice(0, 3)).toEqual(["negotiate_protocol", "set_subagent_subscription", "set_host_tools"]);
+    expect(frames[2]).toMatchObject({ tools: [ECHO] });
+    expect(calls).toEqual([{ id: CALL, toolCallId: "call_1", toolName: "ucch_echo", arguments: { text: "ping" } }]);
+    expect(frames.filter((f) => f.type === "host_tool_result")).toEqual([
+      { type: "host_tool_result", id: CALL, result: { content: [{ type: "text", text: "echo: ping" }] } },
+    ]);
+    const uses = events.filter((e) => e.type === "agent.tool_use");
+    expect(uses).toEqual([expect.objectContaining({ toolUseId: "call_1", name: "ucch_echo", input: { text: "ping" } })]);
+    expect(events.filter((e) => e.type === "agent.tool_result")).toHaveLength(1);
+    expect(events.some((e) => e.type === "file.changed")).toBe(false);
+    expect(closing(events)).toEqual([expect.objectContaining({ type: "agent.turn_completed" })]);
+  });
+
+  it("answers a failed call, and one whose runner throws, with isError", async () => {
+    for (const runner of [
+      async () => ({ content: "ucch_echo failed: boom", isError: true }),
+      async () => {
+        throw new Error("boom");
+      },
+    ]) {
+      const host = fakeOmp({ turn: promptFrames("omp-host-tool-xd") });
+      await drain(startTurn(host, { hostTools: [ECHO], onHostToolCall: runner }));
+      expect(host.children[0]!.frames.filter((f) => f.type === "host_tool_result")).toEqual([
+        { type: "host_tool_result", id: CALL, isError: true, result: { content: [{ type: "text", text: "ucch_echo failed: boom" }] } },
+      ]);
+    }
+  });
+
+  it("aborts a running call when OMP cancels it on the stop button", async () => {
+    const host = fakeOmp({ turn: promptFrames("omp-host-tool-xd") });
+    let aborted = false;
+    let started: () => void = () => {};
+    const running = new Promise<void>((resolve) => (started = resolve));
+    const run = startTurn(host, {
+      hostTools: [ECHO],
+      onHostToolCall: (_call, signal) =>
+        new Promise((resolve) => {
+          started();
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            resolve({ content: "ucch_echo was cancelled.", isError: true });
+          });
+        }),
+    });
+    void running.then(() => run.interrupt());
+    const events = await drain(run);
+    expect(aborted).toBe(true);
+    expect(closing(events)).toEqual([expect.objectContaining({ type: "agent.turn_completed", stopReason: "cancelled" })]);
+  });
+
+  it("offers none when the turn has none", async () => {
+    const host = fakeOmp();
+    await drain(startTurn(host, { hostTools: [] }));
+    expect(host.children[0]!.frames.map((f) => f.type)).not.toContain("set_host_tools");
+  });
+
+  it("fails the turn when OMP will not register them", async () => {
+    const host = fakeOmp({ refuseHostTools: "bad schema" });
+    const events = await drain(startTurn(host, { hostTools: [ECHO], onHostToolCall: async () => ({ content: "", isError: false }) }));
+    expect(host.children[0]!.frames.map((f) => f.type)).not.toContain("prompt");
+    expect(closing(events)).toEqual([expect.objectContaining({ type: "agent.turn_failed", error: "omp refused the host tools: bad schema" })]);
   });
 });
 

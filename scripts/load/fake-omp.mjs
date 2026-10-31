@@ -33,9 +33,14 @@
  *                         editor) holds the stream until it is answered;
  *                         the recording carries on as recorded whatever the
  *                         answer.
+ *                         A `host_tool_call` holds it likewise until its
+ *                         `host_tool_result`, whose text and `isError`
+ *                         then stand in for the recorded result of that
+ *                         call, as OMP reports the host's answer.
  *     abort               ends the turn as OMP does: an aborted message,
  *                         the terminal `agent_end`, `prompt_result` aborted.
- *                         Held while a dialog is open, as OMP holds it.
+ *                         Held while a dialog is open, as OMP holds it; a
+ *                         host call still running gets `host_tool_cancel`.
  *     anything else       success, with empty data
  *   --session-dir D   sessions persist as `D/<timestamp>_<id>.jsonl`, so a
  *                     later `--resume <id>` (or a unique prefix) continues
@@ -210,8 +215,21 @@ function withAnswer(frame) {
   return { ...frame, message: { ...frame.message, content } };
 }
 
+/** A recorded result of a host call, as the host actually answered it. */
+function withHostResult(turn, frame) {
+  const answer = turn.results.get(frame.toolCallId ?? frame.message?.toolCallId);
+  if (!answer) return frame;
+  const content = answer.result?.content ?? [];
+  const isError = answer.isError === true;
+  if (frame.type === "tool_execution_end") return { ...frame, result: { ...frame.result, content }, isError };
+  if ((frame.type === "message_start" || frame.type === "message_end") && frame.message?.role === "toolResult") {
+    return { ...frame, message: { ...frame.message, content, isError } };
+  }
+  return frame;
+}
+
 async function play(prompt) {
-  const turn = { aborted: false, dialog: null, answered: () => {} };
+  const turn = { aborted: false, dialog: null, host: null, answered: () => {}, results: new Map() };
   current = turn;
   record({ type: "user", text: typeof prompt.message === "string" ? prompt.message : "" });
   let streamed = false;
@@ -231,11 +249,18 @@ async function play(prompt) {
       }
       continue;
     }
-    out(withAnswer(frame));
+    out(withHostResult(turn, withAnswer(frame)));
     if (frame.type === "extension_ui_request" && DIALOGS.has(frame.method)) {
       turn.dialog = frame.id;
       await new Promise((resolve) => (turn.answered = resolve));
       turn.dialog = null;
+    }
+    if (frame.type === "host_tool_call") {
+      turn.host = frame;
+      const result = await new Promise((resolve) => (turn.answered = resolve));
+      turn.host = null;
+      if (result) turn.results.set(frame.toolCallId, result);
+      else if (turn.aborted) out({ type: "host_tool_cancel", id: randomUUID(), targetId: frame.id });
     }
   }
   if (turn.aborted) {
@@ -281,11 +306,18 @@ function handle(frame) {
       return;
     case "abort":
       respond(frame);
-      // A dialog holds the abort: the turn sees it once the dialog is answered.
-      if (current) current.aborted = true;
+      // A dialog holds the abort: the turn sees it once the dialog is
+      // answered. A host call does not: OMP cancels it and moves on.
+      if (current) {
+        current.aborted = true;
+        if (current.host) current.answered(null);
+      }
       return;
     case "extension_ui_response":
       if (current && frame.id === current.dialog) current.answered();
+      return;
+    case "host_tool_result":
+      if (current?.host && frame.id === current.host.id) current.answered(frame);
       return;
     default:
       if (typeof frame.id === "string") respond(frame, {});
@@ -308,7 +340,7 @@ input.on("close", async () => {
   // OMP disposes the session and exits 0. A turn waiting on a dialog is not
   // waited for: nobody is left to answer it.
   stdinClosed = true;
-  current?.answered();
+  current?.answered(null);
   while (current) await sleep(5);
   if (held) held[0] = 0;
   process.exit(0);

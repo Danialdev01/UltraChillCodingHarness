@@ -5,8 +5,10 @@ import { count, eq } from "drizzle-orm";
 import { projects, threads, turns, users, workspaces, type Database } from "@ucch/db";
 import {
   HostExecutor,
+  hostToolSchemas,
   invalidateTree,
   type HeavyJobGate,
+  runTool,
   runTurn,
   type ApprovalDecision,
   type ApprovalRequest,
@@ -30,7 +32,7 @@ import {
   type ReasoningEffort,
   type TokenUsage,
 } from "@ucch/protocol";
-import type { AgentRun, OmpRunFiles } from "@ucch/providers";
+import type { AgentRun, HostToolCall, HostToolResult, OmpRunFiles, ProviderRunInput } from "@ucch/providers";
 import { detectStack } from "./clone.js";
 import { decryptSecret } from "./crypto.js";
 import { ensureProjectInfo, readProjectKnowledge } from "./dev-database.js";
@@ -815,8 +817,11 @@ export class AgentTurnReactor {
       );
       const permissionMode = this.#modeFor(input.threadId, input.owner);
       let omp: OmpRunFiles | undefined;
+      let host: Pick<ProviderRunInput, "hostTools" | "onHostToolCall"> = {};
       if (provider === "omp") {
         const providers = this.options.providers;
+        const preset = "standard" as const;
+        const hostTools = hostToolSchemas(preset, this.options.registry);
         const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), input.turnId, {
           // Every model role is the turn's model until the workspace picks
           // its own (OM8.1): a role left unnamed is the repository's to set.
@@ -829,6 +834,7 @@ export class AgentTurnReactor {
           // OMP's own search needs a search provider's key, and its
           // environment carries the OpenRouter key alone (solution §3.3).
           webSearch: false,
+          hostTools: hostTools.map((tool) => tool.name),
         });
         overlay = written;
         omp = {
@@ -836,6 +842,16 @@ export class AgentTurnReactor {
           sessionDir: providers.ompSessionDir(input.ownerId, input.projectId),
           guardHookPath: providers.ompGuardHook(input.ownerId),
           trusted: false,
+        };
+        host = {
+          hostTools,
+          onHostToolCall: (call, signal) =>
+            this.#runHostTool(call, signal, {
+              ...input,
+              preset,
+              advertised: new Set(hostTools.map((tool) => tool.name)),
+              apiKey: openrouterKey!,
+            }),
         };
       }
       const instructions = provider === "omp" ? ompInstructions(input.workspace, knowledge) : knowledge;
@@ -851,6 +867,7 @@ export class AgentTurnReactor {
         permissionMode,
         ...(instructions ? { instructions } : {}),
         ...(omp ? { omp } : {}),
+        ...host,
       });
       this.#cliRuns.add(run);
       this.#cliByThread.set(input.threadId, run);
@@ -911,6 +928,72 @@ export class AgentTurnReactor {
       // overlay any more. A failure to delete it is the operator's to hear.
       await overlay?.dispose().catch(this.onError);
     }
+  }
+
+  /**
+   * One call an OMP turn made to a host tool (solution §3.7), run by
+   * `runTool` exactly as a native turn runs it: the preset's tool, its
+   * arguments repaired and checked, the thread's approval gate, a deadline,
+   * and the executor's confinement to the worktree. What the tool emits --
+   * a changed file, an upload, a document -- lands on the thread as a native
+   * turn's would. The call's own `agent.tool_use` / `agent.tool_result` come
+   * from OMP's frames, not from here.
+   *
+   * `signal` is OMP's cancel; the turn's stop button reaches the tool too.
+   */
+  async #runHostTool(
+    call: HostToolCall,
+    signal: AbortSignal,
+    input: {
+      threadId: string;
+      turnId: string;
+      projectId: string;
+      workspace: string;
+      model: string | undefined;
+      owner: { agentPermissionMode: string | null };
+      signal: AbortSignal;
+      append: (events: readonly DomainEvent[]) => Promise<unknown>;
+      preset: "standard" | "research" | "documentation";
+      advertised: ReadonlySet<string>;
+      apiKey: string;
+    },
+  ): Promise<HostToolResult> {
+    // OMP only calls what it was offered; this keeps it so if it ever does not.
+    if (!input.advertised.has(call.toolName)) {
+      return { content: `There is no host tool called ${JSON.stringify(call.toolName)}.`, isError: true };
+    }
+    const turnSignal = AbortSignal.any([input.signal, signal]);
+    const model = input.model ?? this.options.defaultModel;
+    const outcome = await runTool(
+      { id: call.toolCallId, type: "function", function: { name: call.toolName, arguments: JSON.stringify(call.arguments) } },
+      {
+        projectId: input.projectId,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        apiKey: input.apiKey,
+        model,
+        searchModel: this.options.searchModel,
+        preset: input.preset,
+        registry: this.options.registry,
+        executor: new HostExecutor(input.workspace, { heavyJobs: this.options.heavyJobs, wrapArgv: this.options.wrapArgv }),
+        complete: streamCompletion,
+        signal: turnSignal,
+        ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
+        approve: (request) =>
+          this.#approveNative({
+            threadId: input.threadId,
+            turnId: input.turnId,
+            owner: input.owner,
+            request,
+            signal: turnSignal,
+            append: input.append,
+          }),
+        append: async (events) => {
+          await input.append(events);
+        },
+      },
+    );
+    return { content: outcome.content, isError: outcome.isError };
   }
 
   /**

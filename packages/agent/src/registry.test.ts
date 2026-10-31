@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
-import { ALL, buildSchemas, schemasFor, selectPreset, toolsFor } from "./registry.js";
+import { ALL, buildSchemas, hostToolSchemas, hostToolsFor, schemasFor, selectPreset, toolByName, toolsFor } from "./registry.js";
 import { defineTool, type AnyTool } from "./tool.js";
 import { toJsonSchema } from "./schema.js";
 
@@ -166,5 +166,51 @@ describe("the prompt-cache canary", () => {
     for (const preset of ["standard", "readonly", "minimal"] as const) {
       for (const t of toolsFor(preset)) expect(ALL).toContain(t);
     }
+  });
+});
+
+describe("hostToolsFor", () => {
+  const names = (preset: Parameters<typeof hostToolsFor>[0]) => hostToolsFor(preset).map((tool) => tool.name);
+
+  it("offers OMP only what it has nothing of its own for", () => {
+    expect(names("standard")).toEqual(["current_time", "attach_upload"]);
+    expect(names("research")).toEqual(["current_time", "research_search", "research_read", "research_browse"]);
+    expect(names("documentation")).toEqual([
+      "current_time",
+      "attach_upload",
+      "doc_skill",
+      "doc_read",
+      "doc_inspect",
+      "doc_edit",
+      "doc_render",
+      "doc_diagram",
+      "doc_chart",
+      "doc_check",
+    ]);
+  });
+
+  it("never offers a file, search or shell tool, which OMP has", () => {
+    for (const preset of ["standard", "research", "documentation"] as const) {
+      for (const name of ["read_file", "write_file", "edit_file", "delete_file", "list_dir", "glob", "grep", "bash", "web_search", "web_fetch"]) {
+        expect(names(preset)).not.toContain(name);
+      }
+    }
+  });
+
+  it("offers only members of the preset, so runTool finds every one", () => {
+    for (const preset of ["standard", "research", "documentation"] as const) {
+      for (const name of names(preset)) expect(toolByName(preset, name)).toBeDefined();
+    }
+  });
+
+  it("describes each with the schema a native turn sends", () => {
+    const [time] = hostToolSchemas("standard");
+    const native = schemasFor("standard").find((schema) => schema.function.name === "current_time")!;
+    expect(time).toEqual({
+      name: "current_time",
+      label: "current_time",
+      description: native.function.description,
+      parameters: native.function.parameters,
+    });
   });
 });

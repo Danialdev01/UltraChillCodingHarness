@@ -5,6 +5,7 @@ import type {
   ReasoningEffort,
 } from "@ucch/protocol";
 import { isOmpCredentialEnv } from "./omp-credentials.js";
+import type { OmpHostToolSpec } from "./omp-rpc-types.js";
 import type { ProcessHost } from "./process.js";
 
 /**
@@ -78,6 +79,35 @@ export interface ProviderRunInput {
   instructions?: string;
   /** What only an OMP run takes; the server writes and owns all of it. */
   omp?: OmpRunFiles;
+  /**
+   * The harness's own tools, offered to an OMP run as host tools
+   * (solution §3.7). Absent or empty, none are offered.
+   */
+  hostTools?: readonly HostToolSpec[];
+  /**
+   * Runs one call to a host tool and resolves with its result; never
+   * rejects for a tool's own failure. `signal` aborts when the provider
+   * cancels the call. Required whenever `hostTools` is not empty.
+   */
+  onHostToolCall?(call: HostToolCall, signal: AbortSignal): Promise<HostToolResult>;
+}
+
+/** A host tool as the model is offered it: JSON Schema parameters. */
+export type HostToolSpec = OmpHostToolSpec;
+
+/** One call the model made to a host tool. */
+export interface HostToolCall {
+  /** The provider's id for the call, to answer it by. */
+  id: string;
+  /** The model's tool call id: what the call's `agent.tool_use` carries. */
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface HostToolResult {
+  content: string;
+  isError: boolean;
 }
 
 /** The files an OMP turn runs with (solution §3.1). Absolute paths. */

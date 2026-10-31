@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -531,6 +531,51 @@ describe("an OMP turn", () => {
     expect(events.find((e) => e.type === "turn.started")).toMatchObject({ provider: "omp" });
     expect(events.find((e) => e.type === "agent.session_started")).toMatchObject({ provider: "omp" });
     expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
+  });
+
+  describe("host tools", () => {
+    /**
+     * The recorded xd:// call, made to `current_time` instead of the
+     * recording's `ucch_echo`: the way a real model reaches a host tool.
+     */
+    async function currentTimeFixture(): Promise<string> {
+      const recorded = await readFile(join(FIXTURES, "omp-host-tool-xd.jsonl"), "utf8");
+      const path = join(root, "omp-current-time.jsonl");
+      await writeFile(
+        path,
+        recorded
+          .replaceAll("ucch_echo", "current_time")
+          .replaceAll('{"text":"ping"}', '{"timezone":"UTC"}')
+          .replaceAll('{\\"text\\":\\"ping\\"}', '{\\"timezone\\":\\"UTC\\"}'),
+      );
+      return path;
+    }
+
+    it("runs a call through runTool, and the chat shows OMP's row with the tool's own result", async () => {
+      process.env.FAKE_OMP_FIXTURE = await currentTimeFixture();
+      const { agent, appended } = ompReactor(thread, keyed);
+      agent.react(omp, [message]);
+      await until(appended, closed);
+      const events = appended.flat();
+      expect(events.filter((e) => e.type === "agent.tool_use")).toEqual([
+        expect.objectContaining({ toolUseId: "call_1", name: "current_time", input: { timezone: "UTC" } }),
+      ]);
+      const result = events.find((e) => e.type === "agent.tool_result") as Extract<DomainEvent, { type: "agent.tool_result" }>;
+      expect(result).toMatchObject({ toolUseId: "call_1", isError: false });
+      expect(result.content).toMatch(/ISO 8601 \(UTC\): \d{4}-\d{2}-\d{2}T/);
+      expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
+    });
+
+    it("refuses a call to a tool the turn was not offered", async () => {
+      process.env.FAKE_OMP_FIXTURE = join(FIXTURES, "omp-host-tool-xd.jsonl");
+      const { agent, appended } = ompReactor(thread, keyed);
+      agent.react(omp, [message]);
+      await until(appended, closed);
+      expect(appended.flat().find((e) => e.type === "agent.tool_result")).toMatchObject({
+        isError: true,
+        content: 'There is no host tool called "ucch_echo".',
+      });
+    });
   });
 
   it("fails the turn, spawning nothing, without an OpenRouter key", async () => {

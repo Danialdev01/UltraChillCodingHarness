@@ -4,6 +4,8 @@ import type {
   OmpAgentEnd,
   OmpClientFrame,
   OmpFrame,
+  OmpHostToolCall,
+  OmpHostToolCancel,
   OmpPromptResult,
   OmpToolExecutionEnd,
   OmpToolExecutionStart,
@@ -15,6 +17,7 @@ import type { ExitStatus } from "./process.js";
 import {
   forbiddenEnvFor,
   type AgentProvider,
+  type HostToolResult,
   type AgentRun,
   type PermissionReply,
   type ProviderHealth,
@@ -715,6 +718,8 @@ class OmpTurn implements AgentRun {
   #killed = false;
   #failure: string | null = null;
   #timer: NodeJS.Timeout | undefined;
+  /** Host calls running, by OMP's call id, to abort on `host_tool_cancel`. */
+  readonly #hostCalls = new Map<string, AbortController>();
 
   constructor(
     private readonly input: ProviderRunInput,
@@ -792,6 +797,16 @@ class OmpTurn implements AgentRun {
   async #turn(rpc: OmpRpc): Promise<void> {
     // Subagent frames are read from OM5; asking now costs nothing.
     await rpc.request({ type: "set_subagent_subscription", level: "progress" });
+    const hostTools = this.input.hostTools ?? [];
+    if (hostTools.length > 0) {
+      // A turn whose tools did not register would tell the model about
+      // tools it cannot call; better to fail it than to let it try.
+      const registered = await rpc.request({ type: "set_host_tools", tools: [...hostTools] });
+      if (!registered.success) {
+        this.#failure = `omp refused the host tools: ${registered.error ?? "no reason given"}`;
+        return this.#close(rpc);
+      }
+    }
     const state = await rpc.request<{ sessionId?: unknown }>({ type: "get_state" });
     if (typeof state.data?.sessionId === "string") this.#queue.push(...this.#normaliser.session(state.data.sessionId));
     const before = await this.#stats(rpc);
@@ -811,6 +826,11 @@ class OmpTurn implements AgentRun {
   }
 
   #onFrame(frame: OmpFrame): void {
+    if (frame.type === "host_tool_call") return this.#hostCall(frame as OmpHostToolCall);
+    if (frame.type === "host_tool_cancel") {
+      this.#hostCalls.get((frame as OmpHostToolCancel).targetId)?.abort();
+      return;
+    }
     if (frame.type === "rpc_frame_error") {
       // Part of the turn is lost, so none of it can be trusted.
       this.#failure ??= `omp sent a frame that could not be read: ${String(frame.error)}`;
@@ -819,6 +839,44 @@ class OmpTurn implements AgentRun {
     }
     this.#queue.push(...this.#normaliser.push(frame));
     if (this.#normaliser.settled) this.#settle();
+  }
+
+  /**
+   * Runs a host call off the read loop, so a slow tool never holds the
+   * stream, and answers it. OMP sends the call's own `tool_execution_*`
+   * frames, so nothing here becomes an event (spike report, OM0.3).
+   *
+   * Answered even after a cancel: OMP has ended the call by then and drops
+   * the late result (OM3.2), and answering always keeps one path for both.
+   */
+  #hostCall(call: OmpHostToolCall): void {
+    const controller = new AbortController();
+    this.#hostCalls.set(call.id, controller);
+    const run = this.input.onHostToolCall;
+    const pending: Promise<HostToolResult> = run
+      ? Promise.resolve().then(() =>
+          run(
+            {
+              id: call.id,
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              arguments: call.arguments && typeof call.arguments === "object" ? call.arguments : {},
+            },
+            controller.signal,
+          ),
+        )
+      : Promise.resolve({ content: `There is no host tool called ${JSON.stringify(call.toolName)}.`, isError: true });
+    void pending
+      .catch((error: unknown): HostToolResult => ({ content: `${call.toolName} failed: ${describeError(error)}`, isError: true }))
+      .then((result) => {
+        this.#hostCalls.delete(call.id);
+        this.#send({
+          type: "host_tool_result",
+          id: call.id,
+          result: { content: [{ type: "text", text: result.content }] },
+          ...(result.isError ? { isError: true } : {}),
+        });
+      });
   }
 
   async #stats(rpc: OmpRpc): Promise<OmpSessionStats | null> {
@@ -848,6 +906,8 @@ class OmpTurn implements AgentRun {
 
   #end(exit: ExitStatus, error: string | null): void {
     clearTimeout(this.#timer);
+    // Nobody is left to answer: a tool still running stops.
+    for (const controller of this.#hostCalls.values()) controller.abort();
     const stderrTail = (this.#rpc?.stderrTail ?? "").slice(-STDERR_TAIL_BYTES).trim();
     this.#queue.push(
       ...this.#normaliser.finish({ ...exit, interrupted: this.#interrupted, stderrTail, ...(error ? { error } : {}) }),

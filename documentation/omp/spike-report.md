@@ -62,6 +62,8 @@ omp/18.14.1
 | `omp-subagent` | `set_subagent_subscription progress`, one `scout` task | `agent_end` (terminal, after a non-terminal one) |
 | `omp-host-tool` | `set_host_tools` with `ucch_echo`, called by name | `agent_end` |
 | `omp-host-tool-xd` | the same tool reached the way a real model reaches it: `write` to `xd://ucch_echo` | `agent_end` |
+| `omp-host-tool-error` | a host call answered `isError: true` (OM3.2) | `agent_end` |
+| `omp-host-tool-cancel` | a host call still running at an `abort`, then a late result (OM3.2) | `agent_end` |
 | `omp-error` | the model API answers HTTP 400 | `prompt_result` `status: "error"` |
 | `omp-retry` | HTTP 503, then an answer | `agent_end` |
 | `omp-resume` | a turn, `new_session`, `switch_session` back, a second turn | `agent_end` |
@@ -113,6 +115,8 @@ omp-compaction.jsonl: 172 lines … omp-tool.jsonl: 47 lines     (exit 0)
 - **Host tools are not top-level model tools.** With the default `tools.xdev: true`, OMP mounts them as `xd://<name>` devices (`notice` "xd://: mounted ucch_echo", `:6`). The system prompt lists `xd://ucch_echo — Echo text back from the host.` under "xd:// Tool Devices", and the model calls one by `write`-ing its JSON arguments to that path. A tool call named `ucch_echo` directly is also dispatched (`omp-host-tool.jsonl`), but a real model follows the prompt (`omp-host-tool-xd.jsonl`). `tools.xdev: false` would expose every tool top-level, built-ins included; not proposed.
 - **`host_tool_call` fields:** `{ id, toolCallId, toolName, arguments }` (`omp-host-tool-xd.jsonl:19`). `toolName` is the host tool's name even when the model wrote to `xd://`. Answered with `{ type: "host_tool_result", id, result: { content: [{ type: "text", text }] } }`.
 - **Yes, OMP also emits `tool_execution_*` for a host call**, so UCCH must **not** add its own `agent.tool_use` / `agent.tool_result` (§3.4 corrected). Order: `host_tool_call` → `host_tool_result` → `tool_execution_start` → `tool_execution_end`. Through `xd://` the execution frames name the tool **`write`** with `args.path: "xd://ucch_echo"` and `args.content` the JSON; `tool_execution_end.result.details.xdev` has `{ tool, mode: "execute", args, tier }`. The normaliser maps a `write` to `xd://<tool>` back to `<tool>` with the parsed content as input, and never reports it as a file change.
+- **A failed host call** (OM3.2, `omp-host-tool-error.jsonl`): `{ type: "host_tool_result", id, isError: true, result: { content } }`, with `isError` beside `result`, ends the call `isError: true` with that text.
+- **A host call still running at an abort** (OM3.2, `omp-host-tool-cancel.jsonl`): OMP sends `host_tool_cancel { id, targetId }` (`targetId` is the `host_tool_call`'s `id`) and ends the call itself, `isError: true`, "Aborted: Cancelled". A `host_tool_result` for it sent after that is ignored: no response, no error, and the next command is answered normally. So the host aborts the tool on cancel and may still send its result.
 - **Subagents do not see host tools.** A scout's request carried exactly `read, grep, glob, web_search` (its agent definition's tools); `ucch_echo` was not mounted for it. Research workers (`ucch-researcher`, §6.4) therefore cannot rely on host tools; they belong to the parent turn.
 
 ### Q4. Compaction summary (§5.1)
