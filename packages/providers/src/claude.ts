@@ -183,6 +183,25 @@ export async function probeClaude(
   });
 }
 
+/** The tools that spawn a subagent: `Task`, renamed `Agent` by 2.1.316. */
+const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
+
+/** At most one progress line a second per subagent (solution §6.2). */
+const SUBAGENT_PROGRESS_MS = 1_000;
+
+/** The size a subagent's result is held to on its card. */
+const SUBAGENT_RESULT_CHARS = 8_000;
+
+interface ClaudeSubagent {
+  /** Registered in the background: its call's tool_result is only the launch. */
+  background: boolean;
+  toolCalls: number;
+  durationMs?: number;
+  lastProgressAt: number;
+  /** Its latest prose: the result when the CLI's own is a summary. */
+  lastText: string | null;
+}
+
 /** Tools whose successful result means a file in the workspace changed. */
 const WRITING_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
@@ -227,6 +246,16 @@ interface Line {
   rate_limit_info?: { status?: string; rateLimitType?: string; resetsAt?: number };
   /** The API's own error type, on a response it refused: `usage_limit_reached` for the plan's limit. */
   api_error?: string;
+  /** `system` `task_*` lines: a background task's id, its spawning call, and how it is going. */
+  task_id?: string;
+  tool_use_id?: string;
+  description?: string;
+  subagent_type?: string;
+  is_backgrounded?: boolean;
+  task_type?: string;
+  status?: string;
+  summary?: string;
+  last_tool_name?: string;
   is_error?: boolean;
   result?: string | null;
   terminal_reason?: string;
@@ -255,6 +284,12 @@ export class ClaudeNormaliser implements Normaliser {
   #message: { id: string; content: unknown[] } | null = null;
   /** The turn met a usage limit: a refused `rate_limit_event`, or a response the API refused for one. */
   #limited = false;
+  /** This turn's `Agent` / `Task` calls, by tool use id: what each subagent was asked. */
+  #agentCalls = new Map<string, { agent: string | null; description: string | null }>();
+  /** Subagents started and not yet finished, by the spawning call's id (solution §6.2). */
+  #subagents = new Map<string, ClaudeSubagent>();
+  /** Finished ones, so a late line does not start them again. */
+  #finishedSubagents = new Set<string>();
   #usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -337,6 +372,11 @@ export class ClaudeNormaliser implements Normaliser {
             },
           ];
         }
+        // A subagent's own task lines (2.1.316): `Agent` calls run in the
+        // background, so these, not the call's tool_result, say how it went.
+        if (line.subtype === "task_started" || line.subtype === "task_progress" || line.subtype === "task_notification") {
+          return this.#taskLine(line);
+        }
         if (line.subtype === "api_retry") {
           return [
             {
@@ -359,8 +399,8 @@ export class ClaudeNormaliser implements Normaliser {
         return [];
 
       case "stream_event": {
-        // Subagent prose is not this turn's prose; its tool calls still
-        // arrive as ordinary assistant lines below.
+        // Subagent prose is not this turn's prose; its lines arrive whole
+        // as assistant lines below, and become its progress.
         if (line.parent_tool_use_id) return [];
         const delta = line.event?.delta;
         if (line.event?.type !== "content_block_delta" || !delta) return [];
@@ -380,6 +420,7 @@ export class ClaudeNormaliser implements Normaliser {
         // `rate_limit` is a request throttled past its retries, which the
         // plan's next reset has nothing to do with.
         if (!line.parent_tool_use_id && isLimitLine(line)) this.#limited = true;
+        if (line.parent_tool_use_id) return this.#subagentLine(line.parent_tool_use_id, line.message?.content ?? []);
         const blocks = line.message?.content ?? [];
         const events: DomainEvent[] = [];
         const id = line.message?.id ?? "";
@@ -393,6 +434,13 @@ export class ClaudeNormaliser implements Normaliser {
             name: block.name ?? "tool",
             path: this.#pathOf(block),
           });
+          if (SUBAGENT_TOOLS.has(block.name ?? "")) {
+            const input = (block.input ?? {}) as { subagent_type?: unknown; description?: unknown };
+            this.#agentCalls.set(block.id, {
+              agent: typeof input.subagent_type === "string" && input.subagent_type ? input.subagent_type : null,
+              description: typeof input.description === "string" && input.description ? input.description : null,
+            });
+          }
           // Written as the model asked for it, before the result: the same
           // order the native loop keeps.
           events.push(...this.#flushMessage());
@@ -432,6 +480,16 @@ export class ClaudeNormaliser implements Normaliser {
                 : "modified",
             });
           }
+          // A foreground subagent's result is its call's; a background one's
+          // call only says it was launched, and `task_notification` ends it.
+          const subagent = this.#subagents.get(block.tool_use_id);
+          const content = flattenContent(block.content);
+          if (subagent && !subagent.background && !content.startsWith("Async agent launched")) {
+            events.push(...this.#subagentFinished(block.tool_use_id, isError ? "failed" : "completed", content));
+          } else if (!subagent && this.#agentCalls.has(block.tool_use_id) && !content.startsWith("Async agent launched")) {
+            events.push(...this.#subagentStarted(block.tool_use_id, {}));
+            events.push(...this.#subagentFinished(block.tool_use_id, isError ? "failed" : "completed", content));
+          }
         }
         return events;
       }
@@ -458,6 +516,7 @@ export class ClaudeNormaliser implements Normaliser {
         this.#closed = true;
         const events = this.#flushMessage();
         events.push(...this.#closePrompts());
+        events.push(...this.#closeSubagents());
         // With stdin held for prompts the CLI waits for the next message
         // after a result; closing it is what lets the process exit.
         this.#io?.endStdin();
@@ -509,6 +568,7 @@ export class ClaudeNormaliser implements Normaliser {
     const ids = { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
     const events = this.#flushMessage();
     events.push(...this.#closePrompts());
+    events.push(...this.#closeSubagents(exit.interrupted ? "aborted" : "failed"));
     if (exit.interrupted && (exitedBySignal(exit) || exit.code === 0)) {
       events.push({
         type: "agent.turn_completed",
@@ -547,6 +607,120 @@ export class ClaudeNormaliser implements Normaliser {
     }
     this.#prompts.clear();
     return events;
+  }
+
+  /**
+   * A line from inside a subagent (`parent_tool_use_id` set). Its prose is
+   * not this turn's: it becomes the subagent's progress line, never a delta
+   * or part of the turn's message. Its tool calls are still the turn's tool
+   * events -- they act on the same worktree, and revert and the file view
+   * follow them -- and also its progress.
+   */
+  #subagentLine(parent: string, blocks: Block[]): DomainEvent[] {
+    const ids = { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
+    const events = this.#subagentStarted(parent, {});
+    const subagent = this.#subagents.get(parent);
+    for (const block of blocks) {
+      if (block.type === "text" && block.text?.trim()) {
+        if (subagent) subagent.lastText = block.text.trim();
+        events.push(...this.#subagentProgress(parent, block.text));
+      } else if (block.type === "tool_use" && block.id) {
+        this.#pending.set(block.id, { startedAt: this.#now(), name: block.name ?? "tool", path: this.#pathOf(block) });
+        events.push({ type: "agent.tool_use", ...ids, toolUseId: block.id, name: block.name ?? "tool", input: block.input ?? null });
+        if (subagent) subagent.toolCalls += 1;
+        events.push(...this.#subagentProgress(parent, block.name ?? "tool"));
+      }
+    }
+    return events;
+  }
+
+  /** `task_started` / `task_progress` / `task_notification`, for a subagent this turn spawned. */
+  #taskLine(line: Line): DomainEvent[] {
+    const parent = line.tool_use_id;
+    if (!parent || (!this.#agentCalls.has(parent) && line.task_type !== "local_agent")) return [];
+    const usage = (line.usage ?? {}) as { tool_uses?: unknown; duration_ms?: unknown };
+    const events = this.#subagentStarted(parent, {
+      ...(line.subagent_type ? { agent: line.subagent_type } : {}),
+      ...(line.description ? { description: line.description } : {}),
+    });
+    const subagent = this.#subagents.get(parent);
+    if (!subagent) return events;
+    if (line.subtype === "task_started" && line.is_backgrounded !== undefined) subagent.background = line.is_backgrounded;
+    if (typeof usage.tool_uses === "number") subagent.toolCalls = Math.max(subagent.toolCalls, usage.tool_uses);
+    if (typeof usage.duration_ms === "number") subagent.durationMs = usage.duration_ms;
+    if (line.subtype === "task_progress") {
+      events.push(...this.#subagentProgress(parent, line.summary || line.description || line.last_tool_name || ""));
+    } else if (line.subtype === "task_notification") {
+      const status = line.status === "completed" ? "completed" : line.status === "failed" ? "failed" : "aborted";
+      events.push(...this.#subagentFinished(parent, status, subagent.lastText ?? line.summary ?? null));
+    }
+    return events;
+  }
+
+  /** `agent.subagent_started`, the first time the turn hears of a subagent. */
+  #subagentStarted(parent: string, seen: { agent?: string; description?: string }): DomainEvent[] {
+    if (this.#subagents.has(parent) || this.#finishedSubagents.has(parent)) return [];
+    const call = this.#agentCalls.get(parent);
+    this.#subagents.set(parent, { background: false, toolCalls: 0, lastProgressAt: -Infinity, lastText: null });
+    return [
+      {
+        type: "agent.subagent_started",
+        threadId: this.ctx.threadId,
+        turnId: this.ctx.turnId,
+        subagentId: parent,
+        parentToolUseId: parent,
+        agent: call?.agent ?? seen.agent ?? "general-purpose",
+        description: call?.description ?? seen.description ?? null,
+        model: null,
+      },
+    ];
+  }
+
+  /** A progress line, at most one a second per subagent: the card's, not a log. */
+  #subagentProgress(parent: string, text: string): DomainEvent[] {
+    const subagent = this.#subagents.get(parent);
+    const summary = text.trim().split("\n")[0]!.slice(0, 300);
+    if (!subagent || !summary) return [];
+    const now = this.#now();
+    if (now - subagent.lastProgressAt < SUBAGENT_PROGRESS_MS) return [];
+    subagent.lastProgressAt = now;
+    return [
+      {
+        type: "agent.subagent_progress",
+        threadId: this.ctx.threadId,
+        turnId: this.ctx.turnId,
+        subagentId: parent,
+        summary,
+        toolCalls: subagent.toolCalls,
+        ...(subagent.durationMs !== undefined ? { durationMs: subagent.durationMs } : {}),
+      },
+    ];
+  }
+
+  /** `agent.subagent_finished`, once per subagent. */
+  #subagentFinished(parent: string, status: "completed" | "failed" | "aborted", result: string | null): DomainEvent[] {
+    const subagent = this.#subagents.get(parent);
+    if (!subagent) return [];
+    this.#subagents.delete(parent);
+    this.#finishedSubagents.add(parent);
+    const text = result?.trim() || subagent.lastText || null;
+    return [
+      {
+        type: "agent.subagent_finished",
+        threadId: this.ctx.threadId,
+        turnId: this.ctx.turnId,
+        subagentId: parent,
+        status,
+        result: text && text.length > SUBAGENT_RESULT_CHARS ? `${text.slice(0, SUBAGENT_RESULT_CHARS)}\n[… truncated]` : text,
+        toolCalls: subagent.toolCalls,
+        ...(subagent.durationMs !== undefined ? { durationMs: subagent.durationMs } : {}),
+      },
+    ];
+  }
+
+  /** The turn ended with subagents still running: they ended with it. */
+  #closeSubagents(status: "aborted" | "failed" = "aborted"): DomainEvent[] {
+    return [...this.#subagents.keys()].flatMap((parent) => this.#subagentFinished(parent, status, null));
   }
 
   #flushMessage(): DomainEvent[] {

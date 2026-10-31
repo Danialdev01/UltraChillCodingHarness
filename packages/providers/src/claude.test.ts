@@ -190,6 +190,82 @@ describe("ClaudeNormaliser on a usage limit", () => {
   });
 });
 
+describe("ClaudeNormaliser on a turn that runs a subagent (OM5.2)", () => {
+  // Recorded from Claude Code 2.1.316: an `Agent` call in the background,
+  // its `task_*` lines, and the subagent's own lines under parent_tool_use_id.
+  const run = () => {
+    let clock = 0;
+    return feed(new ClaudeNormaliser({ ...ids, workspace: WORKSPACE, now: () => (clock += 1_500) }), fixture("task"));
+  };
+
+  it("starts, reports and finishes the subagent once, on its call's id", () => {
+    const events = run();
+    const started = events.filter((e) => e.type === "agent.subagent_started");
+    const finished = events.filter((e) => e.type === "agent.subagent_finished");
+    expect(started).toEqual([
+      {
+        type: "agent.subagent_started",
+        ...{ threadId: ids.threadId, turnId: ids.turnId },
+        subagentId: "toolu_task_1",
+        parentToolUseId: "toolu_task_1",
+        agent: "Explore",
+        description: "Find src exports",
+        model: null,
+      },
+    ]);
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({
+      subagentId: "toolu_task_1",
+      status: "completed",
+      result: "src/a.ts exports `a`.",
+      toolCalls: 1,
+    });
+    expect(events.filter((e) => e.type === "agent.subagent_progress").length).toBeGreaterThan(0);
+    const order = events.map((e) => e.type);
+    expect(order.indexOf("agent.subagent_started")).toBeLessThan(order.indexOf("agent.subagent_progress"));
+    expect(order.indexOf("agent.subagent_finished")).toBeLessThan(order.indexOf("agent.turn_completed"));
+  });
+
+  it("keeps the subagent's prose out of the turn's own", () => {
+    const events = run();
+    const deltas = events.flatMap((e) => (e.type === "agent.text_delta" ? [e.text] : [])).join("");
+    expect(deltas).toBe("The subagent found that src/a.ts exports a.");
+    const prose = JSON.stringify(events.filter((e) => e.type === "agent.message"));
+    expect(prose).not.toContain("Looking at src.");
+    expect(prose).not.toContain("src/a.ts exports `a`.");
+  });
+
+  it("still records the subagent's tool calls as the turn's", () => {
+    const events = run();
+    expect(events.some((e) => e.type === "agent.tool_use" && e.toolUseId === "toolu_read_1")).toBe(true);
+    expect(events.some((e) => e.type === "agent.tool_result" && e.toolUseId === "toolu_read_1")).toBe(true);
+  });
+
+  it("holds progress to one line a second", () => {
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE, now: () => 0 });
+    const events = feed(normaliser, fixture("task"));
+    expect(events.filter((e) => e.type === "agent.subagent_progress")).toHaveLength(1);
+  });
+
+  it("finishes a foreground subagent from its call's result", () => {
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const events = [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_fg", name: "Task", input: { description: "Look", subagent_type: "general-purpose" } }] } },
+      { type: "assistant", parent_tool_use_id: "toolu_fg", message: { content: [{ type: "text", text: "Looking." }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_fg", content: [{ type: "text", text: "Found it." }] }] } },
+    ].flatMap((line) => normaliser.push(JSON.stringify(line)));
+    expect(events.find((e) => e.type === "agent.subagent_finished")).toMatchObject({ status: "completed", result: "Found it." });
+  });
+
+  it("ends a subagent still running with the turn", () => {
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    normaliser.push(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_x", name: "Agent", input: {} }] } }));
+    normaliser.push(JSON.stringify({ type: "assistant", parent_tool_use_id: "toolu_x", message: { content: [{ type: "text", text: "Working." }] } }));
+    const events = normaliser.finish({ code: 143, signal: null, interrupted: true, stderrTail: "" });
+    expect(events.find((e) => e.type === "agent.subagent_finished")).toMatchObject({ subagentId: "toolu_x", status: "aborted", result: "Working." });
+  });
+});
+
 describe("ClaudeNormaliser on a text-only turn", () => {
   it("opens the session, streams deltas, stores the message and closes the turn", () => {
     const events = feed(new ClaudeNormaliser({ ...ids, workspace: WORKSPACE }), fixture("text"));
