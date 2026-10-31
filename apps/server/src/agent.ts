@@ -95,6 +95,8 @@ export interface AgentOptions {
   streamFlushMs?: number;
   /** Subagents one OMP turn may run at once (`OMP_WORKERS_PER_TURN`). 4 when absent. */
   ompWorkersPerTurn?: number;
+  /** `OMP_ENABLED`: new "Custom" threads run on OMP; see `resolveProvider`. */
+  ompEnabled?: boolean;
 }
 
 /** How a turn was asked for: carried on the command, not the event. */
@@ -151,15 +153,24 @@ export function turnKindOf(provider: ProviderId): TurnKind {
  * what the turn asked for, then the account's default, then the native loop.
  * `decide()` has already refused a request that disagrees with the binding,
  * so the first two never conflict by the time this runs.
+ *
+ * With `ompEnabled` (`OMP_ENABLED`), "Custom" is OMP: a thread not yet bound
+ * that would start on the native loop starts on OMP instead. A thread
+ * already bound to the native loop stays on it, because its history is the
+ * native session log, which OMP cannot resume (solution §11).
  */
 export function resolveProvider(
   requested: ProviderId | undefined,
   threadBound: string | null,
   accountDefault: string | null,
+  options: { ompEnabled?: boolean } = {},
 ): ProviderId {
   const known = (value: string | null | undefined): ProviderId | null =>
     value === "native" || value === "claude" || value === "codex" || value === "omp" ? value : null;
-  return known(threadBound) ?? known(requested) ?? known(accountDefault) ?? "native";
+  const bound = known(threadBound);
+  if (bound) return bound;
+  const chosen = known(requested) ?? known(accountDefault) ?? "native";
+  return chosen === "native" && options.ompEnabled ? "omp" : chosen;
 }
 
 /**
@@ -493,7 +504,9 @@ export class AgentTurnReactor {
       // account's default from Settings, then the server's. A message sent
       // from the composer always names one; the fallbacks are for everything
       // that does not -- another client, or a turn started by the harness.
-      const provider = resolveProvider(requestedProvider, thread.provider, owner.defaultProvider);
+      const provider = resolveProvider(requestedProvider, thread.provider, owner.defaultProvider, {
+        ompEnabled: this.options.ompEnabled ?? false,
+      });
 
       // A slot, before the turn opens: over the server's limits the turn
       // waits here, with no `turns` row and nothing billed, and the thread

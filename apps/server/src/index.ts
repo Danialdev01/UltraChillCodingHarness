@@ -270,6 +270,7 @@ const agentTurns = new AgentTurnReactor(
     scheduler: turnScheduler,
     streamFlushMs: config.STREAM_FLUSH_MS,
     ompWorkersPerTurn: config.OMP_WORKERS_PER_TURN,
+    ompEnabled: config.OMP_ENABLED,
   },
   (error) => app.log.error({ err: error }, "agent turn failed"),
 );

@@ -69,6 +69,38 @@ describe("resolveProvider", () => {
     // A column written by a future version, or a hand-edited row.
     expect(resolveProvider(undefined, "gemini", null)).toBe("native");
   });
+
+  describe("with OMP_ENABLED", () => {
+    // bound, requested, account default -> without the flag, with it.
+    const table: [string | null, "native" | "claude" | "codex" | "omp" | undefined, string | null, string, string][] = [
+      // Unbound: whatever would start on the native loop starts on OMP.
+      [null, undefined, null, "native", "omp"],
+      [null, "native", null, "native", "omp"],
+      [null, undefined, "native", "native", "omp"],
+      [null, "native", "claude", "native", "omp"],
+      [null, undefined, "gemini", "native", "omp"],
+      // Unbound, and something else chosen: the flag changes nothing.
+      [null, "claude", null, "claude", "claude"],
+      [null, "codex", "native", "codex", "codex"],
+      [null, undefined, "claude", "claude", "claude"],
+      [null, undefined, "omp", "omp", "omp"],
+      [null, "omp", null, "omp", "omp"],
+      // Bound: the binding wins, a native thread included.
+      ["native", undefined, null, "native", "native"],
+      ["native", "native", "omp", "native", "native"],
+      ["claude", undefined, "native", "claude", "claude"],
+      ["codex", "codex", null, "codex", "codex"],
+      ["omp", undefined, "native", "omp", "omp"],
+      // A binding it does not know is no binding.
+      ["gemini", undefined, null, "native", "omp"],
+    ];
+
+    it.each(table)("bound %s, asked %s, default %s: %s, or %s with the flag", (bound, requested, fallback, off, on) => {
+      expect(resolveProvider(requested, bound, fallback)).toBe(off);
+      expect(resolveProvider(requested, bound, fallback, { ompEnabled: false })).toBe(off);
+      expect(resolveProvider(requested, bound, fallback, { ompEnabled: true })).toBe(on);
+    });
+  });
 });
 
 describe("turnKindOf", () => {
@@ -489,6 +521,16 @@ describe("an OMP turn", () => {
     await until(appended, closed);
     expect(appended.flat().at(-1)).toMatchObject({ type: "agent.turn_completed", stopReason: "cancelled" });
     await eventually(() => readdir(join(creds, USER, "omp", "run")), []);
+  });
+
+  it("is where a Custom turn goes once OMP_ENABLED is on", async () => {
+    const { agent, appended } = ompReactor(thread, keyed, { ompEnabled: true });
+    agent.react({ type: "thread.send", threadId: THREAD, text: "hi", provider: "native" }, [message]);
+    await until(appended, closed);
+    const events = appended.flat();
+    expect(events.find((e) => e.type === "turn.started")).toMatchObject({ provider: "omp" });
+    expect(events.find((e) => e.type === "agent.session_started")).toMatchObject({ provider: "omp" });
+    expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
   });
 
   it("fails the turn, spawning nothing, without an OpenRouter key", async () => {

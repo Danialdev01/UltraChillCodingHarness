@@ -275,6 +275,33 @@ describe("thread.send", () => {
     }
   });
 
+  // With OMP_ENABLED a "Custom" thread is bound to OMP, and the composer
+  // still names the native loop until it reloads.
+  it("takes a native request on an OMP thread as the same Custom choice", () => {
+    const d = run({ project: project(), thread: thread({ provider: "omp" }) }, {
+      type: "thread.send",
+      threadId: THREAD,
+      text: "hi",
+      provider: "native",
+    });
+    expect(d).toMatchObject({ ok: true });
+  });
+
+  it("still refuses OMP on a thread bound to the native loop, or another CLI on an OMP one", () => {
+    for (const [bound, provider] of [
+      ["native", "omp"],
+      ["omp", "claude"],
+    ] as const) {
+      const d = run({ project: project(), thread: thread({ provider: bound }) }, {
+        type: "thread.send",
+        threadId: THREAD,
+        text: "hi",
+        provider,
+      });
+      expect(d).toMatchObject({ ok: false, error: { code: "conflict" } });
+    }
+  });
+
   it("lets an unbound thread pick any provider", () => {
     const d = run({ project: project(), thread: thread() }, {
       type: "thread.send",

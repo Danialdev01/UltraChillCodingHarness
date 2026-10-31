@@ -231,7 +231,13 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       // A CLI provider's session belongs to that provider: Claude Code cannot
       // resume a Codex rollout, and the native loop cannot see either. A
       // thread that has run is bound, and switching means a new thread.
-      if (command.provider && thread.value.provider && command.provider !== thread.value.provider) {
+      //
+      // "Custom" is one choice whichever runtime serves it: with OMP_ENABLED
+      // a thread asked for on the native loop is bound to OMP instead
+      // (`resolveProvider`), and a composer that has not reloaded still asks
+      // for `native`. That is no switch, and the binding is what runs.
+      const custom = command.provider === "native" && thread.value.provider === "omp";
+      if (command.provider && thread.value.provider && command.provider !== thread.value.provider && !custom) {
         return fail(
           "conflict",
           `this thread runs on ${thread.value.provider}; start a new thread to switch provider`,
