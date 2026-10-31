@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { count, eq } from "drizzle-orm";
 import { projects, threads, turns, users, workspaces, type Database } from "@ucch/db";
 import {
+  DOCUMENTATION_RULES,
   HostExecutor,
   hostToolSchemas,
   invalidateTree,
@@ -46,7 +47,7 @@ import { documentationPrompt } from "./documents.js";
 import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 import { TurnScheduler, type TurnKind } from "./turn-scheduler.js";
-import { DEFAULT_OMP_SETTINGS, writeOmpOverlay } from "./omp-overlay.js";
+import { DEFAULT_OMP_SETTINGS, writeOmpOverlay, type OmpPreset } from "./omp-overlay.js";
 import type { ArgvWrapper } from "./child-priority.js";
 
 export interface AgentOptions {
@@ -544,9 +545,14 @@ export class AgentTurnReactor {
         // none of these -- and what it found is handed to the CLI with the
         // message. The phase's events land on the thread as they happen, so
         // the person watches the research before the CLI starts on it.
+        //
+        // OMP needs neither this nor the documentation prompt below: it is
+        // given the pipeline's own tools as host tools, under the mode's
+        // preset (solution §3.7), and does the research or the document
+        // itself.
         let prompt = text;
         let researched: { usage: TokenUsage; costUsd: number } | undefined;
-        if (mode === "research") {
+        if (mode === "research" && provider !== "omp") {
           const phase = await this.#researchPhase({
             threadId,
             turnId,
@@ -580,7 +586,7 @@ export class AgentTurnReactor {
         // A documentation turn on a CLI has no phase of its own: the CLI
         // has a shell, so it is handed the same scripts the native loop's
         // typed tools run, by path, with the rules that go with them.
-        if (mode === "documentation") {
+        if (mode === "documentation" && provider !== "omp") {
           prompt = documentationPrompt(text, this.options.documents);
           await append([
             {
@@ -605,6 +611,7 @@ export class AgentTurnReactor {
           effort,
           signal: controller.signal,
           append,
+          ...(mode ? { mode } : {}),
           ...(researched ? { researched } : {}),
         });
         return;
@@ -776,6 +783,8 @@ export class AgentTurnReactor {
       effort: ReasoningEffort | undefined;
       signal: AbortSignal;
       append: (events: readonly DomainEvent[]) => Promise<unknown>;
+      /** The composer mode. Only OMP reads it: the CLIs' prompt already carries it. */
+      mode?: MessageMode;
       /**
        * What a research phase already spent on this turn. Folded into the
        * CLI's `agent.turn_completed`, which is the one event the usage
@@ -806,7 +815,7 @@ export class AgentTurnReactor {
       // OMP is handed the knowledge inside its own section of the system
       // prompt (solution §3.8). It reads the worktree's AGENTS.md itself, so
       // that is never added here.
-      const instructions = provider === "omp" ? ompInstructions(input.workspace, knowledge) : knowledge;
+      const instructions = provider === "omp" ? ompInstructions(input.workspace, knowledge, input.mode) : knowledge;
       // Logged as the native loop logs its prompt parts, so the thread says
       // exactly what the CLI was handed on top of the message: for OMP the
       // whole appended prompt, byte for byte.
@@ -819,23 +828,25 @@ export class AgentTurnReactor {
           { type: "context.injected", threadId: input.threadId, source: "project_context", content: knowledge },
         ]);
       }
+      // The mode's tools and rules (solution §3.7); the guard hook reads it
+      // too, to keep a documentation turn's writes under docs/.
+      const preset: OmpPreset = input.mode ?? "standard";
       const resolved = await this.options.providers.resolve(
         input.ownerId,
         provider,
-        openrouterKey ? { openrouterKey } : {},
+        openrouterKey ? { openrouterKey, ompPreset: preset } : {},
       );
       const permissionMode = this.#modeFor(input.threadId, input.owner);
       let omp: OmpRunFiles | undefined;
       let host: Pick<ProviderRunInput, "hostTools" | "onHostToolCall"> = {};
       if (provider === "omp") {
         const providers = this.options.providers;
-        const preset = "standard" as const;
         const hostTools = hostToolSchemas(preset, this.options.registry);
         const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), input.turnId, {
           // Every model role is the turn's model until the workspace picks
           // its own (OM8.1): a role left unnamed is the repository's to set.
           settings: { ...DEFAULT_OMP_SETTINGS, models: input.model ? { default: input.model } : {} },
-          preset: "standard",
+          preset,
           permissionMode,
           // No project is trusted until a person can say so (OM7.6).
           trusted: false,
@@ -961,7 +972,7 @@ export class AgentTurnReactor {
       owner: { agentPermissionMode: string | null };
       signal: AbortSignal;
       append: (events: readonly DomainEvent[]) => Promise<unknown>;
-      preset: "standard" | "research" | "documentation";
+      preset: OmpPreset;
       advertised: ReadonlySet<string>;
       apiKey: string;
     },
@@ -987,6 +998,9 @@ export class AgentTurnReactor {
         complete: streamCompletion,
         signal: turnSignal,
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
+        // The pipelines' backends, bound to this turn's key inside runTool.
+        ...(input.preset === "research" ? { mode: "research" as const, research: this.options.research } : {}),
+        ...(input.preset === "documentation" ? { mode: "documentation" as const, documents: this.options.documents } : {}),
         approve: (request) =>
           this.#approveNative({
             threadId: input.threadId,
@@ -1285,12 +1299,44 @@ function ompPromptNeedsPerson(mode: AgentPermissionMode, toolName: string, input
   return true;
 }
 
+/** How an OMP turn reaches UCCH's own tools: they are host tools, mounted as devices. */
+const OMP_HOST_TOOLS_NOTE =
+  "UCCH's own tools named below are xd:// devices: call one by writing its JSON arguments to xd://<name> " +
+  "with your write tool, e.g. xd://current_time.";
+
+/**
+ * A research turn on OMP (solution §3.7): the native loop's pipeline, in
+ * the same order and for the same reasons (`RESEARCH_RULES` in
+ * `@ucch/agent`), with the two differences OMP makes -- the tools are
+ * devices, and the preset's overlay denies every file change.
+ */
+const OMP_RESEARCH_RULES = `## Research turn
+
+This is a research turn. The developer wants live, sourced information, not code changes, and this turn cannot change any file. ${OMP_HOST_TOOLS_NOTE} The pipeline's order is deliberate:
+
+1. research_search first: a live web search that returns an answer, the URLs it drew on, and a line on each. Run several focused queries rather than one broad one -- one per sub-question, one per claim you need to check.
+2. research_read next, on the URLs that matter: a fast crawler, fine to call on several URLs in parallel. Read the page before you state anything from it as fact; a search summary is a lead, not a source. A gated page is escalated to the browser agent on its own.
+3. research_browse only for a page that needs interaction -- something to click, a search form, pagination. It drives a real browser and takes minutes; say precisely what to do and what to bring back.
+
+Then write the answer. Cite the URL beside every claim it supports. Keep what the sources confirm separate from what you inferred, and say what you could not find rather than filling it in. Give dates as the sources give them, and call current_time before saying how recent anything is. The answer is the deliverable: if asked to save the findings, say that this turn cannot write files.`;
+
+/**
+ * A documentation turn on OMP: the native loop's rules, whose tools OMP is
+ * given as host tools, and what is different here.
+ */
+const OMP_DOCUMENTATION_RULES = `## Documentation turn
+
+${OMP_HOST_TOOLS_NOTE} The rules below were written for a harness with no shell: you have one, but use the document tools for anything a document needs. Where they say write_file, use your own write tool. Every file you write or edit must be under docs/: anything else is refused.
+
+${DOCUMENTATION_RULES}`;
+
 /**
  * What an OMP turn adds to OMP's system prompt (solution §3.8): the
  * project's `.ucch/` knowledge, then the few rules that are UCCH's rather
- * than the project's. OMP reads the worktree's AGENTS.md itself.
+ * than the project's, then the composer mode's. OMP reads the worktree's
+ * AGENTS.md itself.
  */
-export function ompInstructions(workspace: string, knowledge: string | null): string {
+export function ompInstructions(workspace: string, knowledge: string | null, mode?: MessageMode): string {
   const rules = [
     "## Working in UCCH",
     "",
@@ -1298,7 +1344,9 @@ export function ompInstructions(workspace: string, knowledge: string | null): st
     "- Ask any question in your reply: the chat is where the person reads and answers it.",
     "- Never commit or push. The person reviews and commits your changes from UCCH's Git view.",
   ].join("\n");
-  return knowledge ? `${knowledge.trimEnd()}\n\n${rules}\n` : `${rules}\n`;
+  const modeRules = mode === "research" ? OMP_RESEARCH_RULES : mode === "documentation" ? OMP_DOCUMENTATION_RULES : null;
+  const parts = [knowledge?.trimEnd(), rules, modeRules].filter((part): part is string => Boolean(part));
+  return `${parts.join("\n\n")}\n`;
 }
 
 /** The shell line a call runs, when it is one: `bash`'s and `Bash`'s `command`. */

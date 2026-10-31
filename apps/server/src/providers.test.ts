@@ -159,6 +159,23 @@ describe("the environment a provider gets", () => {
       expect(forbiddenEnvFor("omp", env)).toBeNull();
     });
 
+    it("names the turn's preset for the guard hook, and never one the server inherited", () => {
+      vi.stubEnv("UCCH_OMP_PRESET", "documentation");
+      const svc = service(new FakeProcessHost([]));
+      expect(svc.providerEnv(USER, "omp", { openrouterKey: "k" }).UCCH_OMP_PRESET).toBeUndefined();
+      const env = svc.providerEnv(USER, "omp", { openrouterKey: "k", ompPreset: "research" });
+      expect(env.UCCH_OMP_PRESET).toBe("research");
+      expect(forbiddenEnvFor("omp", env)).toBeNull();
+    });
+
+    it("still refuses the run when a credential reaches it", () => {
+      // The billing rule as a test (todo rule 6): whatever builds the
+      // environment, a variable OMP would bill makes the run refuse.
+      const svc = service(new FakeProcessHost([]));
+      const env = { ...svc.providerEnv(USER, "omp", { openrouterKey: "k", ompPreset: "research" }), ANTHROPIC_API_KEY: "sk-ant" };
+      expect(forbiddenEnvFor("omp", env)).toBe("ANTHROPIC_API_KEY");
+    });
+
     it("carries no OpenRouter key unless given one, and none of the CLIs' variables", () => {
       const svc = service(new FakeProcessHost([]));
       const env = svc.providerEnv(USER, "omp", { token: "tok" });

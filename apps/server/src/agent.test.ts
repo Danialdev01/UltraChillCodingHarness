@@ -1,10 +1,11 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
 import type { Command, DomainEvent } from "@ucch/protocol";
-import { createProviders, HostProcessHost } from "@ucch/providers";
+import { createProviders, HostProcessHost, type AgentProvider, type ProviderRunInput } from "@ucch/providers";
 import {
   AgentTurnReactor,
   ompInstructions,
@@ -384,13 +385,14 @@ describe("an OMP turn", () => {
 
   /** Rows as the database returns them: a thread, and the person it is billed to. */
   type Row = Record<string, unknown>;
-  function ompReactor(threadRow: Row, personRow: Row, extra: Partial<AgentOptions> = {}) {
+  function ompReactor(threadRow: Row, personRow: Row, extra: Partial<AgentOptions> = {}, ompProvider?: AgentProvider) {
     const creds = join(root, "creds");
+    const real = createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: OMP_BIN });
     const providers = new ProviderService(
       {} as Database,
       { CREDS_ROOT: creds } as Config,
       new HostProcessHost(),
-      createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: OMP_BIN }),
+      ompProvider ? { ...real, omp: ompProvider } : real,
     );
     const scheduler = new TurnScheduler({ cliPerUser: 2, cliTotal: 2, nativeTotal: 2, ompTotal: 1 });
     const built = reactorWith(
@@ -595,6 +597,144 @@ describe("an OMP turn", () => {
     expect(prompt!.content).toContain("Uses pnpm.");
     expect(prompt!.content).toContain("## Working in UCCH");
     expect(prompt!.content).not.toContain("Agents file.");
+  });
+
+  describe("in research and documentation mode", () => {
+    /**
+     * An OMP provider that runs nothing: it keeps what the turn handed it --
+     * the input, the overlay as written, the environment -- lets the test act
+     * as OMP (calling host tools), and then completes the turn.
+     */
+    function capturing(act: (input: ProviderRunInput) => Promise<void> = async () => {}) {
+      const seen: { input?: ProviderRunInput; overlay?: string; env?: Record<string, string> } = {};
+      const provider: AgentProvider = {
+        id: "omp",
+        label: "Custom",
+        models: [],
+        probe: async () => ({ installed: true, authenticated: true, authMode: "api-key" }),
+        run: (input) => {
+          seen.input = input;
+          seen.overlay = readFileSync(input.omp!.overlayPath, "utf8");
+          seen.env = input.ctx.env;
+          return {
+            events: (async function* () {
+              await act(input);
+              yield {
+                type: "agent.turn_completed",
+                threadId: input.threadId,
+                turnId: input.turnId,
+                stopReason: "end_turn",
+                usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+                costUsd: 0,
+              } satisfies DomainEvent;
+            })(),
+            interrupt: async () => {},
+            kill: async () => {},
+          };
+        },
+      };
+      return { provider, seen };
+    }
+    const sendIn = (mode: "research" | "documentation"): [Command, DomainEvent[]] => [
+      omp,
+      [{ type: "user.message", threadId: THREAD, text: "hi", mode }],
+    ];
+
+    it("researches on OMP itself: the research tools, no file changes, no phase on the native loop", async () => {
+      let aborted = false;
+      let result: { content: string; isError: boolean } | undefined;
+      const reader = {
+        read: (request: { signal: AbortSignal }) =>
+          new Promise<never>((_, reject) => {
+            request.signal.addEventListener("abort", () => {
+              aborted = true;
+              reject(new Error("aborted"));
+            });
+          }),
+      };
+      const { provider, seen } = capturing(async (input) => {
+        // OMP cancels a fetch still running, as it does on the stop button.
+        const cancel = new AbortController();
+        const call = input.onHostToolCall!(
+          { id: "h1", toolCallId: "call_1", toolName: "research_read", arguments: { url: "https://93.184.215.14/", escalate: null } },
+          cancel.signal,
+        );
+        await new Promise((r) => setTimeout(r, 20));
+        cancel.abort();
+        result = await call;
+      });
+      const { agent, appended } = ompReactor(
+        thread,
+        keyed,
+        { research: { searchModel: "perplexity/sonar", reader }, registry: {} },
+        provider,
+      );
+      agent.react(...sendIn("research"));
+      await until(appended, closed);
+      const events = appended.flat();
+      expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
+      // The message is the person's own: no brief, because no phase ran.
+      expect(seen.input!.prompt).toBe("hi");
+      expect(events.some((e) => e.type === "context.injected" && e.source === "research")).toBe(false);
+      expect(seen.input!.hostTools!.map((tool) => tool.name)).toEqual([
+        "current_time",
+        "research_search",
+        "research_read",
+        "research_browse",
+      ]);
+      expect(seen.input!.instructions).toContain("## Research turn");
+      expect(seen.env!.UCCH_OMP_PRESET).toBe("research");
+      for (const line of ['  write: "deny"', '  edit: "deny"', '  research_read: "allow"', '  bash: "prompt"']) {
+        expect(seen.overlay).toContain(`\n  ${line}\n`);
+      }
+      // Cancel reached the fetch, and the call came back failed.
+      expect(aborted).toBe(true);
+      expect(result).toMatchObject({ isError: true });
+    });
+
+    it("writes documents on OMP: the document tools, writes kept to docs/, and the render's events", async () => {
+      const kit = join(root, "kit");
+      await mkdir(join(kit, "scripts"), { recursive: true });
+      const workspace = join(root, "workspaces", PROJECT);
+      await mkdir(join(workspace, "docs"), { recursive: true });
+      await writeFile(join(workspace, "docs", "notes.md"), "---\ntitle: T\n---\n# A\n");
+      await writeFile(
+        join(kit, "scripts", "doc_render.py"),
+        `echo '{"path":"${workspace}/docs/notes.pdf","format":"pdf","type":"memo","pages":2,"warnings":[],"figure_errors":[]}'\n`,
+      );
+      await chmod(join(kit, "scripts", "doc_render.py"), 0o755);
+      let result: { content: string; isError: boolean } | undefined;
+      const { provider, seen } = capturing(async (input) => {
+        result = await input.onHostToolCall!(
+          {
+            id: "h1",
+            toolCallId: "call_1",
+            toolName: "doc_render",
+            arguments: { source: "docs/notes.md", format: "pdf", out: null, fallback: null },
+          },
+          new AbortController().signal,
+        );
+      });
+      const { agent, appended } = ompReactor(
+        thread,
+        keyed,
+        { documents: { kitDir: kit, python: "/bin/sh", visionModel: "test/vision" }, registry: {} },
+        provider,
+      );
+      agent.react(...sendIn("documentation"));
+      await until(appended, closed);
+      const events = appended.flat();
+      expect(seen.input!.hostTools!.map((tool) => tool.name)).toContain("doc_render");
+      expect(seen.input!.instructions).toContain("## Documentation turn");
+      expect(seen.input!.instructions).toContain("must be under docs/");
+      // The guard hook confines writes to docs/ from this.
+      expect(seen.env!.UCCH_OMP_PRESET).toBe("documentation");
+      // No CLI documentation prompt: the tools are OMP's to call.
+      expect(seen.input!.prompt).toBe("hi");
+      expect(result).toMatchObject({ isError: false, content: expect.stringContaining("Rendered docs/notes.pdf (2 pages)") });
+      // What a native turn's render emits, landing on the thread the same way.
+      expect(events).toContainEqual(expect.objectContaining({ type: "file.changed", projectId: PROJECT, path: "docs/notes.pdf" }));
+    });
   });
 
   it("fails the turn, spawning nothing, without an OpenRouter key", async () => {

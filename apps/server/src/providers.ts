@@ -179,12 +179,14 @@ export class ProviderService {
    * OMP is billed to the workspace's OpenRouter key, which it is handed
    * here, and nothing else: every other variable it would read as a
    * credential is dropped, including the ones `terminalEnv` lets through
-   * because they are not named like secrets (`AWS_ACCESS_KEY_ID`).
+   * because they are not named like secrets (`AWS_ACCESS_KEY_ID`). Its
+   * guard hook reads the turn's preset from `UCCH_OMP_PRESET`, which is
+   * this turn's or absent -- never one the server itself was started with.
    */
   providerEnv(
     userId: string,
     id: CliProviderId,
-    options: { token?: string; openrouterKey?: string } = {},
+    options: { token?: string; openrouterKey?: string; ompPreset?: string } = {},
   ): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(terminalEnv())) if (value !== undefined) env[name] = value;
@@ -206,6 +208,8 @@ export class ProviderService {
       env.OMP_SKIP_SETUP = "1";
       env.PI_TASK_MAX_OUTPUT_BYTES = OMP_TASK_MAX_OUTPUT_BYTES;
       if (options.openrouterKey) env.OPENROUTER_API_KEY = options.openrouterKey;
+      delete env.UCCH_OMP_PRESET;
+      if (options.ompPreset) env.UCCH_OMP_PRESET = options.ompPreset;
     }
     return env;
   }
@@ -222,13 +226,13 @@ export class ProviderService {
 
   /**
    * What a provider run needs: the provider, and a context for a workspace.
-   * `openrouterKey` is an OMP run's, decrypted by the caller for this one
-   * run; the CLIs never get it.
+   * `openrouterKey` and `ompPreset` are an OMP run's -- the key decrypted by
+   * the caller for this one run; the CLIs never get either.
    */
   async resolve(
     userId: string,
     id: CliProviderId,
-    options: { openrouterKey?: string } = {},
+    options: { openrouterKey?: string; ompPreset?: string } = {},
   ): Promise<{ provider: AgentProvider; ctx: (cwd: string) => RunContext }> {
     const provider = this.providers[id];
     if (!provider) throw new Error(`The ${id} provider is not available on this server.`);
@@ -236,6 +240,7 @@ export class ProviderService {
     const env = this.providerEnv(userId, id, {
       ...(token ? { token } : {}),
       ...(id === "omp" && options.openrouterKey ? { openrouterKey: options.openrouterKey } : {}),
+      ...(id === "omp" && options.ompPreset ? { ompPreset: options.ompPreset } : {}),
     });
     return { provider, ctx: (cwd) => ({ cwd, env, host: this.host }) };
   }

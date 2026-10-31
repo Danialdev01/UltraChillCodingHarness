@@ -192,6 +192,28 @@ export const scenarios = [
     },
   },
   {
+    // The research preset on OMP (OM3.4): `write` and `edit` denied, the host
+    // tools allowed by name. A device call is a `write` to xd://<tool>; this
+    // records whether the device's own key wins over `write: deny`, and that
+    // a file write is still refused.
+    name: "host-tool-write-denied",
+    config: "tools:\n  approval:\n    write: deny\n    edit: deny\n    ucch_echo: allow\n",
+    args: ["--approval-mode", "write"],
+    script: [
+      { toolCalls: [{ name: "write", arguments: { i: "ask the host", path: "xd://ucch_echo", content: JSON.stringify({ text: "ping" }) } }] },
+      { toolCalls: [{ name: "write", arguments: { i: "save notes", path: "notes.md", content: "notes" } }] },
+      { text: "Done." },
+    ],
+    onFrame(f) {
+      if (f.type !== "host_tool_call") return null;
+      return { type: "host_tool_result", id: f.id, result: { content: [{ type: "text", text: `echo: ${f.arguments?.text ?? ""}` }] } };
+    },
+    async run(ctx) {
+      await command(ctx, { type: "set_host_tools", tools: [ECHO_TOOL] });
+      await turn(ctx, "Call ucch_echo with ping, then save notes.");
+    },
+  },
+  {
     // A host tool that fails (OM3.2): `isError` beside `result`, as the
     // rpc docs place it, and how OMP reports it.
     name: "host-tool-error",
