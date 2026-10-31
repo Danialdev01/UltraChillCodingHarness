@@ -229,7 +229,7 @@ Everything stateful lives under **`/data`**: `postgres/`, `mysql/`, `workspaces/
 
 ### 1. Before you start
 
-- An **x86_64** VPS with Dokploy installed (`curl -sSL https://dokploy.com/install.sh | sh`), ports 80 and 443 open. 2 vCPU / 4 GB RAM is comfortable (the build compiles Next.js). ARM hosts are not supported: the image downloads amd64 builds of pandoc, typst and s6-overlay, and the build stops early on anything else.
+- An **x86_64** VPS with Dokploy installed (`curl -sSL https://dokploy.com/install.sh | sh`), ports 80 and 443 open. 2 vCPU / 4 GB RAM is comfortable (the build compiles Next.js). ARM hosts are not supported: the image downloads amd64 builds of pandoc, typst, s6-overlay and OMP, and the build stops early on anything else.
 - A domain for UCCH, e.g. `ucch.example.com`, with a DNS **A record** pointing at the VPS. For live previews also add `*.ucch.example.com` (see [Live previews](#live-previews-optional-one-time)). On Cloudflare, set both to **DNS only** (grey cloud).
 - This repository on GitHub (or any Git URL Dokploy can reach).
 
@@ -245,6 +245,8 @@ Everything stateful lives under **`/data`**: `postgres/`, `mysql/`, `workspaces/
 7. **Deploy**. The first build takes ~10 minutes; later ones reuse BuildKit's cache. Turn on **Auto Deploy** (or add Dokploy's webhook to the GitHub repository) to deploy on every push to `main`.
 
 `docker build .` builds the same image anywhere else.
+
+The image also carries [OMP](https://omp.sh) (oh-my-pi), the agent that is taking over the "Custom" provider (`documentation/omp/`). It is the pinned release binary in `/opt/omp`, checked against its SHA-256, with its native modules unpacked once at build time (`PI_NATIVES_DIR`); the build arguments `OMP_VERSION` and `OMP_SHA256` move the pin together. It adds about 390 MB and is off until `OMP_ENABLED=true`.
 
 #### Alternative: a prebuilt image from CI
 

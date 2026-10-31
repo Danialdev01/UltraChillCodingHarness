@@ -150,6 +150,32 @@ RUN set -e; dir=/home/node/.cache/typst/packages/preview; \
   done; \
   chown -R node:node /home/node/.cache
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+# OMP (oh-my-pi), the agent behind the "Custom" provider
+# (documentation/omp/solution.md §1.1). The release binary, not the install
+# script: the script resolves the file through a second service, and prefers
+# a Bun install whenever Bun is on PATH. The binary is self-contained (glibc
+# only). Bumping it is OM8.6: version, checksum and the recorded fixtures
+# together.
+#
+# OMP unpacks ~120 MB of native modules on first start into $HOME/.omp, once
+# per HOME -- and every subject's run has its own. PI_NATIVES_DIR points them
+# all at one copy, unpacked here (OMP only reads it once it exists).
+ARG OMP_VERSION=18.14.1
+ARG OMP_SHA256=02d76a0cfeee473ffa387f50cf0378b0de1c44684c83e67ca27ba4d717cfb0d0
+ENV OMP_SKIP_SETUP=1 \
+    PI_NATIVES_DIR=/opt/omp/natives \
+    OMP_BIN=/opt/omp/bin/omp
+RUN set -eux; \
+  mkdir -p /opt/omp/bin; \
+  curl -fsSL -o /opt/omp/bin/omp \
+    "https://github.com/can1357/oh-my-pi/releases/download/v${OMP_VERSION}/omp-linux-x64"; \
+  echo "${OMP_SHA256}  /opt/omp/bin/omp" | sha256sum -c -; \
+  chmod 755 /opt/omp/bin/omp; \
+  test "$(/opt/omp/bin/omp --version)" = "omp/${OMP_VERSION}"; \
+  HOME=/tmp/omp-warm /opt/omp/bin/omp config get autoResume >/dev/null; \
+  test -d "/opt/omp/natives/${OMP_VERSION}"; \
+  rm -rf /tmp/omp-warm
+ENV PATH=/opt/omp/bin:$PATH
 ENV SHELL=/bin/bash
 
 # --- app: the single container ----------------------------------------------
