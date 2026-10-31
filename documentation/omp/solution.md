@@ -164,7 +164,7 @@ export function ompArgv(input: {
 **Notes on the flags:**
 - **`rpc-ui`, not `rpc`.** Approvals need it (§3.5). The flip side is that `rpc-ui` "disables PTY-backed shell execution" ([modes](https://omp.sh/docs/modes)). That is acceptable, because `CI=1` / `TERM=dumb` are already set for CLI runs. If OM0 shows that the confirm path does not need `rpc-ui`, use `rpc`.
 - **`--no-title`** saves a `tiny` model call per session.
-- **`--append-system-prompt`** works on resumed turns too, for the same reason `claudeArgv` sends it every turn.
+- **`--append-system-prompt`** works on resumed turns too, for the same reason `claudeArgv` sends it every turn. OMP reads its value as "text or file contents": a value that names an existing file is replaced by that file (measured with 18.14.1). Knowledge comes from the repository, so `ompArgv` always ends the value with a newline, which makes it text.
 - **`--resume` in RPC mode works** with `--session-dir` (OM0). An unknown id exits 1 before `ready` ("Session … not found"); the provider fails the turn with that, and the reactor starts the thread on a fresh session next time.
 - **`@file` arguments are rejected in RPC** ([rpc](https://omp.sh/docs/rpc)). The prompt and knowledge are sent as text.
 
