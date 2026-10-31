@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { count, eq } from "drizzle-orm";
+import { count, desc, eq } from "drizzle-orm";
 import { projects, threads, turns, users, workspaces, type Database } from "@ucch/db";
 import {
   DOCUMENTATION_RULES,
@@ -33,7 +33,14 @@ import {
   type ReasoningEffort,
   type TokenUsage,
 } from "@ucch/protocol";
-import type { AgentRun, HostToolCall, HostToolResult, OmpRunFiles, ProviderRunInput } from "@ucch/providers";
+import type {
+  AgentRun,
+  HostToolCall,
+  HostToolResult,
+  OmpMaintenanceInput,
+  OmpRunFiles,
+  ProviderRunInput,
+} from "@ucch/providers";
 import { detectStack } from "./clone.js";
 import { decryptSecret } from "./crypto.js";
 import { ensureProjectInfo, readProjectKnowledge } from "./dev-database.js";
@@ -258,6 +265,10 @@ export class AgentTurnReactor {
     }
 
     for (const event of batch) {
+      if (event.type === "thread.compaction_requested") {
+        void this.#compact(event.threadId, event.method, event.focus).catch(this.onError);
+        continue;
+      }
       if (event.type !== "user.message") continue;
       // The model and effort ride on the command rather than the event: they
       // are how this turn was asked for, not something that happened.
@@ -698,6 +709,97 @@ export class AgentTurnReactor {
       // After the turn, not during it: a slow disk must not hold the
       // conversation up, and a failure here is never the turn's.
       void this.#recheckStack(thread.projectId, workspace).catch(this.onError);
+    }
+  }
+
+  /**
+   * `thread.compact` / `thread.handoff` (solution §5.3): OMP's own command
+   * on the thread's session, in a short process of its own, between turns.
+   * No turn opens -- nothing is asked of the model but the summary -- so
+   * what it made lands as a `context.injected` with no turn, which the chat
+   * draws under the last answer, and the reading the meter shows after it.
+   *
+   * It takes an OMP slot like a turn, and a stop reaches it like a turn's
+   * (`#running`). Every way out ends with `thread.compaction_finished`,
+   * which is what frees the thread the request claimed.
+   */
+  async #compact(threadId: string, method: "compact" | "handoff", focus: string | undefined): Promise<void> {
+    const controller = new AbortController();
+    this.#running.set(threadId, controller);
+    const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1).catch((error: unknown) => {
+      this.#running.delete(threadId);
+      throw error;
+    });
+    if (!thread) {
+      this.#running.delete(threadId);
+      return;
+    }
+    let made: DomainEvent[] = [];
+    let error: string | undefined;
+    let release: (() => void) | undefined;
+    let overlay: { dispose(): Promise<void> } | undefined;
+    try {
+      const owner = await this.#owner(thread.projectId, thread);
+      if (!owner) throw new Error("there is nobody to bill this thread to");
+      if (!thread.providerSessionId) throw new Error("this thread has no OMP session to compact yet");
+      const providers = this.options.providers;
+      if (!providers || !this.options.cliEnabled) throw new Error("OMP is disabled on this server");
+      // The key first: a missing one says where to add it.
+      const openrouterKey = this.#decryptKey(owner.openrouterKeyEncrypted);
+      release = await this.#scheduler.acquire({ ownerId: owner.id, kind: "omp", threadId, signal: controller.signal });
+      // The model the session last ran on: the summary is written by it, as
+      // one OMP made mid-turn would be.
+      const [last] = await this.db
+        .select({ model: turns.model })
+        .from(turns)
+        .where(eq(turns.threadId, threadId))
+        .orderBy(desc(turns.seq))
+        .limit(1);
+      const model = last?.model ?? resolveModel(undefined, owner.defaultModel, this.options.defaultModel);
+      const permissionMode = this.#modeFor(threadId, owner);
+      const resolved = await providers.resolve(owner.id, "omp", { openrouterKey, ompPreset: "standard" });
+      const provider = resolved.provider as { maintain?(input: OmpMaintenanceInput): Promise<DomainEvent[]> };
+      if (!provider.maintain) throw new Error("this server's OMP provider cannot compact a session");
+      const written = await writeOmpOverlay(providers.ompRunDir(owner.id), randomUUID(), {
+        settings: { ...DEFAULT_OMP_SETTINGS, models: { default: model } },
+        preset: "standard",
+        permissionMode,
+        trusted: false,
+        workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
+        webSearch: false,
+        hostTools: [],
+      });
+      overlay = written;
+      made = await provider.maintain({
+        ctx: resolved.ctx(treeFor(this.options.workspaceRoot, thread.projectId, thread)),
+        threadId,
+        resumeToken: thread.providerSessionId,
+        model,
+        permissionMode,
+        omp: {
+          overlayPath: written.path,
+          sessionDir: providers.ompSessionDir(owner.id, thread.projectId),
+          guardHookPath: providers.ompGuardHook(owner.id),
+          trusted: false,
+          contextThreshold: written.contextThreshold,
+        },
+        method,
+        ...(focus ? { focus } : {}),
+        signal: controller.signal,
+      });
+    } catch (caught) {
+      error = controller.signal.aborted ? "Stopped." : caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      release?.();
+      await overlay?.dispose().catch(this.onError);
+      if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
+      const events: DomainEvent[] = [
+        ...made,
+        { type: "thread.compaction_finished", threadId, method, ...(error ? { error: error.slice(0, 2_000) } : {}) },
+      ];
+      await this.store
+        .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
+        .catch(this.onError);
     }
   }
 

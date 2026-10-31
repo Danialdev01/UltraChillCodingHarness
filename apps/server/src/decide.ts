@@ -337,6 +337,37 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       ]);
     }
 
+    case "thread.compact":
+    case "thread.handoff": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      const method = command.type === "thread.compact" ? "compact" : "handoff";
+      // OMP's own commands on OMP's own session: no other runtime keeps a
+      // session UCCH can fold, and a thread that has never run has nothing
+      // to fold yet (solution §5.3).
+      if (thread.value.provider !== "omp") {
+        return fail(
+          "conflict",
+          thread.value.provider
+            ? `this thread runs on ${thread.value.provider}, which manages its own context`
+            : "this thread has no conversation to compact yet",
+        );
+      }
+      // The session is the running turn's while it runs: a second process
+      // on it would write the same session file.
+      if (thread.value.status !== "idle" && thread.value.status !== "error") {
+        return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
+      }
+      return ok([
+        {
+          type: "thread.compaction_requested",
+          threadId: thread.value.id,
+          method,
+          ...(command.focus ? { focus: command.focus } : {}),
+        },
+      ]);
+    }
+
     // -- Terminals -----------------------------------------------------------
     //
     // Terminal traffic is a stream, not a fact worth persisting. These are

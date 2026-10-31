@@ -239,6 +239,9 @@ export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   "thread.permission_reply": "exec",
   "thread.revert": "write",
   "thread.fork": "write",
+  // Both run the model on the thread's session, billed as a turn is.
+  "thread.compact": "exec",
+  "thread.handoff": "exec",
   "terminal.create": "exec",
   "terminal.input": "exec",
   "terminal.resize": "exec",

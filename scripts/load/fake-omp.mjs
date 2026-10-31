@@ -34,7 +34,16 @@
  *                         the turn, to the turn's tokens by its end, and a
  *                         compaction (`auto_compaction_end`) cuts it to a
  *                         quarter, so a meter can be seen to move and drop
- *     get_messages        the recording's own answer to it, if it has one
+ *     get_messages        the recording's own answer to it, if it has one,
+ *                         and a `compactionSummary` for each compact or
+ *                         handoff since
+ *     compact             between turns, as 18.14.1 does (spike report,
+ *                         Q4): `manual_compaction_start` / `_end`, the
+ *                         result as the answer, a summary in the messages,
+ *                         and the context cut to a quarter. Nothing in the
+ *                         context: refused
+ *     handoff             likewise, answered `{}`, its summary's method
+ *                         `handoff`; `customInstructions` lands in both
  *     prompt              the recording's chosen prompt, from just after its
  *                         response to its `prompt_result`. A dialog
  *                         (`extension_ui_request` select/confirm/input/
@@ -312,6 +321,29 @@ async function play(prompt) {
   current = null;
 }
 
+/** The session's messages as `get_messages` lists them. */
+const messages = [...(recordedMessages.messages ?? [])];
+
+/** `compact` / `handoff` on the session, between turns. */
+function fold(frame) {
+  if (current) return respond(frame, undefined, { success: false, error: "Agent is already processing" });
+  if (contextTokens === 0) return respond(frame, undefined, { success: false, error: "Nothing to compact" });
+  const focus = typeof frame.customInstructions === "string" && frame.customInstructions ? frame.customInstructions : null;
+  const tokensBefore = contextTokens;
+  contextTokens = Math.round(contextTokens / 4);
+  record({ type: "context", tokens: contextTokens });
+  const handoff = frame.type === "handoff";
+  const summary = handoff
+    ? `## Goal\nCarry on the work.\n## Next\n${focus ?? "The next step."}`
+    : `Summary: the session so far.${focus ? ` Kept: ${focus}.` : ""}`;
+  messages.push({ role: "compactionSummary", summary, tokensBefore, tokensAfter: contextTokens, method: handoff ? "handoff" : "soft", timestamp: Date.now() });
+  if (handoff) return respond(frame, {});
+  const result = { summary, shortSummary: summary, firstKeptEntryId: randomUUID().slice(0, 8), tokensBefore, details: { readFiles: [], modifiedFiles: [] } };
+  out({ type: "manual_compaction_start", reason: "manual" });
+  out({ type: "manual_compaction_end", result, aborted: false, willRetry: false });
+  return respond(frame, result);
+}
+
 function respond(frame, data, extra = {}) {
   out({ id: frame.id, type: "response", command: frame.type, success: true, ...(data === undefined ? {} : { data }), ...extra });
 }
@@ -330,7 +362,10 @@ function handle(frame) {
     case "get_session_stats":
       return respond(frame, stats());
     case "get_messages":
-      return respond(frame, recordedMessages);
+      return respond(frame, { ...recordedMessages, messages });
+    case "compact":
+    case "handoff":
+      return fold(frame);
     case "prompt":
       if (current) return respond(frame, undefined, { success: false, error: "Agent is already processing" });
       respond(frame);

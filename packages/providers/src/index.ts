@@ -13,6 +13,7 @@ export {
   ompModel,
   probeOmp,
   thinkingFor,
+  type OmpMaintenanceInput,
   type OmpProviderOptions,
   type OmpSessionStats,
 } from "./omp.js";

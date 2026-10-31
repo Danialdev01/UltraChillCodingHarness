@@ -7,12 +7,12 @@
  * and sends as a message like any other.
  */
 
-export type SlashArg = "model" | "effort" | "harness";
+export type SlashArg = "model" | "effort" | "harness" | "focus";
 
 export interface SlashCommand {
   name: string;
   description: string;
-  /** What the command chooses between, when it takes a value. */
+  /** What the command chooses between, when it takes a value. `focus` is free text. */
   takesArg?: SlashArg;
 }
 
@@ -24,6 +24,8 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "research", description: "Turn research mode on or off" },
   { name: "documentation", description: "Turn documentation mode on or off" },
   { name: "attach", description: "Attach files from your computer" },
+  { name: "compact", description: "Fold older turns into a summary now", takesArg: "focus" },
+  { name: "handoff", description: "Replace the context with a brief of the work so far", takesArg: "focus" },
 ];
 
 export interface Slash {

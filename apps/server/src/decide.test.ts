@@ -383,6 +383,31 @@ describe("thread.cancel", () => {
   });
 });
 
+describe("thread.compact and thread.handoff", () => {
+  it.each([
+    ["thread.compact", "compact"],
+    ["thread.handoff", "handoff"],
+  ] as const)("%s claims an idle OMP thread for its method, with the focus", (type, method) => {
+    const d = run({ project: project(), thread: thread({ provider: "omp" }) }, { type, threadId: THREAD, focus: "the parser" });
+    expect(d).toEqual({ ok: true, events: [{ type: "thread.compaction_requested", threadId: THREAD, method, focus: "the parser" }] });
+    // And without one.
+    expect(run({ project: project(), thread: thread({ provider: "omp", status: "error" }) }, { type, threadId: THREAD })).toEqual({
+      ok: true,
+      events: [{ type: "thread.compaction_requested", threadId: THREAD, method }],
+    });
+  });
+
+  it.each(["claude", "codex", "native", null] as const)("refuses a thread on %s", (provider) => {
+    const d = run({ project: project(), thread: thread({ provider }) }, { type: "thread.compact", threadId: THREAD });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+
+  it.each(["queued", "running", "cancelling"] as const)("refuses while the thread is %s", (status) => {
+    const d = run({ project: project(), thread: thread({ provider: "omp", status }) }, { type: "thread.handoff", threadId: THREAD });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("busy") } });
+  });
+});
+
 describe("thread.revert", () => {
   it("reverts to the checkpoint taken before the turn", () => {
     const d = run({ project: project(), thread: thread(), turn: turn() }, {
@@ -439,6 +464,8 @@ describe("thread ownership", () => {
     { type: "thread.permission_reply", threadId: THREAD, requestId: "r1", behavior: "allow" },
     { type: "thread.revert", threadId: THREAD, turnId: TURN },
     { type: "thread.fork", threadId: THREAD, turnId: TURN },
+    { type: "thread.compact", threadId: THREAD },
+    { type: "thread.handoff", threadId: THREAD },
   ];
 
   it.each(cases)("refuses $type on another user's thread", (command) => {

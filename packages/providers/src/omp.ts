@@ -7,6 +7,7 @@ import type {
   OmpHostToolCall,
   OmpHostToolCancel,
   OmpPromptResult,
+  OmpResponse,
   OmpToolExecutionEnd,
   OmpToolExecutionStart,
   OmpToolResult,
@@ -19,6 +20,7 @@ import {
   type AgentProvider,
   type HostToolResult,
   type AgentRun,
+  type OmpRunFiles,
   type PermissionReply,
   type ProviderHealth,
   type ProviderRunInput,
@@ -393,19 +395,12 @@ export class OmpNormaliser {
    */
   usage(stats: OmpSessionStats | null | undefined, threshold: { tokens?: number; percent?: number } = {}): DomainEvent[] {
     if (this.#closed) return [];
-    const usedTokens = tokenCount(stats?.contextUsage?.tokens);
-    if (usedTokens === undefined) return [];
-    const window = tokenCount(stats?.contextUsage?.contextWindow);
-    const windowTokens = window ? window : null;
-    let thresholdTokens: number | null = null;
-    if (threshold.tokens !== undefined && threshold.tokens > 0) thresholdTokens = Math.floor(threshold.tokens) || null;
-    else if (threshold.percent !== undefined && threshold.percent > 0 && windowTokens !== null) {
-      thresholdTokens = Math.floor(windowTokens * (Math.min(99, Math.max(1, threshold.percent)) / 100)) || null;
-    }
-    const key = `${usedTokens}/${windowTokens}/${thresholdTokens}`;
+    const reading = contextReading(stats, threshold);
+    if (!reading) return [];
+    const key = `${reading.usedTokens}/${reading.windowTokens}/${reading.thresholdTokens}`;
     if (key === this.#lastUsage) return [];
     this.#lastUsage = key;
-    return [{ type: "context.usage", ...this.#ids(), usedTokens, windowTokens, thresholdTokens }];
+    return [{ type: "context.usage", ...this.#ids(), ...reading }];
   }
 
   /**
@@ -581,6 +576,28 @@ function stopReasonOf(reason: string | null): string | null {
 
 function count(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+/**
+ * How full a session's context is, from its `get_session_stats` (solution
+ * §5.2), with the overlay's threshold resolved as OMP resolves it: `tokens`
+ * wins, else `percent` (clamped to 1-99) of the window, rounded down. Null
+ * for stats without a size.
+ */
+export function contextReading(
+  stats: OmpSessionStats | null | undefined,
+  threshold: { tokens?: number; percent?: number } = {},
+): { usedTokens: number; windowTokens: number | null; thresholdTokens: number | null } | null {
+  const usedTokens = tokenCount(stats?.contextUsage?.tokens);
+  if (usedTokens === undefined) return null;
+  const window = tokenCount(stats?.contextUsage?.contextWindow);
+  const windowTokens = window ? window : null;
+  let thresholdTokens: number | null = null;
+  if (threshold.tokens !== undefined && threshold.tokens > 0) thresholdTokens = Math.floor(threshold.tokens) || null;
+  else if (threshold.percent !== undefined && threshold.percent > 0 && windowTokens !== null) {
+    thresholdTokens = Math.floor(windowTokens * (Math.min(99, Math.max(1, threshold.percent)) / 100)) || null;
+  }
+  return { usedTokens, windowTokens, thresholdTokens };
 }
 
 /** A token figure OMP reported, or undefined where it reported none. */
@@ -776,6 +793,121 @@ export class OmpProvider implements AgentProvider {
     });
     return new OmpTurn(input, argv, this.options);
   }
+
+  /**
+   * `compact` or `handoff` on a thread's session between turns (solution
+   * §5.3): a short process on the session, one command, then the divider it
+   * made and the context it left. OMP answers `compact` with the result and
+   * `handoff` with nothing (spike report, Q4), so both read the new summary
+   * back from `get_messages`, as a divider mid-turn does.
+   *
+   * Rejects, with what to tell the person, when OMP made no summary: it
+   * refused, it skipped ("Already compacted"), or it was stopped.
+   */
+  async maintain(input: OmpMaintenanceInput): Promise<DomainEvent[]> {
+    const forbidden = forbiddenEnvFor("omp", input.ctx.env);
+    if (forbidden) {
+      throw new Error(`${forbidden} is set in the provider environment; refusing to run on a credential other than the OpenRouter key`);
+    }
+    const argv = ompArgv({
+      bin: this.bin,
+      overlayPath: input.omp.overlayPath,
+      sessionDir: input.omp.sessionDir,
+      guardHookPath: input.omp.guardHookPath,
+      trusted: input.omp.trusted,
+      resumeToken: input.resumeToken,
+      ...(input.model ? { model: ompModel(input.model) } : {}),
+      ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+    });
+    let rpc: OmpRpc | null = null;
+    const rpcOf = () => rpc;
+    rpc = await OmpRpc.start({
+      host: input.ctx.host,
+      argv,
+      cwd: input.ctx.cwd,
+      env: input.ctx.env,
+      // Nobody is there to answer a dialog: each is cancelled, so none holds
+      // the command up.
+      onFrame: (frame) => {
+        const request = frame as OmpUiRequest;
+        if (frame.type === "extension_ui_request" && DIALOGS.has(request.method)) {
+          try {
+            rpcOf()?.send({ type: "extension_ui_response", id: request.id, cancelled: true });
+          } catch {
+            // Gone; the command's rejection says so.
+          }
+        }
+      },
+      ...(this.options.onStderr ? { onStderr: this.options.onStderr } : {}),
+      ...(this.options.readyTimeoutMs !== undefined ? { readyTimeoutMs: this.options.readyTimeoutMs } : {}),
+      ...(this.options.killGraceMs !== undefined ? { killGraceMs: this.options.killGraceMs } : {}),
+    });
+    const client = rpc;
+    let stopped = false;
+    const onAbort = () => {
+      stopped = true;
+      client.request({ type: "abort" }).catch(() => {});
+      // OMP may finish the summary it is writing; it gets as long as a turn's interrupt.
+      setTimeout(() => void client.kill(), this.options.interruptGraceMs ?? INTERRUPT_GRACE_MS).unref();
+    };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) onAbort();
+    try {
+      const summaries = (answer: OmpResponse<{ messages?: unknown }>) =>
+        answer.success && Array.isArray(answer.data?.messages)
+          ? answer.data.messages.filter((m) => (m as { role?: unknown } | null)?.role === "compactionSummary")
+          : null;
+      const before = summaries(await client.request<{ messages?: unknown }>({ type: "get_messages" }))?.length ?? 0;
+      const answer = await client.request<{ skipped?: unknown; errorMessage?: unknown }>({
+        type: input.method,
+        ...(input.focus ? { customInstructions: input.focus } : {}),
+      });
+      if (stopped) throw new Error("Stopped.");
+      if (!answer.success) throw new Error(answer.error || `omp refused to ${input.method} the session`);
+      if (answer.data?.skipped === true) {
+        throw new Error(typeof answer.data.errorMessage === "string" && answer.data.errorMessage ? answer.data.errorMessage : "There was nothing to compact.");
+      }
+      const listed = await client.request<{ messages?: unknown }>({ type: "get_messages" });
+      const after = summaries(listed);
+      const newest = after && after.length > before ? (after.at(-1) as { summary?: unknown }) : null;
+      if (!newest || typeof newest.summary !== "string" || newest.summary === "") {
+        throw new Error(`omp reported a ${input.method} but wrote no summary`);
+      }
+      const divider = describeCompaction(
+        { type: "context.injected", threadId: input.threadId, source: "compaction", content: newest.summary },
+        listed.data?.messages,
+      );
+      const stats = await client.request<OmpSessionStats>({ type: "get_session_stats" });
+      const reading = stats.success ? contextReading(stats.data, input.omp.contextThreshold) : null;
+      return [divider, ...(reading ? [{ type: "context.usage" as const, threadId: input.threadId, ...reading }] : [])];
+    } catch (error) {
+      if (stopped) throw new Error("Stopped.");
+      throw error;
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort);
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), this.options.closeGraceMs ?? CLOSE_GRACE_MS)));
+      const outcome = await Promise.race([client.close(), late]);
+      clearTimeout(timer);
+      if (outcome === "late") await client.kill();
+    }
+  }
+}
+
+/** What `OmpProvider.maintain` runs on (solution §5.3). */
+export interface OmpMaintenanceInput {
+  ctx: RunContext;
+  threadId: string;
+  /** The thread's session: what is folded. */
+  resumeToken: string;
+  model?: string;
+  permissionMode?: AgentPermissionMode;
+  omp: OmpRunFiles;
+  method: "compact" | "handoff";
+  /** What the summary should keep: OMP's `customInstructions`. */
+  focus?: string;
+  /** Stops it: OMP is asked to abort, then killed. */
+  signal?: AbortSignal;
 }
 
 /**

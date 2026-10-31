@@ -198,6 +198,27 @@ const ThreadCancelRequested = z.object({
 });
 
 /**
+ * `thread.compact` or `thread.handoff` was accepted: the thread is busy
+ * until `thread.compaction_finished`, which a short OMP process on its
+ * session emits once OMP has answered (solution §5.3). No turn opens; what
+ * it produced is a `context.injected` (`compaction`) with no turn.
+ */
+const ThreadCompactionRequested = z.object({
+  type: z.literal("thread.compaction_requested"),
+  threadId: z.string().uuid(),
+  method: z.enum(["compact", "handoff"]),
+  focus: z.string().max(2_000).optional(),
+});
+
+/** The compaction is over; `error` says why it made nothing, when it did not. */
+const ThreadCompactionFinished = z.object({
+  type: z.literal("thread.compaction_finished"),
+  threadId: z.string().uuid(),
+  method: z.enum(["compact", "handoff"]),
+  error: z.string().max(2_000).optional(),
+});
+
+/**
  * A sent message that never became a turn. `user.message` claims the thread
  * (`threads.status = 'queued'`) so a second send is refused until the turn
  * opens; this releases the claim when it never does:
@@ -363,7 +384,8 @@ const AgentRetry = z.object({
 const ContextUsage = z.object({
   type: z.literal("context.usage"),
   threadId: z.string().uuid(),
-  turnId: z.string().uuid(),
+  /** Absent for a reading taken outside a turn, after `thread.compact`. */
+  turnId: z.string().uuid().optional(),
   usedTokens: z.number().int().nonnegative(),
   windowTokens: z.number().int().positive().nullable(),
   thresholdTokens: z.number().int().positive().nullable(),
@@ -837,6 +859,8 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ThreadRemoved,
   UserMessage,
   ThreadCancelRequested,
+  ThreadCompactionRequested,
+  ThreadCompactionFinished,
   TurnDequeued,
   AgentQueued,
   ContextInjected,

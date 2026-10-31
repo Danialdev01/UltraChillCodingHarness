@@ -142,6 +142,14 @@ export interface ChatState {
    * rather than drifting.
    */
   contextTokens: number | null;
+  /**
+   * A Compact or Hand off still running on the thread (`thread.compact`,
+   * `thread.handoff`), or null. While it runs the thread is busy, as during
+   * a turn, so `running` is true too.
+   */
+  compacting: "compact" | "handoff" | null;
+  /** Why the newest compaction made nothing, until anything else happens on the thread. */
+  compactionError: string | null;
 }
 
 /**
@@ -165,6 +173,8 @@ export function toMessages(
   let running = false;
   let activeTurn: string | null = null;
   let contextTokens: number | null = null;
+  let compacting: "compact" | "handoff" | null = null;
+  let compactionError: string | null = null;
   const prompts = new Map<string, PermissionPrompt>();
 
   /**
@@ -251,6 +261,7 @@ export function toMessages(
         if (event.provider) turn(event.turnId).provider = event.provider;
         running = true;
         activeTurn = event.turnId;
+        compactionError = null;
         activity.set(event.turnId, {
           turnId: event.turnId,
           startedAt: row.receivedAt ?? null,
@@ -433,6 +444,22 @@ export function toMessages(
         break;
       }
 
+      case "thread.compaction_requested":
+        compacting = event.method;
+        compactionError = null;
+        running = true;
+        // Busy, but with no turn: the last one's progress is not this.
+        activeTurn = null;
+        break;
+
+      case "thread.compaction_finished":
+        compacting = null;
+        running = false;
+        compactionError = event.error
+          ? `${event.method === "handoff" ? "The hand-off" : "Compacting"} did not happen: ${event.error}`
+          : null;
+        break;
+
       case "agent.retry": {
         const current = activity.get(event.turnId);
         if (current) current.retry = { attempt: event.attempt, maxRetries: event.maxRetries };
@@ -447,6 +474,8 @@ export function toMessages(
     active: running && activeTurn ? (activity.get(activeTurn) ?? null) : null,
     prompts: running ? [...prompts.values()] : [],
     contextTokens,
+    compacting,
+    compactionError,
   };
 }
 

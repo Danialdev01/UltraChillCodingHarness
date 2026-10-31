@@ -18,6 +18,8 @@ import {
   DownloadIcon,
   EraserIcon,
   FileTextIcon,
+  FoldVerticalIcon,
+  ForwardIcon,
   GaugeIcon,
   ImageIcon,
   Loader2Icon,
@@ -713,7 +715,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   // -- and the streaming turn is laid over it on every update: only that
   // turn's message is new, so only it draws again.
   const settled = useMemo(() => toMessages(durableEvents), [durableEvents]);
-  const { messages, running: turnRunning, active, prompts, contextTokens } = useMemo(
+  const { messages, running: turnRunning, active, prompts, contextTokens, compacting, compactionError } = useMemo(
     () => overlayLive(settled, liveTurns),
     [settled, liveTurns],
   );
@@ -1093,6 +1095,30 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   }, [cancelling, threadId]);
 
   /**
+   * Compact and Hand off (solution §5.3), for a thread on OMP between
+   * turns. Requests too: the divider lands from the log when OMP has made
+   * it, and `compacting` says it is under way until then.
+   */
+  const ompThread = boundProvider === "omp" || messages.some((m) => m.provider === "omp");
+  const compactThread = useCallback(
+    async (method: "compact" | "handoff", focus: string) => {
+      const client = clientRef.current;
+      if (!client || !threadId) return;
+      setError(null);
+      try {
+        await client.dispatch({
+          type: method === "compact" ? "thread.compact" : "thread.handoff",
+          threadId,
+          ...(focus ? { focus } : {}),
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [threadId],
+  );
+
+  /**
    * Answers a CLI's permission prompt.
    *
    * Like `cancel`, a request rather than a local change: the card stays
@@ -1223,6 +1249,20 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                 : { row: { ...row, icon: icon(BotIcon) }, pick: step };
             case "effort":
               return { row: { ...row, icon: icon(GaugeIcon) }, pick: step };
+            case "compact":
+            case "handoff": {
+              const Icon = command.name === "compact" ? FoldVerticalIcon : ForwardIcon;
+              // Disabled rather than hidden, as /harness is: why not is
+              // worth saying.
+              const why = !ompThread
+                ? "Only on a Custom thread that has run"
+                : running
+                  ? "Wait for the agent to finish"
+                  : null;
+              return why
+                ? { row: { ...row, icon: icon(Icon), disabled: true, detail: why }, pick: () => {} }
+                : { row: { ...row, icon: icon(Icon) }, pick: step };
+            }
             default:
               return { row: { ...row, icon: icon(BrainIcon) }, pick: step };
           }
@@ -1245,6 +1285,22 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
             pick: () => (done(), setEffort(e)),
           };
         });
+      case "focus": {
+        if (!ompThread || running) return [];
+        const method = slash.name === "handoff" ? "handoff" : "compact";
+        const focus = slash.arg.trim();
+        return [
+          {
+            row: {
+              key: method,
+              icon: icon(method === "compact" ? FoldVerticalIcon : ForwardIcon),
+              label: method === "compact" ? "Compact now" : "Hand off now",
+              detail: focus ? `Keeping: ${focus}` : "Type what to keep, or pick to go on",
+            },
+            pick: () => (done(), void compactThread(method, focus)),
+          },
+        ];
+      }
       case "harness":
         if (boundProvider) return [];
         return matchOptions(Object.values(providers.cards ?? {}), slash.arg, (card) => card.label).map((card) => {
@@ -1424,6 +1480,21 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
             />
           )}
           {active && !prompts.length && <TurnProgress active={active} />}
+          {compacting && (
+            <p className="text-muted-foreground flex items-center gap-2 px-1 text-xs" data-testid="compacting">
+              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+              {compacting === "handoff" ? "Handing off to a brief of the work so far…" : "Compacting the context…"}
+            </p>
+          )}
+          {compactionError && (
+            <p
+              role="alert"
+              className="border-destructive/40 bg-destructive/5 text-destructive flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
+            >
+              <AlertCircleIcon className="size-3.5 shrink-0" />
+              {compactionError}
+            </p>
+          )}
           {/* Same place as the progress line, same reason: it is about what
               the send would do, and it goes away when the cause does --
               another model picked, or the picture removed. */}

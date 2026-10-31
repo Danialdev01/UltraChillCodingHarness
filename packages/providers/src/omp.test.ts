@@ -13,6 +13,7 @@ import {
   probeOmp,
   thinkingFor,
   type OmpProviderOptions,
+  type OmpMaintenanceInput,
   type OmpSessionStats,
 } from "./omp.js";
 import type { OmpFrame } from "./omp-rpc-types.js";
@@ -448,6 +449,8 @@ interface FakeOptions {
   messages?: unknown[] | false;
   /** What each `get_session_stats` answers, in turn; the last repeats. Default: before, then after. */
   stats?: OmpSessionStats[];
+  /** How `compact` / `handoff` go: refused with a reason, skipped, or answered with no summary written. */
+  fold?: { refuse?: string; skipped?: string; silent?: boolean; hang?: boolean };
 }
 
 /** The frames a recording streamed for its first prompt, up to its `prompt_result`. */
@@ -468,6 +471,7 @@ function promptFrames(name: string): OmpFrame[] {
 function fakeOmp(options: FakeOptions = {}) {
   let stats = 0;
   return new ManualProcessHost((child) => {
+    const folded: unknown[] = [];
     const emit = (frame: object) => child.emit(JSON.stringify(frame));
     const respond = (frame: Record<string, unknown>, data?: unknown, extra: object = {}) =>
       emit({ id: frame.id, type: "response", command: frame.type, success: true, ...(data === undefined ? {} : { data }), ...extra });
@@ -527,7 +531,20 @@ function fakeOmp(options: FakeOptions = {}) {
           return;
         case "get_messages":
           if (options.messages === false) return respond(frame, undefined, { success: false, error: "no session" });
-          return respond(frame, { messages: options.messages ?? [] });
+          return respond(frame, { messages: [...(options.messages ?? []), ...folded] });
+        case "compact":
+        case "handoff": {
+          const fold = options.fold ?? {};
+          if (fold.hang) return;
+          if (fold.refuse) return respond(frame, undefined, { success: false, error: fold.refuse });
+          if (fold.skipped) return respond(frame, { skipped: true, errorMessage: fold.skipped });
+          const summary = `${frame.type} summary${frame.customInstructions ? `: ${String(frame.customInstructions)}` : ""}`;
+          const method = frame.type === "handoff" ? "handoff" : "soft";
+          if (!fold.silent) folded.push({ role: "compactionSummary", summary, tokensBefore: 9000, tokensAfter: 1500, method });
+          if (frame.type === "handoff") return respond(frame, {});
+          emit({ type: "manual_compaction_end", result: { summary, tokensBefore: 9000 }, aborted: false });
+          return respond(frame, { summary, tokensBefore: 9000 });
+        }
         case "set_host_tools":
           if (options.refuseHostTools) return respond(frame, undefined, { success: false, error: options.refuseHostTools });
           return respond(frame, { toolNames: (frame.tools as { name: string }[]).map((tool) => tool.name) });
@@ -581,9 +598,76 @@ async function drain(run: AgentRun, onEvent: (event: DomainEvent) => void = () =
   return events;
 }
 
+/** Waits until the fake's newest process has been sent a frame of `type`. */
+async function eventuallyFrame(host: ManualProcessHost, type: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (host.children.at(-1)?.frames.some((f) => f.type === type)) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`never sent ${type}`);
+}
+
 const closing = (events: DomainEvent[]) => events.filter((e) => e.type === "agent.turn_completed" || e.type === "agent.turn_failed");
 
 describe("OmpProvider", () => {
+  describe("maintain: compact and handoff between turns", () => {
+    const AFTER = { ...STATS_AFTER, contextUsage: { tokens: 1500, contextWindow: 128000, percent: 1.2 } };
+    const maintain = (host: ManualProcessHost, over: Partial<OmpMaintenanceInput> = {}) =>
+      new OmpProvider("omp", { killGraceMs: 20, interruptGraceMs: 50, closeGraceMs: 200 }).maintain({
+        ctx: { cwd: WORKSPACE, env: { PATH: "/usr/bin", OPENROUTER_API_KEY: "sk-or-test" }, host },
+        threadId: ids.threadId,
+        resumeToken: SESSION,
+        model: "anthropic/claude-sonnet-4.5",
+        omp: FILES,
+        method: "compact",
+        ...over,
+      });
+
+    it.each(["compact", "handoff"] as const)("%s: resumes the session, sends the focus, and returns the divider and the reading", async (method) => {
+      const host = fakeOmp({ stats: [AFTER] });
+      const events = await maintain(host, { method, focus: "the parser" });
+      const [child] = host.children;
+      expect(child!.spec.argv).toEqual(expect.arrayContaining(["--resume", SESSION, "--model", "openrouter/anthropic/claude-sonnet-4.5"]));
+      expect(child!.frames.find((f) => f.type === method)).toMatchObject({ customInstructions: "the parser" });
+      expect(events).toEqual([
+        {
+          type: "context.injected",
+          threadId: ids.threadId,
+          source: "compaction",
+          content: `${method} summary: the parser`,
+          compaction: { method: method === "handoff" ? "handoff" : "soft", tokensBefore: 9000, tokensAfter: 1500 },
+        },
+        { type: "context.usage", threadId: ids.threadId, usedTokens: 1500, windowTokens: 128000, thresholdTokens: null },
+      ]);
+      expect(child!.stdinOpen).toBe(false);
+    });
+
+    it("says why when OMP refuses, skips, or writes nothing", async () => {
+      await expect(maintain(fakeOmp({ fold: { refuse: "Nothing to compact" } }))).rejects.toThrow("Nothing to compact");
+      await expect(maintain(fakeOmp({ fold: { skipped: "Already compacted" } }))).rejects.toThrow("Already compacted");
+      await expect(maintain(fakeOmp({ fold: { silent: true } }), { method: "handoff" })).rejects.toThrow(/wrote no summary/);
+    });
+
+    it("stops when asked: abort, then a kill if OMP does not wind down", async () => {
+      const host = fakeOmp({ fold: { hang: true } });
+      const controller = new AbortController();
+      const pending = maintain(host, { signal: controller.signal });
+      await eventuallyFrame(host, "compact");
+      controller.abort();
+      await expect(pending).rejects.toThrow("Stopped.");
+      expect(host.children[0]!.frames.map((f) => f.type)).toContain("abort");
+      expect(host.children[0]!.signals).toContain("SIGTERM");
+    });
+
+    it("refuses a forbidden credential before spawning", async () => {
+      const host = fakeOmp();
+      await expect(
+        maintain(host, { ctx: { cwd: WORKSPACE, env: { OPENROUTER_API_KEY: "k", ANTHROPIC_API_KEY: "x" }, host } }),
+      ).rejects.toThrow(/ANTHROPIC_API_KEY/);
+      expect(host.children).toHaveLength(0);
+    });
+  });
+
   describe("the context meter's readings", () => {
     const at = (tokens: number, extra: object = {}): OmpSessionStats => ({
       ...STATS_AFTER,

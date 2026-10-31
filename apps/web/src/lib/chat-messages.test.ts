@@ -743,6 +743,37 @@ describe("a compaction", () => {
     expect(parts.at(-1)!.kind).toBe("compaction");
   });
 
+  it("between turns, keeps the thread busy until it finishes, and says why one did not happen", () => {
+    const requested: DomainEvent = { type: "thread.compaction_requested", threadId: THREAD, method: "handoff" };
+    const ended: DomainEvent = {
+      type: "agent.turn_completed",
+      threadId: THREAD,
+      turnId: TURN,
+      stopReason: "end_turn",
+      usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      costUsd: 0,
+    };
+    // The turn before it is over: its progress line must not come back.
+    const busy = log(...toolTurn, ended, requested);
+    expect(busy).toMatchObject({ running: true, compacting: "handoff", compactionError: null, active: null });
+    const done = log(...toolTurn, requested, { type: "thread.compaction_finished", threadId: THREAD, method: "handoff" });
+    expect(done).toMatchObject({ running: false, compacting: null, compactionError: null });
+    const failed = log(...toolTurn, requested, {
+      type: "thread.compaction_finished",
+      threadId: THREAD,
+      method: "compact",
+      error: "Already compacted",
+    });
+    expect(failed).toMatchObject({ running: false, compactionError: "Compacting did not happen: Already compacted" });
+    // The next turn clears it.
+    const next = log(...toolTurn, requested, { type: "thread.compaction_finished", threadId: THREAD, method: "compact", error: "x" }, {
+      type: "turn.started",
+      threadId: THREAD,
+      turnId: "99999999-9999-4999-8999-999999999999",
+    });
+    expect(next.compactionError).toBeNull();
+  });
+
   it("says what happened, leaving out what the provider did not say", () => {
     expect(describeCompaction({ method: "handoff", tokensBefore: 142_000, tokensAfter: 31_000 })).toBe(
       "Context compacted (handoff) · 142k → 31k tokens",

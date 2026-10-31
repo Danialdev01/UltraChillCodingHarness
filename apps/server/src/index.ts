@@ -572,6 +572,12 @@ async function auditCommand(
     case "thread.fork":
       entry = thread("chat.fork", "Forked the conversation");
       break;
+    case "thread.compact":
+      entry = thread("chat.compact", "Compacted the conversation", command.focus ? { focus: command.focus } : undefined);
+      break;
+    case "thread.handoff":
+      entry = thread("chat.handoff", "Handed the conversation off to a brief", command.focus ? { focus: command.focus } : undefined);
+      break;
     case "terminal.create":
       entry = { ...base, action: "terminal.open", targetType: "terminal", targetId: command.terminalId, summary: "Opened a terminal" };
       break;

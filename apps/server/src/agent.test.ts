@@ -163,7 +163,7 @@ function reactorWith(extra: Partial<AgentOptions>, ...rows: unknown[][]) {
   const appended: DomainEvent[][] = [];
   const next = () => Promise.resolve(rows.shift() ?? []);
   const chain: Record<string, unknown> = {};
-  for (const step of ["from", "innerJoin", "where"]) chain[step] = () => chain;
+  for (const step of ["from", "innerJoin", "where", "orderBy"]) chain[step] = () => chain;
   chain.limit = next;
   chain.then = (resolve: (value: unknown) => void, reject: (error: unknown) => void) => next().then(resolve, reject);
   const db = { select: () => chain } as unknown as Database;
@@ -771,6 +771,86 @@ describe("an OMP turn", () => {
     expect(readings.length).toBeGreaterThan(1);
     expect(after!.usedTokens).toBeLessThan(Math.max(...readings));
     expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
+  });
+
+  describe("compact and handoff between turns", () => {
+    /** The reactor as `#compact` reads: the thread, whom to bill, the model the session last ran on. */
+    function compactReactor(threadRow: Row, personRow: Row) {
+      const creds = join(root, "creds");
+      const providers = new ProviderService(
+        {} as Database,
+        { CREDS_ROOT: creds } as Config,
+        new HostProcessHost(),
+        createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: OMP_BIN }),
+      );
+      const scheduler = new TurnScheduler({ cliPerUser: 2, cliTotal: 2, nativeTotal: 2, ompTotal: 1 });
+      const built = reactorWith(
+        { workspaceRoot: join(root, "workspaces"), secretKey: SECRET, defaultModel: "anthropic/claude-sonnet-4.5", cliEnabled: true, providers, scheduler },
+        [threadRow],
+        [owner],
+        [personRow],
+        [{ model: "anthropic/claude-sonnet-4.5" }],
+      );
+      return { ...built, scheduler, creds };
+    }
+    const finished = (event: DomainEvent) => event.type === "thread.compaction_finished";
+
+    async function boundThread() {
+      const first = ompReactor(thread, keyed);
+      first.agent.react(omp, [message]);
+      await until(first.appended, closed);
+      const session = first.appended.flat().find((e) => e.type === "agent.session_started") as { sessionId: string };
+      return { ...thread, provider: "omp", providerSessionId: session.sessionId };
+    }
+
+    it.each(["compact", "handoff"] as const)("%s: folds the session, draws the divider with no turn, and frees the thread", async (method) => {
+      const bound = await boundThread();
+      const { agent, appended, scheduler, creds } = compactReactor(bound, keyed);
+      agent.react({ type: method === "compact" ? "thread.compact" : "thread.handoff", threadId: THREAD, focus: "the fix" }, [
+        { type: "thread.compaction_requested", threadId: THREAD, method, focus: "the fix" },
+      ]);
+      await until(appended, finished);
+      const events = appended.flat();
+      const divider = events.find((e) => e.type === "context.injected");
+      expect(divider).toEqual({
+        type: "context.injected",
+        threadId: THREAD,
+        source: "compaction",
+        content: method === "compact" ? "Summary: the session so far. Kept: the fix." : "## Goal\nCarry on the work.\n## Next\nthe fix",
+        // fake-omp's context: one turn's 1280 tokens, cut to a quarter.
+        compaction: { method: method === "compact" ? "soft" : "handoff", tokensBefore: 1280, tokensAfter: 320 },
+      });
+      expect(events.find((e) => e.type === "context.usage")).toEqual({
+        type: "context.usage",
+        threadId: THREAD,
+        usedTokens: 320,
+        windowTokens: 200000,
+        thresholdTokens: null,
+      });
+      expect(events.at(-1)).toEqual({ type: "thread.compaction_finished", threadId: THREAD, method });
+      expect(events.some((e) => e.type === "turn.started")).toBe(false);
+      // The slot is given back, and the overlay is gone.
+      await eventually(() => scheduler.stats().running.omp, 0);
+      await eventually(() => readdir(join(creds, USER, "omp", "run")), []);
+    });
+
+    it("frees the thread with the reason when there is nothing to fold", async () => {
+      const { agent, appended } = compactReactor({ ...thread, provider: "omp", providerSessionId: null }, keyed);
+      agent.react({ type: "thread.compact", threadId: THREAD }, [{ type: "thread.compaction_requested", threadId: THREAD, method: "compact" }]);
+      await until(appended, finished);
+      expect(appended.flat()).toEqual([
+        { type: "thread.compaction_finished", threadId: THREAD, method: "compact", error: "this thread has no OMP session to compact yet" },
+      ]);
+    });
+
+    it("frees the thread, saying so, when it is stopped", async () => {
+      const bound = await boundThread();
+      const { agent, appended } = compactReactor(bound, keyed);
+      agent.react({ type: "thread.compact", threadId: THREAD }, [{ type: "thread.compaction_requested", threadId: THREAD, method: "compact" }]);
+      agent.react({ type: "thread.cancel", threadId: THREAD }, []);
+      await until(appended, finished);
+      expect(appended.flat().at(-1)).toEqual({ type: "thread.compaction_finished", threadId: THREAD, method: "compact", error: "Stopped." });
+    });
   });
 
   it("fails the turn, spawning nothing, without an OpenRouter key", async () => {

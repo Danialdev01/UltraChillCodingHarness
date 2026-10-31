@@ -447,6 +447,29 @@ export async function applyProjection(
           .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["queued", "running"])));
         break;
 
+      case "thread.compaction_requested": {
+        // Claims the thread as a message does, and for the same reason: two
+        // requests, or a request and a send, that both read it idle must not
+        // both run on its session. `running` rather than `queued`, so a stop
+        // reaches the process; `thread.compaction_finished` releases it.
+        const claimed = await tx
+          .update(threads)
+          .set({ status: "running" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["idle", "error"])))
+          .returning({ id: threads.id });
+        if (claimed.length === 0) throw new ProjectionConflict("this thread is busy");
+        break;
+      }
+
+      case "thread.compaction_finished":
+        // Only from what the request left: a stray one must not idle a
+        // thread whose next turn has begun.
+        await tx
+          .update(threads)
+          .set({ status: "idle" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["running", "cancelling"])));
+        break;
+
       case "thread.created":
         await tx.insert(threads).values({
           id: event.threadId,

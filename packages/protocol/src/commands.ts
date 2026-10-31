@@ -159,6 +159,28 @@ const ThreadFork = z.object({
   turnId: z.string().uuid(),
 });
 
+/**
+ * Folds an idle OMP thread's older turns into a summary now, rather than
+ * waiting for its context to fill (solution §5.3). `focus` is what the
+ * summary should keep, handed to OMP as its `customInstructions`.
+ */
+const ThreadCompact = z.object({
+  type: z.literal("thread.compact"),
+  threadId: z.string().uuid(),
+  focus: z.string().trim().max(2_000).optional(),
+});
+
+/**
+ * OMP's handoff on an idle OMP thread (solution §5.3): the session's
+ * context is replaced by a brief of the work so far -- what was done, what
+ * matters, what is next -- and the thread carries on from that.
+ */
+const ThreadHandoff = z.object({
+  type: z.literal("thread.handoff"),
+  threadId: z.string().uuid(),
+  focus: z.string().trim().max(2_000).optional(),
+});
+
 const TerminalCreate = z.object({
   type: z.literal("terminal.create"),
   projectId: z.string().uuid(),
@@ -256,6 +278,8 @@ export const Command = z.discriminatedUnion("type", [
   ThreadPermissionReply,
   ThreadRevert,
   ThreadFork,
+  ThreadCompact,
+  ThreadHandoff,
   TerminalCreate,
   TerminalInput,
   TerminalResize,

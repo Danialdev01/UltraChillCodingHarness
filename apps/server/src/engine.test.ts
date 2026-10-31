@@ -206,6 +206,21 @@ describe("thread status", () => {
     expect(rendered(wheres.get(statements[0]!)).params).toEqual([THREAD, "queued", "cancelling"]);
   });
 
+  it("is claimed by a compaction, running so a stop reaches it, only from idle or error", async () => {
+    const statements = await apply([{ type: "thread.compaction_requested", threadId: THREAD, method: "compact" }]);
+    expect(statements).toEqual([{ op: "update", table: "threads", values: { status: "running" } }]);
+    expect(rendered(wheres.get(statements[0]!)).params).toEqual([THREAD, "idle", "error"]);
+    await expect(
+      apply([{ type: "thread.compaction_requested", threadId: THREAD, method: "handoff" }], { claimed: false }),
+    ).rejects.toBeInstanceOf(ProjectionConflict);
+  });
+
+  it("is freed when the compaction finishes, and only from what it left", async () => {
+    const statements = await apply([{ type: "thread.compaction_finished", threadId: THREAD, method: "compact" }]);
+    expect(statements).toEqual([{ op: "update", table: "threads", values: { status: "idle" } }]);
+    expect(rendered(wheres.get(statements[0]!)).params).toEqual([THREAD, "running", "cancelling"]);
+  });
+
   it("moves to cancelling on a cancel request, not straight to idle", async () => {
     const statements = await apply([{ type: "thread.cancel_requested", threadId: THREAD }]);
     expect(statements).toEqual([
