@@ -1,5 +1,1375 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`OmpNormaliser > produces valid, fixed events for omp-compaction 1`] = `
+{
+  "events": [
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "attempt": 1,
+      "category": "Thinking loop detected: the model repeated near-identical content (repeated an exact 5-character cycle 52× back-to-back). Treating as a stream stall and retrying.",
+      "delayMs": 435,
+      "maxRetries": 10,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.retry",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "attempt": 2,
+      "category": "Thinking loop detected: the model repeated near-identical content (repeated an exact 5-character cycle 52× back-to-back). Treating as a stream stall and retrying.",
+      "delayMs": 873,
+      "maxRetries": 10,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.retry",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rd word word",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " word word w",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ord word wor",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "d word word ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "word word wo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "attempt": 3,
+      "category": "Thinking loop detected: the model repeated near-identical content (repeated an exact 5-character cycle 52× back-to-back). Treating as a stream stall and retrying.",
+      "delayMs": 1534,
+      "maxRetries": 10,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.retry",
+    },
+    {
+      "text": "Fourth answe",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "r.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Fourth answer.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "text": "Done.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Done.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "content": "Summary: the session so far.
+
+---
+
+**Turn Context (split turn):**
+
+Summary: the session so far.",
+      "source": "compaction",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "type": "context.injected",
+    },
+    {
+      "text": "Done.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Done.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "text": "Done.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Done.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "content": "Summary: the session so far.
+
+---
+
+**Turn Context (split turn):**
+
+Summary: the session so far.",
+      "source": "compaction",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "type": "context.injected",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 100,
+        "outputTokens": 10,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-confirm 1`] = `
+{
+  "events": [
+    {
+      "content": [
+        {
+          "arguments": "{"i":"list files","command":"ls"}",
+          "id": "call_1",
+          "input": {
+            "command": "ls",
+            "i": "list files",
+          },
+          "name": "bash",
+          "type": "tool_use",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "input": {
+        "command": "ls",
+      },
+      "name": "bash",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_use",
+    },
+    {
+      "description": "Command: ls",
+      "input": {
+        "command": "ls",
+      },
+      "requestId": "15bb4296eaba7a53",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolName": "bash",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.permission_requested",
+    },
+    {
+      "behavior": "allow",
+      "requestId": "15bb4296eaba7a53",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.permission_resolved",
+    },
+    {
+      "content": "(no output)",
+      "durationMs": 5,
+      "isError": false,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_result",
+    },
+    {
+      "content": [
+        {
+          "arguments": "{"i":"print a word","command":"echo denied-run"}",
+          "id": "call_2",
+          "input": {
+            "command": "echo denied-run",
+            "i": "print a word",
+          },
+          "name": "bash",
+          "type": "tool_use",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "input": {
+        "command": "echo denied-run",
+      },
+      "name": "bash",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_2",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_use",
+    },
+    {
+      "description": "Command: echo denied-run",
+      "input": {
+        "command": "echo denied-run",
+      },
+      "requestId": "15bb4296f3ba7a54",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolName": "bash",
+      "toolUseId": "call_2",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.permission_requested",
+    },
+    {
+      "behavior": "deny",
+      "requestId": "15bb4296f3ba7a54",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.permission_resolved",
+    },
+    {
+      "content": "Tool call denied by user: bash",
+      "durationMs": 5,
+      "isError": true,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_2",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_result",
+    },
+    {
+      "text": "Ran both.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Ran both.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+      },
+    },
+  ],
+  "sent": [
+    {
+      "id": "15bb4296eaba7a53",
+      "type": "extension_ui_response",
+      "value": "Approve",
+    },
+    {
+      "id": "15bb4296f3ba7a54",
+      "type": "extension_ui_response",
+      "value": "Deny",
+    },
+  ],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-error 1`] = `
+{
+  "events": [
+    {
+      "error": "400 This model does not support that request.
+This model does not support that request. (type=invalid_request_error)",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_failed",
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-handoff 1`] = `
+{
+  "events": [
+    {
+      "text": "The bug is i",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "n the parser",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": ".",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "The bug is in the parser.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "text": "Investigated",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": " the bug; ne",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "xt step is t",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "he fix.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Investigated the bug; next step is the fix.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 100,
+        "outputTokens": 10,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-host-tool 1`] = `
+{
+  "events": [
+    {
+      "content": [
+        {
+          "arguments": "{"text":"ping"}",
+          "id": "call_1",
+          "input": {
+            "text": "ping",
+          },
+          "name": "ucch_echo",
+          "type": "tool_use",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "input": {
+        "text": "ping",
+      },
+      "name": "ucch_echo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_use",
+    },
+    {
+      "content": "echo: ping",
+      "durationMs": 5,
+      "isError": false,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_result",
+    },
+    {
+      "text": "The host too",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "l answered.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "The host tool answered.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-host-tool-xd 1`] = `
+{
+  "events": [
+    {
+      "content": [
+        {
+          "arguments": "{"i":"ask the host","path":"xd://ucch_echo","content":"{\\"text\\":\\"ping\\"}"}",
+          "id": "call_1",
+          "input": {
+            "text": "ping",
+          },
+          "name": "ucch_echo",
+          "type": "tool_use",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "input": {
+        "text": "ping",
+      },
+      "name": "ucch_echo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_use",
+    },
+    {
+      "content": "echo: ping",
+      "durationMs": 5,
+      "isError": false,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_result",
+    },
+    {
+      "text": "The host too",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "l answered.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "The host tool answered.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-plain 1`] = `
+{
+  "events": [
+    {
+      "provider": "omp",
+      "sessionId": "01a18fd3-9a3c-7089-88f3-a56882f2afa4",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.session_started",
+    },
+    {
+      "text": "Hello from t",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "he scripted ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "model.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Hello from the scripted model.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 100,
+        "outputTokens": 10,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-resume 1`] = `
+{
+  "events": [
+    {
+      "provider": "omp",
+      "sessionId": "01a18fd6-973c-768f-9b71-6ae07a27aa07",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.session_started",
+    },
+    {
+      "text": "First sessio",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "n answer.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "First session answer.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "text": "Resumed answ",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "er.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Resumed answer.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-retry 1`] = `
+{
+  "events": [
+    {
+      "text": "Answered aft",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "er a retry.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Answered after a retry.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-subagent 1`] = `
+{
+  "events": [
+    {
+      "content": [
+        {
+          "arguments": "{"i":"explore the source","context":"A tiny TypeScript repo.","tasks":[{"name":"ScoutSrc","agent":"scout","task":"List what src/ exports.","solutionSpace":"Read-only; report exports."}]}",
+          "id": "call_1",
+          "input": {
+            "context": "A tiny TypeScript repo.",
+            "i": "explore the source",
+            "tasks": [
+              {
+                "agent": "scout",
+                "name": "ScoutSrc",
+                "solutionSpace": "Read-only; report exports.",
+                "task": "List what src/ exports.",
+              },
+            ],
+          },
+          "name": "task",
+          "type": "tool_use",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "input": {
+        "context": "A tiny TypeScript repo.",
+        "tasks": [
+          {
+            "agent": "scout",
+            "name": "ScoutSrc",
+            "solutionSpace": "Read-only; report exports.",
+            "task": "List what src/ exports.",
+          },
+        ],
+      },
+      "name": "task",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_use",
+    },
+    {
+      "content": "Spawned agent \`ScoutSrc\` (job \`ScoutSrc\`).",
+      "durationMs": 5,
+      "isError": false,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_result",
+    },
+    {
+      "text": "(waiting)",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "(waiting)",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "text": "The scout re",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "ports that s",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rc/a.ts expo",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "rts a.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "The scout reports that src/a.ts exports a.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
+exports[`OmpNormaliser > produces valid, fixed events for omp-tool 1`] = `
+{
+  "events": [
+    {
+      "content": [
+        {
+          "arguments": "{"i":"read the notes","path":"notes.txt"}",
+          "id": "call_1",
+          "input": {
+            "i": "read the notes",
+            "path": "notes.txt",
+          },
+          "name": "read_file",
+          "type": "tool_use",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "input": {
+        "path": "notes.txt",
+      },
+      "name": "read_file",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_use",
+    },
+    {
+      "content": "[notes.txt#0063]
+1:alpha
+2:beta",
+      "durationMs": 5,
+      "isError": false,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_1",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_result",
+    },
+    {
+      "content": [
+        {
+          "arguments": "{"i":"write a summary","path":"summary.txt","content":"two lines\\n"}",
+          "id": "call_2",
+          "input": {
+            "content": "two lines
+",
+            "i": "write a summary",
+            "path": "summary.txt",
+          },
+          "name": "write_file",
+          "type": "tool_use",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "input": {
+        "content": "two lines
+",
+        "path": "summary.txt",
+      },
+      "name": "write_file",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_2",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_use",
+    },
+    {
+      "content": "[summary.txt#F30D]
+Successfully wrote 10 bytes to summary.txt",
+      "durationMs": 5,
+      "isError": false,
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "toolUseId": "call_2",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.tool_result",
+    },
+    {
+      "change": "modified",
+      "path": "summary.txt",
+      "projectId": "00000000-0000-4000-8000-000000000001",
+      "type": "file.changed",
+    },
+    {
+      "text": "Wrote summar",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "text": "y.txt.",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.text_delta",
+    },
+    {
+      "content": [
+        {
+          "text": "Wrote summary.txt.",
+          "type": "text",
+        },
+      ],
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.message",
+    },
+    {
+      "costUsd": 0,
+      "stopReason": "end_turn",
+      "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
+      "type": "agent.turn_completed",
+      "usage": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "inputTokens": 300,
+        "outputTokens": 30,
+      },
+    },
+  ],
+  "sent": [],
+}
+`;
+
 exports[`ompArgv > is fixed for every permission mode × effort × resume × trust 1`] = `
 {
   "- - - trusted": "--mode rpc-ui --config /creds/u/omp/run/t.yml --session-dir /creds/u/omp/sessions/p --approval-mode write --no-extensions --no-rules --no-title --hook /creds/u/omp/agent/ucch-guard.ts",

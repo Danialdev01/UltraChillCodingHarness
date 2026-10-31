@@ -1,4 +1,17 @@
-import type { AgentPermissionMode, ReasoningEffort } from "@ucch/protocol";
+import type { AgentPermissionMode, DomainEvent, ReasoningEffort, TokenUsage } from "@ucch/protocol";
+import { workspaceRelative } from "./claude.js";
+import type {
+  OmpAgentEnd,
+  OmpClientFrame,
+  OmpFrame,
+  OmpPromptResult,
+  OmpToolExecutionEnd,
+  OmpToolExecutionStart,
+  OmpToolResult,
+  OmpUiRequest,
+} from "./omp-rpc-types.js";
+import type { ExitStatus } from "./process.js";
+import type { PermissionReply } from "./types.js";
 
 /**
  * OMP (oh-my-pi) as a provider: `omp --mode rpc-ui`, one process per turn,
@@ -108,4 +121,458 @@ export function ompArgv(input: {
   }
   if (input.maxTime) argv.push("--max-time", input.maxTime);
   return argv;
+}
+
+// -- Normalising the RPC stream ------------------------------------------------
+
+/** What `get_session_stats` reports (fixtures/omp-plain.jsonl). Cumulative per session. */
+export interface OmpSessionStats {
+  sessionId?: string;
+  tokens?: { input?: number; output?: number; reasoning?: number; cacheRead?: number; cacheWrite?: number; total?: number };
+  cost?: number;
+  contextUsage?: { tokens?: number; contextWindow?: number; percent?: number };
+  [key: string]: unknown;
+}
+
+/**
+ * OMP's tool names, as the chat names the native loop's: the same tool
+ * should read the same whichever harness ran it. Anything else passes
+ * through unchanged.
+ */
+const TOOL_NAMES: Record<string, string> = {
+  read: "read_file",
+  write: "write_file",
+  edit: "edit_file",
+};
+
+/** The size a stored tool result is held to: the native loop's own bound. */
+const RESULT_BYTES = 30_000;
+
+const APPROVAL_TITLE = /^Allow tool:\s*(.+)$/;
+
+/** Dialogs that block OMP until answered. Anything else is a notification. */
+const DIALOGS = new Set(["select", "confirm", "input", "editor"]);
+
+interface RunningCall {
+  toolUseId: string;
+  name: string;
+  input: unknown;
+  startedAt: number;
+  /** Workspace-relative files a successful call changes, and how. */
+  changes: { path: string; change: "added" | "modified" | "deleted" }[];
+}
+
+/**
+ * Turns OMP's RPC frames into the harness's events (solution §3.4).
+ *
+ * Fed by the provider: every frame `OmpRpc` hands on goes to `push`, and the
+ * answers OMP gives to commands come in through `session` (the `get_state`
+ * after `ready`) and `complete` (the stats after the turn). It writes back to
+ * OMP only through `bind`'s `send`: permission answers, and a `cancelled`
+ * for every dialog the chat has no surface for.
+ *
+ * A turn is over when both its terminal `agent_end` and its `prompt_result`
+ * have arrived, in either order: with a background task the `prompt_result`
+ * comes first and a non-terminal `agent_end` precedes the real one; after an
+ * API error the terminal `agent_end` comes first and the `prompt_result`
+ * says it failed (OMP exits 0 regardless). `settled` says when.
+ */
+export class OmpNormaliser {
+  #sessionId: string | null = null;
+  #closed = false;
+  #interrupted = false;
+  #ended = false;
+  #result: { status: string; error: string | null } | null = null;
+  #stopReason: string | null = null;
+  #lastError: string | null = null;
+  #running: RunningCall[] = [];
+  #prompts = new Map<string, true>();
+  #io: { send(frame: OmpClientFrame): void } | null = null;
+
+  constructor(
+    private readonly ctx: {
+      projectId: string;
+      threadId: string;
+      turnId: string;
+      workspace: string;
+      now?: () => number;
+    },
+  ) {}
+
+  get sessionId(): string | null {
+    return this.#sessionId;
+  }
+
+  /** The turn's terminal `agent_end` and its `prompt_result` have both arrived. */
+  get settled(): boolean {
+    return this.#ended && this.#result !== null;
+  }
+
+  /** The terminal `agent_end` has arrived, whatever the `prompt_result`. */
+  get ended(): boolean {
+    return this.#ended;
+  }
+
+  bind(io: { send(frame: OmpClientFrame): void }): void {
+    this.#io = io;
+  }
+
+  noteInterrupt(): void {
+    this.#interrupted = true;
+  }
+
+  /** The session the turn runs in, from `get_state`: the thread's next resume token. */
+  session(sessionId: string): DomainEvent[] {
+    if (!sessionId || sessionId === this.#sessionId) return [];
+    this.#sessionId = sessionId;
+    return [{ type: "agent.session_started", ...this.#ids(), provider: "omp", sessionId }];
+  }
+
+  /**
+   * Answers an approval this stream raised. OMP takes the option's label;
+   * "Approve … for this session" is never sent, because UCCH's own Allow All
+   * is the session-wide answer and OMP's would outlive the person's choice.
+   */
+  answerPermission(requestId: string, reply: PermissionReply): DomainEvent[] {
+    if (!this.#prompts.has(requestId) || !this.#io) return [];
+    this.#prompts.delete(requestId);
+    this.#io.send({ type: "extension_ui_response", id: requestId, value: reply.behavior === "allow" ? "Approve" : "Deny" });
+    return [{ type: "agent.permission_resolved", ...this.#ids(), requestId, behavior: reply.behavior }];
+  }
+
+  push(frame: OmpFrame): DomainEvent[] {
+    if (this.#closed) return [];
+    const ids = this.#ids();
+    switch (frame.type) {
+      case "message_update": {
+        const event = (frame as { assistantMessageEvent?: { type?: string; delta?: unknown } }).assistantMessageEvent;
+        if (typeof event?.delta !== "string" || event.delta === "") return [];
+        if (event.type === "text_delta") return [{ type: "agent.text_delta", ...ids, text: event.delta }];
+        if (event.type === "thinking_delta") return [{ type: "agent.thinking_delta", ...ids, text: event.delta }];
+        return [];
+      }
+
+      case "message_end": {
+        const message = (frame as { message?: OmpMessage }).message;
+        if (message?.role !== "assistant") return [];
+        this.#stopReason = message.stopReason ?? null;
+        this.#lastError = message.stopReason === "error" ? (message.errorMessage ?? "the model returned an error") : null;
+        const content = Array.isArray(message.content) ? message.content.map((block) => this.#blockOf(block)) : [];
+        return content.length ? [{ type: "agent.message", ...ids, content }] : [];
+      }
+
+      case "tool_execution_start": {
+        const start = frame as OmpToolExecutionStart;
+        const { name, input } = this.#toolOf(start.toolName, start.args);
+        this.#running.push({
+          toolUseId: start.toolCallId,
+          name,
+          input,
+          startedAt: this.#now(),
+          changes: this.#changesOf(start.toolName, start.args),
+        });
+        return [{ type: "agent.tool_use", ...ids, toolUseId: start.toolCallId, name, input }];
+      }
+
+      case "tool_execution_end": {
+        const end = frame as OmpToolExecutionEnd;
+        const at = this.#running.findIndex((call) => call.toolUseId === end.toolCallId);
+        if (at === -1) return [];
+        const [call] = this.#running.splice(at, 1);
+        const isError = end.isError === true;
+        const events: DomainEvent[] = [
+          {
+            type: "agent.tool_result",
+            ...ids,
+            toolUseId: end.toolCallId,
+            content: clampResult(resultText(end.result)),
+            isError,
+            durationMs: Math.max(0, Math.round(this.#now() - call!.startedAt)),
+          },
+        ];
+        if (!isError) {
+          for (const { path, change } of call!.changes) {
+            events.push({ type: "file.changed", projectId: this.ctx.projectId, path, change });
+          }
+        }
+        return events;
+      }
+
+      case "extension_ui_request":
+        return this.#uiRequest(frame as OmpUiRequest);
+
+      case "auto_retry_start": {
+        const retry = frame as { attempt?: unknown; maxAttempts?: unknown; delayMs?: unknown; errorMessage?: unknown };
+        return [
+          {
+            type: "agent.retry",
+            ...ids,
+            attempt: count(retry.attempt),
+            maxRetries: count(retry.maxAttempts),
+            delayMs: count(retry.delayMs),
+            category: typeof retry.errorMessage === "string" ? retry.errorMessage.split("\n")[0]!.slice(0, 200) : "retry",
+          },
+        ];
+      }
+
+      case "auto_retry_end":
+        if ((frame as { success?: unknown }).success === true) this.#lastError = null;
+        return [];
+
+      case "auto_compaction_end":
+      case "manual_compaction_end": {
+        const end = frame as { skipped?: unknown; aborted?: unknown; result?: { summary?: unknown } };
+        const summary = end.result?.summary;
+        if (end.skipped === true || end.aborted === true || typeof summary !== "string" || summary === "") return [];
+        return [{ type: "context.injected", threadId: this.ctx.threadId, source: "compaction", content: summary }];
+      }
+
+      case "agent_end":
+        if ((frame as OmpAgentEnd).isTerminal === false) return [];
+        this.#ended = true;
+        return this.#closePrompts();
+
+      case "prompt_result": {
+        const result = frame as OmpPromptResult;
+        this.#result = {
+          status: typeof result.status === "string" ? result.status : "completed",
+          error: result.error?.message ?? null,
+        };
+        return [];
+      }
+
+      default:
+        // `notice`, `session_settled`, `available_commands_update`, the
+        // subagent frames (OM5) and whatever the next version adds.
+        return [];
+    }
+  }
+
+  /**
+   * Closes a settled turn with what it cost: `before` is the session's stats
+   * when the turn started (absent for a new session), `after` when it ended.
+   */
+  complete(stats: { before?: OmpSessionStats | null; after?: OmpSessionStats | null } = {}): DomainEvent[] {
+    if (this.#closed) return [];
+    this.#closed = true;
+    const ids = this.#ids();
+    const events = this.#closePrompts();
+    const failure = this.#result?.status === "error" ? (this.#result.error ?? this.#lastError ?? "omp reported an error") : null;
+    if (this.#interrupted || this.#stopReason === "aborted") {
+      events.push({ type: "agent.turn_completed", ...ids, stopReason: "cancelled", ...cost(stats) });
+    } else if (failure) {
+      events.push({ type: "agent.turn_failed", ...ids, error: failure });
+    } else {
+      events.push({ type: "agent.turn_completed", ...ids, stopReason: stopReasonOf(this.#stopReason), ...cost(stats) });
+    }
+    return events;
+  }
+
+  /** The process is gone. Closes the turn if `complete` never did. */
+  finish(exit: ExitStatus & { interrupted: boolean; stderrTail: string; error?: string }): DomainEvent[] {
+    if (this.#closed) return [];
+    if (this.settled) return this.complete();
+    this.#closed = true;
+    const ids = this.#ids();
+    const events = this.#closePrompts();
+    if (exit.interrupted || this.#interrupted) {
+      events.push({ type: "agent.turn_completed", ...ids, stopReason: "cancelled", usage: ZERO_USAGE, costUsd: 0 });
+      return events;
+    }
+    const why =
+      exit.error ??
+      (exit.stderrTail.trim() || this.#lastError || (exit.signal ? `omp exited on ${exit.signal}` : `omp exited with code ${String(exit.code)}`));
+    events.push({ type: "agent.turn_failed", ...ids, error: why });
+    return events;
+  }
+
+  #uiRequest(request: OmpUiRequest): DomainEvent[] {
+    if (!DIALOGS.has(request.method)) return [];
+    const title = typeof request.title === "string" ? request.title : "";
+    const approval = request.method === "select" ? APPROVAL_TITLE.exec(title.split("\n")[0] ?? "") : null;
+    if (!approval) {
+      // A question the chat cannot show. Unanswered, OMP would wait forever.
+      this.#io?.send({ type: "extension_ui_response", id: request.id, cancelled: true });
+      return [];
+    }
+    // Approvals are asked one at a time, for the call that has just started.
+    const toolName = approval[1]!.trim();
+    const call = [...this.#running].reverse().find((c) => c.toolUseId) ?? null;
+    this.#prompts.set(request.id, true);
+    return [
+      {
+        type: "agent.permission_requested",
+        ...this.#ids(),
+        requestId: request.id,
+        toolUseId: call?.toolUseId ?? null,
+        toolName: call?.name ?? TOOL_NAMES[toolName] ?? toolName,
+        input: call?.input ?? null,
+        description: title.split("\n").slice(1).join("\n").trim() || null,
+      },
+    ];
+  }
+
+  /**
+   * The name and input the chat shows for a call. A `write` to `xd://<tool>`
+   * is a device call -- a host tool, or one of OMP's rarer tools -- so it
+   * shows as that tool with its JSON arguments, not as a file write.
+   */
+  #toolOf(toolName: string, args: Record<string, unknown> | undefined): { name: string; input: unknown } {
+    const path = args?.path;
+    if (toolName === "write" && typeof path === "string" && path.startsWith("xd://")) {
+      const device = path.slice("xd://".length).split("/")[0] || "device";
+      let input: unknown = args?.content ?? null;
+      if (typeof input === "string") {
+        try {
+          input = JSON.parse(input);
+        } catch {
+          /* shown as the text it is */
+        }
+      }
+      return { name: device, input };
+    }
+    return { name: TOOL_NAMES[toolName] ?? toolName, input: args ?? null };
+  }
+
+  /**
+   * A content block in the shape the event log already holds (Anthropic's):
+   * OMP's `toolCall` becomes `tool_use`, named as its `agent.tool_use` is,
+   * with the raw argument string kept as `arguments` the way
+   * `session-log.ts` replays it. Text, and anything else, passes through.
+   */
+  #blockOf(block: unknown): unknown {
+    if (typeof block !== "object" || block === null || (block as { type?: unknown }).type !== "toolCall") return block;
+    const call = block as { id?: unknown; name?: unknown; arguments?: unknown; partialArgs?: unknown };
+    const args = typeof call.arguments === "object" && call.arguments !== null ? (call.arguments as Record<string, unknown>) : undefined;
+    const { name, input } = this.#toolOf(String(call.name ?? ""), args);
+    return {
+      type: "tool_use",
+      id: String(call.id ?? ""),
+      name,
+      input,
+      ...(typeof call.partialArgs === "string" ? { arguments: call.partialArgs } : {}),
+    };
+  }
+
+  /** What a call will change in the workspace if it succeeds. */
+  #changesOf(toolName: string, args: Record<string, unknown> | undefined): RunningCall["changes"] {
+    const rel = (named: unknown) => (typeof named === "string" ? workspaceRelative(this.ctx.workspace, named) : null);
+    if (toolName === "write") {
+      const path = typeof args?.path === "string" && !args.path.startsWith("xd://") ? rel(args.path) : null;
+      return path ? [{ path, change: "modified" }] : [];
+    }
+    if (toolName === "edit" && typeof args?.input === "string") {
+      const changes: RunningCall["changes"] = [];
+      for (const op of editOperations(args.input)) {
+        const path = rel(op.path);
+        if (!path) continue;
+        if (op.removed) changes.push({ path, change: "deleted" });
+        else if (op.movedTo) {
+          changes.push({ path, change: "deleted" });
+          const to = rel(op.movedTo);
+          if (to) changes.push({ path: to, change: "added" });
+        } else changes.push({ path, change: "modified" });
+      }
+      return changes;
+    }
+    return [];
+  }
+
+  /** A turn that ends with approvals open answers them: nobody else will. */
+  #closePrompts(): DomainEvent[] {
+    const events: DomainEvent[] = [];
+    for (const requestId of this.#prompts.keys()) {
+      events.push({ type: "agent.permission_resolved", ...this.#ids(), requestId, behavior: "deny" });
+    }
+    this.#prompts.clear();
+    return events;
+  }
+
+  #ids() {
+    return { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
+  }
+
+  #now(): number {
+    return (this.ctx.now ?? Date.now)();
+  }
+}
+
+interface OmpMessage {
+  role?: string;
+  content?: unknown[];
+  stopReason?: string;
+  errorMessage?: string;
+}
+
+const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+
+/** OMP's stop reasons in the harness's words, where the harness has one. */
+function stopReasonOf(reason: string | null): string | null {
+  switch (reason) {
+    case "stop":
+      return "end_turn";
+    case "length":
+      return "max_tokens";
+    default:
+      return reason;
+  }
+}
+
+function count(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+/** The turn's usage and cost: the session's totals after it, less those before. */
+function cost(stats: { before?: OmpSessionStats | null; after?: OmpSessionStats | null }): { usage: TokenUsage; costUsd: number } {
+  const delta = (pick: (s: OmpSessionStats) => unknown) =>
+    Math.max(0, count(stats.after ? pick(stats.after) : 0) - count(stats.before ? pick(stats.before) : 0));
+  const costOf = (s: OmpSessionStats | null | undefined) => (typeof s?.cost === "number" && Number.isFinite(s.cost) ? s.cost : 0);
+  return {
+    usage: {
+      inputTokens: delta((s) => s.tokens?.input),
+      outputTokens: delta((s) => s.tokens?.output),
+      cacheReadInputTokens: delta((s) => s.tokens?.cacheRead),
+      cacheCreationInputTokens: delta((s) => s.tokens?.cacheWrite),
+    },
+    costUsd: Math.max(0, costOf(stats.after) - costOf(stats.before)),
+  };
+}
+
+function resultText(result: OmpToolResult | undefined): string {
+  if (!result?.content) return "";
+  return result.content.map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : "")).join("");
+}
+
+/** The native loop's bound: head and tail kept, the middle elided. */
+function clampResult(text: string): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= RESULT_BYTES) return text;
+  const head = Math.floor(RESULT_BYTES * 0.7);
+  const tail = RESULT_BYTES - head;
+  return (
+    bytes.subarray(0, head).toString("utf8") +
+    `\n\n… ${(bytes.length - RESULT_BYTES).toLocaleString("en-US")} bytes elided …\n\n` +
+    bytes.subarray(bytes.length - tail).toString("utf8")
+  );
+}
+
+/**
+ * The files an `edit` patch touches. Each file's section opens with
+ * `[PATH#TAG]`; `REM` deletes it and `MV DEST` renames it.
+ */
+export function editOperations(patch: string): { path: string; removed: boolean; movedTo: string | null }[] {
+  const ops: { path: string; removed: boolean; movedTo: string | null }[] = [];
+  for (const line of patch.split("\n")) {
+    const header = /^\[(.+)#[0-9A-Fa-f]{4}\]\s*$/.exec(line);
+    if (header) {
+      ops.push({ path: header[1]!, removed: false, movedTo: null });
+      continue;
+    }
+    const current = ops.at(-1);
+    if (!current) continue;
+    if (/^REM\s*$/.test(line)) current.removed = true;
+    const move = /^MV\s+(.+?)\s*$/.exec(line);
+    if (move) current.movedTo = move[1]!.replace(/^(["'])(.*)\1$/, "$2");
+  }
+  return ops;
 }

@@ -207,7 +207,7 @@ export function ompArgv(input: {
 | `tool_execution_start` | `agent.tool_use { toolUseId, name, input }` | tool names are mapped for the UI's icons (`bash`→`bash`, `edit`→`edit_file`, `write`→`write_file`, `read`→`read_file`, …); unknown names pass through. A `write` to `xd://<tool>` is a device call (OM0): it becomes `<tool>` with the parsed JSON `content` as input, and is never a file change |
 | `tool_execution_update` | none | progress is not stored |
 | `tool_execution_end` | `agent.tool_result { toolUseId, content, isError, durationMs }` | `content` is the text parts joined and truncated like the native loop's results; `durationMs` comes from the start/end timestamps |
-| `message_end` (assistant) | `agent.message { content }` | the content blocks as OMP sends them; used for display only, because resume goes through OMP's own session |
+| `message_end` (assistant) | `agent.message { content }` | text blocks as OMP sends them; a `toolCall` block becomes `tool_use { id, name, input, arguments }` (the name mapped as for `agent.tool_use`, `arguments` = OMP's `partialArgs`), the shape `session-log.ts` already reads. Used for display; resume goes through OMP's own session |
 | `auto_retry_start` | `agent.retry { attempt }` | |
 | `auto_compaction_start` | none | a transient "Compacting…" through the existing turn status |
 | `auto_compaction_end` | `context.injected { source: "compaction", content, tokens }` | `content` is `result.summary` on the frame (OM0); `skipped: true` produces nothing. The method and `tokensAfter` are on the `compactionSummary` message (`get_messages`), not the frame |
