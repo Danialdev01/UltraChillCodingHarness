@@ -9,6 +9,8 @@ touching the network. The plan behind them is `documentation/solution.md`
 | `mock-openrouter.mjs` | An OpenRouter stand-in: streams answers at a set rate, serves the model catalogue and the key/credits endpoints |
 | `fake-claude.mjs` | A `claude` CLI stand-in: answers the harness's probes and plays a turn in stream-json at a set rate, optionally holding the real CLI's memory |
 | `fixtures/claude-text.jsonl` | The stream `fake-claude.mjs` replays, copied from `packages/providers/src/fixtures` |
+| `fake-omp.mjs` | An `omp` stand-in: speaks OMP's RPC protocol and replays a recorded turn, with sessions that resume, optionally holding the real process's memory |
+| `fixtures/omp-plain.jsonl` | The RPC recording `fake-omp.mjs` replays, copied from `packages/providers/src/fixtures` |
 | `up.sh` | Starts a load-test target: its own Postgres, and the app limited like the production VPS with the mocks inside |
 | `run.mjs` | The load generator: virtual users on the WebSocket and the edge, measured from outside and from `/metrics` |
 | `apps/web/e2e/stream.spec.ts` | What a streaming answer costs the browser: long tasks, INP and frame-to-paint |
@@ -72,6 +74,22 @@ exec node /load/fake-claude.mjs --rss-mb 370 "$@"
 ```
 
 It names its process `claude`, so the resource sampler counts it as one (`resource_processes{group="claude"}` on `/metrics`). The stop button works: SIGINT ends the answer with the aborted result the real CLI prints.
+
+## `fake-omp.mjs`
+
+`OMP_BIN` is a path too, so the options go on its command line (a wrapper, as above) or in the environment:
+
+| Flag | Environment | Default | |
+| --- | --- | --- | --- |
+| `--fixture` | `FAKE_OMP_FIXTURE` | `fixtures/omp-plain.jsonl` | the RPC recording to replay; any `packages/providers/src/fixtures/omp-*.jsonl` works |
+| `--length` | `FAKE_OMP_LENGTH` | unset | tokens in the answer; unset, the recording's own text, sent at once |
+| `--rate` | `FAKE_OMP_RATE` | 60 | tokens a second, with `--length` |
+| `--chunk` | `FAKE_OMP_CHUNK` | 1 | tokens per text delta, with `--length` |
+| `--rss-mb` | `FAKE_OMP_RSS_MB` | 0 | memory to allocate and hold (the real process holds ~270-320 MB) |
+
+It answers `--version` and `--mode rpc-ui` the way OMP 18.14.1 does on the wire: `ready`, commands answered by `id`, the recording's first prompt replayed from its response to its `prompt_result`, and `get_session_stats` with fixed numbers per completed turn. A dialog in the recording (an approval) holds the stream until the harness answers it; the recording then carries on as recorded, whatever the answer. `abort` ends the turn as OMP does, and is held while a dialog is open. With `--session-dir` a session persists, so `--resume <id>` continues it and an unknown id exits 1 before `ready`, as OMP does. Closing stdin exits 0. It names its process `omp`.
+
+The server's own tests run OMP turns against it (`apps/server/src/agent.test.ts`), so they need no key and no network.
 
 ## Seeding: `apps/server/scripts/seed-load.ts`
 
