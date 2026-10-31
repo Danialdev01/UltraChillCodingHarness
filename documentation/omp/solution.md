@@ -575,6 +575,7 @@ The role prompts live in `packages/providers/src/omp-roles.ts`, next to the code
 - Per turn: `task.maxConcurrency: 4` and `maxRecursionDepth: 1`.
 - Per server: the `TurnScheduler` counts **OMP processes**, which is one per OMP turn plus one per bridge call. Workers inside a process are not separate OS processes (OM0: four scouts ran in the one `omp` process, adding ~45 MB).
 - **Isolation.** `none` by default, because each UCCH thread already has its own worktree (`thread.worktree_ready`). For fan-out edit tasks (OM5.5), `task.isolation.enabled: true` (and `isolated: true` per task) with `merge: patch`, so each worker's patch is applied back to the thread's worktree. Conflicts surface as a failed worker with patch metadata ([subagents](https://omp.sh/docs/subagents)).
+- **As built (OM5.5).** The workspace's `agent_settings.isolatedFanOut` turns it on. OMP does not fail a worker whose patch did not apply: it reports `completed`, and only its `<merge-summary>` says "Patches were not applied". `OmpNormaliser` makes that `agent.subagent_finished { status: "failed" }` with the reason, leaving out OMP's path to the patch.
 
 ---
 

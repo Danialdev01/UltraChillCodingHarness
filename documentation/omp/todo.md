@@ -447,13 +447,19 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Caps.** The overlay already set `task.maxConcurrency` from `OMP_WORKERS_PER_TURN` and `maxRecursionDepth: 1` (OM2.5). OM0 found workers run inside the one `omp` process, so `TurnScheduler` counts no more than it did.
     - **Metric.** `omp_subagents_total{provider, status}` counts each `agent.subagent_finished` a turn writes, Claude Code's subagents included, under `provider`.
     - **Manual run.** Real OMP on the overlay against the scripted model: 10 scouts ran 4, 4, 2, never more than 4 (spike report, "Measured later").
-- [ ] **OM5.5 — Isolated fan-out edits (opt-in)**
+- [x] **OM5.5 — Isolated fan-out edits (opt-in)** — 1ec3bef
 
   - **Depends:** OM5.4
   - **Files:** `omp-overlay.ts`, workspace settings
   - **Steps:** a workspace toggle sets `task.isolation.mode: auto` with `merge: patch` and `OMP_WORKTREE_DIR` under the subject. A failed patch apply surfaces as a failed subagent with its reason.
   - **Acceptance:** two workers editing disjoint files both land in the thread's worktree, and checkpoint/revert covers them.
   - **Verify:** manual run, plus `pnpm test`
+  - **As built:**
+    - **Keys.** OM0 corrected `task.isolation.mode: auto` to `task.isolation.enabled` (spike report, corrections); a task then asks per worker with `isolated: true`. `OMP_WORKTREE_DIR` was already the subject's (`providers.ts`).
+    - **Setting.** `agent_settings.isolatedFanOut { enabled }`, read with the project row the turn already loads, so no new query. Workspace settings, "Isolated parallel edits".
+    - **Failure.** An unapplied patch reports `status="completed"`; only `<merge-summary>` says "Patches were not applied". It becomes a failed subagent whose result says its changes were left out.
+    - **Manual run.** Real OMP with the overlay: two isolated workers writing `src/b.ts` and `src/c.ts` both landed in the checkout; two writing the same line left the second patch out (spike report, "Measured later").
+    - **Checkpoints.** No code captures `checkpoint.captured` yet (the revert path waits on it), so revert could not be exercised. The workers' patches are ordinary changes in the thread's worktree when the turn ends, which a tree snapshot will hold like any other edit.
 
 ---
 
