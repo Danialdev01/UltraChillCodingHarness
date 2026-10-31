@@ -26,9 +26,11 @@ export interface ProviderHealth {
   authenticated: boolean;
   /**
    * `subscription` is the vendor's own login; `token` is a pasted
-   * `setup-token`; `api-key` means the CLI would bill an API key it found,
-   * which is the state this feature exists to avoid and is reported so the
-   * settings page can say so.
+   * `setup-token`. What `api-key` means is the provider's: for Claude Code
+   * and Codex it means the CLI would bill an API key it found, which is the
+   * state this feature exists to avoid and is reported so the settings page
+   * can say so; for OMP it is the workspace's OpenRouter key, the intended
+   * route.
    */
   authMode: "subscription" | "token" | "api-key" | "none";
   /** Display only -- a masked email, never a token. */
@@ -74,6 +76,22 @@ export interface ProviderRunInput {
    * appended system prompt, Codex ahead of a new session's first message.
    */
   instructions?: string;
+  /** What only an OMP run takes; the server writes and owns all of it. */
+  omp?: OmpRunFiles;
+}
+
+/** The files an OMP turn runs with (solution §3.1). Absolute paths. */
+export interface OmpRunFiles {
+  /** This turn's overlay (§4), passed with `--config`. */
+  overlayPath: string;
+  /** The project's session directory, `<creds>/omp/sessions/<projectId>`. */
+  sessionDir: string;
+  /** The UCCH guard hook (§3.9), passed with `--hook`. */
+  guardHookPath: string;
+  /** Whether the workspace is trusted (§0.3); an untrusted one runs with `--no-lsp`. */
+  trusted: boolean;
+  /** OMP's own limit on the session, e.g. "45m". */
+  maxTime?: string;
 }
 
 /** What a person said to a CLI's permission prompt. */

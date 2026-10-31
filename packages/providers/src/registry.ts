@@ -1,6 +1,7 @@
 import type { CliProviderId, ProviderId } from "@ucch/protocol";
 import { ClaudeProvider } from "./claude.js";
 import { CodexProvider } from "./codex.js";
+import { OmpProvider } from "./omp.js";
 import type { AgentProvider } from "./types.js";
 
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
@@ -28,10 +29,13 @@ export interface CliProviders {
 export function createProviders(options: {
   claudeBin: string;
   codexBin: string;
+  /** OMP's binary; absent, there is no OMP provider. */
+  ompBin?: string;
   isRepo?: (cwd: string) => boolean;
 }): CliProviders {
   return {
     claude: new ClaudeProvider(options.claudeBin),
     codex: new CodexProvider(options.codexBin, options.isRepo),
+    ...(options.ompBin ? { omp: new OmpProvider(options.ompBin) } : {}),
   };
 }

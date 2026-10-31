@@ -237,10 +237,12 @@ Unknown frames produce nothing. The normaliser is a pure `(frame) => DomainEvent
 3. `set_host_tools { tools }` (§3.7).
 4. If resuming without `--resume`: `switch_session`.
 5. `prompt { message }`, where the message is the user's text plus research or documentation additions, exactly as built today for CLI turns (`agent.ts`, the `context.injected` `research` / `documentation` events).
-6. Stream until `agent_end`, terminal. Then `get_session_stats`, emit `agent.turn_completed`, and `close()`.
+6. Stream until `agent_end`, terminal, and `prompt_result`. Then `get_session_stats`, emit `agent.turn_completed` with the difference from a `get_session_stats` taken before the prompt (the totals are the session's, and a resumed session has some), and `close()`.
+
+`get_state` is asked after step 1, and its `sessionId` is `agent.session_started`. Steps 3 (host tools) and 4 are not taken: host tools are OM3.2, and resuming uses `--resume` (§3.1).
 
 **Signals:**
-- `interrupt()` sends `abort`, waits for `agent_end`, then `close()`. That is "end the turn cleanly" in `AgentRun` terms.
+- `interrupt()` answers every open approval with `cancelled: true` (OMP does not answer `abort` while a dialog is open; OM2.4), sends `abort`, waits for the terminal `agent_end` and `prompt_result { status: "aborted" }`, then `close()`. That is "end the turn cleanly" in `AgentRun` terms. If the process is still there after 10 s, `kill()`.
 - `kill()` is `OmpRpc.kill()`.
 - **Steering mid-turn.** A second `thread.send` while a turn runs can be forwarded as `steer` instead of queued. This is optional and comes after OM2, behind a composer affordance. Today's queueing (`agent.queued`) stays the default.
 

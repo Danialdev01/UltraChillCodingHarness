@@ -149,6 +149,12 @@ omp-compaction.jsonl: 172 lines … omp-tool.jsonl: 47 lines     (exit 0)
 
 ### Other RPC facts found on the way
 - **Abort:** `abort` is answered at once, `agent_end` follows within ~20 ms, the last assistant message has `stopReason: "aborted"`, `errorMessage: "Interrupted by user"`. Closing stdin then exits 0.
+- **Abort, measured for OM2.4** (`scratchpad/probe/abort.mjs`, `abort2.mjs`, 2026-10-31):
+  - During a running tool (`sleep 8`, `--approval-mode yolo`): the tool ends `isError: true`, the assistant message `stopReason: "aborted"`, then terminal `agent_end`, then **`prompt_result { status: "aborted" }`**, then `session_settled`. Closing stdin exits 0.
+  - **While an approval is open, `abort` is not answered** (no response in 30 s): OMP's command loop waits on the dialog. Answering the dialog first — `cancelled: true` or `value: "Deny"`, before or after the `abort` — lets it through, and the turn ends as above ("Tool call denied by user: bash", then `prompt_result { status: "aborted" }`). So an interrupt answers every open approval, then sends `abort`.
+  - `get_session_stats` on a new session, before any prompt: all `tokens` 0, `cost` 0, `sessionId` set — the "before" figure for a turn's usage.
+  - **`get_session_stats` totals carry across `--resume`**: a resumed session starts with the earlier turns' tokens, so a turn's usage is the difference between a call before its prompt and one after.
+- **`OmpProvider` end to end** (`scratchpad/e2e/e2e.mts`, real 18.14.1, scripted model via `modelRoles.default`, guard hook loaded, `--no-lsp`): a strict-mode `bash` approval round trip (requested `call_1`, resolved, result, completed, 294 ms); an interrupt at an approval (cancelled, process exited on stdin close without a signal, 238 ms); `--resume` of that session (same `sessionId`); an unknown resume id (`turn_failed` with OMP's "Session … not found", 97 ms).
 - **Retries:** an HTTP 503 followed by an answer produced **no** `auto_retry_*` frames (`omp-retry.jsonl`); the provider client retried silently. `agent.retry` will be rare.
 - **Errors:** a non-retryable API error ends the turn normally (`agent_end`, terminal) with the assistant message `stopReason: "error"`, `errorMessage: "400 …"`, and `prompt_result { status: "error", error: { message, provider, model, retryable, httpStatus } }` — `omp-error.jsonl:16`. The normaliser fails the turn on that, not on the exit code (which is 0).
 - **`prompt_result { id, agentInvoked, status, sessionSettled }`** follows every prompt; `session_settled` follows when background work is done.

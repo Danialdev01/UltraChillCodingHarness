@@ -10,8 +10,17 @@ import type {
   OmpToolResult,
   OmpUiRequest,
 } from "./omp-rpc-types.js";
+import { OmpRpc } from "./omp-rpc.js";
 import type { ExitStatus } from "./process.js";
-import type { PermissionReply } from "./types.js";
+import {
+  forbiddenEnvFor,
+  type AgentProvider,
+  type AgentRun,
+  type PermissionReply,
+  type ProviderHealth,
+  type ProviderRunInput,
+  type RunContext,
+} from "./types.js";
 
 /**
  * OMP (oh-my-pi) as a provider: `omp --mode rpc-ui`, one process per turn,
@@ -240,6 +249,15 @@ export class OmpNormaliser {
     return [{ type: "agent.permission_resolved", ...this.#ids(), requestId, behavior: reply.behavior }];
   }
 
+  /**
+   * Answers every open approval with a cancel, for an interrupt: OMP does
+   * not take `abort` while a dialog waits (OM2.4), so the dialogs go first.
+   */
+  cancelPrompts(): DomainEvent[] {
+    for (const id of this.#prompts.keys()) this.#io?.send({ type: "extension_ui_response", id, cancelled: true });
+    return this.#closePrompts();
+  }
+
   push(frame: OmpFrame): DomainEvent[] {
     if (this.#closed) return [];
     const ids = this.#ids();
@@ -390,8 +408,9 @@ export class OmpNormaliser {
     if (!DIALOGS.has(request.method)) return [];
     const title = typeof request.title === "string" ? request.title : "";
     const approval = request.method === "select" ? APPROVAL_TITLE.exec(title.split("\n")[0] ?? "") : null;
-    if (!approval) {
-      // A question the chat cannot show. Unanswered, OMP would wait forever.
+    if (!approval || this.#interrupted) {
+      // A question the chat cannot show, or one asked after the stop button:
+      // unanswered, OMP would wait forever, and hold the `abort` with it.
       this.#io?.send({ type: "extension_ui_response", id: request.id, cancelled: true });
       return [];
     }
@@ -575,4 +594,295 @@ export function editOperations(patch: string): { path: string; removed: boolean;
     if (move) current.movedTo = move[1]!.replace(/^(["'])(.*)\1$/, "$2");
   }
   return ops;
+}
+
+// -- The provider ---------------------------------------------------------------
+
+/** How long an interrupted turn gets to wind down before it is killed. */
+const INTERRUPT_GRACE_MS = 10_000;
+
+/** How long a finished turn's process gets to exit once stdin is closed. */
+const CLOSE_GRACE_MS = 10_000;
+
+/** Stderr kept for the failure message. The end of it is where the error is. */
+const STDERR_TAIL_BYTES = 4 * 1024;
+
+/** The account's OpenRouter id as OMP names it (solution §3.2, OM0). */
+export function ompModel(model: string): string {
+  return model.startsWith("openrouter/") ? model : `openrouter/${model}`;
+}
+
+/**
+ * `omp --version` for `installed` and `version`; the OpenRouter key in the
+ * environment for `authenticated`, which is how a run bills (§1.4). A login
+ * stored by `omp login` is OM8.2's to detect, and is never opened here.
+ */
+export async function probeOmp(ctx: RunContext, bin: string): Promise<ProviderHealth> {
+  const forbidden = forbiddenEnvFor("omp", ctx.env);
+  const warnings = forbidden
+    ? [`${forbidden} is set in the provider environment; OMP would bill it instead of the OpenRouter key, so runs refuse to start.`]
+    : [];
+  const version = await ctx.host
+    .run({ argv: [bin, "--version"], cwd: ctx.cwd, env: ctx.env }, { timeoutMs: 15_000 })
+    .catch(() => null);
+  if (!version || version.code !== 0) {
+    return {
+      installed: false,
+      authenticated: false,
+      authMode: "none",
+      error: version?.stderr.trim() || "omp is not installed",
+      ...(warnings.length ? { warnings } : {}),
+    };
+  }
+  const keyed = Boolean(ctx.env.OPENROUTER_API_KEY);
+  return {
+    installed: true,
+    // "omp/18.14.1"
+    version: /\d+\.\d+\.\d+\S*/.exec(version.stdout)?.[0] ?? version.stdout.trim(),
+    authenticated: keyed,
+    authMode: keyed ? "api-key" : "none",
+    ...(keyed ? { account: "OpenRouter key" } : {}),
+    ...(warnings.length ? { warnings } : {}),
+  };
+}
+
+/** Timings, for tests; the defaults are the production ones. */
+export interface OmpProviderOptions {
+  readyTimeoutMs?: number;
+  /** SIGTERM to SIGKILL, in a kill. */
+  killGraceMs?: number;
+  /** An interrupt to a kill, if the turn has not wound down. */
+  interruptGraceMs?: number;
+  /** Stdin closed to a kill, if the process has not exited. */
+  closeGraceMs?: number;
+  onStderr?: (line: string) => void;
+}
+
+export class OmpProvider implements AgentProvider {
+  readonly id = "omp" as const;
+  readonly label = "Custom";
+  /** The account's OpenRouter models, as for the native loop: none of OMP's own. */
+  readonly models = [] as const;
+
+  constructor(
+    private readonly bin: string,
+    private readonly options: OmpProviderOptions = {},
+  ) {}
+
+  probe(ctx: RunContext): Promise<ProviderHealth> {
+    return probeOmp(ctx, this.bin);
+  }
+
+  run(input: ProviderRunInput): AgentRun {
+    const forbidden = forbiddenEnvFor("omp", input.ctx.env);
+    if (forbidden) {
+      throw new Error(`${forbidden} is set in the provider environment; refusing to run on a credential other than the OpenRouter key`);
+    }
+    if (!input.omp) throw new Error("an OMP run needs its overlay, session directory and guard hook");
+    const argv = ompArgv({
+      bin: this.bin,
+      overlayPath: input.omp.overlayPath,
+      sessionDir: input.omp.sessionDir,
+      guardHookPath: input.omp.guardHookPath,
+      trusted: input.omp.trusted,
+      ...(input.model ? { model: ompModel(input.model) } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
+      ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+      ...(input.instructions ? { appendSystemPrompt: input.instructions } : {}),
+      ...(input.omp.maxTime ? { maxTime: input.omp.maxTime } : {}),
+    });
+    return new OmpTurn(input, argv, this.options);
+  }
+}
+
+/**
+ * One turn, one process (solution §3.6): `ready`, the session, the stats
+ * before, the prompt, the stream until the turn settles, the stats after,
+ * then stdin closed. Every path out -- done, failed, stopped, killed, the
+ * process dying -- ends the event stream with exactly one closing event.
+ */
+class OmpTurn implements AgentRun {
+  readonly events: AsyncIterable<DomainEvent>;
+  readonly #queue = new EventQueue();
+  readonly #normaliser: OmpNormaliser;
+  readonly #settled: Promise<void>;
+  #settle: () => void = () => {};
+  #rpc: OmpRpc | null = null;
+  /** Answers sent before the client was ready. */
+  #early: OmpClientFrame[] = [];
+  #interrupted = false;
+  #killed = false;
+  #failure: string | null = null;
+  #timer: NodeJS.Timeout | undefined;
+
+  constructor(
+    private readonly input: ProviderRunInput,
+    argv: string[],
+    private readonly options: OmpProviderOptions,
+  ) {
+    this.events = this.#queue;
+    this.#settled = new Promise((resolve) => (this.#settle = resolve));
+    this.#normaliser = new OmpNormaliser({
+      projectId: input.projectId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      workspace: input.ctx.cwd,
+    });
+    this.#normaliser.bind({ send: (frame) => this.#send(frame) });
+    void this.#drive(argv).catch((error: unknown) => this.#end({ code: null, signal: null }, describeError(error)));
+  }
+
+  answerPermission(requestId: string, reply: PermissionReply): boolean {
+    const events = this.#normaliser.answerPermission(requestId, reply);
+    this.#queue.push(...events);
+    return events.length > 0;
+  }
+
+  async interrupt(): Promise<void> {
+    if (this.#interrupted) return;
+    this.#interrupted = true;
+    this.#normaliser.noteInterrupt();
+    this.#queue.push(...this.#normaliser.cancelPrompts());
+    // Before the prompt, `#drive` sees the flag and closes instead.
+    this.#rpc?.request({ type: "abort" }).catch(() => {});
+    this.#timer = setTimeout(() => void this.kill(), this.options.interruptGraceMs ?? INTERRUPT_GRACE_MS);
+    this.#timer.unref();
+  }
+
+  async kill(): Promise<void> {
+    this.#interrupted = true;
+    this.#killed = true;
+    this.#normaliser.noteInterrupt();
+    await this.#rpc?.kill();
+  }
+
+  async #drive(argv: string[]): Promise<void> {
+    const { ctx } = this.input;
+    let rpc: OmpRpc;
+    try {
+      rpc = await OmpRpc.start({
+        host: ctx.host,
+        argv,
+        cwd: ctx.cwd,
+        env: ctx.env,
+        onFrame: (frame) => this.#onFrame(frame),
+        ...(this.options.onStderr ? { onStderr: this.options.onStderr } : {}),
+        ...(this.options.readyTimeoutMs !== undefined ? { readyTimeoutMs: this.options.readyTimeoutMs } : {}),
+        ...(this.options.killGraceMs !== undefined ? { killGraceMs: this.options.killGraceMs } : {}),
+      });
+    } catch (error) {
+      // `start` has already killed what it spawned; its message carries the stderr.
+      this.#end({ code: null, signal: null }, describeError(error));
+      return;
+    }
+    this.#rpc = rpc;
+    for (const frame of this.#early.splice(0)) this.#send(frame);
+    try {
+      if (this.#killed) await rpc.kill();
+      else await this.#turn(rpc);
+    } catch (error) {
+      // The process went away under a command, or a write failed.
+      this.#failure ??= describeError(error);
+      await rpc.kill();
+    }
+    this.#end(await rpc.exited, this.#failure);
+  }
+
+  async #turn(rpc: OmpRpc): Promise<void> {
+    // Subagent frames are read from OM5; asking now costs nothing.
+    await rpc.request({ type: "set_subagent_subscription", level: "progress" });
+    const state = await rpc.request<{ sessionId?: unknown }>({ type: "get_state" });
+    if (typeof state.data?.sessionId === "string") this.#queue.push(...this.#normaliser.session(state.data.sessionId));
+    const before = await this.#stats(rpc);
+    if (this.#interrupted) return this.#close(rpc);
+
+    const prompt = await rpc.request({ type: "prompt", message: this.input.prompt });
+    if (!prompt.success) {
+      this.#failure = prompt.error || "omp refused the prompt";
+      return this.#close(rpc);
+    }
+    const outcome = await Promise.race([this.#settled.then(() => "settled" as const), rpc.exited.then(() => "exited" as const)]);
+    // Gone before the turn settled: `#end` reports how.
+    if (outcome === "exited") return;
+    const after = await this.#stats(rpc);
+    this.#queue.push(...this.#normaliser.complete({ before, after }));
+    await this.#close(rpc);
+  }
+
+  #onFrame(frame: OmpFrame): void {
+    if (frame.type === "rpc_frame_error") {
+      // Part of the turn is lost, so none of it can be trusted.
+      this.#failure ??= `omp sent a frame that could not be read: ${String(frame.error)}`;
+      void this.#rpc?.kill();
+      return;
+    }
+    this.#queue.push(...this.#normaliser.push(frame));
+    if (this.#normaliser.settled) this.#settle();
+  }
+
+  async #stats(rpc: OmpRpc): Promise<OmpSessionStats | null> {
+    const response = await rpc.request<OmpSessionStats>({ type: "get_session_stats" });
+    return response.success ? (response.data ?? null) : null;
+  }
+
+  async #close(rpc: OmpRpc): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), this.options.closeGraceMs ?? CLOSE_GRACE_MS)));
+    const outcome = await Promise.race([rpc.close(), late]);
+    clearTimeout(timer);
+    if (outcome === "late") await rpc.kill();
+  }
+
+  #send(frame: OmpClientFrame): void {
+    if (!this.#rpc) {
+      this.#early.push(frame);
+      return;
+    }
+    try {
+      this.#rpc.send(frame);
+    } catch {
+      // The process is gone; `#drive` reports that.
+    }
+  }
+
+  #end(exit: ExitStatus, error: string | null): void {
+    clearTimeout(this.#timer);
+    const stderrTail = (this.#rpc?.stderrTail ?? "").slice(-STDERR_TAIL_BYTES).trim();
+    this.#queue.push(
+      ...this.#normaliser.finish({ ...exit, interrupted: this.#interrupted, stderrTail, ...(error ? { error } : {}) }),
+    );
+    this.#queue.end();
+  }
+}
+
+/** Events in order, for one reader, until `end`. */
+class EventQueue implements AsyncIterable<DomainEvent> {
+  #items: DomainEvent[] = [];
+  #done = false;
+  #wake: (() => void) | null = null;
+
+  push(...events: DomainEvent[]): void {
+    if (this.#done || events.length === 0) return;
+    this.#items.push(...events);
+    this.#wake?.();
+  }
+
+  end(): void {
+    this.#done = true;
+    this.#wake?.();
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<DomainEvent> {
+    for (;;) {
+      while (this.#items.length) yield this.#items.shift()!;
+      if (this.#done) return;
+      await new Promise<void>((resolve) => (this.#wake = resolve));
+      this.#wake = null;
+    }
+  }
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

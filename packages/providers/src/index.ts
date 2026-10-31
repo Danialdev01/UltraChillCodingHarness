@@ -6,6 +6,17 @@ export { ompGuardHookSource } from "./omp-assets.js";
 export { OmpRpc, type OmpRpcOptions } from "./omp-rpc.js";
 export type * from "./omp-rpc-types.js";
 export {
+  OmpProvider,
+  OmpNormaliser,
+  approvalFor,
+  ompArgv,
+  ompModel,
+  probeOmp,
+  thinkingFor,
+  type OmpProviderOptions,
+  type OmpSessionStats,
+} from "./omp.js";
+export {
   ClaudeProvider,
   ClaudeNormaliser,
   CLAUDE_MODELS,
