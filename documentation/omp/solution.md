@@ -474,6 +474,26 @@ As built (OM4.3): the accepted command emits `thread.compaction_requested { thre
 3. A new thread is created on `targetProvider` in **the same worktree** (`thread.create` with `worktreeOf: sourceThreadId`, plus a new optional field). Its first `user.message` is the brief inside `<handoff-brief>`, followed by "Continue from here."
 4. The events `thread.handed_off { from, to, brief }` link the two threads. The UI shows "Continued in →" and "Continued from ←".
 
+**As built (OM4.5):**
+- **Claim.** `decide()` takes a thread that has run (`provider` set) and is `idle` or `error`. A turn that failed on a usage limit leaves `error`, and that is what OM4.6 hands off. Its worktree must be ready. `thread.handoff_requested` claims it as `running`, so `thread.cancel` stops the brief. It needs `session.create` and `project.write`.
+- **Brief.** `AgentTurnReactor` reads `store.threadHistory`, takes an OMP slot, and asks on an overlay whose roles all resolve to `SEARCH_MODEL`, the server's compaction model, so `@smol` is never the coding model. The account's OpenRouter key pays for the brief, whichever providers sit on either side.
+- **New thread.** It is dispatched as the person who asked:
+  - `thread.create { worktreeOf, title: "Continued: <title>" }`, keeping the source's credential source.
+  - Then `thread.handed_off`, appended to the new thread, so its log opens with where it came from.
+  - Then `thread.send { provider: targetProvider }`.
+  - Finally `thread.handed_off` on the source, which frees it. Any failure ends with `thread.handoff_failed { error }` instead.
+- **Same folder.**
+  - `thread.created` gains `worktreeOf` and `treeHash`, the hash of the thread whose worktree it is: the first one, down a chain of handoffs. The new row is `ready` at once, on the same branch. `WorktreeReactor` skips it.
+  - Two columns: `threads.tree_hash` (a hash, not an id, so the folder stays named once the thread that made it is gone) and `threads.handoff_from_thread_id`.
+  - `treeFor` and the `?session=` / collab lookups resolve through it. Each matches `hash = h OR tree_hash = h`.
+  - The web addresses a session's tree by `treeHash ?? hash` (`project-workspace.tsx`). That is also the `worktreeId` the shared folder's file events carry, so both threads hear them.
+- **Removing.** `SessionLifecycle` counts the other sessions in a folder. A session removed while another shares its worktree takes only its row; the last one out takes the worktree and the branch. No session settles while another is working in its tree.
+- **Stream.** `thread.create` with `worktreeOf` loads the source as the command's thread. The engine appends `thread.created` to the new thread's stream, not the source's.
+- **UI.**
+  - `/continue <harness>` in the composer starts it. It is offered once the thread has run, whoever sent its turns.
+  - "Writing a brief … for <harness>…" shows while it runs.
+  - The new thread's first message shows the brief folded under "Handoff brief", and the request ("Continue from here.") as the message.
+
 **Automatic triggers** (workspace setting, off by default):
 - **Usage limit.** A CLI turn fails with a usage-limit or quota error. Classified in the normalisers: Claude's `rate_limit_event` / `error_*` result, Codex's error item. The trigger applies when the workspace has a fallback provider set.
 - **Context full.** Claude Code's reported context usage (`mapUsage`) passes 90% of the window. The next turn on that thread offers "Hand off" in the composer. It is not automatic, because Claude Code compacts on its own.

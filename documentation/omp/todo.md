@@ -365,7 +365,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     3. Return the brief.
   - **Acceptance:** the test, against `fake-omp`, checks the transcript rendering has a token cap and that secrets matching `*_API_KEY=` are masked.
   - **Verify:** `pnpm test -- omp-handoff`
-- [ ] **OM4.5 — Cross-provider handoff**
+- [x] **OM4.5 — Cross-provider handoff** — f94ba9d
 
   - **Depends:** OM4.4
   - **Files:**
@@ -383,6 +383,12 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - The new thread's first message holds the brief.
     - Files in the worktree are untouched by the handoff.
   - **Verify:** `pnpm test && pnpm --filter @ucch/web e2e -- handoff`
+  - **As built:** solution §5.4, "As built".
+    - **Schema.** A second column, `threads.tree_hash`, names the shared worktree folder.
+    - **Unit tests.** `agent.test.ts` runs Claude → Codex, Codex → OMP and OMP → Claude through the reactor. Each writes the brief on fake-omp, then dispatches the new thread in the same folder and the brief as its first message, and the files are left as they were.
+    - **No fake Codex.** There is no fake Codex CLI, so the target's own turn is not run there.
+    - **e2e.** `handoff.spec.ts` runs OMP → Claude end to end, on `CLAUDE_BIN=scripts/load/fake-claude.mjs`, in the project's checkout and in a session's worktree.
+    - **Not settled in e2e.** Settling the two sessions would push to the project's origin. `session-lifecycle.test.ts` covers that on real git.
 - [ ] **OM4.6 — Automatic handoff on usage limit**
 
   - **Depends:** OM4.5
