@@ -408,6 +408,127 @@ describe("thread.compact and thread.handoff", () => {
   });
 });
 
+describe("thread.handoff_to", () => {
+  it.each(["claude", "codex", "omp", "native"] as const)("claims an idle thread for a handoff to %s, with the focus", (target) => {
+    const d = run(
+      { project: project(), thread: thread({ provider: "claude" }) },
+      { type: "thread.handoff_to", threadId: THREAD, targetProvider: target, focus: "the migration" },
+    );
+    expect(d).toEqual({
+      ok: true,
+      events: [{ type: "thread.handoff_requested", threadId: THREAD, targetProvider: target, focus: "the migration" }],
+    });
+  });
+
+  it("takes a thread whose last turn failed: a usage limit is what a handoff is for", () => {
+    const d = run({ project: project(), thread: thread({ provider: "codex", status: "error" }) }, {
+      type: "thread.handoff_to",
+      threadId: THREAD,
+      targetProvider: "omp",
+    });
+    expect(d).toEqual({ ok: true, events: [{ type: "thread.handoff_requested", threadId: THREAD, targetProvider: "omp" }] });
+  });
+
+  it("refuses a thread that has never run", () => {
+    const d = run({ project: project(), thread: thread() }, { type: "thread.handoff_to", threadId: THREAD, targetProvider: "codex" });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("no conversation") } });
+  });
+
+  it.each(["queued", "running", "cancelling"] as const)("refuses while the thread is %s", (status) => {
+    const d = run({ project: project(), thread: thread({ provider: "omp", status }) }, {
+      type: "thread.handoff_to",
+      threadId: THREAD,
+      targetProvider: "claude",
+    });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("busy") } });
+  });
+
+  it.each(["creating", "error"] as const)("refuses a session whose worktree is %s", (worktreeState) => {
+    const d = run({ project: project(), thread: thread({ provider: "omp", worktreeState }) }, {
+      type: "thread.handoff_to",
+      threadId: THREAD,
+      targetProvider: "claude",
+    });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("worktree") } });
+  });
+
+  it("refuses a member who cannot start a session", () => {
+    const d = run(
+      { project: project(), workspace: workspace({ membership: member({ canCreateSession: false }) }), thread: thread({ provider: "omp" }) },
+      { type: "thread.handoff_to", threadId: THREAD, targetProvider: "claude" },
+    );
+    expect(d).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+});
+
+describe("thread.create in another thread's worktree", () => {
+  const source = (over: Partial<ThreadSnapshot> = {}) =>
+    thread({ provider: "omp", hash: "s0urce0hash0", branch: "ucch/s0urce0hash0", baseBranch: "main", worktreeState: "ready", ...over });
+
+  it("takes the source's worktree and branch, naming the folder by the source's hash", () => {
+    const d = run({ project: project(), thread: source() }, { type: "thread.create", projectId: PROJECT, title: "Continued: x", worktreeOf: THREAD });
+    expect(d).toEqual({
+      ok: true,
+      events: [
+        {
+          type: "thread.created",
+          threadId: NEW_ID,
+          projectId: PROJECT,
+          title: "Continued: x",
+          createdByUserId: USER,
+          credentialSource: "member",
+          hash: "abcdef123456",
+          worktreeOf: THREAD,
+          baseBranch: "main",
+          branch: "ucch/s0urce0hash0",
+          treeHash: "s0urce0hash0",
+        },
+      ],
+    });
+  });
+
+  it("keeps naming the first folder down a chain of handoffs", () => {
+    const d = run({ project: project(), thread: source({ hash: "m1ddle0hash0", treeHash: "s0urce0hash0" }) }, {
+      type: "thread.create",
+      projectId: PROJECT,
+      worktreeOf: THREAD,
+    });
+    expect(d).toMatchObject({ ok: true, events: [{ treeHash: "s0urce0hash0", branch: "ucch/s0urce0hash0" }] });
+  });
+
+  it("shares the project's checkout with a thread that has no worktree", () => {
+    const d = run({ project: project(), thread: source({ branch: null, baseBranch: null, worktreeState: null }) }, {
+      type: "thread.create",
+      projectId: PROJECT,
+      worktreeOf: THREAD,
+    });
+    expect(d).toMatchObject({ ok: true });
+    const [event] = (d as { events: Record<string, unknown>[] }).events;
+    expect(event).toMatchObject({ type: "thread.created", worktreeOf: THREAD });
+    expect(event).not.toHaveProperty("branch");
+    expect(event).not.toHaveProperty("treeHash");
+  });
+
+  it("refuses a source in another project, a missing one, or a branch of its own beside it", () => {
+    expect(run({ project: project(), thread: source({ projectId: NEW_ID }) }, { type: "thread.create", projectId: PROJECT, worktreeOf: THREAD })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(run({ project: project() }, { type: "thread.create", projectId: PROJECT, worktreeOf: THREAD })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(
+      run({ project: project(), thread: source() }, { type: "thread.create", projectId: PROJECT, worktreeOf: THREAD, baseBranch: "main" }),
+    ).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
+
+  it("refuses a worktree that is not there yet", () => {
+    const d = run({ project: project(), thread: source({ worktreeState: "creating" }) }, { type: "thread.create", projectId: PROJECT, worktreeOf: THREAD });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+});
+
 describe("thread.revert", () => {
   it("reverts to the checkpoint taken before the turn", () => {
     const d = run({ project: project(), thread: thread(), turn: turn() }, {
@@ -466,6 +587,7 @@ describe("thread ownership", () => {
     { type: "thread.fork", threadId: THREAD, turnId: TURN },
     { type: "thread.compact", threadId: THREAD },
     { type: "thread.handoff", threadId: THREAD },
+    { type: "thread.handoff_to", threadId: THREAD, targetProvider: "claude" },
   ];
 
   it.each(cases)("refuses $type on another user's thread", (command) => {

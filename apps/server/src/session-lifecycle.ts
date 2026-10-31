@@ -2,7 +2,7 @@ import { rm } from "node:fs/promises";
 import type { DomainEvent } from "@ucch/protocol";
 import { runGit } from "./git-exec.js";
 import type { GitAuthor, GitService } from "./git.js";
-import { projectRoot, sessionTree } from "./trees.js";
+import { projectRoot, sessionTree, treeHashOf } from "./trees.js";
 
 const TIMEOUT_MS = 60_000;
 
@@ -16,6 +16,15 @@ export interface SessionRecord {
   branch: string | null;
   baseBranch: string | null;
   worktreeState: string | null;
+  /** Set when it works in another session's worktree: that one's hash. */
+  treeHash?: string | null;
+}
+
+/** The other sessions working in one session's folder: a handoff's two ends. */
+export interface TreeSharers {
+  count: number;
+  /** Whether any of them has a turn in flight. */
+  running: boolean;
 }
 
 /** What a session holds that removing it could lose. */
@@ -28,12 +37,19 @@ export interface SessionInspection {
   unpushed: number;
   hasRemote: boolean;
   running: boolean;
+  /** Other sessions in the same worktree, which keep it when this one goes. */
+  sharers: TreeSharers;
 }
 
 export interface SessionLifecycleDeps {
   git: GitService;
   workspaceRoot: string;
   turnCount(threadId: string): Promise<number>;
+  /**
+   * The other sessions whose folder is this one's (`threads.tree_hash`, or
+   * the hash it names). None when absent.
+   */
+  sharers?(session: SessionRecord): Promise<TreeSharers>;
   /** Deletes the thread row; its events and turns go with it. */
   deleteThread(threadId: string): Promise<void>;
   /** The token for origin (null when it does not apply) and whose name commits carry. */
@@ -61,6 +77,10 @@ export class SessionUnsavedError extends Error {}
  *
  * A session in the project's main checkout (no branch of its own) has no
  * files to lose: its edits are the project's, and stay where they are.
+ *
+ * A handoff leaves two sessions in one worktree (solution §5.4). Either
+ * can go; the worktree and its branch go with the last of them, and none is
+ * settled while another is working in it.
  */
 export class SessionLifecycle {
   constructor(private readonly deps: SessionLifecycleDeps) {}
@@ -69,15 +89,18 @@ export class SessionLifecycle {
     if (!session.branch || session.worktreeState !== "ready") return null;
     return {
       projectId: session.projectId,
-      tree: sessionTree(this.deps.workspaceRoot, session.projectId, session.hash),
+      tree: sessionTree(this.deps.workspaceRoot, session.projectId, treeHashOf(session)),
     };
   }
 
   async inspect(session: SessionRecord): Promise<SessionInspection> {
     const running = session.status === "queued" || session.status === "running" || session.status === "cancelling";
-    const turns = await this.deps.turnCount(session.id);
+    const [turns, sharers] = await Promise.all([
+      this.deps.turnCount(session.id),
+      this.deps.sharers?.(session) ?? Promise.resolve({ count: 0, running: false }),
+    ]);
     const tree = this.#tree(session);
-    if (!tree) return { turns, dirty: false, unpushed: 0, hasRemote: false, running };
+    if (!tree) return { turns, dirty: false, unpushed: 0, hasRemote: false, running, sharers };
 
     const status = await this.deps.git.status(tree);
     const unpushed = status.upstream
@@ -85,7 +108,7 @@ export class SessionLifecycle {
       : session.baseBranch
         ? await this.deps.git.commitsSince(tree, session.baseBranch)
         : 0;
-    return { turns, dirty: status.files.length > 0, unpushed, hasRemote: status.hasRemote, running };
+    return { turns, dirty: status.files.length > 0, unpushed, hasRemote: status.hasRemote, running, sharers };
   }
 
   /** Nothing said, nothing changed, nothing running. */
@@ -95,8 +118,9 @@ export class SessionLifecycle {
 
   /** Removes the session only if it is empty. Never commits or pushes. */
   async removeIfEmpty(session: SessionRecord): Promise<boolean> {
-    if (!SessionLifecycle.isEmpty(await this.inspect(session))) return false;
-    await this.#remove(session, null);
+    const inspection = await this.inspect(session);
+    if (!SessionLifecycle.isEmpty(inspection)) return false;
+    await this.#remove(session, null, inspection.sharers.count > 0);
     return true;
   }
 
@@ -108,6 +132,11 @@ export class SessionLifecycle {
     const inspection = await this.inspect(session);
     if (inspection.running) {
       throw new SessionBusyError("the agent is still working in this session -- stop it, then settle");
+    }
+    if (inspection.sharers.running) {
+      // Committing under an agent that is writing the same files would
+      // push half of its edit.
+      throw new SessionBusyError("the session this one was handed off to is still working in its worktree -- stop it, then settle");
     }
 
     const tree = this.#tree(session);
@@ -131,19 +160,20 @@ export class SessionLifecycle {
       }
     }
 
-    await this.#remove(session, pushed);
+    await this.#remove(session, pushed, inspection.sharers.count > 0);
     return { pushed };
   }
 
   /**
    * The row first, then the disk: a failure part-way leaves a stray folder
    * (logged, harmless) rather than a session pointing at a tree that is gone.
+   * A worktree another session still works in is left to it.
    */
-  async #remove(session: SessionRecord, pushedBranch: string | null): Promise<void> {
+  async #remove(session: SessionRecord, pushedBranch: string | null, shared: boolean): Promise<void> {
     await this.deps.deleteThread(session.id);
-    if (session.branch) {
+    if (session.branch && !shared) {
       const repo = projectRoot(this.deps.workspaceRoot, session.projectId);
-      const tree = sessionTree(this.deps.workspaceRoot, session.projectId, session.hash);
+      const tree = sessionTree(this.deps.workspaceRoot, session.projectId, treeHashOf(session));
       try {
         await runGit(["worktree", "remove", "--force", "--", tree], repo, TIMEOUT_MS, { okExitCodes: [0, 128] });
         await rm(tree, { recursive: true, force: true });

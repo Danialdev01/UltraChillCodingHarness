@@ -60,6 +60,25 @@ export interface PermissionPrompt {
   description: string | null;
 }
 
+type ProviderId = Extract<DomainEvent, { type: "thread.handoff_requested" }>["targetProvider"];
+
+/** The other end of a handoff: the thread, and its address. */
+export interface HandoffLink {
+  threadId: string;
+  hash: string;
+  /** What it runs on; known for the thread handed to. */
+  provider?: ProviderId;
+}
+
+/** The new thread's first message as the server writes it (`handoffMessage`). */
+const BRIEF = /^<handoff-brief>\n([\s\S]*?)\n<\/handoff-brief>(?:\n\n([\s\S]*))?$/;
+
+/** A handoff's message as its brief and what follows it, or null for any other. */
+export function splitBrief(text: string): { brief: string; text: string } | null {
+  const match = BRIEF.exec(text);
+  return match ? { brief: match[1]!.trim(), text: (match[2] ?? "").trim() } : null;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   /** The user's text. An assistant's prose lives in `parts`. */
@@ -74,6 +93,11 @@ export interface ChatMessage {
   attachments?: MessageAttachment[];
   /** How the message asked to be answered. Absent on an ordinary one. */
   mode?: MessageMode;
+  /**
+   * The brief a handoff opened this thread with (`<handoff-brief>`, solution
+   * §5.4), split from the request after it, which is `text`.
+   */
+  brief?: string;
   parts: MessagePart[];
   reasoning: string;
   /** True while the turn is open: no `turn_completed` and no `turn_failed`. */
@@ -148,8 +172,17 @@ export interface ChatState {
    * a turn, so `running` is true too.
    */
   compacting: "compact" | "handoff" | null;
-  /** Why the newest compaction made nothing, until anything else happens on the thread. */
+  /** Why the newest compaction or handoff made nothing, until anything else happens on the thread. */
   compactionError: string | null;
+  /**
+   * The provider a handoff (`thread.handoff_to`) is writing the brief for,
+   * while it does; the thread is `running` meanwhile.
+   */
+  handingOff: ProviderId | null;
+  /** Where this thread's work went on, once it was handed off. */
+  continuedIn: HandoffLink | null;
+  /** Where it came from, when a handoff started this thread. */
+  continuedFrom: HandoffLink | null;
 }
 
 /**
@@ -175,6 +208,9 @@ export function toMessages(
   let contextTokens: number | null = null;
   let compacting: "compact" | "handoff" | null = null;
   let compactionError: string | null = null;
+  let handingOff: ProviderId | null = null;
+  let continuedIn: HandoffLink | null = null;
+  let continuedFrom: HandoffLink | null = null;
   const prompts = new Map<string, PermissionPrompt>();
 
   /**
@@ -239,10 +275,13 @@ export function toMessages(
       case "user.message": {
         // The attachment block is for the model; the chat shows the sentence
         // that was typed, and a tag per file.
-        const { text, attachments } = parseAttachments(event.text);
+        const { text: typed, attachments } = parseAttachments(event.text);
+        const handed = splitBrief(typed);
+        const text = handed ? handed.text : typed;
         messages.push({
           role: "user",
           text,
+          ...(handed ? { brief: handed.brief } : {}),
           ...(attachments.length ? { attachments } : {}),
           ...(event.mode ? { mode: event.mode } : {}),
           parts: [],
@@ -460,6 +499,29 @@ export function toMessages(
           : null;
         break;
 
+      case "thread.handoff_requested":
+        handingOff = event.targetProvider;
+        compactionError = null;
+        running = true;
+        activeTurn = null;
+        break;
+
+      case "thread.handed_off":
+        if (event.threadId === event.fromThreadId) {
+          handingOff = null;
+          running = false;
+          continuedIn = { threadId: event.toThreadId, hash: event.toHash, provider: event.targetProvider };
+        } else {
+          continuedFrom = { threadId: event.fromThreadId, hash: event.fromHash };
+        }
+        break;
+
+      case "thread.handoff_failed":
+        handingOff = null;
+        running = false;
+        compactionError = `The handoff did not happen: ${event.error}`;
+        break;
+
       case "agent.retry": {
         const current = activity.get(event.turnId);
         if (current) current.retry = { attempt: event.attempt, maxRetries: event.maxRetries };
@@ -476,6 +538,9 @@ export function toMessages(
     contextTokens,
     compacting,
     compactionError,
+    handingOff,
+    continuedIn,
+    continuedFrom,
   };
 }
 

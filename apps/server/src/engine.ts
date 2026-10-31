@@ -177,7 +177,10 @@ export class OrchestrationEngine {
     if (decision.events.length > 0) {
       const target = {
         projectId: resolveProjectId(state, decision.events) ?? state.project?.id ?? "",
-        threadId: state.thread?.id ?? resolveThreadId(decision.events),
+        // A thread made in another's folder has that one loaded as its
+        // thread, but its `thread.created` opens its own stream.
+        threadId:
+          command.type === "thread.create" ? resolveThreadId(decision.events) : (state.thread?.id ?? resolveThreadId(decision.events)),
       };
       if (!target.projectId) {
         return { ok: false, code: "internal", message: "could not resolve the project for this command" };
@@ -205,7 +208,10 @@ export class OrchestrationEngine {
   async #loadState(command: Command, principal: Principal): Promise<DecisionState> {
     const state: DecisionState = {};
 
-    const threadId = "threadId" in command ? command.threadId : undefined;
+    // `thread.create` names a thread only when it is made in that one's
+    // folder: the thread `decide` copies the worktree from.
+    const threadId =
+      "threadId" in command ? command.threadId : command.type === "thread.create" ? command.worktreeOf : undefined;
     if (threadId) {
       const [row] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
       if (row) {
@@ -222,6 +228,10 @@ export class OrchestrationEngine {
             row.worktreeState === "creating" || row.worktreeState === "ready" || row.worktreeState === "error"
               ? row.worktreeState
               : null,
+          hash: row.hash,
+          branch: row.branch,
+          baseBranch: row.baseBranch,
+          treeHash: row.treeHash,
         };
       }
     }
@@ -470,6 +480,36 @@ export async function applyProjection(
           .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["running", "cancelling"])));
         break;
 
+      case "thread.handoff_requested": {
+        // Claims the thread while its brief is written, as a compaction
+        // does: `running`, so a stop reaches the OMP call.
+        const claimed = await tx
+          .update(threads)
+          .set({ status: "running" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["idle", "error"])))
+          .returning({ id: threads.id });
+        if (claimed.length === 0) throw new ProjectionConflict("this thread is busy");
+        break;
+      }
+
+      case "thread.handed_off":
+        if (event.threadId === event.toThreadId) {
+          await tx.update(threads).set({ handoffFromThreadId: event.fromThreadId }).where(eq(threads.id, event.threadId));
+          break;
+        }
+        await tx
+          .update(threads)
+          .set({ status: "idle" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["running", "cancelling"])));
+        break;
+
+      case "thread.handoff_failed":
+        await tx
+          .update(threads)
+          .set({ status: "idle" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["running", "cancelling"])));
+        break;
+
       case "thread.created":
         await tx.insert(threads).values({
           id: event.threadId,
@@ -482,7 +522,9 @@ export async function applyProjection(
           hash: event.hash ?? event.threadId.replace(/-/g, "").slice(0, 12),
           baseBranch: event.baseBranch ?? null,
           branch: event.branch ?? null,
-          worktreeState: event.branch ? "creating" : null,
+          // Made in another thread's worktree: one that is there already.
+          worktreeState: event.branch ? (event.worktreeOf ? "ready" : "creating") : null,
+          treeHash: event.treeHash ?? null,
         });
         // An upsert, so a project without a row yet still counts.
         await tx

@@ -37,8 +37,10 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
   const base = useProject(seed.hash) ?? seed
   // In a project session the files, the terminal and git work in the
   // session's own worktree; a session without a branch -- the project's
-  // first, or one older than worktrees -- works in the main checkout.
-  const sessionHash = session?.branch ? session.hash : null
+  // first, or one older than worktrees -- works in the main checkout. A
+  // session a handoff started works in the old one's worktree, named by
+  // that one's hash (`treeHash`), which is what its file events carry.
+  const sessionHash = session?.branch ? (session.treeHash ?? session.hash) : null
   const project = React.useMemo(() => ({ ...base, sessionHash }), [base, sessionHash])
   useCurrentProject(project)
   const { mode, sidebar } = useFilesPanel()

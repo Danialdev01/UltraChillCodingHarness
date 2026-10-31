@@ -853,6 +853,197 @@ describe("an OMP turn", () => {
     });
   });
 
+  describe("a handoff to another provider (solution §5.4)", () => {
+    const NEW_THREAD = "99999999-9999-4999-8999-999999999999";
+    const NEW_HASH = "n3wsess10n00";
+    const principal = { userId: USER, sessionId: "s", scopes: ["read", "write", "exec"] as ("read" | "write" | "exec")[] };
+    const handedOff = (event: DomainEvent) => event.type === "thread.handed_off" && event.threadId === THREAD;
+    const ended = (event: DomainEvent) => handedOff(event) || event.type === "thread.handoff_failed";
+
+    /** The source's log, in its provider's vocabulary: what every provider's normaliser emits. */
+    function history(provider: string): DomainEvent[] {
+      const turnId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      return [
+        { type: "user.message", threadId: THREAD, text: `Fix the parser bug (on ${provider}).` },
+        { type: "turn.started", threadId: THREAD, turnId, provider: provider as "claude" },
+        { type: "agent.tool_use", threadId: THREAD, turnId, toolUseId: "t1", name: "edit_file", input: { path: "src/parser.ts" } },
+        { type: "agent.tool_result", threadId: THREAD, turnId, toolUseId: "t1", content: "ok", isError: false, durationMs: 3 },
+        { type: "file.changed", projectId: PROJECT, path: "src/parser.ts", change: "modified" },
+        { type: "agent.message", threadId: THREAD, turnId, content: [{ type: "text", text: "Fixed the off-by-one." }] },
+      ];
+    }
+
+    /**
+     * The reactor as `#handoffTo` reads -- the thread, whom to bill -- with
+     * the thread's log in the store and the engine's answers to the new
+     * thread and its message recorded.
+     */
+    async function handoffReactor(threadRow: Row, log: DomainEvent[], options: { refuseSend?: string } = {}) {
+      // The project's checkout, which the brief's process runs in.
+      await mkdir(join(root, "workspaces", PROJECT), { recursive: true });
+      const creds = join(root, "creds");
+      const providers = new ProviderService(
+        {} as Database,
+        { CREDS_ROOT: creds } as Config,
+        new HostProcessHost(),
+        createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: OMP_BIN }),
+      );
+      const scheduler = new TurnScheduler({ cliPerUser: 2, cliTotal: 2, nativeTotal: 2, ompTotal: 1 });
+      const dispatched: Command[] = [];
+      const appendedTo: { threadId: string | null; batch: DomainEvent[] }[] = [];
+      const rows: unknown[][] = [[threadRow], [owner], [keyed]];
+      const next = () => Promise.resolve(rows.shift() ?? []);
+      const chain: Record<string, unknown> = {};
+      for (const step of ["from", "innerJoin", "where", "orderBy"]) chain[step] = () => chain;
+      chain.limit = next;
+      chain.then = (resolve: (value: unknown) => void, reject: (error: unknown) => void) => next().then(resolve, reject);
+      const store = {
+        append: async (target: { threadId: string | null }, batch: DomainEvent[]) => {
+          appendedTo.push({ threadId: target.threadId, batch });
+          return [];
+        },
+        threadHistory: async () => log.map((event, i) => ({ id: String(i), threadId: THREAD, projectId: PROJECT, seq: i, createdAt: "", event })),
+      } as unknown as EventStore;
+      const errors: unknown[] = [];
+      const agent = new AgentTurnReactor(
+        { select: () => chain } as unknown as Database,
+        store,
+        {
+          workspaceRoot: join(root, "workspaces"),
+          secretKey: SECRET,
+          defaultModel: "anthropic/claude-sonnet-4.5",
+          searchModel: "google/gemini-flash",
+          cliEnabled: true,
+          providers,
+          scheduler,
+          dispatch: async (_principal: unknown, command: Command) => {
+            dispatched.push(command);
+            if (command.type === "thread.create") {
+              return {
+                ok: true,
+                events: [
+                  {
+                    id: "1",
+                    threadId: NEW_THREAD,
+                    projectId: PROJECT,
+                    seq: 0,
+                    createdAt: "",
+                    event: { type: "thread.created", threadId: NEW_THREAD, projectId: PROJECT, title: "t", hash: NEW_HASH, worktreeOf: THREAD },
+                  },
+                ],
+              };
+            }
+            if (options.refuseSend) return { ok: false, code: "conflict", message: options.refuseSend };
+            return { ok: true, events: [] };
+          },
+        } as unknown as AgentOptions,
+        (error) => errors.push(error),
+      );
+      return { agent, dispatched, appendedTo, scheduler, creds, errors };
+    }
+
+    it.each([
+      ["claude", "codex"],
+      ["codex", "omp"],
+      ["omp", "claude"],
+    ] as const)("%s -> %s: writes the brief on OMP, opens the new thread in the same folder, and sends it the brief", async (from, to) => {
+      const log = join(root, "print.jsonl");
+      const saved = process.env.FAKE_OMP_PRINT_LOG;
+      process.env.FAKE_OMP_PRINT_LOG = log;
+      try {
+        // The folder the work is in, which the handoff must leave as it was.
+        const tree = join(root, "workspaces", PROJECT);
+        await mkdir(join(tree, "src"), { recursive: true });
+        await writeFile(join(tree, "src", "parser.ts"), "export const fixed = true;\n");
+        const before = await readdir(tree, { recursive: true });
+
+        const source = { ...thread, title: "Fix the parser", provider: from, providerSessionId: "sess-1" };
+        const { agent, dispatched, appendedTo, scheduler, creds, errors } = await handoffReactor(source, history(from));
+        agent.react(
+          { type: "thread.handoff_to", threadId: THREAD, targetProvider: to, focus: "the tests" },
+          [{ type: "thread.handoff_requested", threadId: THREAD, targetProvider: to, focus: "the tests" }],
+          principal,
+        );
+        const flat = () => appendedTo.flatMap((entry) => entry.batch);
+        const deadline = Date.now() + 10_000;
+        while (!flat().some(ended) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+        expect(errors).toEqual([]);
+
+        // The brief, from the masked transcript, on the compaction model's smol role, with no tools and no session.
+        const [asked] = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { argv: string[]; stdin: string });
+        expect(asked!.argv).toEqual(expect.arrayContaining(["-p", "--no-session", "--no-tools", "--model", "@smol"]));
+        expect(asked!.stdin).toContain(`Fix the parser bug (on ${from}).`);
+        expect(asked!.stdin).toContain("## Files changed\n- src/parser.ts (modified)");
+        const brief = `## Goal\nFix the parser bug (on ${from}).\n## Done\nRead ${asked!.stdin.length} characters of transcript.\n## Next\nthe tests`;
+
+        // A new thread in this one's folder, then the brief as its first message, on the target.
+        expect(dispatched).toEqual([
+          { type: "thread.create", projectId: PROJECT, title: "Continued: Fix the parser", worktreeOf: THREAD },
+          { type: "thread.send", threadId: NEW_THREAD, text: `<handoff-brief>\n${brief}\n</handoff-brief>\n\nContinue from here.`, provider: to },
+        ]);
+        const link = { type: "thread.handed_off", fromThreadId: THREAD, fromHash: "abcdef123456", toThreadId: NEW_THREAD, toHash: NEW_HASH, targetProvider: to, brief };
+        // Linked from both ends: the new thread first, before its message is sent.
+        expect(appendedTo).toEqual([
+          { threadId: NEW_THREAD, batch: [{ ...link, threadId: NEW_THREAD }] },
+          { threadId: THREAD, batch: [{ ...link, threadId: THREAD }] },
+        ]);
+
+        // The files are as they were, and nothing is left behind.
+        expect(await readdir(tree, { recursive: true })).toEqual(before);
+        expect(await readFile(join(tree, "src", "parser.ts"), "utf8")).toBe("export const fixed = true;\n");
+        await eventually(() => scheduler.stats().running.omp, 0);
+        await eventually(() => readdir(join(creds, USER, "omp", "run")), []);
+      } finally {
+        if (saved === undefined) delete process.env.FAKE_OMP_PRINT_LOG;
+        else process.env.FAKE_OMP_PRINT_LOG = saved;
+      }
+    });
+
+    it("frees the thread with OMP's error, starting nothing", async () => {
+      const saved = process.env.FAKE_OMP_PRINT_FAIL;
+      process.env.FAKE_OMP_PRINT_FAIL = "No API key found for openrouter.";
+      try {
+        const { agent, dispatched, appendedTo } = await handoffReactor({ ...thread, title: "t", provider: "claude" }, history("claude"));
+        agent.react({ type: "thread.handoff_to", threadId: THREAD, targetProvider: "omp" }, [
+          { type: "thread.handoff_requested", threadId: THREAD, targetProvider: "omp" },
+        ], principal);
+        const deadline = Date.now() + 10_000;
+        while (!appendedTo.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+        expect(dispatched).toEqual([]);
+        expect(appendedTo).toEqual([
+          { threadId: THREAD, batch: [{ type: "thread.handoff_failed", threadId: THREAD, error: "error: No API key found for openrouter." }] },
+        ]);
+      } finally {
+        if (saved === undefined) delete process.env.FAKE_OMP_PRINT_FAIL;
+        else process.env.FAKE_OMP_PRINT_FAIL = saved;
+      }
+    });
+
+    it("says why when the new thread's message is refused", async () => {
+      const { agent, appendedTo } = await handoffReactor({ ...thread, title: "t", provider: "codex" }, history("codex"), { refuseSend: "the CLI is not signed in" });
+      agent.react({ type: "thread.handoff_to", threadId: THREAD, targetProvider: "claude" }, [
+        { type: "thread.handoff_requested", threadId: THREAD, targetProvider: "claude" },
+      ], principal);
+      const deadline = Date.now() + 10_000;
+      while (!appendedTo.some((e) => e.threadId === THREAD) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+      expect(appendedTo.find((e) => e.threadId === THREAD)!.batch).toEqual([
+        { type: "thread.handoff_failed", threadId: THREAD, error: "the new thread could not start: the CLI is not signed in" },
+      ]);
+    });
+
+    it("frees the thread, saying so, when it is stopped before the brief is written", async () => {
+      const { agent, dispatched, appendedTo } = await handoffReactor({ ...thread, title: "t", provider: "omp" }, history("omp"));
+      agent.react({ type: "thread.handoff_to", threadId: THREAD, targetProvider: "claude" }, [
+        { type: "thread.handoff_requested", threadId: THREAD, targetProvider: "claude" },
+      ], principal);
+      agent.react({ type: "thread.cancel", threadId: THREAD }, []);
+      const deadline = Date.now() + 10_000;
+      while (!appendedTo.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+      expect(dispatched).toEqual([]);
+      expect(appendedTo).toEqual([{ threadId: THREAD, batch: [{ type: "thread.handoff_failed", threadId: THREAD, error: "Stopped." }] }]);
+    });
+  });
+
   it("fails the turn, spawning nothing, without an OpenRouter key", async () => {
     const { agent, appended, creds } = ompReactor(thread, person);
     agent.react(omp, [message]);

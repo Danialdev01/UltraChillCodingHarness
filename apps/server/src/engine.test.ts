@@ -221,6 +221,59 @@ describe("thread status", () => {
     expect(rendered(wheres.get(statements[0]!)).params).toEqual([THREAD, "running", "cancelling"]);
   });
 
+  it("is claimed by a handoff while its brief is written, only from idle or error", async () => {
+    const statements = await apply([{ type: "thread.handoff_requested", threadId: THREAD, targetProvider: "codex" }]);
+    expect(statements).toEqual([{ op: "update", table: "threads", values: { status: "running" } }]);
+    expect(rendered(wheres.get(statements[0]!)).params).toEqual([THREAD, "idle", "error"]);
+    await expect(
+      apply([{ type: "thread.handoff_requested", threadId: THREAD, targetProvider: "codex" }], { claimed: false }),
+    ).rejects.toBeInstanceOf(ProjectionConflict);
+  });
+
+  it("is freed by its handoff's end, and the new thread records where it came from", async () => {
+    const OTHER = "88888888-8888-8888-8888-888888888888";
+    const handed = {
+      type: "thread.handed_off" as const,
+      fromThreadId: THREAD,
+      fromHash: "s0urce0hash0",
+      toThreadId: OTHER,
+      toHash: "abcdef123456",
+      targetProvider: "claude" as const,
+      brief: "## Goal",
+    };
+    const source = await apply([{ ...handed, threadId: THREAD }]);
+    expect(source).toEqual([{ op: "update", table: "threads", values: { status: "idle" } }]);
+    expect(rendered(wheres.get(source[0]!)).params).toEqual([THREAD, "running", "cancelling"]);
+
+    const target = await apply([{ ...handed, threadId: OTHER }]);
+    expect(target).toEqual([{ op: "update", table: "threads", values: { handoffFromThreadId: THREAD } }]);
+    expect(rendered(wheres.get(target[0]!)).params).toEqual([OTHER]);
+
+    const failed = await apply([{ type: "thread.handoff_failed", threadId: THREAD, error: "no key" }]);
+    expect(failed).toEqual([{ op: "update", table: "threads", values: { status: "idle" } }]);
+    expect(rendered(wheres.get(failed[0]!)).params).toEqual([THREAD, "running", "cancelling"]);
+  });
+
+  it("makes a thread in another's worktree ready at once, in that folder", async () => {
+    const [insert] = await apply([
+      {
+        type: "thread.created",
+        threadId: THREAD,
+        projectId: PROJECT,
+        title: "Continued: x",
+        hash: "abcdef123456",
+        worktreeOf: TURN,
+        baseBranch: "main",
+        branch: "ucch/s0urce0hash0",
+        treeHash: "s0urce0hash0",
+      },
+    ]);
+    expect(insert!.values).toMatchObject({ branch: "ucch/s0urce0hash0", worktreeState: "ready", treeHash: "s0urce0hash0" });
+    // A session of its own is still made.
+    const [own] = await apply([{ type: "thread.created", threadId: THREAD, projectId: PROJECT, title: "t", baseBranch: "main", branch: "ucch/abcdef123456" }]);
+    expect(own!.values).toMatchObject({ worktreeState: "creating", treeHash: null });
+  });
+
   it("moves to cancelling on a cancel request, not straight to idle", async () => {
     const statements = await apply([{ type: "thread.cancel_requested", threadId: THREAD }]);
     expect(statements).toEqual([
@@ -420,6 +473,34 @@ describe("OrchestrationEngine", () => {
 
     expect(result).toEqual({ ok: false, code: "conflict", message: "this thread already has a turn in progress" });
     expect(reacted).toEqual([]);
+    await engine.worker.drain();
+  });
+
+  it("opens a thread made in another's worktree on its own stream, not the source's", async () => {
+    const rows: unknown[][] = [
+      [{ id: THREAD, projectId: PROJECT, status: "running", provider: "omp", credentialSource: null, worktreeState: "ready", hash: "s0urce0hash0", branch: "ucch/s0urce0hash0", baseBranch: "main", treeHash: null }],
+      [{ project: { ...project, containerState: "running" } }],
+      [{ id: workspace.id, credentialPolicy: "member", role: "owner", canCreateProject: null, canCreateSession: null }],
+    ];
+    const chain: Record<string, unknown> = {};
+    for (const step of ["from", "leftJoin", "where"]) chain[step] = () => chain;
+    chain.limit = () => Promise.resolve(rows.shift() ?? []);
+    const db = { select: () => chain } as unknown as Database;
+    const targets: unknown[] = [];
+    const store = {
+      append: async (target: unknown) => {
+        targets.push(target);
+        return [];
+      },
+    } as unknown as EventStore;
+    const engine = new OrchestrationEngine(db, store, { react: () => {} });
+    const result = await engine.dispatch(
+      { userId: USER, sessionId: "s", scopes: ["read", "write", "exec"] },
+      { type: "thread.create", projectId: PROJECT, worktreeOf: THREAD },
+    );
+    expect(result).toEqual({ ok: true, events: [] });
+    // `newId` is random in the engine: the stream is the created thread's, whatever it is.
+    expect(targets).toEqual([{ projectId: PROJECT, threadId: expect.not.stringMatching(THREAD) }]);
     await engine.worker.drain();
   });
 

@@ -7,7 +7,9 @@ import { HostProcessHost, OmpProvider } from "@ucch/providers";
 import {
   buildHandoffBrief,
   HANDOFF_INSTRUCTION,
+  handoffMessage,
   handoffPrompt,
+  handoffTitle,
   maskSecrets,
   renderTranscript,
   TOOL_RESULT_BYTES,
@@ -129,6 +131,19 @@ describe("handoffPrompt", () => {
     expect(handoffPrompt()).toBe(HANDOFF_INSTRUCTION);
     expect(handoffPrompt("  ")).toBe(HANDOFF_INSTRUCTION);
     expect(handoffPrompt(" the migration ")).toBe(`${HANDOFF_INSTRUCTION}\n\nFocus on: the migration`);
+  });
+});
+
+describe("the new thread", () => {
+  it("opens with the brief marked as one, then the request", () => {
+    expect(handoffMessage("  ## Goal\nShip it.\n")).toBe("<handoff-brief>\n## Goal\nShip it.\n</handoff-brief>\n\nContinue from here.");
+  });
+
+  it("is titled for what it carries on, once however often it is handed on", () => {
+    expect(handoffTitle("Fix the parser")).toBe("Continued: Fix the parser");
+    expect(handoffTitle("Continued: Fix the parser")).toBe("Continued: Fix the parser");
+    expect(handoffTitle("  ")).toBe("Continued: Untitled");
+    expect(handoffTitle("x".repeat(300))).toHaveLength(200);
   });
 });
 

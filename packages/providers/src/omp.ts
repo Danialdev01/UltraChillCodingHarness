@@ -854,8 +854,9 @@ export class OmpProvider implements AgentProvider {
     });
     const result = await input.ctx.host.run(
       { argv, cwd: input.ctx.cwd, env: input.ctx.env, stdin: input.stdin },
-      { timeoutMs: input.timeoutMs ?? ASK_TIMEOUT_MS },
+      { timeoutMs: input.timeoutMs ?? ASK_TIMEOUT_MS, ...(input.signal ? { signal: input.signal } : {}) },
     );
+    if (input.signal?.aborted) throw new Error("Stopped.");
     // "Working..." is print mode's own line on stderr, not the error.
     const stderr = result.stderr
       .split("\n")
@@ -981,6 +982,8 @@ export interface OmpAskInput {
   /** `openrouter/<id>` or a role; `@smol` when absent. */
   model?: string;
   timeoutMs?: number;
+  /** Stops it: the process is sent SIGTERM, and the ask rejects. */
+  signal?: AbortSignal;
 }
 
 /** What `OmpProvider.maintain` runs on (solution §5.3). */

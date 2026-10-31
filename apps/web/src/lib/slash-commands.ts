@@ -7,12 +7,15 @@
  * and sends as a message like any other.
  */
 
-export type SlashArg = "model" | "effort" | "harness" | "focus";
+export type SlashArg = "model" | "effort" | "harness" | "focus" | "target";
 
 export interface SlashCommand {
   name: string;
   description: string;
-  /** What the command chooses between, when it takes a value. `focus` is free text. */
+  /**
+   * What the command chooses between, when it takes a value. `focus` is
+   * free text; `target` is a harness to carry the work on in.
+   */
   takesArg?: SlashArg;
 }
 
@@ -26,6 +29,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "attach", description: "Attach files from your computer" },
   { name: "compact", description: "Fold older turns into a summary now", takesArg: "focus" },
   { name: "handoff", description: "Replace the context with a brief of the work so far", takesArg: "focus" },
+  { name: "continue", description: "Carry the work on in a new thread on another harness", takesArg: "target" },
 ];
 
 export interface Slash {

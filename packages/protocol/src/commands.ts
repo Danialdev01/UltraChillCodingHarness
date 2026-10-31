@@ -63,6 +63,13 @@ const ThreadCreate = z.object({
    * project's main folder.
    */
   baseBranch: BranchName.optional(),
+  /**
+   * Works in this thread's folder instead of one of its own: its worktree
+   * and branch when it has them, the project's checkout when it does not.
+   * What a handoff's new thread is made with (solution §5.4), so the work
+   * carries on where it is. Excludes `baseBranch`.
+   */
+  worktreeOf: z.string().uuid().optional(),
 });
 
 /**
@@ -181,6 +188,19 @@ const ThreadHandoff = z.object({
   focus: z.string().trim().max(2_000).optional(),
 });
 
+/**
+ * Carries an idle thread's work on in a new thread on `targetProvider`
+ * (solution §5.4): a brief of it, written from the thread's log, becomes
+ * the new thread's first message, in the same folder. Any provider to any
+ * provider -- a CLI session cannot move between them, but a brief can.
+ */
+const ThreadHandoffTo = z.object({
+  type: z.literal("thread.handoff_to"),
+  threadId: z.string().uuid(),
+  targetProvider: ProviderId,
+  focus: z.string().trim().max(2_000).optional(),
+});
+
 const TerminalCreate = z.object({
   type: z.literal("terminal.create"),
   projectId: z.string().uuid(),
@@ -280,6 +300,7 @@ export const Command = z.discriminatedUnion("type", [
   ThreadFork,
   ThreadCompact,
   ThreadHandoff,
+  ThreadHandoffTo,
   TerminalCreate,
   TerminalInput,
   TerminalResize,

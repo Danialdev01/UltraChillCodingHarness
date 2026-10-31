@@ -182,6 +182,21 @@ export function renderTranscript(events: readonly DomainEvent[], options: { maxT
   return parts.join("\n\n");
 }
 
+/**
+ * The new thread's first message (solution §5.4): the brief, marked as one
+ * so the agent reads it as where the work stands rather than as a request,
+ * then the request.
+ */
+export function handoffMessage(brief: string): string {
+  return `<handoff-brief>\n${brief.trim()}\n</handoff-brief>\n\nContinue from here.`;
+}
+
+/** The new thread's title: the old one's, saying it carries it on. */
+export function handoffTitle(title: string): string {
+  const base = title.replace(/^Continued: /, "").trim() || "Untitled";
+  return `Continued: ${base}`.slice(0, 200);
+}
+
 /** What `buildHandoffBrief` asks with: `OmpProvider.ask`, or anything that answers as it does. */
 export interface BriefAsker {
   ask(input: OmpAskInput): Promise<string>;
@@ -200,6 +215,7 @@ export async function buildHandoffBrief(input: {
   focus?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<string> {
   const transcript = renderTranscript(input.events, input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {});
   if (!transcript) throw new Error("this thread has nothing to hand off yet");
@@ -210,5 +226,6 @@ export async function buildHandoffBrief(input: {
     stdin: `<transcript>\n${transcript}\n</transcript>\n`,
     model: "@smol",
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
 }

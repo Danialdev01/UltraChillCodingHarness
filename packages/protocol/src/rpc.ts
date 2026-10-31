@@ -242,6 +242,8 @@ export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   // Both run the model on the thread's session, billed as a turn is.
   "thread.compact": "exec",
   "thread.handoff": "exec",
+  // Writes the brief on OMP, then starts a turn on the new thread.
+  "thread.handoff_to": "exec",
   "terminal.create": "exec",
   "terminal.input": "exec",
   "terminal.resize": "exec",

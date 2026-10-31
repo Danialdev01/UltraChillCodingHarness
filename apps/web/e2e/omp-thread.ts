@@ -33,8 +33,16 @@ export async function dispatch(origin: string, id: string, command: Json): Promi
   return ack;
 }
 
-/** A new thread in the first project: its id and the page that shows it. */
-export async function newThread(origin: string, title: string): Promise<{ threadId: string; href: string }> {
+/**
+ * A new thread in the first project: its id and the page that shows it.
+ * With `session`, a project session on a worktree of its own, forked from
+ * the project's default branch.
+ */
+export async function newThread(
+  origin: string,
+  title: string,
+  options: { session?: boolean } = {},
+): Promise<{ threadId: string; href: string; projectHash: string }> {
   const { workspaces } = await api("/api/workspaces");
   let found: { ws: Json; project: Json } | null = null;
   for (const ws of workspaces.filter((w: Json) => w.kind === "project" && !w.archived)) {
@@ -49,10 +57,11 @@ export async function newThread(origin: string, title: string): Promise<{ thread
     type: "thread.create",
     projectId: found.project.id,
     title: `${title} ${new Date().toISOString()}`,
+    ...(options.session ? { baseBranch: found.project.defaultBranch } : {}),
   });
   const threadId = ack.events?.find((e: Json) => e.event.type === "thread.created")?.event.threadId as string | undefined;
   if (!threadId) throw new Error("thread.create: no thread.created");
   const { threads } = await api(`/api/projects/${found.project.hash}/threads`);
   const thread = threads.find((t: Json) => t.id === threadId);
-  return { threadId, href: `/${found.ws.hash}/p/${found.project.hash}/${thread.hash}` };
+  return { threadId, href: `/${found.ws.hash}/p/${found.project.hash}/${thread.hash}`, projectHash: found.project.hash };
 }

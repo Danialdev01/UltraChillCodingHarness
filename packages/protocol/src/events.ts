@@ -108,6 +108,14 @@ const ThreadCreated = z.object({
    */
   baseBranch: BranchName.optional(),
   branch: z.string().optional(),
+  /**
+   * A thread made to work in another's folder (`thread.create` with
+   * `worktreeOf`): the thread it took it from, and -- when that is a
+   * worktree -- the hash naming its folder. `baseBranch` and `branch` are
+   * then that worktree's, and no worktree is made.
+   */
+  worktreeOf: z.string().uuid().optional(),
+  treeHash: ThreadHash.optional(),
 });
 
 /** The session's worktree exists and is checked out on its branch. */
@@ -308,6 +316,40 @@ const ContextInjected = z.object({
  */
 export const ProviderId = z.enum(["native", "claude", "codex", "omp"]);
 export type ProviderId = z.infer<typeof ProviderId>;
+
+/**
+ * `thread.handoff_to` was accepted: the thread is busy while its brief is
+ * written, until `thread.handed_off` or `thread.handoff_failed`.
+ */
+const ThreadHandoffRequested = z.object({
+  type: z.literal("thread.handoff_requested"),
+  threadId: z.string().uuid(),
+  targetProvider: ProviderId,
+  focus: z.string().max(2_000).optional(),
+});
+
+/**
+ * The work went on in a new thread (solution §5.4). Recorded on both, so
+ * each can say where the other is: the old one "Continued in", the new one
+ * "Continued from". `brief` is what the new thread was handed.
+ */
+const ThreadHandedOff = z.object({
+  type: z.literal("thread.handed_off"),
+  threadId: z.string().uuid(),
+  fromThreadId: z.string().uuid(),
+  fromHash: ThreadHash,
+  toThreadId: z.string().uuid(),
+  toHash: ThreadHash,
+  targetProvider: ProviderId,
+  brief: z.string(),
+});
+
+/** No new thread was started: why, for the thread that asked. */
+const ThreadHandoffFailed = z.object({
+  type: z.literal("thread.handoff_failed"),
+  threadId: z.string().uuid(),
+  error: z.string().max(2_000),
+});
 
 /** The providers that keep a session of their own to resume. */
 export const CliProviderId = z.enum(["claude", "codex", "omp"]);
@@ -861,6 +903,9 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ThreadCancelRequested,
   ThreadCompactionRequested,
   ThreadCompactionFinished,
+  ThreadHandoffRequested,
+  ThreadHandedOff,
+  ThreadHandoffFailed,
   TurnDequeued,
   AgentQueued,
   ContextInjected,

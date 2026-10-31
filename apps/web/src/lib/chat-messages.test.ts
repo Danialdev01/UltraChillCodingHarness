@@ -9,6 +9,7 @@ import {
   formatCookTime,
   formatDuration,
   overlayLive,
+  splitBrief,
   splitThinking,
   summariseInput,
   toMessages as foldAll,
@@ -772,6 +773,58 @@ describe("a compaction", () => {
       turnId: "99999999-9999-4999-8999-999999999999",
     });
     expect(next.compactionError).toBeNull();
+  });
+
+  it("between turns, a handoff keeps the thread busy, then says where the work went", () => {
+    const requested: DomainEvent = { type: "thread.handoff_requested", threadId: THREAD, targetProvider: "codex" };
+    expect(log(...toolTurn, requested)).toMatchObject({ running: true, handingOff: "codex", active: null, continuedIn: null });
+    const handed: DomainEvent = {
+      type: "thread.handed_off",
+      threadId: THREAD,
+      fromThreadId: THREAD,
+      fromHash: "s0urce0hash0",
+      toThreadId: TURN,
+      toHash: "n3wsess10n00",
+      targetProvider: "codex",
+      brief: "## Goal",
+    };
+    expect(log(...toolTurn, requested, handed)).toMatchObject({
+      running: false,
+      handingOff: null,
+      continuedIn: { threadId: TURN, hash: "n3wsess10n00", provider: "codex" },
+      continuedFrom: null,
+    });
+    expect(log(...toolTurn, requested, { type: "thread.handoff_failed", threadId: THREAD, error: "no key" })).toMatchObject({
+      running: false,
+      handingOff: null,
+      compactionError: "The handoff did not happen: no key",
+    });
+  });
+
+  it("opens a thread a handoff started with where it came from, and its brief folded apart", () => {
+    const SOURCE = "77777777-7777-4777-8777-777777777777";
+    const state = log(
+      {
+        type: "thread.handed_off",
+        threadId: THREAD,
+        fromThreadId: SOURCE,
+        fromHash: "s0urce0hash0",
+        toThreadId: THREAD,
+        toHash: "n3wsess10n00",
+        targetProvider: "claude",
+        brief: "## Goal\nShip it.",
+      },
+      { type: "user.message", threadId: THREAD, text: "<handoff-brief>\n## Goal\nShip it.\n</handoff-brief>\n\nContinue from here." },
+    );
+    expect(state.continuedFrom).toEqual({ threadId: SOURCE, hash: "s0urce0hash0" });
+    expect(state.continuedIn).toBeNull();
+    expect(state.messages).toEqual([expect.objectContaining({ role: "user", brief: "## Goal\nShip it.", text: "Continue from here." })]);
+  });
+
+  it("splits only a message that is a handoff's", () => {
+    expect(splitBrief("<handoff-brief>\nA\nB\n</handoff-brief>")).toEqual({ brief: "A\nB", text: "" });
+    expect(splitBrief("see <handoff-brief>\nx\n</handoff-brief>")).toBeNull();
+    expect(splitBrief("plain")).toBeNull();
   });
 
   it("says what happened, leaving out what the provider did not say", () => {

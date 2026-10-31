@@ -20,6 +20,7 @@ let turns: number;
 let deleted: string[];
 let announced: DomainEvent[];
 let lifecycle: SessionLifecycle;
+let sharers: { count: number; running: boolean };
 
 const sh = (argv: string[], cwd = repo) => runGit([...IDENTITY, ...argv], cwd, 20_000);
 const exists = (path: string) => stat(path).then(() => true, () => false);
@@ -59,12 +60,14 @@ beforeEach(async () => {
   await sh(["worktree", "add", "-q", "-b", `ucch/${HASH}`, tree, "main"]);
 
   turns = 0;
+  sharers = { count: 0, running: false };
   deleted = [];
   announced = [];
   lifecycle = new SessionLifecycle({
     git: new GitService(root),
     workspaceRoot: root,
     turnCount: async () => turns,
+    sharers: async () => sharers,
     deleteThread: async (id) => void deleted.push(id),
     credentials: async () => ({ token: null, author: AUTHOR }),
     announce: async (_projectId, event) => void announced.push(event),
@@ -155,5 +158,47 @@ describe("settle", () => {
     expect(await lifecycle.settle(session())).toEqual({ pushed: null });
     expect(await runGit(["branch", "--list", `ucch/${HASH}`], origin, 20_000)).toBe("");
     expect(deleted).toHaveLength(1);
+  });
+});
+
+describe("a worktree two sessions share (a handoff)", () => {
+  const handedTo = () => session({ id: "77777777-7777-7777-7777-777777777777", hash: "n3wsess10n00", treeHash: HASH });
+
+  it("works the new session in the old one's folder", async () => {
+    await writeFile(join(tree, "work.txt"), "the old session's edit\n");
+    // The same folder, so the same edit.
+    expect(await lifecycle.inspect(handedTo())).toMatchObject({ dirty: true });
+  });
+
+  it("keeps the worktree and branch while another session works in it", async () => {
+    const origin = await addOrigin();
+    turns = 2;
+    sharers = { count: 1, running: false };
+    await writeFile(join(tree, "work.txt"), "work\n");
+    // The old session settles: its work is pushed, its row goes, the folder stays.
+    expect(await lifecycle.settle(session())).toEqual({ pushed: `ucch/${HASH}` });
+    expect(await runGit(["show", `ucch/${HASH}:work.txt`], origin, 20_000)).toBe("work\n");
+    expect(deleted).toEqual([session().id]);
+    expect(await exists(join(tree, "work.txt"))).toBe(true);
+    expect(await sh(["branch", "--list", `ucch/${HASH}`])).toContain(`ucch/${HASH}`);
+
+    // The last one out takes them.
+    sharers = { count: 0, running: false };
+    expect(await lifecycle.settle(handedTo())).toEqual({ pushed: null });
+    expect(await exists(tree)).toBe(false);
+    expect(await sh(["branch", "--list", `ucch/${HASH}`])).toBe("");
+  });
+
+  it("refuses to settle while the session it was handed to is working", async () => {
+    turns = 1;
+    sharers = { count: 1, running: true };
+    await expect(lifecycle.settle(session())).rejects.toBeInstanceOf(SessionBusyError);
+    expect(deleted).toEqual([]);
+  });
+
+  it("removes an empty one's row without its partner's folder", async () => {
+    sharers = { count: 1, running: false };
+    expect(await lifecycle.removeIfEmpty(handedTo())).toBe(true);
+    expect(await exists(tree)).toBe(true);
   });
 });

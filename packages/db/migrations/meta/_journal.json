@@ -197,6 +197,13 @@
       "when": 1792999612063,
       "tag": "0027_note_ydocs",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793437182187,
+      "tag": "0028_handoff",
+      "breakpoints": true
     }
   ]
 }

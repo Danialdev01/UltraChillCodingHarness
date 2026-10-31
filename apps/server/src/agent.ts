@@ -48,6 +48,9 @@ import { workspaceSubject, type ProviderService } from "./providers.js";
 import { toPolicy } from "./workspaces.js";
 import { applyProjection } from "./engine.js";
 import { treeFor, worktreeIdOf } from "./trees.js";
+import type { Principal } from "./auth.js";
+import type { EngineResult } from "./engine.js";
+import { buildHandoffBrief, handoffMessage, handoffTitle, type BriefAsker } from "./omp-handoff.js";
 import type { EventStore } from "./eventstore.js";
 import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter.js";
 import { documentationPrompt } from "./documents.js";
@@ -107,6 +110,12 @@ export interface AgentOptions {
   ompWorkersPerTurn?: number;
   /** `OMP_ENABLED`: new "Custom" threads run on OMP; see `resolveProvider`. */
   ompEnabled?: boolean;
+  /**
+   * The engine, for what a handoff starts as the person who asked for it:
+   * the new thread and its first message (solution §5.4). Without it a
+   * handoff fails with why.
+   */
+  dispatch?: (principal: Principal, command: Command) => Promise<EngineResult>;
 }
 
 /** How a turn was asked for: carried on the command, not the event. */
@@ -239,8 +248,12 @@ export class AgentTurnReactor {
       options.scheduler ?? new TurnScheduler({ cliPerUser: 2, cliTotal: Infinity, nativeTotal: Infinity });
   }
 
-  /** Starts a turn for each user message, and stops one on a cancel. */
-  react(command: Command, batch: readonly DomainEvent[]): void {
+  /**
+   * Starts a turn for each user message, and stops one on a cancel.
+   * `principal` is who dispatched the command: a handoff starts its new
+   * thread as them.
+   */
+  react(command: Command, batch: readonly DomainEvent[], principal?: Principal): void {
     if (command.type === "thread.cancel") {
       // The loop notices between tool calls and unwinds itself; a tool
       // already dispatched still records its result rather than vanishing.
@@ -267,6 +280,10 @@ export class AgentTurnReactor {
     for (const event of batch) {
       if (event.type === "thread.compaction_requested") {
         void this.#compact(event.threadId, event.method, event.focus).catch(this.onError);
+        continue;
+      }
+      if (event.type === "thread.handoff_requested") {
+        void this.#handoffTo(event, principal).catch(this.onError);
         continue;
       }
       if (event.type !== "user.message") continue;
@@ -796,6 +813,136 @@ export class AgentTurnReactor {
       const events: DomainEvent[] = [
         ...made,
         { type: "thread.compaction_finished", threadId, method, ...(error ? { error: error.slice(0, 2_000) } : {}) },
+      ];
+      await this.store
+        .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
+        .catch(this.onError);
+    }
+  }
+
+  /**
+   * A thread's work carried on in a new thread on another provider
+   * (solution §5.4).
+   *
+   * 1. The brief: the thread's log as a transcript, on stdin to a one-shot
+   *    `omp -p --no-session --no-tools` on the overlay's `smol` role --
+   *    the server's compaction model, never the coding one. OMP writes it
+   *    whichever providers are on either side, so it bills as an OMP call
+   *    does: the account's OpenRouter key, and an OMP slot.
+   * 2. A new thread in the same folder (`thread.create` with `worktreeOf`),
+   *    linked from both ends by `thread.handed_off`.
+   * 3. The brief as its first message, on `targetProvider`.
+   *
+   * The files are not touched: the new thread finds them as the old one
+   * left them. The old thread is busy from the request until the new
+   * thread's message is sent, and a stop ends the brief there.
+   */
+  async #handoffTo(
+    event: Extract<DomainEvent, { type: "thread.handoff_requested" }>,
+    principal: Principal | undefined,
+  ): Promise<void> {
+    const { threadId } = event;
+    const controller = new AbortController();
+    this.#running.set(threadId, controller);
+    const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1).catch((error: unknown) => {
+      this.#running.delete(threadId);
+      throw error;
+    });
+    if (!thread) {
+      this.#running.delete(threadId);
+      return;
+    }
+    let handed: Extract<DomainEvent, { type: "thread.handed_off" }> | undefined;
+    let error: string | undefined;
+    let release: (() => void) | undefined;
+    let overlay: { dispose(): Promise<void> } | undefined;
+    const stopped = () => {
+      if (controller.signal.aborted) throw new Error("Stopped.");
+    };
+    try {
+      const dispatch = this.options.dispatch;
+      if (!dispatch || !principal) throw new Error("this server cannot start a thread for a handoff");
+      const owner = await this.#owner(thread.projectId, thread);
+      if (!owner) throw new Error("there is nobody to bill this thread to");
+      const providers = this.options.providers;
+      if (!providers || !this.options.cliEnabled) throw new Error("a handoff's brief is written by OMP, which is disabled on this server");
+      // The key first: a missing one says where to add it.
+      const openrouterKey = this.#decryptKey(owner.openrouterKeyEncrypted);
+      const history = await this.store.threadHistory(threadId);
+      release = await this.#scheduler.acquire({ ownerId: owner.id, kind: "omp", threadId, signal: controller.signal });
+      stopped();
+      const resolved = await providers.resolve(owner.id, "omp", { openrouterKey, ompPreset: "standard" });
+      const omp = resolved.provider as Partial<BriefAsker>;
+      if (!omp.ask) throw new Error("this server's OMP provider cannot write a brief");
+      const written = await writeOmpOverlay(providers.ompRunDir(owner.id), randomUUID(), {
+        settings: { ...DEFAULT_OMP_SETTINGS, models: { default: this.options.searchModel } },
+        preset: "standard",
+        permissionMode: this.#modeFor(threadId, owner),
+        trusted: false,
+        workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
+        webSearch: false,
+        hostTools: [],
+      });
+      overlay = written;
+      const brief = await buildHandoffBrief({
+        omp: omp as BriefAsker,
+        ctx: resolved.ctx(treeFor(this.options.workspaceRoot, thread.projectId, thread)),
+        files: { overlayPath: written.path, guardHookPath: providers.ompGuardHook(owner.id) },
+        events: history.map((stored) => stored.event),
+        ...(event.focus ? { focus: event.focus } : {}),
+        signal: controller.signal,
+      });
+      // The slot was for OMP; the new thread's turn takes its own.
+      release();
+      release = undefined;
+      stopped();
+
+      const created = await dispatch(principal, {
+        type: "thread.create",
+        projectId: thread.projectId,
+        title: handoffTitle(thread.title),
+        worktreeOf: threadId,
+        ...(thread.credentialSource === "member" || thread.credentialSource === "workspace"
+          ? { credentialSource: thread.credentialSource }
+          : {}),
+      });
+      if (!created.ok) throw new Error(`could not start the new thread: ${created.message}`);
+      const made = created.events.find((stored) => stored.event.type === "thread.created")?.event;
+      if (made?.type !== "thread.created" || !made.hash) throw new Error("could not start the new thread");
+      handed = {
+        type: "thread.handed_off",
+        threadId,
+        fromThreadId: threadId,
+        fromHash: thread.hash,
+        toThreadId: made.threadId,
+        toHash: made.hash,
+        targetProvider: event.targetProvider,
+        brief,
+      };
+      // Linked before its first message, so the new thread's log opens
+      // with where it came from.
+      const linked: DomainEvent[] = [{ ...handed, threadId: made.threadId }];
+      await this.store.append({ projectId: thread.projectId, threadId: made.threadId }, linked, (tx) =>
+        applyProjection(tx, linked, null),
+      );
+      const sent = await dispatch(principal, {
+        type: "thread.send",
+        threadId: made.threadId,
+        text: handoffMessage(brief),
+        provider: event.targetProvider,
+      });
+      if (!sent.ok) {
+        handed = undefined;
+        throw new Error(`the new thread could not start: ${sent.message}`);
+      }
+    } catch (caught) {
+      error = controller.signal.aborted ? "Stopped." : caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      release?.();
+      await overlay?.dispose().catch(this.onError);
+      if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
+      const events: DomainEvent[] = [
+        handed && !error ? handed : { type: "thread.handoff_failed", threadId, error: (error ?? "the handoff failed").slice(0, 2_000) },
       ];
       await this.store
         .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))

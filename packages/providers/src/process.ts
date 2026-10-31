@@ -58,8 +58,11 @@ export interface RunResult extends ExitStatus {
 export interface ProcessHost {
   /** A streaming child: for turns. */
   spawn(spec: SpawnSpec): ChildHandle;
-  /** A one-shot child, output buffered: for probes and version checks. */
-  run(spec: SpawnSpec, options?: { timeoutMs?: number }): Promise<RunResult>;
+  /**
+   * A one-shot child, output buffered: for probes, version checks and
+   * print-mode asks. `signal` stops it as the timeout does, with SIGTERM.
+   */
+  run(spec: SpawnSpec, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<RunResult>;
 }
 
 /** What the CLIs exit with after SIGTERM: 128 + 15. */
@@ -243,22 +246,29 @@ export class HostProcessHost implements ProcessHost {
     };
   }
 
-  async run(spec: SpawnSpec, options: { timeoutMs?: number } = {}): Promise<RunResult> {
+  async run(spec: SpawnSpec, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<RunResult> {
     const child = this.spawn(spec);
     const timer = options.timeoutMs
       ? setTimeout(() => child.signal("SIGTERM"), options.timeoutMs)
       : undefined;
     timer?.unref();
+    const stop = () => child.signal("SIGTERM");
+    if (options.signal?.aborted) stop();
+    else options.signal?.addEventListener("abort", stop, { once: true });
+    const done = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", stop);
+    };
     const out: string[] = [];
     const err: string[] = [];
     try {
       for await (const { stream, line } of child.lines) (stream === "stdout" ? out : err).push(line);
     } catch (error) {
-      clearTimeout(timer);
+      done();
       throw error;
     }
     const status = await child.exited;
-    clearTimeout(timer);
+    done();
     return { ...status, stdout: out.join("\n"), stderr: err.join("\n") };
   }
 }

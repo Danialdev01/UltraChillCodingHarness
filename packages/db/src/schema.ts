@@ -346,6 +346,16 @@ export const threads = pgTable(
     /** creating | ready | error, while `branch` is set; null otherwise. */
     worktreeState: text("worktree_state"),
     worktreeError: text("worktree_error"),
+    /**
+     * The worktree folder this thread works in when it is another thread's,
+     * by that thread's hash: a handoff's new thread carries on in the old
+     * one's tree (solution §5.4). Null: its own, `.worktrees/{project}/{hash}`.
+     * A hash, not a thread id, so the folder is still named once the thread
+     * that made it is gone.
+     */
+    treeHash: text("tree_hash"),
+    /** Set on the thread a handoff started: the one whose work it carries on. */
+    handoffFromThreadId: uuid("handoff_from_thread_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

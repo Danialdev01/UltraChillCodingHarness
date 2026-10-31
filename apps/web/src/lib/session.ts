@@ -426,6 +426,10 @@ export interface ProjectSession {
   branch: string | null;
   worktreeState: "creating" | "ready" | "error" | null;
   worktreeError: string | null;
+  /** Set when it works in another session's worktree: that one's hash. */
+  treeHash?: string | null;
+  /** Set on a session a handoff started: the one it carries on. */
+  handoffFromThreadId?: string | null;
   createdAt: string;
 }
 

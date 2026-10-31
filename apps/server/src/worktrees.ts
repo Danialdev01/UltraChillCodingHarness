@@ -42,7 +42,8 @@ export class WorktreeReactor {
 
   react(_command: Command, batch: readonly DomainEvent[]): void {
     for (const event of batch) {
-      if (event.type === "thread.created" && event.branch && event.baseBranch && event.hash) {
+      // A thread made in another's worktree has one already.
+      if (event.type === "thread.created" && event.branch && event.baseBranch && event.hash && !event.worktreeOf) {
         this.worker.push(event);
       }
     }

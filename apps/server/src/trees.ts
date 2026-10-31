@@ -52,15 +52,26 @@ export interface TreeThread {
   projectId: string;
   hash: string;
   worktreeState: string | null;
+  /** Set when it works in another thread's worktree: that one's hash. */
+  treeHash?: string | null;
 }
 
 /**
- * The folder a thread works in: its own worktree once that exists, the
+ * The hash naming a thread's worktree folder: its own, or the one it was
+ * handed off into (`threads.tree_hash`). Also the `worktreeId` its file
+ * changes are told under, so every thread in one folder hears them.
+ */
+export function treeHashOf(thread: Pick<TreeThread, "hash" | "treeHash">): string {
+  return thread.treeHash ?? thread.hash;
+}
+
+/**
+ * The folder a thread works in: its worktree once that exists, the
  * project's checkout for every thread without one.
  */
 export function treeFor(workspaceRoot: string, projectId: string, thread?: TreeThread | null): string {
   if (thread && thread.projectId === projectId && thread.worktreeState === "ready") {
-    return sessionTree(workspaceRoot, projectId, thread.hash);
+    return sessionTree(workspaceRoot, projectId, treeHashOf(thread));
   }
   return projectRoot(workspaceRoot, projectId);
 }

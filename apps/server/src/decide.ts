@@ -52,6 +52,12 @@ export interface ThreadSnapshot {
   credentialSource: CredentialSource | null;
   /** creating | ready | error for a session with its own worktree; null when it shares the project's. */
   worktreeState?: "creating" | "ready" | "error" | null;
+  /** Its address; and, for a session, the branch it works on and where that came from. */
+  hash?: string;
+  branch?: string | null;
+  baseBranch?: string | null;
+  /** Set when it works in another thread's worktree: the hash naming that folder. */
+  treeHash?: string | null;
 }
 
 export interface TurnSnapshot {
@@ -182,6 +188,39 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if ("error" in project) return project.decision;
 
       const hash = ctx.newHash();
+      if (command.worktreeOf) {
+        // In another thread's folder (solution §5.4): the engine loaded it
+        // as the command's thread, and it has to be this project's.
+        if (command.baseBranch) return fail("invalid", "a thread made in another's worktree cannot fork a branch of its own");
+        const source = requireThread(state, ctx, "session.create");
+        if ("error" in source) return source.decision;
+        const refused = worktreeRefusal(source.value);
+        if (refused) return refused;
+        const tree = source.value.branch && source.value.worktreeState === "ready";
+        return ok([
+          {
+            type: "thread.created",
+            threadId: ctx.newId(),
+            projectId: project.value.id,
+            title: command.title?.trim() || "Untitled",
+            createdByUserId: ctx.userId,
+            credentialSource: resolveCredentialSource(
+              state.workspace!.credentialPolicy,
+              command.credentialSource,
+            ),
+            hash,
+            worktreeOf: source.value.id,
+            ...(tree
+              ? {
+                  ...(source.value.baseBranch ? { baseBranch: source.value.baseBranch } : {}),
+                  branch: source.value.branch!,
+                  treeHash: source.value.treeHash ?? source.value.hash!,
+                }
+              : {}),
+          },
+        ]);
+      }
+
       return ok([
         {
           type: "thread.created",
@@ -221,12 +260,8 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
 
       // A session's turn runs in its worktree. Until that exists the agent
       // would land in the project's main folder, on somebody else's branch.
-      if (thread.value.worktreeState === "creating") {
-        return fail("conflict", "this session's worktree is still being created");
-      }
-      if (thread.value.worktreeState === "error") {
-        return fail("conflict", "this session's worktree could not be created; start a new session");
-      }
+      const unready = worktreeRefusal(thread.value);
+      if (unready) return unready;
 
       // A CLI provider's session belongs to that provider: Claude Code cannot
       // resume a Codex rollout, and the native loop cannot see either. A
@@ -368,6 +403,30 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       ]);
     }
 
+    case "thread.handoff_to": {
+      // A new session, and a turn on it: both of what that takes.
+      const thread = requireThread(state, ctx, "session.create");
+      if ("error" in thread) return thread.decision;
+      const writable = requireThread(state, ctx, "project.write");
+      if ("error" in writable) return writable.decision;
+      if (!thread.value.provider) return fail("conflict", "this thread has no conversation to hand off yet");
+      // The brief is of the work so far: a turn still adding to it, or a
+      // compaction folding it, would leave it out of date before it is sent.
+      if (thread.value.status !== "idle" && thread.value.status !== "error") {
+        return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
+      }
+      const unready = worktreeRefusal(thread.value);
+      if (unready) return unready;
+      return ok([
+        {
+          type: "thread.handoff_requested",
+          threadId: thread.value.id,
+          targetProvider: command.targetProvider,
+          ...(command.focus ? { focus: command.focus } : {}),
+        },
+      ]);
+    }
+
     // -- Terminals -----------------------------------------------------------
     //
     // Terminal traffic is a stream, not a fact worth persisting. These are
@@ -486,6 +545,15 @@ function requireProject(
   const refused = membershipFor(state, permission, "project");
   if (refused) return { error: true, decision: refused };
   return { value: state.project };
+}
+
+/** Why a session's folder cannot be worked in yet, or null when it can. */
+function worktreeRefusal(thread: ThreadSnapshot): Decision | null {
+  if (thread.worktreeState === "creating") return fail("conflict", "this session's worktree is still being created");
+  if (thread.worktreeState === "error") {
+    return fail("conflict", "this session's worktree could not be created; start a new session");
+  }
+  return null;
 }
 
 function requireThread(

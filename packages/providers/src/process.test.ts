@@ -58,6 +58,23 @@ describe("HostProcessHost", () => {
     ).rejects.toThrow(/could not run/);
   });
 
+  it("stops a one-shot child when its signal aborts, as the timeout does", async () => {
+    const controller = new AbortController();
+    const running = host.run(
+      { argv: [node, "-e", "process.stdout.write('up\\n');setInterval(()=>{},1000)"], cwd: process.cwd(), env },
+      { signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(), 50);
+    const result = await running;
+    expect(result.signal ?? result.code).toBeTruthy();
+    expect(result.code === 0).toBe(false);
+    // Already stopped: it never runs on.
+    const stopped = new AbortController();
+    stopped.abort();
+    const never = await host.run({ argv: [node, "-e", "setInterval(()=>{},1000)"], cwd: process.cwd(), env }, { signal: stopped.signal });
+    expect(never.code === 0).toBe(false);
+  });
+
   it("exits 143 on SIGTERM", async () => {
     const child = host.spawn({
       argv: [node, "-e", "process.stdout.write('up\\n');setInterval(()=>{},1000)"],

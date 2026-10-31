@@ -8,7 +8,7 @@ import cookie from "@fastify/cookie";
 import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, inArray, lt, notLike, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, ne, notLike, or, sql } from "drizzle-orm";
 import { createDatabase, notes, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
 import { HeavyJobGate } from "@ucch/agent";
 import {
@@ -271,6 +271,8 @@ const agentTurns = new AgentTurnReactor(
     streamFlushMs: config.STREAM_FLUSH_MS,
     ompWorkersPerTurn: config.OMP_WORKERS_PER_TURN,
     ompEnabled: config.OMP_ENABLED,
+    // Bound late: the engine is built from these reactors.
+    dispatch: (principal, command) => engine.dispatch(principal, command),
   },
   (error) => app.log.error({ err: error }, "agent turn failed"),
 );
@@ -415,7 +417,7 @@ const terminals = new TerminalReactor(
 
 const reactors: Reactors = {
   react(command: Command, events, principal) {
-    agentTurns.react(command, events);
+    agentTurns.react(command, events, principal);
     clones.react(command, events);
     worktrees.react(command, events);
     terminals.react(command, principal.userId);
@@ -577,6 +579,12 @@ async function auditCommand(
       break;
     case "thread.handoff":
       entry = thread("chat.handoff", "Handed the conversation off to a brief", command.focus ? { focus: command.focus } : undefined);
+      break;
+    case "thread.handoff_to":
+      entry = thread("chat.handoff_to", `Handed the conversation on to ${command.targetProvider}`, {
+        targetProvider: command.targetProvider,
+        ...(command.focus ? { focus: command.focus } : {}),
+      });
       break;
     case "terminal.create":
       entry = { ...base, action: "terminal.open", targetType: "terminal", targetId: command.terminalId, summary: "Opened a terminal" };
@@ -1671,6 +1679,24 @@ async function projectFor(
   return workspaceService.findByHash(request.params.hash, principal.userId);
 }
 
+/** What `treeFor` reads of a thread row. */
+const TREE_COLUMNS = {
+  projectId: threads.projectId,
+  hash: threads.hash,
+  worktreeState: threads.worktreeState,
+  treeHash: threads.treeHash,
+};
+
+/**
+ * The threads working in the folder a hash names: the one whose hash it
+ * is, and any handed off into it (`tree_hash`) -- which still find it once
+ * that first one is gone. The web app addresses a session's tree by this
+ * hash (`project-workspace.tsx`).
+ */
+function inTree(hash: string) {
+  return or(eq(threads.hash, hash), eq(threads.treeHash, hash))!;
+}
+
 /**
  * The tree a project request works on. `?session={threadHash}` names a
  * project session, whose files are its own worktree; without one it is the
@@ -1686,9 +1712,9 @@ async function sessionTarget(
   if (!session) return project.id;
   if (!ThreadHash.safeParse(session).success) return null;
   const [thread] = await db
-    .select({ projectId: threads.projectId, hash: threads.hash, worktreeState: threads.worktreeState })
+    .select(TREE_COLUMNS)
     .from(threads)
-    .where(and(eq(threads.hash, session), eq(threads.projectId, project.id)))
+    .where(and(inTree(session), eq(threads.projectId, project.id)))
     .limit(1);
   if (!thread) return null;
   return { projectId: project.id, tree: treeFor(config.WORKSPACE_ROOT, project.id, thread) };
@@ -1903,6 +1929,22 @@ const sessionLifecycle = new SessionLifecycle({
       .where(eq(turns.threadId, threadId));
     return row?.count ?? 0;
   },
+  sharers: async (session) => {
+    const [row] = await db
+      .select({
+        count: sql<number>`count(*)::int`,
+        running: sql<boolean>`coalesce(bool_or(${threads.status} in ('queued', 'running', 'cancelling')), false)`,
+      })
+      .from(threads)
+      .where(
+        and(
+          eq(threads.projectId, session.projectId),
+          ne(threads.id, session.id),
+          inTree(session.treeHash ?? session.hash),
+        ),
+      );
+    return { count: row?.count ?? 0, running: row?.running ?? false };
+  },
   // The thread's turns go with it, and so does their spend: its project's
   // totals are summed again in the same transaction.
   deleteThread: async (threadId) => {
@@ -1938,6 +1980,7 @@ const SESSION_COLUMNS = {
   branch: threads.branch,
   baseBranch: threads.baseBranch,
   worktreeState: threads.worktreeState,
+  treeHash: threads.treeHash,
 };
 
 /** How old an empty session has to be before the sweep takes it. */
@@ -2021,9 +2064,9 @@ const CollabAuthorize = z.object({
 async function collabTree(projectId: string, worktreeId: string): Promise<TreeTarget | null> {
   if (!worktreeId) return projectId;
   const [thread] = await db
-    .select({ projectId: threads.projectId, hash: threads.hash, worktreeState: threads.worktreeState })
+    .select(TREE_COLUMNS)
     .from(threads)
-    .where(and(eq(threads.hash, worktreeId), eq(threads.projectId, projectId)))
+    .where(and(inTree(worktreeId), eq(threads.projectId, projectId)))
     .limit(1);
   if (!thread) return null;
   const tree = { projectId, tree: treeFor(config.WORKSPACE_ROOT, projectId, thread) };
@@ -3552,6 +3595,8 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
       branch: threads.branch,
       worktreeState: threads.worktreeState,
       worktreeError: threads.worktreeError,
+      treeHash: threads.treeHash,
+      handoffFromThreadId: threads.handoffFromThreadId,
       createdAt: threads.createdAt,
     })
     .from(threads)

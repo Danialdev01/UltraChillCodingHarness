@@ -4,7 +4,10 @@ import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, 
 import {
   AlertCircleIcon,
   ArrowDownIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
   AsteriskIcon,
+  ArrowRightLeftIcon,
   ArrowUpIcon,
   BlocksIcon,
   BotIcon,
@@ -127,7 +130,7 @@ import { isTaskThreadTitle } from "@/lib/tasks-api";
 import { NEW_SESSION_NAME, renameProject, sessionTitleFrom } from "@/lib/create-project";
 import { keepSession, removeWhenLeft, startProjectSession } from "@/lib/project-sessions";
 import { projectHref } from "@/lib/sections";
-import { useTransitionRouter } from "@/lib/view-transitions";
+import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions";
 import { qk } from "@/lib/query-keys";
 import { useInvalidate } from "@/lib/use-invalidate";
 import { afterNextPaint, reportVital } from "@/lib/vitals";
@@ -715,10 +718,18 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   // -- and the streaming turn is laid over it on every update: only that
   // turn's message is new, so only it draws again.
   const settled = useMemo(() => toMessages(durableEvents), [durableEvents]);
-  const { messages, running: turnRunning, active, prompts, contextTokens, compacting, compactionError } = useMemo(
-    () => overlayLive(settled, liveTurns),
-    [settled, liveTurns],
-  );
+  const {
+    messages,
+    running: turnRunning,
+    active,
+    prompts,
+    contextTokens,
+    compacting,
+    compactionError,
+    handingOff,
+    continuedIn,
+    continuedFrom,
+  } = useMemo(() => overlayLive(settled, liveTurns), [settled, liveTurns]);
   // A turn waiting for a slot is the agent's as much as one running: the
   // composer offers Stop, and the server refuses a second message either way.
   const running = turnRunning || queuedAhead !== null;
@@ -1100,6 +1111,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    * it, and `compacting` says it is under way until then.
    */
   const ompThread = boundProvider === "omp" || messages.some((m) => m.provider === "omp");
+  // Bound by a turn, whoever sent it: a send from another tab binds the
+  // thread without this composer hearing of it.
+  const hasRun = boundProvider !== null || messages.some((m) => m.role === "assistant" && m.turnId);
   const compactThread = useCallback(
     async (method: "compact" | "handoff", focus: string) => {
       const client = clientRef.current;
@@ -1117,6 +1131,35 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     },
     [threadId],
   );
+
+  /**
+   * Carries the work on in a new thread on `target` (solution §5.4). A
+   * request: the server writes the brief, and the thread says where the
+   * work went when `thread.handed_off` lands.
+   */
+  const handoffTo = useCallback(
+    async (target: ProviderId) => {
+      const client = clientRef.current;
+      if (!client || !threadId) return;
+      setError(null);
+      try {
+        await client.dispatch({ type: "thread.handoff_to", threadId, targetProvider: target });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [threadId],
+  );
+  // The new thread is in the project's sessions now.
+  const continuedInId = continuedIn?.threadId ?? null;
+  useEffect(() => {
+    if (continuedInId) invalidate(qk.sessions.list(project.hash));
+  }, [continuedInId, invalidate, project.hash]);
+  const threadHref = useCallback(
+    (hash: string) => (project.workspaceHash ? projectHref(project.workspaceHash, "project", project.hash, hash) : null),
+    [project.workspaceHash, project.hash],
+  );
+  const providerLabel = (id: string) => providers.cards?.[id as ProviderId]?.label ?? id;
 
   /**
    * Answers a CLI's permission prompt.
@@ -1263,6 +1306,16 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                 ? { row: { ...row, icon: icon(Icon), disabled: true, detail: why }, pick: () => {} }
                 : { row: { ...row, icon: icon(Icon) }, pick: step };
             }
+            case "continue": {
+              const why = !hasRun
+                ? "Only on a thread that has run"
+                : running
+                  ? "Wait for the agent to finish"
+                  : null;
+              return why
+                ? { row: { ...row, icon: icon(ArrowRightLeftIcon), disabled: true, detail: why }, pick: () => {} }
+                : { row: { ...row, icon: icon(ArrowRightLeftIcon) }, pick: step };
+            }
             default:
               return { row: { ...row, icon: icon(BrainIcon) }, pick: step };
           }
@@ -1301,6 +1354,25 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           },
         ];
       }
+      case "target":
+        if (!hasRun || running) return [];
+        return matchOptions(Object.values(providers.cards ?? {}), slash.arg, (card) => card.label).map((card) => {
+          const blocker = providerBlocker(card);
+          return {
+            row: {
+              key: card.id,
+              icon: icon(ArrowRightLeftIcon),
+              label: `Continue in ${card.label}`,
+              detail: blocker ?? "A new thread, from a brief of this one",
+              disabled: blocker !== null,
+            },
+            pick: () => {
+              if (blocker) return;
+              done();
+              void handoffTo(card.id);
+            },
+          };
+        });
       case "harness":
         if (boundProvider) return [];
         return matchOptions(Object.values(providers.cards ?? {}), slash.arg, (card) => card.label).map((card) => {
@@ -1386,6 +1458,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           className={cn("h-full overflow-y-auto p-3 @md:p-4", empty && "@2xl:h-auto")}
         >
           <div className="mx-auto flex max-w-3xl flex-col gap-3 @md:gap-4">
+            {continuedFrom && (
+              <HandoffRow direction="from" href={threadHref(continuedFrom.hash)} label="Continued from an earlier thread" />
+            )}
             {!historyLoaded && messages.length === 0 ? (
               <ConversationSkeleton />
             ) : messages.length === 0 ? (
@@ -1413,6 +1488,14 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   onJump={jumpTo}
                 />
               ))
+            )}
+
+            {continuedIn && (
+              <HandoffRow
+                direction="in"
+                href={threadHref(continuedIn.hash)}
+                label={`Continued in a new thread on ${providerLabel(continuedIn.provider ?? "")}`}
+              />
             )}
 
             <div ref={endRef} />
@@ -1484,6 +1567,12 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
             <p className="text-muted-foreground flex items-center gap-2 px-1 text-xs" data-testid="compacting">
               <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
               {compacting === "handoff" ? "Handing off to a brief of the work so far…" : "Compacting the context…"}
+            </p>
+          )}
+          {handingOff && (
+            <p className="text-muted-foreground flex items-center gap-2 px-1 text-xs" data-testid="handing-off">
+              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+              Writing a brief of the work so far for {providerLabel(handingOff)}…
             </p>
           )}
           {compactionError && (
@@ -2097,6 +2186,23 @@ const Message = memo(function Message({
               </span>
             );
           })()}
+        {/* What a handoff started the thread with: the work so far, which
+            the agent reads first. Folded, as it is long and the reader wrote
+            none of it. */}
+        {message.brief && (
+          <details
+            className="group/brief bg-muted/50 text-foreground max-w-[92%] rounded-lg border px-3 py-2 text-sm @md:max-w-[85%]"
+            data-testid="handoff-brief"
+          >
+            <summary className="text-muted-foreground flex cursor-pointer list-none items-center gap-1.5 text-xs select-none">
+              <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-open/brief:rotate-90" />
+              Handoff brief
+            </summary>
+            <div className="mt-2">
+              <Markdown>{message.brief}</Markdown>
+            </div>
+          </details>
+        )}
         {message.text && (
           <p className="bg-ucch-active-bg text-foreground max-w-[92%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap @md:max-w-[85%]">
             {message.text}
@@ -2291,6 +2397,35 @@ const Message = memo(function Message({
     </div>
   );
 });
+
+/**
+ * One end of a handoff (solution §5.4): a rule with a link to the other
+ * thread -- "Continued in →" at the foot of the old one, "Continued from ←"
+ * at the head of the new. Plain text when there is no address to go to.
+ */
+function HandoffRow({ direction, href, label }: { direction: "in" | "from"; href: string | null; label: string }) {
+  const Icon = direction === "in" ? ArrowRightIcon : ArrowLeftIcon;
+  const body = (
+    <>
+      {direction === "from" && <Icon className="size-3.5 shrink-0" />}
+      <span>{label}</span>
+      {direction === "in" && <Icon className="size-3.5 shrink-0" />}
+    </>
+  );
+  return (
+    <div className="text-muted-foreground flex items-center gap-3 text-xs" data-testid={`continued-${direction}`}>
+      <span className="bg-border h-px flex-1" />
+      {href ? (
+        <TransitionLink href={href} className="hover:text-foreground flex items-center gap-1.5 underline-offset-2 hover:underline">
+          {body}
+        </TransitionLink>
+      ) : (
+        <span className="flex items-center gap-1.5">{body}</span>
+      )}
+      <span className="bg-border h-px flex-1" />
+    </div>
+  );
+}
 
 /**
  * Where the context was compacted: a rule with what happened on it, and the
