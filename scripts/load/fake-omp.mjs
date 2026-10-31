@@ -18,6 +18,9 @@
  *   --chunk N    tokens per text delta        FAKE_OMP_CHUNK   (1)
  *   --rss-mb N   memory to allocate and hold  FAKE_OMP_RSS_MB  (0), as the
  *                real process holds ~270-320 MB (spike report, OM0.6)
+ *   --prompt N   which of the recording's prompts to replay, from 1
+ *                                             FAKE_OMP_PROMPT  (1); the
+ *                second and fourth of omp-compaction.jsonl compact mid-turn
  *
  * What it answers, as 18.14.1 does on the wire (spike report, OM0.3):
  *   --version         `omp/18.14.1`
@@ -27,7 +30,8 @@
  *     get_state           the session id
  *     get_session_stats   fixed numbers per completed turn, cumulative over
  *                         the session, as OMP's totals are
- *     prompt              the recording's first prompt, from just after its
+ *     get_messages        the recording's own answer to it, if it has one
+ *     prompt              the recording's chosen prompt, from just after its
  *                         response to its `prompt_result`. A dialog
  *                         (`extension_ui_request` select/confirm/input/
  *                         editor) holds the stream until it is answered;
@@ -54,7 +58,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const OWN = new Set(["--rate", "--chunk", "--length", "--rss-mb", "--fixture"]);
+const OWN = new Set(["--rate", "--chunk", "--length", "--rss-mb", "--fixture", "--prompt"]);
 const argv = process.argv.slice(2);
 const own = {};
 const cli = [];
@@ -164,7 +168,16 @@ const recorded = readFileSync(fixture, "utf8")
   .map((line) => JSON.parse(line))
   .filter((entry) => entry.dir === "out")
   .map((entry) => entry.frame);
-const promptAt = recorded.findIndex((frame) => frame.type === "response" && frame.command === "prompt");
+const promptNumber = Math.max(1, Math.round(option("prompt", "FAKE_OMP_PROMPT", 1)));
+const promptAt = recorded.findIndex(
+  (frame, i) =>
+    frame.type === "response" &&
+    frame.command === "prompt" &&
+    recorded.slice(0, i + 1).filter((f) => f.type === "response" && f.command === "prompt").length === promptNumber,
+);
+const recordedMessages = recorded.find((frame) => frame.type === "response" && frame.command === "get_messages")?.data ?? {
+  messages: [],
+};
 const resultAt = recorded.findIndex((frame, i) => i > promptAt && frame.type === "prompt_result");
 if (promptAt < 0 || resultAt < 0) {
   process.stderr.write(`fake-omp: ${fixture} has no prompt to replay\n`);
@@ -296,6 +309,8 @@ function handle(frame) {
       });
     case "get_session_stats":
       return respond(frame, stats());
+    case "get_messages":
+      return respond(frame, recordedMessages);
     case "prompt":
       if (current) return respond(frame, undefined, { success: false, error: "Agent is already processing" });
       respond(frame);

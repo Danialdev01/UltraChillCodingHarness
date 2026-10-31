@@ -449,6 +449,9 @@ exports[`OmpNormaliser > produces valid, fixed events for omp-compaction 1`] = `
       "type": "agent.message",
     },
     {
+      "compaction": {
+        "tokensBefore": 7832,
+      },
       "content": "Summary: the session so far.
 
 ---
@@ -458,6 +461,7 @@ exports[`OmpNormaliser > produces valid, fixed events for omp-compaction 1`] = `
 Summary: the session so far.",
       "source": "compaction",
       "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
       "type": "context.injected",
     },
     {
@@ -495,6 +499,9 @@ Summary: the session so far.",
       "type": "agent.message",
     },
     {
+      "compaction": {
+        "tokensBefore": 7383,
+      },
       "content": "Summary: the session so far.
 
 ---
@@ -504,6 +511,7 @@ Summary: the session so far.",
 Summary: the session so far.",
       "source": "compaction",
       "threadId": "00000000-0000-4000-8000-000000000002",
+      "turnId": "00000000-0000-4000-8000-000000000003",
       "type": "context.injected",
     },
     {

@@ -35,7 +35,20 @@ export interface ToolPart {
   awaitingApproval?: boolean;
 }
 
-export type MessagePart = TextPart | ToolPart;
+/**
+ * The context compacted: older turns folded into a summary the model now
+ * reads in their place. A divider in the answer where it happened.
+ */
+export interface CompactionPart {
+  kind: "compaction";
+  summary: string;
+  /** How, as the provider names it (OMP's `soft`, `handoff`, ...). */
+  method: string | null;
+  tokensBefore: number | null;
+  tokensAfter: number | null;
+}
+
+export type MessagePart = TextPart | ToolPart | CompactionPart;
 
 /** A CLI's question, open until a person or the end of the turn answers it. */
 export interface PermissionPrompt {
@@ -400,6 +413,26 @@ export function toMessages(
         });
         break;
 
+      case "context.injected": {
+        // Only a compaction is the reader's business; the rest is what the
+        // model was handed, and the log keeps it.
+        if (event.source !== "compaction") break;
+        // In the turn it happened in, or, for one with no turn, under the
+        // answer before it.
+        const message = event.turnId ? turn(event.turnId) : messages.findLast((m) => m.role === "assistant");
+        if (!message) break;
+        const last = message.parts.at(-1);
+        if (last?.kind === "text") last.streaming = false;
+        message.parts.push({
+          kind: "compaction",
+          summary: event.content,
+          method: event.compaction?.method ?? null,
+          tokensBefore: event.compaction?.tokensBefore ?? null,
+          tokensAfter: event.compaction?.tokensAfter ?? null,
+        });
+        break;
+      }
+
       case "agent.retry": {
         const current = activity.get(event.turnId);
         if (current) current.retry = { attempt: event.attempt, maxRetries: event.maxRetries };
@@ -484,6 +517,19 @@ export function summariseInput(input: unknown): string {
     if (typeof value === "string" && value) return truncate(value);
   }
   return "";
+}
+
+/**
+ * A compaction divider's line: "Context compacted (handoff) · 142k → 31k
+ * tokens", with what the provider did not say left out.
+ */
+export function describeCompaction(part: Pick<CompactionPart, "method" | "tokensBefore" | "tokensAfter">): string {
+  const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+  const what = part.method ? `Context compacted (${part.method})` : "Context compacted";
+  const { tokensBefore: before, tokensAfter: after } = part;
+  if (before !== null && after !== null) return `${what} · ${k(before)} → ${k(after)} tokens`;
+  if (before !== null) return `${what} · from ${k(before)} tokens`;
+  return what;
 }
 
 export function formatDuration(ms: number | null): string | null {

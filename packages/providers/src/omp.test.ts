@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   approvalFor,
   editOperations,
+  describeCompaction,
   OmpNormaliser,
   OmpProvider,
   ompArgv,
@@ -307,6 +308,22 @@ describe("OmpNormaliser", () => {
     const injected = events.filter((e) => e.type === "context.injected");
     expect(injected).toHaveLength(2);
     for (const e of injected) expect(e).toMatchObject({ source: "compaction", content: expect.stringContaining("Summary: the session so far.") });
+    // The frame's own figure; the method and the size after are asked for.
+    expect(injected.map((e) => (e as { compaction?: unknown }).compaction)).toEqual([{ tokensBefore: 7832 }, { tokensBefore: 7383 }]);
+  });
+
+  it("takes a compaction's method and size after from the session's summary message", () => {
+    const answer = recording("omp-compaction").find((r) => r.frame.type === "response" && r.frame.command === "get_messages")!;
+    const messages = (answer.frame.data as { messages: unknown[] }).messages;
+    const injected = replay("omp-compaction").events.filter((e) => e.type === "context.injected").at(-1)!;
+    expect(describeCompaction(injected as never, messages).compaction).toEqual({ method: "soft", tokensBefore: 7383, tokensAfter: 7363 });
+    // Another compaction's message, or none at all, leaves the event as it was.
+    const other = { ...(injected as object), content: "a different summary" };
+    expect(describeCompaction(other as never, messages)).toEqual(other);
+    // The same summary from an earlier compaction: its size before differs.
+    const first = replay("omp-compaction").events.find((e) => e.type === "context.injected")!;
+    expect(describeCompaction(first as never, messages)).toEqual(first);
+    expect(describeCompaction(injected as never, undefined)).toEqual(injected);
   });
 
   it("waits for the terminal agent_end, not the one before background work", () => {
@@ -400,6 +417,8 @@ interface FakeOptions {
   refusePrompt?: string;
   /** Answer `set_host_tools` with this failure. */
   refuseHostTools?: string;
+  /** What `get_messages` answers; `false` refuses it. */
+  messages?: unknown[] | false;
 }
 
 /** The frames a recording streamed for its first prompt, up to its `prompt_result`. */
@@ -476,6 +495,9 @@ function fakeOmp(options: FakeOptions = {}) {
           if (waitingOn && !waitingOnHost) heldAbort = frame;
           else abort(frame);
           return;
+        case "get_messages":
+          if (options.messages === false) return respond(frame, undefined, { success: false, error: "no session" });
+          return respond(frame, { messages: options.messages ?? [] });
         case "set_host_tools":
           if (options.refuseHostTools) return respond(frame, undefined, { success: false, error: options.refuseHostTools });
           return respond(frame, { toolNames: (frame.tools as { name: string }[]).map((tool) => tool.name) });
@@ -532,6 +554,48 @@ async function drain(run: AgentRun, onEvent: (event: DomainEvent) => void = () =
 const closing = (events: DomainEvent[]) => events.filter((e) => e.type === "agent.turn_completed" || e.type === "agent.turn_failed");
 
 describe("OmpProvider", () => {
+  describe("on a compaction mid-turn", () => {
+    const SUMMARY = "Summary: the session so far.";
+    const frames = (): OmpFrame[] => {
+      const plain = promptFrames("omp-plain");
+      const at = plain.findIndex((f) => f.type === "message_update");
+      return [
+        ...plain.slice(0, at),
+        { type: "auto_compaction_start", reason: "threshold", action: "context-full" },
+        { type: "auto_compaction_end", action: "context-full", result: { summary: SUMMARY, tokensBefore: 142000 }, aborted: false, willRetry: false },
+        ...plain.slice(at),
+      ];
+    };
+
+    it("asks the session for the figures, and keeps what followed after the divider", async () => {
+      const host = fakeOmp({
+        turn: frames(),
+        messages: [{ role: "compactionSummary", summary: SUMMARY, tokensBefore: 142000, tokensAfter: 31000, method: "handoff" }],
+      });
+      const events = await drain(startTurn(host));
+      expect(host.children[0]!.frames.map((f) => f.type)).toContain("get_messages");
+      const at = events.findIndex((e) => e.type === "context.injected");
+      expect(events[at]).toEqual({
+        type: "context.injected",
+        threadId: ids.threadId,
+        turnId: ids.turnId,
+        source: "compaction",
+        content: SUMMARY,
+        compaction: { method: "handoff", tokensBefore: 142000, tokensAfter: 31000 },
+      });
+      // The prose streamed after the compaction is still after it.
+      const firstText = events.findIndex((e) => e.type === "agent.text_delta");
+      expect(firstText).toBeGreaterThan(at);
+      expect(events.at(-1)?.type).toBe("agent.turn_completed");
+    });
+
+    it("sends the divider without them when the session cannot say", async () => {
+      const events = await drain(startTurn(fakeOmp({ turn: frames(), messages: false })));
+      expect(events.find((e) => e.type === "context.injected")).toMatchObject({ compaction: { tokensBefore: 142000 } });
+      expect(events.at(-1)?.type).toBe("agent.turn_completed");
+    });
+  });
+
   it("runs a turn: session, prompt, stream, usage, then stdin closed", async () => {
     const host = fakeOmp();
     const events = await drain(startTurn(host));

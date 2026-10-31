@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
 import type { Command, DomainEvent } from "@ucch/protocol";
-import { createProviders, HostProcessHost, type AgentProvider, type ProviderRunInput } from "@ucch/providers";
+import { createProviders, HostProcessHost, OmpProvider, type AgentProvider, type ProviderRunInput } from "@ucch/providers";
 import {
   AgentTurnReactor,
   ompInstructions,
@@ -735,6 +735,25 @@ describe("an OMP turn", () => {
       // What a native turn's render emits, landing on the thread the same way.
       expect(events).toContainEqual(expect.objectContaining({ type: "file.changed", projectId: PROJECT, path: "docs/notes.pdf" }));
     });
+  });
+
+  it("logs a compaction mid-turn with its method and size, inside the turn", async () => {
+    // The replay of a turn that compacts (scripts/load/fake-omp-compaction.sh).
+    const wrapper = join(import.meta.dirname, "../../../scripts/load/fake-omp-compaction.sh");
+    const { agent, appended } = ompReactor(thread, keyed, {}, new OmpProvider(wrapper));
+    agent.react(omp, [message]);
+    await until(appended, closed);
+    const events = appended.flat();
+    const started = events.find((e) => e.type === "turn.started") as { turnId: string };
+    expect(events.find((e) => e.type === "context.injected" && e.source === "compaction")).toEqual({
+      type: "context.injected",
+      threadId: THREAD,
+      turnId: started.turnId,
+      source: "compaction",
+      content: expect.stringContaining("Summary: the session so far."),
+      compaction: { method: "soft", tokensBefore: 7383, tokensAfter: 7363 },
+    });
+    expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
   });
 
   it("fails the turn, spawning nothing, without an OpenRouter key", async () => {

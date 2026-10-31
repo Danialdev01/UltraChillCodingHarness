@@ -237,6 +237,11 @@ const ContextInjected = z.object({
   type: z.literal("context.injected"),
   threadId: z.string().uuid(),
   /**
+   * The turn it happened in, where it happened in one: a compaction mid-turn
+   * draws inside that turn's answer, live as the turn streams.
+   */
+  turnId: z.string().uuid().optional(),
+  /**
    * `research` is the brief a research phase produced for a CLI provider's
    * turn: gathered on OpenRouter, then appended to the prompt the CLI was
    * given. Recorded so the log says exactly what the CLI was handed.
@@ -254,6 +259,18 @@ const ContextInjected = z.object({
   ]),
   content: z.string(),
   tokens: z.number().int().nonnegative().optional(),
+  /**
+   * A `compaction`'s figures, for the chat's divider: how the provider
+   * compacted (OMP's `soft`, `handoff`, ...) and the context's size before
+   * and after. Each is absent when the provider did not say.
+   */
+  compaction: z
+    .object({
+      method: z.string().max(40).optional(),
+      tokensBefore: z.number().int().nonnegative().optional(),
+      tokensAfter: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 // -- Agent turn --------------------------------------------------------------

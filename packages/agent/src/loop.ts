@@ -472,9 +472,11 @@ async function fit(
     {
       type: "context.injected",
       threadId: input.threadId,
+      turnId: input.turnId,
       source: "compaction",
       content: outcome.summary,
       tokens: measure([summaryMessage(outcome.summary)]),
+      compaction: { tokensBefore: tokens },
     },
   ]);
 

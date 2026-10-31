@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isTransient, type DomainEvent } from "@ucch/protocol";
 import {
+  describeCompaction,
   describeSent,
   describeStop,
   describeTiming,
@@ -700,6 +701,54 @@ describe("describeSent", () => {
 
   it("is nothing when the message carried no time", () => {
     expect(describeSent(null)).toBeNull();
+  });
+});
+
+describe("a compaction", () => {
+  const compacted = (extra: object = {}): DomainEvent => ({
+    type: "context.injected",
+    threadId: THREAD,
+    turnId: TURN,
+    source: "compaction",
+    content: "Summary so far.",
+    compaction: { method: "handoff", tokensBefore: 142_000, tokensAfter: 31_000 },
+    ...extra,
+  });
+
+  it("is a divider in its turn's answer, between the prose before and after it", () => {
+    const { messages } = log(
+      { type: "user.message", threadId: THREAD, text: "go" },
+      { type: "turn.started", threadId: THREAD, turnId: TURN },
+      { type: "agent.text_delta", threadId: THREAD, turnId: TURN, text: "Before." },
+      compacted(),
+      { type: "agent.text_delta", threadId: THREAD, turnId: TURN, text: "After." },
+    );
+    expect(messages[1]!.parts).toEqual([
+      { kind: "text", text: "Before.", streaming: false },
+      { kind: "compaction", summary: "Summary so far.", method: "handoff", tokensBefore: 142_000, tokensAfter: 31_000 },
+      { kind: "text", text: "After.", streaming: true },
+    ]);
+  });
+
+  it("with no turn, goes under the answer before it; and nothing else injected is drawn", () => {
+    const { messages } = log(
+      ...toolTurn,
+      { type: "context.injected", threadId: THREAD, source: "system_prompt", content: "rules" },
+      compacted({ turnId: undefined, compaction: undefined }),
+    );
+    const parts = messages.at(-1)!.parts;
+    expect(parts.filter((p) => p.kind === "compaction")).toEqual([
+      { kind: "compaction", summary: "Summary so far.", method: null, tokensBefore: null, tokensAfter: null },
+    ]);
+    expect(parts.at(-1)!.kind).toBe("compaction");
+  });
+
+  it("says what happened, leaving out what the provider did not say", () => {
+    expect(describeCompaction({ method: "handoff", tokensBefore: 142_000, tokensAfter: 31_000 })).toBe(
+      "Context compacted (handoff) · 142k → 31k tokens",
+    );
+    expect(describeCompaction({ method: null, tokensBefore: 7832, tokensAfter: null })).toBe("Context compacted · from 8k tokens");
+    expect(describeCompaction({ method: null, tokensBefore: null, tokensAfter: null })).toBe("Context compacted");
   });
 });
 

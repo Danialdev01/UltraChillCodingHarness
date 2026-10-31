@@ -92,6 +92,7 @@ import {
   type PromptNeighbours,
 } from "@/lib/thread-position";
 import {
+  describeCompaction,
   describeSent,
   describeStop,
   describeTiming,
@@ -102,6 +103,7 @@ import {
   summariseInput,
   toMessages,
   type ChatMessage,
+  type CompactionPart,
   type ToolPart,
 } from "@/lib/chat-messages";
 import { readRatings, writeRating, type Rating } from "@/lib/chat-feedback";
@@ -2114,16 +2116,29 @@ const Message = memo(function Message({
   // a question, not for a transcript of the work; the work is a click away.
   const work: WorkItem[] = [];
   const answers: { key: string; text: string; streaming: boolean }[] = [];
+  // The prose and, between it, where the context was compacted.
+  const flow: (
+    | { kind: "answer"; key: string; text: string; streaming: boolean }
+    | { kind: "compaction"; key: string; part: CompactionPart }
+  )[] = [];
   if (message.reasoning) work.push({ kind: "think", key: "reasoning", text: message.reasoning });
   message.parts.forEach((part, i) => {
     if (part.kind === "tool") {
       work.push({ kind: "tool", key: part.id, call: part });
       return;
     }
+    if (part.kind === "compaction") {
+      flow.push({ kind: "compaction", key: `compaction-${i}`, part });
+      return;
+    }
     splitThinking(part.text).forEach((segment, j) => {
       const key = `${i}-${j}`;
       if (segment.kind === "think") work.push({ kind: "think", key, text: segment.text });
-      else answers.push({ key, text: segment.text, streaming: part.streaming });
+      else {
+        const answer = { key, text: segment.text, streaming: part.streaming };
+        answers.push(answer);
+        flow.push({ kind: "answer", ...answer });
+      }
     });
   });
 
@@ -2138,8 +2153,10 @@ const Message = memo(function Message({
     <div ref={ref} className="flex flex-col gap-2">
       {work.length > 0 && <WorkDropdown items={work} working={working} message={message} />}
 
-      {answers.map((answer, i) => {
-        const caret = message.streaming && lastIsAnswer && i === answers.length - 1;
+      {flow.map((item) => {
+        if (item.kind === "compaction") return <CompactionDivider key={item.key} part={item.part} />;
+        const answer = item;
+        const caret = message.streaming && lastIsAnswer && answer.key === answers.at(-1)?.key;
         // Rendered as Markdown, which is what the model writes whether or
         // not anything draws it: the alternative is the reader picking
         // headings and tables out of their own syntax. The prose still being
@@ -2154,7 +2171,7 @@ const Message = memo(function Message({
       })}
 
       {/* A turn that has produced nothing yet still shows it is alive. */}
-      {message.streaming && work.length === 0 && answers.length === 0 && (
+      {message.streaming && work.length === 0 && flow.length === 0 && (
         <p className="text-sm">
           <Caret />
         </p>
@@ -2192,6 +2209,24 @@ const Message = memo(function Message({
     </div>
   );
 });
+
+/**
+ * Where the context was compacted: a rule with what happened on it, and the
+ * summary the model reads from here on a click away.
+ */
+function CompactionDivider({ part }: { part: CompactionPart }) {
+  return (
+    <details className="group/compaction text-muted-foreground text-xs" data-testid="compaction-divider">
+      <summary className="flex cursor-pointer list-none items-center gap-2 py-1 select-none [&::-webkit-details-marker]:hidden">
+        <span className="bg-border h-px flex-1" />
+        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-open/compaction:rotate-90" />
+        <span className="tabular-nums">{describeCompaction(part)}</span>
+        <span className="bg-border h-px flex-1" />
+      </summary>
+      <p className="mt-1 rounded-md border px-3 py-2 whitespace-pre-wrap">{part.summary.trim()}</p>
+    </details>
+  );
+}
 
 type WorkItem =
   | { kind: "think"; key: string; text: string }

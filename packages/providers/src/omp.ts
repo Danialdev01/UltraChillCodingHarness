@@ -342,10 +342,22 @@ export class OmpNormaliser {
 
       case "auto_compaction_end":
       case "manual_compaction_end": {
-        const end = frame as { skipped?: unknown; aborted?: unknown; result?: { summary?: unknown } };
+        const end = frame as { skipped?: unknown; aborted?: unknown; result?: { summary?: unknown; tokensBefore?: unknown } };
         const summary = end.result?.summary;
         if (end.skipped === true || end.aborted === true || typeof summary !== "string" || summary === "") return [];
-        return [{ type: "context.injected", threadId: this.ctx.threadId, source: "compaction", content: summary }];
+        // The method and the size after are not on the frame (spike report,
+        // Q4); `OmpTurn` asks the session for them.
+        const tokensBefore = tokenCount(end.result?.tokensBefore);
+        return [
+          {
+            type: "context.injected",
+            threadId: this.ctx.threadId,
+            turnId: this.ctx.turnId,
+            source: "compaction",
+            content: summary,
+            ...(tokensBefore !== undefined ? { compaction: { tokensBefore } } : {}),
+          },
+        ];
       }
 
       case "agent_end":
@@ -544,6 +556,43 @@ function count(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
 }
 
+/** A token figure OMP reported, or undefined where it reported none. */
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : undefined;
+}
+
+type ContextInjected = Extract<DomainEvent, { type: "context.injected" }>;
+
+/**
+ * Fills a compaction event's method and size after from the session's
+ * newest `compactionSummary` message (`get_messages`, spike report Q4),
+ * when it is the one the event reports.
+ */
+export function describeCompaction(event: ContextInjected, messages: unknown): ContextInjected {
+  if (!Array.isArray(messages)) return event;
+  const summary = messages.findLast(
+    (m): m is { summary?: unknown; method?: unknown; tokensBefore?: unknown; tokensAfter?: unknown } =>
+      typeof m === "object" && m !== null && (m as { role?: unknown }).role === "compactionSummary",
+  );
+  if (!summary || summary.summary !== event.content) return event;
+  // Two compactions can write the same summary; the size before tells them apart.
+  const before = event.compaction?.tokensBefore;
+  if (before !== undefined && tokenCount(summary.tokensBefore) !== undefined && tokenCount(summary.tokensBefore) !== before) {
+    return event;
+  }
+  const method = typeof summary.method === "string" && summary.method ? summary.method.slice(0, 40) : undefined;
+  const tokensBefore = before ?? tokenCount(summary.tokensBefore);
+  const tokensAfter = tokenCount(summary.tokensAfter);
+  return {
+    ...event,
+    compaction: {
+      ...(method ? { method } : {}),
+      ...(tokensBefore !== undefined ? { tokensBefore } : {}),
+      ...(tokensAfter !== undefined ? { tokensAfter } : {}),
+    },
+  };
+}
+
 /** The turn's usage and cost: the session's totals after it, less those before. */
 function cost(stats: { before?: OmpSessionStats | null; after?: OmpSessionStats | null }): { usage: TokenUsage; costUsd: number } {
   const delta = (pick: (s: OmpSessionStats) => unknown) =>
@@ -606,6 +655,9 @@ const INTERRUPT_GRACE_MS = 10_000;
 
 /** How long a finished turn's process gets to exit once stdin is closed. */
 const CLOSE_GRACE_MS = 10_000;
+
+/** How long a compaction's divider waits for its figures before it goes without them. */
+const COMPACTION_LOOKUP_MS = 5_000;
 
 /** Stderr kept for the failure message. The end of it is where the error is. */
 const STDERR_TAIL_BYTES = 4 * 1024;
@@ -720,6 +772,12 @@ class OmpTurn implements AgentRun {
   #timer: NodeJS.Timeout | undefined;
   /** Host calls running, by OMP's call id, to abort on `host_tool_cancel`. */
   readonly #hostCalls = new Map<string, AbortController>();
+  /**
+   * Events held while a compaction's figures are asked for, so that what
+   * follows the divider still lands after it. Null when nothing is held.
+   */
+  #held: DomainEvent[] | null = null;
+  #described: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly input: ProviderRunInput,
@@ -740,7 +798,7 @@ class OmpTurn implements AgentRun {
 
   answerPermission(requestId: string, reply: PermissionReply): boolean {
     const events = this.#normaliser.answerPermission(requestId, reply);
-    this.#queue.push(...events);
+    this.#emit(events);
     return events.length > 0;
   }
 
@@ -748,7 +806,7 @@ class OmpTurn implements AgentRun {
     if (this.#interrupted) return;
     this.#interrupted = true;
     this.#normaliser.noteInterrupt();
-    this.#queue.push(...this.#normaliser.cancelPrompts());
+    this.#emit(this.#normaliser.cancelPrompts());
     // Before the prompt, `#drive` sees the flag and closes instead.
     this.#rpc?.request({ type: "abort" }).catch(() => {});
     this.#timer = setTimeout(() => void this.kill(), this.options.interruptGraceMs ?? INTERRUPT_GRACE_MS);
@@ -820,8 +878,9 @@ class OmpTurn implements AgentRun {
     const outcome = await Promise.race([this.#settled.then(() => "settled" as const), rpc.exited.then(() => "exited" as const)]);
     // Gone before the turn settled: `#end` reports how.
     if (outcome === "exited") return;
+    await this.#described;
     const after = await this.#stats(rpc);
-    this.#queue.push(...this.#normaliser.complete({ before, after }));
+    this.#emit(this.#normaliser.complete({ before, after }));
     await this.#close(rpc);
   }
 
@@ -837,8 +896,45 @@ class OmpTurn implements AgentRun {
       void this.#rpc?.kill();
       return;
     }
-    this.#queue.push(...this.#normaliser.push(frame));
+    const events = this.#normaliser.push(frame);
+    const at = events.findIndex((e) => e.type === "context.injected" && e.source === "compaction");
+    if (at >= 0 && this.#held === null && this.#rpc) {
+      this.#emit(events.slice(0, at));
+      this.#held = events.slice(at);
+      this.#described = this.#describe(this.#rpc);
+    } else this.#emit(events);
     if (this.#normaliser.settled) this.#settle();
+  }
+
+  /** Events out, behind any held for a compaction. */
+  #emit(events: DomainEvent[]): void {
+    if (this.#held) this.#held.push(...events);
+    else this.#queue.push(...events);
+  }
+
+  /**
+   * Asks the session for the compaction just held, fills in its figures,
+   * and lets the held events go. A divider without figures is still a
+   * divider: no answer in time, or a failed one, sends it as it was.
+   */
+  async #describe(rpc: OmpRpc): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), COMPACTION_LOOKUP_MS)));
+    const response = await Promise.race([
+      rpc.request<{ messages?: unknown }>({ type: "get_messages" }).catch(() => null),
+      late,
+    ]);
+    clearTimeout(timer);
+    this.#release(response?.success ? response.data?.messages : undefined);
+  }
+
+  #release(messages: unknown): void {
+    const held = this.#held;
+    if (!held) return;
+    this.#held = null;
+    const [first, ...rest] = held;
+    if (first?.type === "context.injected") this.#queue.push(describeCompaction(first, messages));
+    this.#queue.push(...rest);
   }
 
   /**
@@ -908,6 +1004,7 @@ class OmpTurn implements AgentRun {
     clearTimeout(this.#timer);
     // Nobody is left to answer: a tool still running stops.
     for (const controller of this.#hostCalls.values()) controller.abort();
+    this.#release(undefined);
     const stderrTail = (this.#rpc?.stderrTail ?? "").slice(-STDERR_TAIL_BYTES).trim();
     this.#queue.push(
       ...this.#normaliser.finish({ ...exit, interrupted: this.#interrupted, stderrTail, ...(error ? { error } : {}) }),
