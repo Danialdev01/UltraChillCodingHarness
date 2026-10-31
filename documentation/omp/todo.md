@@ -135,7 +135,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
 
 ## Phase OM1: Protocol, config, credentials
 
-- [ ] **OM1.1 — `omp` in the provider enums**
+- [x] **OM1.1 — `omp` in the provider enums** — d17cb84
 
   - **Depends:** OM0.3
   - **Files:** `packages/protocol/src/events.ts` (lines 269–274), `packages/providers/src/registry.ts`, `apps/server/src/agent.ts` (`resolveProvider`, line 145), every exhaustive `switch` over `ProviderId` (`grep -rn "ProviderId" apps packages`)
@@ -145,14 +145,14 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     3. `resolveProvider` knows `omp`. The `OMP_ENABLED` rule waits for OM2.7.
   - **Acceptance:** typecheck passes with `omp` unhandled only where the provider is looked up (`ProviderService.provider` returns null for it until OM2).
   - **Verify:** `pnpm typecheck && pnpm test`
-- [ ] **OM1.2 — Config keys**
+- [x] **OM1.2 — Config keys** — 468e3e0
 
   - **Depends:** OM1.1
   - **Files:** `apps/server/src/config.ts`, `.env.example`, `.env.development.example`
   - **Steps:** add `OMP_BIN`, `OMP_ENABLED` (false), `NATIVE_LOOP_FALLBACK` (true), `OMP_BRIDGE_BIN`, `OMP_TURN_TOTAL` (from OM0.6), `OMP_WORKERS_PER_TURN` (4) and `OMP_BRIDGE_MAX_SECONDS` (300). See solution §1.3.
   - **Acceptance:** each key has a block comment saying what it does and why its default is what it is.
   - **Verify:** `pnpm typecheck && pnpm test -- config`
-- [ ] **OM1.3 — Per-provider credential rules**
+- [x] **OM1.3 — Per-provider credential rules** — c31d064
 
   - **Depends:** OM1.1
   - **Files:** `packages/providers/src/types.ts`, new `packages/providers/src/omp-credentials.ts` and its test, `packages/providers/src/run.ts`
@@ -162,7 +162,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - `ANTHROPIC_API_KEY`, `ANTHROPIC_OAUTH_TOKEN`, `OPENAI_API_KEY`, `OPENAI_CODEX_OAUTH_TOKEN` and `GEMINI_API_KEY` each make an omp run refuse.
     - The claude and codex behaviour is unchanged (the existing tests pass).
   - **Verify:** `pnpm test -- providers`
-- [ ] **OM1.4 — The OMP credential directory**
+- [x] **OM1.4 — The OMP credential directory** — 7d20078
 
   - **Depends:** OM1.3, OM0.4
   - **Files:** `apps/server/src/providers.ts` (`credsDir`, `ensureCredsDir`, `providerEnv`), new `packages/providers/assets/omp-hooks/ucch-guard.ts`, new `packages/providers/assets/omp-agents/*.md`
