@@ -73,3 +73,99 @@ export class FakeProcessHost implements ProcessHost {
 
 export const stdout = (line: string): OutputLine => ({ stream: "stdout", line });
 export const stderr = (line: string): OutputLine => ({ stream: "stderr", line });
+
+/**
+ * A child the test drives by hand: it writes the child's stdout and stderr
+ * when it likes, sees every line written to its stdin, and decides when it
+ * exits. For a protocol that answers what the host says, which a fixed
+ * script cannot.
+ */
+export class ManualChild {
+  readonly written: string[] = [];
+  readonly signals: string[] = [];
+  stdinOpen = true;
+  /** Called with each line the host writes, after it is recorded. */
+  onWrite: ((line: string) => void) | null = null;
+  /** Called with each signal, after it is recorded. */
+  onSignal: ((sig: string) => void) | null = null;
+  readonly handle: ChildHandle;
+
+  #queue: OutputLine[] = [];
+  #wake: (() => void) | null = null;
+  #ended = false;
+  #exit!: (status: ExitStatus) => void;
+
+  constructor(readonly spec: SpawnSpec) {
+    const exited = new Promise<ExitStatus>((resolve) => {
+      this.#exit = resolve;
+    });
+    const child = this;
+    this.handle = {
+      lines: {
+        async *[Symbol.asyncIterator]() {
+          for (;;) {
+            const next = child.#queue.shift();
+            if (next) {
+              yield next;
+              continue;
+            }
+            if (child.#ended) return;
+            await new Promise<void>((resolve) => {
+              child.#wake = resolve;
+            });
+          }
+        },
+      },
+      exited,
+      signal(sig) {
+        child.signals.push(sig);
+        child.onSignal?.(sig);
+      },
+      write(line) {
+        if (!child.stdinOpen) return;
+        child.written.push(line);
+        child.onWrite?.(line);
+      },
+      endStdin() {
+        child.stdinOpen = false;
+      },
+    };
+  }
+
+  /** The frames written so far, parsed. */
+  get frames(): Record<string, unknown>[] {
+    return this.written.map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  emit(line: string, stream: "stdout" | "stderr" = "stdout"): void {
+    this.#queue.push({ stream, line });
+    this.#wake?.();
+    this.#wake = null;
+  }
+
+  /** Closes both streams and exits. */
+  exit(status: ExitStatus = { code: 0, signal: null }): void {
+    this.#ended = true;
+    this.#wake?.();
+    this.#wake = null;
+    this.#exit(status);
+  }
+}
+
+/** A host whose children are `ManualChild`ren; `onSpawn` sets each one up. */
+export class ManualProcessHost implements ProcessHost {
+  readonly children: ManualChild[] = [];
+
+  constructor(private readonly onSpawn: (child: ManualChild) => void = () => {}) {}
+
+  spawn(spec: SpawnSpec): ChildHandle {
+    const child = new ManualChild(spec);
+    this.children.push(child);
+    this.onSpawn(child);
+    return child.handle;
+  }
+
+  async run(): Promise<RunResult> {
+    throw new Error("ManualProcessHost runs streaming children only");
+  }
+}
