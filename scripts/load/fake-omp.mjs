@@ -24,6 +24,10 @@
  *
  * What it answers, as 18.14.1 does on the wire (spike report, OM0.3):
  *   --version         `omp/18.14.1`
+ *   -p                a brief, in markdown, from what stdin carried and the
+ *                     prompt's "Focus on:" line; "Working..." on stderr.
+ *                     FAKE_OMP_PRINT_LOG=F appends {argv, stdin, prompt} to
+ *                     F; FAKE_OMP_PRINT_FAIL=msg exits 1 with it instead
  *   --mode rpc-ui     `ready`, then commands by `id`:
  *     negotiate_protocol  v2 when asked (it never sends a frame big enough
  *                         to need chunking)
@@ -100,6 +104,41 @@ const out = (frame) => process.stdout.write(`${typeof frame === "string" ? frame
 
 if (cli.includes("--version")) {
   out("omp/18.14.1");
+  process.exit(0);
+}
+
+// `-p`: one answer and exit, as 18.14.1's text mode does -- "Working..." on
+// stderr, the answer alone on stdout, stdin read ahead of the prompt.
+if (cli.includes("-p") || cli.includes("--print")) {
+  const VALUED = new Set(["--config", "--hook", "--model", "--mode", "--session-dir", "--approval-mode", "--thinking", "--max-time", "--resume"]);
+  let prompt = "";
+  for (let i = 0; i < cli.length; i++) {
+    if (VALUED.has(cli[i])) i++;
+    else if (!cli[i].startsWith("-")) prompt = cli[i];
+  }
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  for await (const piece of process.stdin) input += piece;
+  process.stderr.write("Working...\n");
+  if (process.env.FAKE_OMP_PRINT_LOG) {
+    appendFileSync(process.env.FAKE_OMP_PRINT_LOG, `${JSON.stringify({ argv: cli, stdin: input, prompt })}\n`);
+  }
+  if (process.env.FAKE_OMP_PRINT_FAIL) {
+    process.stderr.write(`error: ${process.env.FAKE_OMP_PRINT_FAIL}\n`);
+    process.exit(1);
+  }
+  const focus = /\nFocus on: (.+)$/s.exec(prompt)?.[1]?.trim();
+  const asked = /## User\n(.+)/.exec(input)?.[1]?.trim();
+  out(
+    [
+      "## Goal",
+      asked ?? "Carry on the work.",
+      "## Done",
+      `Read ${input.length} characters of transcript.`,
+      "## Next",
+      focus ?? "The next step.",
+    ].join("\n"),
+  );
   process.exit(0);
 }
 const mode = flag("--mode");

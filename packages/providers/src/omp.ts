@@ -137,6 +137,44 @@ export function ompArgv(input: {
   return argv;
 }
 
+/**
+ * `omp -p` for a one-shot answer with no tools and no session: the handoff
+ * brief (solution §5.4). Measured with 18.14.1 against a scripted model:
+ * text mode writes the answer alone to stdout ("Working..." goes to
+ * stderr), stdin is read and put ahead of the prompt in the user message,
+ * and `--model @smol` with `--config` takes the overlay's `smol` role.
+ * The same guard flags as a turn: a print run reads the repository's
+ * config just as an RPC one does.
+ */
+export function ompPrintArgv(input: {
+  bin: string;
+  overlayPath: string;
+  guardHookPath: string;
+  /** The instruction, as the prompt argument. What it is about goes on stdin. */
+  prompt: string;
+  /** `openrouter/<id>` or a role (`@smol`). */
+  model: string;
+}): string[] {
+  return [
+    input.bin,
+    "-p",
+    "--no-session",
+    "--no-tools",
+    "--config",
+    input.overlayPath,
+    "--no-extensions",
+    "--no-rules",
+    "--no-title",
+    // Nothing to read code with, so nothing to start a language server for.
+    "--no-lsp",
+    "--hook",
+    input.guardHookPath,
+    "--model",
+    input.model,
+    input.prompt,
+  ];
+}
+
 // -- Normalising the RPC stream ------------------------------------------------
 
 /** What `get_session_stats` reports (fixtures/omp-plain.jsonl). Cumulative per session. */
@@ -700,6 +738,9 @@ const INTERRUPT_GRACE_MS = 10_000;
 /** How long a finished turn's process gets to exit once stdin is closed. */
 const CLOSE_GRACE_MS = 10_000;
 
+/** How long a one-shot `omp -p` may take: one model call, no tools. */
+const ASK_TIMEOUT_MS = 3 * 60_000;
+
 /** How long a compaction's divider waits for its figures before it goes without them. */
 const COMPACTION_LOOKUP_MS = 5_000;
 
@@ -792,6 +833,41 @@ export class OmpProvider implements AgentProvider {
       ...(input.omp.maxTime ? { maxTime: input.omp.maxTime } : {}),
     });
     return new OmpTurn(input, argv, this.options);
+  }
+
+  /**
+   * One question, one answer, with no tools and no session (`omp -p`,
+   * `ompPrintArgv`). Rejects with OMP's own error when it exits non-zero or
+   * says nothing.
+   */
+  async ask(input: OmpAskInput): Promise<string> {
+    const forbidden = forbiddenEnvFor("omp", input.ctx.env);
+    if (forbidden) {
+      throw new Error(`${forbidden} is set in the provider environment; refusing to run on a credential other than the OpenRouter key`);
+    }
+    const argv = ompPrintArgv({
+      bin: this.bin,
+      overlayPath: input.omp.overlayPath,
+      guardHookPath: input.omp.guardHookPath,
+      prompt: input.prompt,
+      model: input.model ? (input.model.startsWith("@") ? input.model : ompModel(input.model)) : "@smol",
+    });
+    const result = await input.ctx.host.run(
+      { argv, cwd: input.ctx.cwd, env: input.ctx.env, stdin: input.stdin },
+      { timeoutMs: input.timeoutMs ?? ASK_TIMEOUT_MS },
+    );
+    // "Working..." is print mode's own line on stderr, not the error.
+    const stderr = result.stderr
+      .split("\n")
+      .filter((line) => line.trim() !== "" && line.trim() !== "Working...")
+      .join("\n")
+      .slice(-STDERR_TAIL_BYTES)
+      .trim();
+    if (result.signal) throw new Error(`omp was stopped (${result.signal}) before it answered`);
+    if (result.code !== 0) throw new Error(stderr || `omp exited ${result.code}`);
+    const answer = result.stdout.trim();
+    if (!answer) throw new Error(stderr || "omp answered with nothing");
+    return answer;
   }
 
   /**
@@ -892,6 +968,19 @@ export class OmpProvider implements AgentProvider {
       if (outcome === "late") await client.kill();
     }
   }
+}
+
+/** What `OmpProvider.ask` runs (solution §5.4). */
+export interface OmpAskInput {
+  ctx: RunContext;
+  /** The overlay and the guard hook; a print run has no session. */
+  omp: Pick<OmpRunFiles, "overlayPath" | "guardHookPath">;
+  prompt: string;
+  /** What the prompt is about: on stdin, which has no length limit. */
+  stdin: string;
+  /** `openrouter/<id>` or a role; `@smol` when absent. */
+  model?: string;
+  timeoutMs?: number;
 }
 
 /** What `OmpProvider.maintain` runs on (solution §5.3). */

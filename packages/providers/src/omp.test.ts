@@ -9,6 +9,7 @@ import {
   OmpNormaliser,
   OmpProvider,
   ompArgv,
+  ompPrintArgv,
   ompModel,
   probeOmp,
   thinkingFor,
@@ -17,7 +18,7 @@ import {
   type OmpSessionStats,
 } from "./omp.js";
 import type { OmpFrame } from "./omp-rpc-types.js";
-import { FakeProcessHost, ManualProcessHost } from "./testing.js";
+import { FakeProcessHost, ManualProcessHost, stdout } from "./testing.js";
 import type { AgentRun, ProviderRunInput } from "./types.js";
 
 const base = {
@@ -610,6 +611,49 @@ async function eventuallyFrame(host: ManualProcessHost, type: string): Promise<v
 const closing = (events: DomainEvent[]) => events.filter((e) => e.type === "agent.turn_completed" || e.type === "agent.turn_failed");
 
 describe("OmpProvider", () => {
+  describe("ask: one answer from omp -p", () => {
+    const files = { overlayPath: "/c/omp/run/b.yml", guardHookPath: "/c/omp/agent/ucch-guard.ts" };
+    const env = { PATH: "/usr/bin", OPENROUTER_API_KEY: "sk-or-test" };
+    const isPrint = (argv: readonly string[]) => argv.includes("-p");
+
+    it("runs with no tools and no session, on the smol role, the text on stdin", async () => {
+      const host = new FakeProcessHost([
+        { match: isPrint, lines: [{ stream: "stderr", line: "Working..." }, stdout("## Goal"), stdout("Fix it."), stdout("")] },
+      ]);
+      const answer = await new OmpProvider("omp").ask({ ctx: { cwd: WORKSPACE, env, host }, omp: files, prompt: "Write the brief.", stdin: "transcript" });
+      expect(answer).toBe("## Goal\nFix it.");
+      expect(host.spawned[0]).toMatchObject({ argv: ompPrintArgv({ bin: "omp", ...files, prompt: "Write the brief.", model: "@smol" }), stdin: "transcript" });
+      expect(host.spawned[0]!.argv).toEqual(
+        expect.arrayContaining(["-p", "--no-session", "--no-tools", "--no-extensions", "--no-rules", "--no-lsp", "--model", "@smol"]),
+      );
+      expect(host.spawned[0]!.argv.at(-1)).toBe("Write the brief.");
+      // An OpenRouter model, as a turn names one.
+      await new OmpProvider("omp").ask({ ctx: { cwd: WORKSPACE, env, host }, omp: files, prompt: "p", stdin: "", model: "openai/gpt-5-mini" });
+      expect(host.spawned[1]!.argv).toEqual(expect.arrayContaining(["--model", "openrouter/openai/gpt-5-mini"]));
+    });
+
+    it("rejects with OMP's own error, not its progress line, and on an empty answer", async () => {
+      const failing = new FakeProcessHost([
+        { match: isPrint, lines: [{ stream: "stderr", line: "Working..." }, { stream: "stderr", line: "error: No API key found for openrouter." }], exit: { code: 1, signal: null } },
+      ]);
+      await expect(new OmpProvider("omp").ask({ ctx: { cwd: WORKSPACE, env, host: failing }, omp: files, prompt: "p", stdin: "" })).rejects.toThrow(
+        /^error: No API key found for openrouter\.$/,
+      );
+      const silent = new FakeProcessHost([{ match: isPrint, lines: [{ stream: "stderr", line: "Working..." }] }]);
+      await expect(new OmpProvider("omp").ask({ ctx: { cwd: WORKSPACE, env, host: silent }, omp: files, prompt: "p", stdin: "" })).rejects.toThrow(
+        "omp answered with nothing",
+      );
+    });
+
+    it("refuses a forbidden credential before spawning", async () => {
+      const host = new FakeProcessHost([]);
+      await expect(
+        new OmpProvider("omp").ask({ ctx: { cwd: WORKSPACE, env: { ...env, OPENAI_API_KEY: "x" }, host }, omp: files, prompt: "p", stdin: "" }),
+      ).rejects.toThrow(/OPENAI_API_KEY/);
+      expect(host.spawned).toHaveLength(0);
+    });
+  });
+
   describe("maintain: compact and handoff between turns", () => {
     const AFTER = { ...STATS_AFTER, contextUsage: { tokens: 1500, contextWindow: 128000, percent: 1.2 } };
     const maintain = (host: ManualProcessHost, over: Partial<OmpMaintenanceInput> = {}) =>
