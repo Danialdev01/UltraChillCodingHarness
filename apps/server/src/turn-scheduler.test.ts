@@ -34,7 +34,7 @@ describe("TurnScheduler", () => {
     const turns = ["a", "b", "c", "d"].map((owner) => ask(scheduler, owner, "cli", `t-${owner}`));
     await settle();
     expect(turns.map((t) => t.started)).toEqual([true, true, true, false]);
-    expect(scheduler.stats()).toEqual({ running: { cli: 3, native: 0 }, waiting: { cli: 1, native: 0 } });
+    expect(scheduler.stats()).toEqual({ running: { cli: 3, native: 0, omp: 0 }, waiting: { cli: 1, native: 0, omp: 0 } });
     turns[1]!.release();
     await settle();
     expect(turns[3]!.started).toBe(true);
@@ -144,5 +144,27 @@ describe("TurnScheduler", () => {
     await settle();
     expect(next.started).toBe(true);
     expect(third.started).toBe(false);
+  });
+
+  it("caps OMP turns server-wide, apart from CLI turns and with no per-account limit", async () => {
+    const scheduler = new TurnScheduler({ cliPerUser: 1, cliTotal: 1, nativeTotal: 1, ompTotal: 2 });
+    const cli = ask(scheduler, "a", "cli", "a-cli");
+    const first = ask(scheduler, "a", "omp", "a-1");
+    const second = ask(scheduler, "a", "omp", "a-2");
+    const third = ask(scheduler, "b", "omp", "b-1");
+    await settle();
+    expect([cli.started, first.started, second.started, third.started]).toEqual([true, true, true, false]);
+    expect(third.aheads).toEqual([0]);
+    expect(scheduler.stats()).toEqual({ running: { cli: 1, native: 0, omp: 2 }, waiting: { cli: 0, native: 0, omp: 1 } });
+    first.release();
+    await settle();
+    expect(third.started).toBe(true);
+  });
+
+  it("leaves OMP turns unlimited without a cap", async () => {
+    const scheduler = new TurnScheduler(limits);
+    const turns = Array.from({ length: 5 }, (_, i) => ask(scheduler, "a", "omp", `a-${i}`));
+    await settle();
+    expect(turns.every((turn) => turn.started)).toBe(true);
   });
 });

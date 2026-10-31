@@ -8,13 +8,16 @@
  * Here a turn over a limit waits instead, before it opens: no `turns` row,
  * nothing billed, and the thread is told how many turns are ahead of it.
  *
- * Three limits:
+ * Four limits:
  *
  * - CLI turns per account (`AGENT_MAX_CONCURRENT_PER_USER`): a subscription
  *   is one person's, and so is its rate limit;
  * - CLI turns in all (`AGENT_MAX_CONCURRENT_TOTAL`): the processes' memory;
  * - native turns in all (`AGENT_MAX_NATIVE_TOTAL`), diagram jobs included:
- *   each is a loop, its context and a model stream held in this process.
+ *   each is a loop, its context and a model stream held in this process;
+ * - OMP turns in all (`OMP_TURN_TOTAL`): each is an `omp` process with its
+ *   workers. Not per account -- they bill an OpenRouter key, not a
+ *   subscription with a person's rate limit.
  *
  * Waiting turns are served round-robin across accounts, so one person's ten
  * queued turns do not keep everybody else's behind them. Within an account,
@@ -23,12 +26,14 @@
  * Pure bookkeeping: nothing here knows what a turn is beyond its kind.
  */
 
-export type TurnKind = "cli" | "native";
+export type TurnKind = "cli" | "native" | "omp";
 
 export interface TurnLimits {
   cliPerUser: number;
   cliTotal: number;
   nativeTotal: number;
+  /** Unlimited when absent. */
+  ompTotal?: number;
 }
 
 export interface TurnRequest {
@@ -62,7 +67,7 @@ export class TurnScheduler {
    * starts, and a new one joins at the back.
    */
   readonly #waiting = new Map<string, Waiting[]>();
-  readonly #running: Record<TurnKind, number> = { cli: 0, native: 0 };
+  readonly #running: Record<TurnKind, number> = { cli: 0, native: 0, omp: 0 };
   readonly #cliByOwner = new Map<string, number>();
 
   constructor(limits: TurnLimits) {
@@ -100,7 +105,7 @@ export class TurnScheduler {
 
   /** Turns running and waiting, by kind: for the metrics. */
   stats(): { running: Record<TurnKind, number>; waiting: Record<TurnKind, number> } {
-    const waiting: Record<TurnKind, number> = { cli: 0, native: 0 };
+    const waiting: Record<TurnKind, number> = { cli: 0, native: 0, omp: 0 };
     for (const queue of this.#waiting.values()) for (const entry of queue) waiting[entry.kind]++;
     return { running: { ...this.#running }, waiting };
   }
@@ -127,6 +132,7 @@ export class TurnScheduler {
 
   #fits(entry: Waiting): boolean {
     if (entry.kind === "native") return this.#running.native < this.#limits.nativeTotal;
+    if (entry.kind === "omp") return this.#running.omp < (this.#limits.ompTotal ?? Infinity);
     return (
       this.#running.cli < this.#limits.cliTotal &&
       (this.#cliByOwner.get(entry.ownerId) ?? 0) < this.#limits.cliPerUser
@@ -167,7 +173,7 @@ export class TurnScheduler {
    * first turn in rotation order, then each one's second, and so on.
    */
   #announce(): void {
-    for (const kind of ["cli", "native"] as const) {
+    for (const kind of ["cli", "native", "omp"] as const) {
       const queues = [...this.#waiting.values()].map((queue) => queue.filter((entry) => entry.kind === kind));
       const longest = Math.max(0, ...queues.map((queue) => queue.length));
       let ahead = 0;
