@@ -424,13 +424,18 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
   - **Steps:** implement solution §6.2 for Claude. Subagent prose never becomes `agent.text_delta`.
   - **Acceptance:** the fixture yields subagent events, and the turn's own text is unchanged compared with today's output.
   - **Verify:** `pnpm test -- claude`
-- [ ] **OM5.3 — Subagent card in the chat**
+- [x] **OM5.3 — Subagent card in the chat** — 595428d
 
   - **Depends:** OM5.1
   - **Files:** `apps/web/src/components/project-chat.tsx` (and a new `subagent-card.tsx`), `lib/agent-activity.ts`
   - **Steps:** implement solution §6.3, following the web conventions.
   - **Acceptance:** live progress while running, and the result expands when done. It works for OMP `task`, Claude `Task` and `mcp__omp__omp_task`.
   - **Verify:** `pnpm --filter @ucch/web build && pnpm --filter @ucch/web e2e -- subagent`
+  - **As built:**
+    - **Fold.** The subagent fold lives in `lib/chat-messages.ts`, next to the tool rows it hangs on; `lib/agent-activity.ts` is the sidebar's working/done status and needed nothing. A subagent whose call was never seen gets a card of its own.
+    - **Live.** `agent.subagent_progress` joins the thread store's live events, one run per subagent. The closed work line shows the running subagent's latest progress, so it is live without opening anything.
+    - **Bridge.** `mcp__omp__omp_task` draws as a card from the call alone (its result), since the bridge sends no subagent events.
+    - **e2e.** `fake-omp.mjs` now replays a background task past its `prompt_result` to the terminal `agent_end`. `e2e/subagent.spec.ts` runs on `OMP_BIN=scripts/load/fake-omp-subagent.sh` (`pnpm --filter @ucch/web e2e subagent`, without the `--`).
 - [ ] **OM5.4 — Caps and metrics**
 
   - **Depends:** OM5.1, OM0.6
