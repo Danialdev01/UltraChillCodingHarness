@@ -241,7 +241,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - an interrupt mid-stream ends with `agent.turn_completed` or `turn_failed`, never hanging;
     - a forbidden variable refuses the run before spawn.
   - **Verify:** `pnpm test -- omp`
-- [ ] **OM2.5 — Overlay writer**
+- [x] **OM2.5 — Overlay writer** — 80e7f35
 
   - **Depends:** OM0.1, OM1.4
   - **Files:** new `apps/server/src/omp-overlay.ts`, `omp-overlay.test.ts`
