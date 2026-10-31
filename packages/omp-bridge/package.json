@@ -1,0 +1,19 @@
+{
+  "name": "@ucch/omp-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@ucch/providers": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
