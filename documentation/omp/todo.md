@@ -250,7 +250,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     2. Return a disposer that deletes it.
   - **Acceptance:** snapshot tests, plus a test that every emitted key path exists in `fixtures/omp-config-list.json`.
   - **Verify:** `pnpm test -- omp-overlay`
-- [ ] **OM2.6 — Server wiring for OMP turns**
+- [x] **OM2.6 — Server wiring for OMP turns** — f372e04
 
   - **Depends:** OM2.4, OM2.5
   - **Files:** `apps/server/src/agent.ts` (CLI path around line 775; `#decryptKey` usage at line 590), `providers.ts` (`provider()` returns OMP), `turn-scheduler.ts` (`TurnKind` adds `"omp"`, `ompTotal`), `index.ts:232`
@@ -264,14 +264,14 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - Permission prompts appear in the chat.
     - Stop works.
   - **Verify:** `pnpm test -- agent`, plus a manual turn with real OMP on the dev machine
-- [ ] **OM2.7 — `OMP_ENABLED` routing**
+- [x] **OM2.7 — `OMP_ENABLED` routing** — 5749268
 
   - **Depends:** OM2.6
   - **Files:** `apps/server/src/agent.ts` (`resolveProvider`), its test
   - **Steps:** when `OMP_ENABLED`, a thread that is unbound and resolves to `native` becomes `omp`. Bound threads keep their provider (solution §11 step 1).
   - **Acceptance:** table tests for bound × requested × account default × flag.
   - **Verify:** `pnpm test -- agent`
-- [ ] **OM2.8 — `fake-omp` for tests and load**
+- [x] **OM2.8 — `fake-omp` for tests and load** — 64edf77
 
   - **Depends:** OM0.2
   - **Files:** new `scripts/load/fake-omp.mjs`, `scripts/load/README.md`
