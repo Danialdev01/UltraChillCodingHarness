@@ -1459,7 +1459,11 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
         >
           <div className="mx-auto flex max-w-3xl flex-col gap-3 @md:gap-4">
             {continuedFrom && (
-              <HandoffRow direction="from" href={threadHref(continuedFrom.hash)} label="Continued from an earlier thread" />
+              <HandoffRow
+                direction="from"
+                href={threadHref(continuedFrom.hash)}
+                label={continuedFrom.limit ? "Continued from a thread that hit its usage limit" : "Continued from an earlier thread"}
+              />
             )}
             {!historyLoaded && messages.length === 0 ? (
               <ConversationSkeleton />
@@ -1494,7 +1498,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
               <HandoffRow
                 direction="in"
                 href={threadHref(continuedIn.hash)}
-                label={`Continued in a new thread on ${providerLabel(continuedIn.provider ?? "")}`}
+                label={`${continuedIn.limit ? "Usage limit reached. " : ""}Continued in a new thread on ${providerLabel(continuedIn.provider ?? "")}`}
               />
             )}
 

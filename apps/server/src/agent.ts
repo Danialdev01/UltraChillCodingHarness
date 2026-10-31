@@ -24,7 +24,9 @@ import {
   effectiveCredentialSource,
   isTransient,
   isRiskyCommand,
+  limitFallback,
   needsApproval,
+  readAgentSettings,
   type CliProviderId,
   type Command,
   type DomainEvent,
@@ -290,14 +292,19 @@ export class AgentTurnReactor {
       // The model and effort ride on the command rather than the event: they
       // are how this turn was asked for, not something that happened.
       const sent = command.type === "thread.send" ? command : undefined;
-      void this.#run(event.threadId, event.text, {
-        model: sent?.model,
-        effort: sent?.effort,
-        provider: sent?.provider,
-        // From the event, not the command: it is recorded there, and a turn
-        // replayed from the log runs the same pipeline the original did.
-        mode: event.mode,
-      }).catch(this.onError);
+      void this.#run(
+        event.threadId,
+        event.text,
+        {
+          model: sent?.model,
+          effort: sent?.effort,
+          provider: sent?.provider,
+          // From the event, not the command: it is recorded there, and a turn
+          // replayed from the log runs the same pipeline the original did.
+          mode: event.mode,
+        },
+        principal,
+      ).catch(this.onError);
     }
   }
 
@@ -416,16 +423,55 @@ export class AgentTurnReactor {
    * while the thread is still `queued` finds the turn and stops it before it
    * opens.
    */
-  async #run(threadId: string, text: string, options: TurnOptions): Promise<void> {
+  async #run(threadId: string, text: string, options: TurnOptions, principal?: Principal): Promise<void> {
     const controller = new AbortController();
     this.#running.set(threadId, controller);
+    let limited: ProviderId | undefined;
     try {
-      await this.#turn(threadId, text, options, controller);
+      limited = await this.#turn(threadId, text, options, controller);
     } finally {
       // Only if it is still ours: a turn that overran its own cancellation
       // must not clear a controller the next turn has already registered.
       if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
     }
+    // After the turn has let go of the thread: the handoff claims it anew.
+    if (limited) await this.#handOffOnLimit(threadId, limited, text, principal);
+  }
+
+  /**
+   * Automatic handoff on a usage limit (solution §5.4, OM4.6): a Claude Code
+   * or Codex turn that failed on its plan's limit goes on in a new thread on
+   * the workspace's fallback provider, which is asked the message that
+   * failed. The workspace turns it on (`agent_settings.autoHandoff`).
+   *
+   * Once per chain: a thread that already handed off on a limit, or was
+   * itself started by one, fails as it would without the setting. So a
+   * fallback that is limited too stops there instead of handing back.
+   */
+  async #handOffOnLimit(threadId: string, provider: ProviderId, text: string, principal: Principal | undefined): Promise<void> {
+    const dispatch = this.options.dispatch;
+    if (!dispatch || !principal) return;
+    const [row] = await this.db
+      .select({ agent: workspaces.agentSettings })
+      .from(threads)
+      .innerJoin(projects, eq(projects.id, threads.projectId))
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .where(eq(threads.id, threadId))
+      .limit(1);
+    const target = row ? limitFallback(readAgentSettings(row.agent), provider) : null;
+    if (!target) return;
+    const history = await this.store.threadHistory(threadId);
+    if (history.some(({ event }) => event.type === "thread.handed_off" && event.reason === "limit")) return;
+    const result = await dispatch(principal, {
+      type: "thread.handoff_to",
+      threadId,
+      targetProvider: target,
+      message: text,
+      reason: "limit",
+    });
+    // Refused -- the thread was sent another message meanwhile, or its
+    // worktree is gone: the failed turn already says what happened.
+    if (!result.ok) this.onError(new Error(`automatic handoff of ${threadId} refused: ${result.message}`));
   }
 
   async #turn(
@@ -433,7 +479,7 @@ export class AgentTurnReactor {
     text: string,
     { model, effort, provider: requestedProvider, mode }: TurnOptions,
     controller: AbortController,
-  ): Promise<void> {
+  ): Promise<ProviderId | undefined> {
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
     // Nothing to release: the thread, and its status, went with it.
     if (!thread) return;
@@ -478,8 +524,11 @@ export class AgentTurnReactor {
     // Its writes name the worktree, so a view of another tree skips them.
     const worktreeId = worktreeIdOf(this.options.workspaceRoot, { projectId: thread.projectId, tree: workspace });
 
+    // The turn failed on its plan's usage limit (OM4.6): `#run` may hand it off.
+    let limited = false;
     const write = (batch: readonly DomainEvent[]) => {
       if (batch.length === 0) return Promise.resolve([]);
+      if (batch.some((event) => event.type === "agent.turn_failed" && event.limit)) limited = true;
       const events = worktreeId
         ? batch.map((event) => (event.type === "file.changed" ? { ...event, worktreeId } : event))
         : batch;
@@ -642,7 +691,8 @@ export class AgentTurnReactor {
           ...(mode ? { mode } : {}),
           ...(researched ? { researched } : {}),
         });
-        return;
+        // Claude Code and Codex are the subscriptions with a limit to hit.
+        return limited && (provider === "claude" || provider === "codex") ? provider : undefined;
       }
 
       const resolvedModel = resolveModel(model, owner.defaultModel, this.options.defaultModel);
@@ -918,6 +968,7 @@ export class AgentTurnReactor {
         toHash: made.hash,
         targetProvider: event.targetProvider,
         brief,
+        ...(event.reason ? { reason: event.reason } : {}),
       };
       // Linked before its first message, so the new thread's log opens
       // with where it came from.
@@ -928,7 +979,7 @@ export class AgentTurnReactor {
       const sent = await dispatch(principal, {
         type: "thread.send",
         threadId: made.threadId,
-        text: handoffMessage(brief),
+        text: handoffMessage(brief, event.message),
         provider: event.targetProvider,
       });
       if (!sent.ok) {

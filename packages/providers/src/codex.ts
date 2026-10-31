@@ -126,6 +126,24 @@ export async function probeCodex(
   });
 }
 
+/**
+ * Codex's words for a plan's usage limit or quota, as 0.166.0 writes them
+ * (read from its binary): "You’ve hit your usage limit. Upgrade to Plus …",
+ * "… Visit https://chatgpt.com/settings/usage to purchase more credits",
+ * "… for <model>. Switch to another model now", "Quota exceeded. Check your
+ * plan and billing details.", "Your workspace is out of credits. …" and "You
+ * hit your spend cap set in your workspace. …". The apostrophe is U+2019.
+ * "To use Codex with your ChatGPT plan, upgrade to Plus" is not one: no reset
+ * brings that plan back.
+ */
+const CODEX_LIMIT =
+  /\bYou['’]ve hit your usage limit\b|\bQuota exceeded\. Check your plan\b|\bworkspace is out of credits\b|\bYou hit your spend cap\b/i;
+
+/** Whether a failure's text says the subscription hit its limit. */
+export function isCodexLimit(message: string): boolean {
+  return CODEX_LIMIT.test(message);
+}
+
 /** An item as `codex exec --json` prints it. Only the fields read here. */
 interface Item {
   id?: string;
@@ -211,12 +229,15 @@ export class CodexNormaliser implements Normaliser {
 
       case "turn.failed":
       case "error": {
+        // A fatal error is printed twice, `error` and then `turn.failed`
+        // with the same message: one failure, so the first one ends it.
+        if (this.#closed) return [];
         this.#closed = true;
         const error =
           typeof line.error === "string"
             ? line.error
             : (line.error?.message ?? line.message ?? "codex reported an error");
-        return [{ type: "agent.turn_failed", ...ids, error }];
+        return [{ type: "agent.turn_failed", ...ids, error, ...(isCodexLimit(error) ? { limit: true as const } : {}) }];
       }
 
       default:
@@ -240,7 +261,9 @@ export class CodexNormaliser implements Normaliser {
       ];
     }
     const why = exit.stderrTail || (exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`);
-    return [{ type: "agent.turn_failed", ...ids, error: `codex exited with ${why}` }];
+    return [
+      { type: "agent.turn_failed", ...ids, error: `codex exited with ${why}`, ...(isCodexLimit(why) ? { limit: true as const } : {}) },
+    ];
   }
 
   #now(): number {
@@ -321,8 +344,10 @@ export class CodexNormaliser implements Normaliser {
           isError: false,
         }));
 
-      case "error":
-        return [{ type: "agent.turn_failed", ...ids, error: item.message ?? "codex reported an error" }];
+      case "error": {
+        const error = item.message ?? "codex reported an error";
+        return [{ type: "agent.turn_failed", ...ids, error, ...(isCodexLimit(error) ? { limit: true as const } : {}) }];
+      }
 
       default:
         return [];

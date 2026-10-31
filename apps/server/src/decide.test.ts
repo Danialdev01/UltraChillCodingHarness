@@ -429,6 +429,22 @@ describe("thread.handoff_to", () => {
     expect(d).toEqual({ ok: true, events: [{ type: "thread.handoff_requested", threadId: THREAD, targetProvider: "omp" }] });
   });
 
+  it("carries the server's own handoff on a limit: the message that failed, and why", () => {
+    const d = run({ project: project(), thread: thread({ provider: "claude", status: "error" }) }, {
+      type: "thread.handoff_to",
+      threadId: THREAD,
+      targetProvider: "codex",
+      message: "Add the retry test",
+      reason: "limit",
+    });
+    expect(d).toEqual({
+      ok: true,
+      events: [
+        { type: "thread.handoff_requested", threadId: THREAD, targetProvider: "codex", message: "Add the retry test", reason: "limit" },
+      ],
+    });
+  });
+
   it("refuses a thread that has never run", () => {
     const d = run({ project: project(), thread: thread() }, { type: "thread.handoff_to", threadId: THREAD, targetProvider: "codex" });
     expect(d).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("no conversation") } });

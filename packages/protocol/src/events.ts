@@ -326,6 +326,10 @@ const ThreadHandoffRequested = z.object({
   threadId: z.string().uuid(),
   targetProvider: ProviderId,
   focus: z.string().max(2_000).optional(),
+  /** What the new thread is asked after the brief; "Continue from here." when absent. */
+  message: z.string().optional(),
+  /** `limit`: started by the server, the thread's provider having hit its usage limit. */
+  reason: z.literal("limit").optional(),
 });
 
 /**
@@ -342,6 +346,7 @@ const ThreadHandedOff = z.object({
   toHash: ThreadHash,
   targetProvider: ProviderId,
   brief: z.string(),
+  reason: z.literal("limit").optional(),
 });
 
 /** No new thread was started: why, for the thread that asked. */
@@ -549,6 +554,13 @@ const AgentTurnFailed = z.object({
   threadId: z.string().uuid(),
   turnId: z.string().uuid(),
   error: z.string(),
+  /**
+   * The provider refused for a usage limit or quota -- the subscription's,
+   * not the request's -- so it will not work again until the limit resets,
+   * and another provider can carry the work on (solution §5.4). Set by the
+   * Claude Code and Codex normalisers; absent on every other failure.
+   */
+  limit: z.literal(true).optional(),
 });
 
 // -- Checkpoints and files ---------------------------------------------------

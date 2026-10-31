@@ -199,6 +199,13 @@ const ThreadHandoffTo = z.object({
   threadId: z.string().uuid(),
   targetProvider: ProviderId,
   focus: z.string().trim().max(2_000).optional(),
+  /**
+   * What the new thread is asked after the brief, in place of "Continue
+   * from here.": the message a limit stopped, when the server hands off
+   * on its own (`reason: "limit"`).
+   */
+  message: z.string().min(1).optional(),
+  reason: z.literal("limit").optional(),
 });
 
 const TerminalCreate = z.object({

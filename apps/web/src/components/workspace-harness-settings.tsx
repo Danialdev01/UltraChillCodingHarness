@@ -1,8 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { BotIcon, KeyRoundIcon, Loader2Icon, TrashIcon } from "lucide-react"
-import type { CredentialPolicy, CredentialSource } from "@ucch/protocol"
+import { ArrowRightLeftIcon, BotIcon, KeyRoundIcon, Loader2Icon, TrashIcon } from "lucide-react"
+import type { CredentialPolicy, CredentialSource, ProviderId } from "@ucch/protocol"
 
 import { ProviderSettings } from "@/components/provider-settings"
 import { Outcome, useOutcome } from "@/components/settings-outcome"
@@ -14,6 +14,7 @@ import { readCredentialChoice, storeCredentialChoice } from "@/lib/credential-ch
 import type { Workspace } from "@/lib/session"
 import {
   fetchHarnessSettings,
+  setAgentSettings,
   setCredentialPolicy,
   setWorkspaceCredential,
   type WorkspaceHarnessSettings as HarnessSettings,
@@ -71,6 +72,9 @@ export function WorkspaceHarnessSettings({
         onChange={setSettings}
       />
       {settings?.credentialPolicy === "either" && <MyChoice workspaceId={workspace.id} />}
+      {settings && (
+        <AutoHandoffSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+      )}
       {settings && settings.credentialPolicy !== "member" && (
         <>
           <OpenRouterSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
@@ -219,6 +223,84 @@ function OpenRouterSection({
           )}
         </form>
       )}
+      <Outcome error={error} done={done} />
+    </section>
+  )
+}
+
+/** Where a limited turn can go on: the agents with a session of their own. */
+const FALLBACKS: { id: ProviderId; label: string }[] = [
+  { id: "claude", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
+  { id: "omp", label: "Custom" },
+]
+
+/**
+ * Automatic handoff on a usage limit (solution §5.4): a Claude Code or Codex
+ * turn stopped by its plan's limit goes on in a new thread on the fallback,
+ * in the same files, asked the same message. Once per thread.
+ */
+function AutoHandoffSection({
+  workspaceId,
+  settings,
+  manages,
+  onChange,
+}: {
+  workspaceId: string
+  settings: HarnessSettings
+  manages: boolean
+  onChange: (settings: HarnessSettings) => void
+}) {
+  const { busy, error, done, run } = useOutcome()
+  const { enabled, fallbackProvider } = settings.agent.autoHandoff
+  const save = (next: { enabled: boolean; fallbackProvider: ProviderId | null }) =>
+    void run(async () => {
+      onChange(await setAgentSettings(workspaceId, { autoHandoff: next }))
+      return "Saved."
+    })
+
+  return (
+    <section className="rounded-lg border p-6">
+      <h2 className="flex items-center gap-2 text-sm font-medium">
+        <ArrowRightLeftIcon className="text-muted-foreground size-4" />
+        Hand off on a usage limit
+      </h2>
+      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
+        When a Claude Code or Codex turn stops because its plan&apos;s usage limit is reached, carry the work on in a
+        new thread on another agent, in the same files, with the message that was stopped. A brief of the thread is
+        written first, on the OpenRouter key. A thread hands off at most once this way.
+      </p>
+      <div className="mt-4 flex max-w-xl flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={!manages || busy || (!enabled && !fallbackProvider)}
+            onChange={(e) => save({ enabled: e.target.checked, fallbackProvider })}
+            aria-label="Hand off on a usage limit"
+          />
+          On
+        </label>
+        <div className="w-48">
+          <NativeSelect
+            id="auto-handoff-fallback"
+            value={fallbackProvider ?? ""}
+            disabled={!manages || busy}
+            onChange={(v) => {
+              const next = FALLBACKS.find((f) => f.id === v)?.id ?? null
+              save({ enabled: enabled && next !== null, fallbackProvider: next })
+            }}
+          >
+            <option value="">Choose an agent…</option>
+            {FALLBACKS.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label}
+              </option>
+            ))}
+          </NativeSelect>
+        </div>
+      </div>
+      {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
     </section>
   )

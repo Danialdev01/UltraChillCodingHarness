@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DomainEvent } from "@ucch/protocol";
 import { describe, expect, it } from "vitest";
-import { CodexNormaliser, CodexProvider, codexArgv, codexPrompt, probeCodex } from "./codex.js";
+import { CodexNormaliser, CodexProvider, codexArgv, codexPrompt, isCodexLimit, probeCodex } from "./codex.js";
 import { FakeProcessHost, stdout } from "./testing.js";
 
 const WORKSPACE = "/srv/ucch/workspaces/11111111-1111-4111-8111-111111111111";
@@ -124,6 +124,41 @@ describe("CodexNormaliser", () => {
     );
     expect(use?.type).toBe("agent.tool_use");
     expect(result).toMatchObject({ type: "agent.tool_result", isError: true });
+  });
+
+  // Built from `codex exec --json`'s shape and 0.166.0's own message text:
+  // no logged-in Codex was at hand to record a real one (spike report).
+  it("fails a usage limit once, flagged, though Codex prints it twice", () => {
+    const n = new CodexNormaliser({ ...ids, workspace: WORKSPACE });
+    const limit = readFileSync(join(import.meta.dirname, "fixtures", "codex-limit.jsonl"), "utf8");
+    const failed = feed(n, limit).filter((e) => e.type === "agent.turn_failed");
+    expect(failed).toEqual([
+      {
+        type: "agent.turn_failed",
+        threadId: ids.threadId,
+        turnId: ids.turnId,
+        error: expect.stringContaining("You’ve hit your usage limit."),
+        limit: true,
+      },
+    ]);
+    expect(n.finish({ code: 1, signal: null, interrupted: false, stderrTail: "" })).toEqual([]);
+  });
+
+  it("flags a run that died on a limit, and nothing else", () => {
+    const n = new CodexNormaliser({ ...ids, workspace: WORKSPACE });
+    expect(n.finish({ code: 1, signal: null, interrupted: false, stderrTail: "Quota exceeded. Check your plan and billing details." })).toEqual([
+      expect.objectContaining({ type: "agent.turn_failed", limit: true }),
+    ]);
+    for (const text of [
+      "You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits",
+      "You’ve hit your usage limit for gpt-5-codex. Switch to another model now, or try again at 3:06 PM.",
+      "Your workspace is out of credits. Add credits to continue.",
+      "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
+    ]) {
+      expect(isCodexLimit(text), text).toBe(true);
+    }
+    expect(isCodexLimit("To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.")).toBe(false);
+    expect(isCodexLimit("stream disconnected before completion")).toBe(false);
   });
 
   it("closes an interrupted run as cancelled", () => {

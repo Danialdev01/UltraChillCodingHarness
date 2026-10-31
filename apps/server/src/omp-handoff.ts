@@ -187,8 +187,8 @@ export function renderTranscript(events: readonly DomainEvent[], options: { maxT
  * so the agent reads it as where the work stands rather than as a request,
  * then the request.
  */
-export function handoffMessage(brief: string): string {
-  return `<handoff-brief>\n${brief.trim()}\n</handoff-brief>\n\nContinue from here.`;
+export function handoffMessage(brief: string, message?: string): string {
+  return `<handoff-brief>\n${brief.trim()}\n</handoff-brief>\n\n${message?.trim() || "Continue from here."}`;
 }
 
 /** The new thread's title: the old one's, saying it carries it on. */

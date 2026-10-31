@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
 import type { Command, DomainEvent } from "@ucch/protocol";
-import { createProviders, HostProcessHost, OmpProvider, type AgentProvider, type ProviderRunInput } from "@ucch/providers";
+import { ClaudeNormaliser, createProviders, HostProcessHost, OmpProvider, type AgentProvider, type ProviderRunInput } from "@ucch/providers";
 import {
   AgentTurnReactor,
   ompInstructions,
@@ -999,6 +999,21 @@ describe("an OMP turn", () => {
       }
     });
 
+    it("asks the new thread the message a limit stopped, and says why on both links", async () => {
+      const { agent, dispatched, appendedTo, errors } = await handoffReactor({ ...thread, title: "t", provider: "claude" }, history("claude"));
+      const requested = { type: "thread.handoff_requested", threadId: THREAD, targetProvider: "codex", message: "Add the retry test", reason: "limit" } as const;
+      agent.react({ type: "thread.handoff_to", threadId: THREAD, targetProvider: "codex", message: "Add the retry test", reason: "limit" }, [requested], principal);
+      const deadline = Date.now() + 10_000;
+      while (!appendedTo.flatMap((entry) => entry.batch).some(ended) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+      expect(errors).toEqual([]);
+      const sent = dispatched.find((command) => command.type === "thread.send");
+      expect(sent).toMatchObject({ provider: "codex", text: expect.stringMatching(/<\/handoff-brief>\n\nAdd the retry test$/) });
+      expect(appendedTo.map((entry) => entry.batch[0])).toEqual([
+        expect.objectContaining({ type: "thread.handed_off", threadId: NEW_THREAD, reason: "limit" }),
+        expect.objectContaining({ type: "thread.handed_off", threadId: THREAD, reason: "limit" }),
+      ]);
+    });
+
     it("frees the thread with OMP's error, starting nothing", async () => {
       const saved = process.env.FAKE_OMP_PRINT_FAIL;
       process.env.FAKE_OMP_PRINT_FAIL = "No API key found for openrouter.";
@@ -1050,5 +1065,135 @@ describe("an OMP turn", () => {
     await until(appended, closed);
     expect(appended.flat().at(-1)).toMatchObject({ type: "agent.turn_failed", error: expect.stringContaining("No OpenRouter API key") });
     await expect(readdir(join(creds, USER, "omp", "sessions"))).rejects.toThrow();
+  });
+});
+
+describe("automatic handoff on a usage limit (OM4.6)", () => {
+  const principal = { userId: USER, sessionId: "s", scopes: ["read", "write", "exec"] as ("read" | "write" | "exec")[] };
+  const FIXTURES = join(import.meta.dirname, "../../../packages/providers/src/fixtures");
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "ucch-limit-"));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** Claude Code as the recorded limit fixture plays it, through the real normaliser. */
+  const limitedClaude: AgentProvider = {
+    id: "claude",
+    label: "Claude Code",
+    models: [],
+    probe: async () => ({ installed: true, authenticated: true, authMode: "subscription" }),
+    run: (input) => ({
+      events: (async function* () {
+        const normaliser = new ClaudeNormaliser({ ...input, workspace: input.ctx.cwd });
+        for (const line of readFileSync(join(FIXTURES, "claude-limit.jsonl"), "utf8").split("\n")) yield* normaliser.push(line);
+        yield* normaliser.finish({ code: 0, signal: null, interrupted: false, stderrTail: "" });
+      })(),
+      interrupt: async () => {},
+      kill: async () => {},
+    }),
+  };
+
+  /**
+   * A Claude Code turn on a bound thread. The database answers by what is
+   * asked: the workspace's agent settings for the handoff's read, otherwise
+   * the turn's own rows in order.
+   */
+  function limitReactor(agentSettings: unknown, log: DomainEvent[] = []) {
+    const rows: unknown[][] = [[{ ...thread, provider: "claude", providerSessionId: "s1" }], [{ stack: null }], [owner], [person]];
+    const select = (fields?: Record<string, unknown>) => {
+      const next = () => Promise.resolve(fields && "agent" in fields ? [{ agent: agentSettings }] : (rows.shift() ?? []));
+      const chain: Record<string, unknown> = {};
+      for (const step of ["from", "innerJoin", "where", "orderBy"]) chain[step] = () => chain;
+      chain.limit = next;
+      chain.then = (resolve: (value: unknown) => void, reject: (error: unknown) => void) => next().then(resolve, reject);
+      return chain;
+    };
+    const appended: DomainEvent[][] = [];
+    const store = {
+      append: async (_target: unknown, batch: DomainEvent[]) => {
+        appended.push(batch);
+        return [];
+      },
+      threadHistory: async () => log.map((event, i) => ({ id: String(i), threadId: THREAD, projectId: PROJECT, seq: i, createdAt: "", event })),
+    } as unknown as EventStore;
+    const dispatched: Command[] = [];
+    const errors: unknown[] = [];
+    const providers = {
+      resolve: async () => ({ provider: limitedClaude, ctx: (cwd: string) => ({ cwd, env: {}, host: new HostProcessHost() }) }),
+    } as unknown as ProviderService;
+    const agent = new AgentTurnReactor(
+      { select } as unknown as Database,
+      store,
+      {
+        workspaceRoot: join(root, "workspaces"),
+        defaultModel: "anthropic/claude-sonnet-4.5",
+        cliEnabled: true,
+        providers,
+        dispatch: async (_principal: unknown, command: Command) => {
+          dispatched.push(command);
+          return { ok: true, events: [] };
+        },
+      } as unknown as AgentOptions,
+      (error) => errors.push(error),
+    );
+    return { agent, appended, dispatched, errors };
+  }
+
+  const on = { autoHandoff: { enabled: true, fallbackProvider: "codex" } };
+  const ask = { type: "thread.send", threadId: THREAD, text: "Add the retry test", provider: "claude" } as const;
+  const asked: DomainEvent = { type: "user.message", threadId: THREAD, text: "Add the retry test" };
+
+  async function settled(run: ReturnType<typeof limitReactor>) {
+    const deadline = Date.now() + 5_000;
+    while (!run.appended.flat().some((e) => e.type === "agent.turn_failed") && Date.now() < deadline) await settle();
+    await settle();
+  }
+
+  it("hands the recorded limit off once, to the fallback, with the message that failed", async () => {
+    const run = limitReactor(on);
+    run.agent.react(ask, [asked], principal);
+    await settled(run);
+    expect(run.appended.flat().find((e) => e.type === "agent.turn_failed")).toMatchObject({ limit: true });
+    expect(run.dispatched).toEqual([
+      { type: "thread.handoff_to", threadId: THREAD, targetProvider: "codex", message: "Add the retry test", reason: "limit" },
+    ]);
+    expect(run.errors).toEqual([]);
+  });
+
+  it("does not loop: a thread a limit handoff started, or one that made one, fails as it would", async () => {
+    const link = {
+      type: "thread.handed_off",
+      fromThreadId: "99999999-9999-4999-8999-999999999999",
+      fromHash: "abcdef654321",
+      toThreadId: THREAD,
+      toHash: "abcdef123456",
+      targetProvider: "claude",
+      brief: "b",
+      reason: "limit",
+    } as const;
+    for (const log of [[{ ...link, threadId: THREAD }], [{ ...link, threadId: THREAD, fromThreadId: THREAD, toThreadId: link.fromThreadId }]]) {
+      const run = limitReactor(on, log);
+      run.agent.react(ask, [asked], principal);
+      await settled(run);
+      expect(run.appended.flat().some((e) => e.type === "agent.turn_failed")).toBe(true);
+      expect(run.dispatched).toEqual([]);
+    }
+  });
+
+  it("does nothing with the setting off, with no fallback, or with the limited provider as the fallback", async () => {
+    for (const settings of [
+      {},
+      { autoHandoff: { enabled: false, fallbackProvider: "codex" } },
+      { autoHandoff: { enabled: true, fallbackProvider: null } },
+      { autoHandoff: { enabled: true, fallbackProvider: "claude" } },
+    ]) {
+      const run = limitReactor(settings);
+      run.agent.react(ask, [asked], principal);
+      await settled(run);
+      expect(run.dispatched).toEqual([]);
+    }
   });
 });

@@ -7,3 +7,4 @@ export * from "./git.js";
 export * from "./database.js";
 export * from "./permissions.js";
 export * from "./workspace-roles.js";
+export * from "./agent-settings.js";

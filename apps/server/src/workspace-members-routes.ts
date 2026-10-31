@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { AssignableRole, CredentialPolicy } from "@ucch/protocol";
+import { AssignableRole, CredentialPolicy, WorkspaceAgentSettingsPatch } from "@ucch/protocol";
 import type { WorkspaceMemberService } from "./workspace-members.js";
 
 type Principal = { userId: string };
@@ -21,6 +21,7 @@ export interface WorkspaceMemberRouteDeps {
     | "acceptInvite"
     | "settings"
     | "setPolicy"
+    | "setAgentSettings"
     | "setCredential"
   >;
   /** A dedicated credential changed: cached provider probes for the workspace are stale. */
@@ -50,7 +51,10 @@ const InviteBody = z.object({
   maxUses: z.number().int().min(1).max(1000).nullable().default(null),
 });
 
-const SettingsBody = z.object({ credentialPolicy: CredentialPolicy });
+/** Either or both: who pays, and how the agents run. */
+const SettingsBody = z
+  .object({ credentialPolicy: CredentialPolicy.optional(), agent: WorkspaceAgentSettingsPatch.optional() })
+  .refine((body) => body.credentialPolicy !== undefined || body.agent !== undefined);
 
 const CredentialBody = z.object({
   /** null clears it. */
@@ -189,10 +193,16 @@ export function registerWorkspaceMemberRoutes(app: FastifyInstance, deps: Worksp
     if (!principal) return reply.code(401).send(unauthorized);
     if (!Uuid.safeParse(request.params.id).success) return reply.code(404).send(notFound);
     const parsed = SettingsBody.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "credentialPolicy must be member, workspace or either" });
-    if (!(await members.setPolicy(request.params.id, principal.userId, parsed.data.credentialPolicy))) {
-      return reply.code(403).send({ error: "only a workspace admin can change this" });
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "send credentialPolicy (member, workspace or either), agent settings, or both" });
     }
+    const { credentialPolicy, agent } = parsed.data;
+    const allowed =
+      (credentialPolicy === undefined || (await members.setPolicy(request.params.id, principal.userId, credentialPolicy))) &&
+      (agent === undefined || (await members.setAgentSettings(request.params.id, principal.userId, agent)));
+    if (!allowed) return reply.code(403).send({ error: "only a workspace admin can change this" });
     return members.settings(request.params.id, principal.userId);
   });
 

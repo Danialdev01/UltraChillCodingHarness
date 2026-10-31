@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "agent_settings" jsonb DEFAULT '{}'::jsonb NOT NULL;

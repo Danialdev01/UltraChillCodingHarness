@@ -68,6 +68,8 @@ export interface HandoffLink {
   hash: string;
   /** What it runs on; known for the thread handed to. */
   provider?: ProviderId;
+  /** The server handed off on its own: the provider hit its usage limit. */
+  limit?: true;
 }
 
 /** The new thread's first message as the server writes it (`handoffMessage`). */
@@ -510,9 +512,14 @@ export function toMessages(
         if (event.threadId === event.fromThreadId) {
           handingOff = null;
           running = false;
-          continuedIn = { threadId: event.toThreadId, hash: event.toHash, provider: event.targetProvider };
+          continuedIn = {
+            threadId: event.toThreadId,
+            hash: event.toHash,
+            provider: event.targetProvider,
+            ...(event.reason === "limit" ? { limit: true as const } : {}),
+          };
         } else {
-          continuedFrom = { threadId: event.fromThreadId, hash: event.fromHash };
+          continuedFrom = { threadId: event.fromThreadId, hash: event.fromHash, ...(event.reason === "limit" ? { limit: true as const } : {}) };
         }
         break;
 

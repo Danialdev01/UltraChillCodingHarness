@@ -224,6 +224,9 @@ interface Line {
   max_retries?: number;
   retry_delay_ms?: number;
   error?: unknown;
+  rate_limit_info?: { status?: string; rateLimitType?: string; resetsAt?: number };
+  /** The API's own error type, on a response it refused: `usage_limit_reached` for the plan's limit. */
+  api_error?: string;
   is_error?: boolean;
   result?: string | null;
   terminal_reason?: string;
@@ -250,6 +253,8 @@ export class ClaudeNormaliser implements Normaliser {
   #io: { write(line: string): void; endStdin(): void } | null = null;
   /** The response being assembled: blocks so far, keyed by message id. */
   #message: { id: string; content: unknown[] } | null = null;
+  /** The turn met a usage limit: a refused `rate_limit_event`, or a response the API refused for one. */
+  #limited = false;
   #usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -347,6 +352,12 @@ export class ClaudeNormaliser implements Normaliser {
         return [];
       }
 
+      case "rate_limit_event":
+        // `allowed`, `allowed_warning` or `rejected` (2.1.316's SDK schema);
+        // only a refusal says this turn met the limit.
+        if (line.rate_limit_info?.status === "rejected") this.#limited = true;
+        return [];
+
       case "stream_event": {
         // Subagent prose is not this turn's prose; its tool calls still
         // arrive as ordinary assistant lines below.
@@ -363,6 +374,12 @@ export class ClaudeNormaliser implements Normaliser {
       }
 
       case "assistant": {
+        // An API error the CLI wrote as the response. The plan's limit is
+        // `api_error: "usage_limit_reached"` (beside `error: "rate_limit"`),
+        // or `billing_error` ("usage limit reached -- check plan"). A bare
+        // `rate_limit` is a request throttled past its retries, which the
+        // plan's next reset has nothing to do with.
+        if (!line.parent_tool_use_id && isLimitLine(line)) this.#limited = true;
         const blocks = line.message?.content ?? [];
         const events: DomainEvent[] = [];
         const id = line.message?.id ?? "";
@@ -459,10 +476,12 @@ export class ClaudeNormaliser implements Normaliser {
             costUsd: Math.max(0, line.total_cost_usd ?? 0),
           });
         } else if (line.is_error) {
+          const error = line.result?.trim() || line.subtype || "claude reported an error";
           events.push({
             type: "agent.turn_failed",
             ...ids,
-            error: explainClaudeError(line.result?.trim() || line.subtype || "claude reported an error"),
+            error: explainClaudeError(error),
+            ...(this.#limited || isLimitLine(line) || isClaudeLimit(error) ? { limit: true as const } : {}),
           });
         } else {
           events.push({
@@ -501,7 +520,12 @@ export class ClaudeNormaliser implements Normaliser {
       return events;
     }
     const why = exit.stderrTail || (exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`);
-    events.push({ type: "agent.turn_failed", ...ids, error: explainClaudeError(`claude exited with ${why}`) });
+    events.push({
+      type: "agent.turn_failed",
+      ...ids,
+      error: explainClaudeError(`claude exited with ${why}`),
+      ...(this.#limited || isClaudeLimit(why) ? { limit: true as const } : {}),
+    });
     return events;
   }
 
@@ -585,6 +609,28 @@ function flattenContent(content: unknown): string {
  */
 const AUTH_FAILURE =
   /OAuth session expired|could not be refreshed|OAuth token (has )?expired|invalid_grant|authentication_error|Failed to authenticate|Invalid API key|Please run \/login/i;
+
+/**
+ * Claude Code's words for a usage limit, as 2.1.316 writes them (read from
+ * its binary, and `fixtures/claude-limit.jsonl`): "You've hit your limit ·
+ * resets 10:06am", "You've hit your weekly limit", "… monthly spend limit",
+ * "You've hit your team's shared budget", "Usage limit reached", and the
+ * older "Claude AI usage limit reached|<epoch>". The text is the fallback:
+ * `api_error: "usage_limit_reached"` and a refused `rate_limit_event` say it
+ * first.
+ */
+const CLAUDE_LIMIT =
+  /\bYou['’]ve hit your [^\n]*(?:limit|budget)\b|\busage limit reached\b|\bspend limit reached\b/i;
+
+/** Whether a line is an API refusal for the plan's usage limit. */
+function isLimitLine(line: Line): boolean {
+  return line.api_error === "usage_limit_reached" || line.error === "billing_error";
+}
+
+/** Whether a failure's text says the subscription hit its limit. */
+export function isClaudeLimit(message: string): boolean {
+  return CLAUDE_LIMIT.test(message);
+}
 
 /**
  * A failed turn's error, with what to do about it when the cause is the

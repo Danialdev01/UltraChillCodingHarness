@@ -423,6 +423,8 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           threadId: thread.value.id,
           targetProvider: command.targetProvider,
           ...(command.focus ? { focus: command.focus } : {}),
+          ...(command.message ? { message: command.message } : {}),
+          ...(command.reason ? { reason: command.reason } : {}),
         },
       ]);
     }

@@ -161,6 +161,12 @@ export const workspaces = pgTable(
     openrouterKeyEncrypted: text("openrouter_key_encrypted"),
     claudeOauthTokenEncrypted: text("claude_oauth_token_encrypted"),
     claudeTokenIssuedAt: timestamp("claude_token_issued_at", { withTimezone: true }),
+    /**
+     * How the workspace's agents run beyond who pays: `WorkspaceAgentSettings`
+     * (automatic handoff, and the OMP toggles as they arrive). Read with
+     * `readAgentSettings`, which defaults whatever is missing.
+     */
+    agentSettings: jsonb("agent_settings").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

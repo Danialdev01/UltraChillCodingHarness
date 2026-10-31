@@ -7,6 +7,7 @@ import {
   ClaudeProvider,
   claudeArgv,
   explainClaudeError,
+  isClaudeLimit,
   maskEmail,
   probeClaude,
   workspaceRelative,
@@ -129,6 +130,63 @@ describe("claudeArgv", () => {
   it("keeps the prompt out of argv", () => {
     const argv = claudeArgv({ bin: "claude", caps });
     expect(argv.some((a) => a.includes("pong"))).toBe(false);
+  });
+});
+
+describe("ClaudeNormaliser on a usage limit", () => {
+  // Recorded from 2.1.316 in subscription mode against a local API that
+  // answered 429 with the plan's headers (`unified-status: rejected`).
+  it("fails the recorded turn once, flagged as a limit", () => {
+    const events = feed(new ClaudeNormaliser({ ...ids, workspace: WORKSPACE }), fixture("limit"));
+    const failed = events.filter((e) => e.type === "agent.turn_failed");
+    expect(failed).toEqual([
+      {
+        type: "agent.turn_failed",
+        threadId: ids.threadId,
+        turnId: ids.turnId,
+        error: "You've hit your limit · resets 10:06am (UTC)",
+        limit: true,
+      },
+    ]);
+    expect(events.some((e) => e.type === "agent.turn_completed")).toBe(false);
+  });
+
+  it("flags a limit from the API's own error type alone", () => {
+    const n = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    n.push(JSON.stringify({ type: "assistant", api_error: "usage_limit_reached", message: { id: "m", content: [] } }));
+    const [failed] = n.push(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "API Error: 429" }));
+    expect(failed).toMatchObject({ type: "agent.turn_failed", limit: true });
+  });
+
+  it("flags a CLI that died on a limit", () => {
+    const n = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const [failed] = n.finish({ code: 1, signal: null, interrupted: false, stderrTail: "Claude AI usage limit reached|1793498784" });
+    expect(failed).toMatchObject({ type: "agent.turn_failed", limit: true });
+  });
+
+  // A request throttled past its retries is not the plan's limit: no reset
+  // is coming that another provider would be worth switching for.
+  it("does not flag a throttled request or any other failure", () => {
+    const n = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    n.push(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning" } }));
+    n.push(JSON.stringify({ type: "assistant", error: "rate_limit", message: { id: "m", content: [] } }));
+    const [failed] = n.push(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "API Error: 429 rate_limit_error" }));
+    expect(failed).toEqual({ type: "agent.turn_failed", threadId: ids.threadId, turnId: ids.turnId, error: "API Error: 429 rate_limit_error" });
+  });
+
+  it("reads the CLI's limit wordings", () => {
+    for (const text of [
+      "You've hit your limit · resets 3pm",
+      "You've hit your weekly limit · resets Mon 9am",
+      "You've hit your monthly spend limit.",
+      "You've hit your team's shared budget. /model to switch models.",
+      "Usage limit reached · send a message after it resets",
+      "Claude AI usage limit reached|1793498784",
+    ]) {
+      expect(isClaudeLimit(text), text).toBe(true);
+    }
+    expect(isClaudeLimit("API Error: 529 overloaded_error")).toBe(false);
+    expect(isClaudeLimit("claude exited with code 1")).toBe(false);
   });
 });
 

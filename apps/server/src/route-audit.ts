@@ -219,10 +219,13 @@ const TABLE: Record<string, Describe> = {
     scope: "account",
   }),
   "PATCH /api/workspaces/:id/settings": (p, b) => ({
-    action: "workspace.credential_policy",
+    action: b?.credentialPolicy === undefined ? "workspace.agent_settings" : "workspace.credential_policy",
     targetType: "workspace",
     targetId: p.id,
-    summary: `Set the workspace's harness subscription to ${str(b?.credentialPolicy) ?? "a new policy"}`,
+    summary:
+      b?.credentialPolicy === undefined
+        ? "Changed the workspace's agent settings"
+        : `Set the workspace's harness subscription to ${str(b?.credentialPolicy) ?? "a new policy"}`,
     resource: "workspace_members",
     scope: "account",
   }),

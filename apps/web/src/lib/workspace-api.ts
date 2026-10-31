@@ -1,4 +1,4 @@
-import type { AssignableRole, CredentialPolicy, WorkspaceRole } from "@ucch/protocol";
+import type { AssignableRole, CredentialPolicy, WorkspaceAgentSettings, WorkspaceRole } from "@ucch/protocol";
 
 /**
  * The workspace writes the switcher and its Manage dialog make. REST rather
@@ -130,6 +130,8 @@ export interface InvitePreview {
 export interface WorkspaceHarnessSettings {
   credentialPolicy: CredentialPolicy;
   credentials: { openrouter: boolean; claudeToken: boolean; claudeTokenIssuedAt: string | null };
+  /** How the workspace's agents run; see `WorkspaceAgentSettings`. */
+  agent: WorkspaceAgentSettings;
 }
 
 export async function listMembers(workspaceId: string): Promise<WorkspaceMember[]> {
@@ -198,6 +200,17 @@ export function setCredentialPolicy(
   return json(`/api/workspaces/${workspaceId}/settings`, {
     method: "PATCH",
     body: JSON.stringify({ credentialPolicy }),
+  });
+}
+
+/** Replaces the agent-settings sections `patch` names; admins only. */
+export function setAgentSettings(
+  workspaceId: string,
+  patch: Partial<WorkspaceAgentSettings>,
+): Promise<WorkspaceHarnessSettings> {
+  return json(`/api/workspaces/${workspaceId}/settings`, {
+    method: "PATCH",
+    body: JSON.stringify({ agent: patch }),
   });
 }
 

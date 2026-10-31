@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import { describe, expect, it } from "vitest";
-import { canAssignRole, canManageMember, type Membership } from "@ucch/protocol";
+import { canAssignRole, canManageMember, readAgentSettings, type Membership, type WorkspaceAgentSettings } from "@ucch/protocol";
 import { registerWorkspaceMemberRoutes, type WorkspaceMemberRouteDeps } from "./workspace-members-routes.js";
 
 const WS = "00000000-0000-4000-8000-000000000001";
@@ -18,6 +18,7 @@ function fakeMembers() {
     [MEMBER, { role: "member", canCreateProject: null, canCreateSession: null }],
   ]);
   const invites = new Map<string, { role: "admin" | "member" | "viewer"; used: boolean }>();
+  const agent: WorkspaceAgentSettings = readAgentSettings(null);
   const members: WorkspaceMemberRouteDeps["members"] = {
     async list(_ws, actor) {
       if (!roster.has(actor)) return null;
@@ -83,12 +84,22 @@ function fakeMembers() {
     },
     async settings(_ws, actor) {
       return roster.has(actor)
-        ? { credentialPolicy: "member", credentials: { openrouter: false, claudeToken: false, claudeTokenIssuedAt: null } }
+        ? {
+            credentialPolicy: "member",
+            credentials: { openrouter: false, claudeToken: false, claudeTokenIssuedAt: null },
+            agent: { ...agent },
+          }
         : null;
     },
     async setPolicy(_ws, actor) {
       const role = roster.get(actor)?.role;
       return role === "owner" || role === "admin";
+    },
+    async setAgentSettings(_ws, actor, patch) {
+      const role = roster.get(actor)?.role;
+      if (role !== "owner" && role !== "admin") return false;
+      Object.assign(agent, patch);
+      return true;
     },
     async setCredential(_ws, actor) {
       const role = roster.get(actor)?.role;
@@ -219,5 +230,22 @@ describe("workspace member routes", () => {
       payload: { credentialPolicy: "workspace" },
     });
     expect(policy.statusCode).toBe(403);
+  });
+
+  it("changes the agent settings for an admin only, section by section", async () => {
+    const { app } = await server();
+    const body = { agent: { autoHandoff: { enabled: true, fallbackProvider: "codex" } } };
+    const refused = await app.inject({ method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(MEMBER), payload: body });
+    expect(refused.statusCode).toBe(403);
+    const ok = await app.inject({ method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN), payload: body });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().agent).toEqual({ autoHandoff: { enabled: true, fallbackProvider: "codex" } });
+    const bad = await app.inject({
+      method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN),
+      payload: { agent: { autoHandoff: { enabled: true, fallbackProvider: "gemini" } } },
+    });
+    expect(bad.statusCode).toBe(400);
+    const empty = await app.inject({ method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN), payload: {} });
+    expect(empty.statusCode).toBe(400);
   });
 });

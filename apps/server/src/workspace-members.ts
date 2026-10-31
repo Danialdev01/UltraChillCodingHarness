@@ -4,9 +4,12 @@ import { users, workspaceInvites, workspaceMembers, workspaces, type Database } 
 import {
   canAssignRole,
   canManageMember,
+  readAgentSettings,
   type AssignableRole,
   type CredentialPolicy,
   type Membership,
+  type WorkspaceAgentSettings,
+  type WorkspaceAgentSettingsPatch,
 } from "@ucch/protocol";
 import { encryptSecret } from "./crypto.js";
 import { toMembership, toPolicy, type MemberRow, type WorkspaceService } from "./workspaces.js";
@@ -37,6 +40,8 @@ export interface WorkspaceSettings {
   credentialPolicy: CredentialPolicy;
   /** Which dedicated credentials are stored -- booleans, never the keys. */
   credentials: { openrouter: boolean; claudeToken: boolean; claudeTokenIssuedAt: string | null };
+  /** How the workspace's agents run (automatic handoff, …). */
+  agent: WorkspaceAgentSettings;
 }
 
 export type MemberError = "not_found" | "forbidden" | "invalid" | "conflict";
@@ -303,6 +308,7 @@ export class WorkspaceMemberService {
         openrouter: workspaces.openrouterKeyEncrypted,
         token: workspaces.claudeOauthTokenEncrypted,
         issuedAt: workspaces.claudeTokenIssuedAt,
+        agent: workspaces.agentSettings,
       })
       .from(workspaces)
       .where(eq(workspaces.id, workspaceId))
@@ -315,7 +321,29 @@ export class WorkspaceMemberService {
         claudeToken: Boolean(row.token),
         claudeTokenIssuedAt: row.token && row.issuedAt ? row.issuedAt.toISOString() : null,
       },
+      agent: readAgentSettings(row.agent),
     };
+  }
+
+  /**
+   * Replaces the sections of the workspace's agent settings that `patch`
+   * names, keeping the rest. Read and written in one transaction, so two
+   * admins changing different sections at once both land.
+   */
+  async setAgentSettings(workspaceId: string, actorId: string, patch: WorkspaceAgentSettingsPatch): Promise<boolean> {
+    if (!(await this.workspaces.allows(workspaceId, actorId, "credentials.manage"))) return false;
+    await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ agent: workspaces.agentSettings })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .for("update")
+        .limit(1);
+      if (!row) return;
+      const next: WorkspaceAgentSettings = { ...readAgentSettings(row.agent), ...patch };
+      await tx.update(workspaces).set({ agentSettings: next }).where(eq(workspaces.id, workspaceId));
+    });
+    return true;
   }
 
   async setPolicy(workspaceId: string, actorId: string, policy: CredentialPolicy): Promise<boolean> {

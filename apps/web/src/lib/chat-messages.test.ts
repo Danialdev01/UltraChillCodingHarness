@@ -794,6 +794,12 @@ describe("a compaction", () => {
       continuedIn: { threadId: TURN, hash: "n3wsess10n00", provider: "codex" },
       continuedFrom: null,
     });
+    expect(log(...toolTurn, requested, { ...handed, reason: "limit" }).continuedIn).toEqual({
+      threadId: TURN,
+      hash: "n3wsess10n00",
+      provider: "codex",
+      limit: true,
+    });
     expect(log(...toolTurn, requested, { type: "thread.handoff_failed", threadId: THREAD, error: "no key" })).toMatchObject({
       running: false,
       handingOff: null,

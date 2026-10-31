@@ -204,6 +204,13 @@
       "when": 1793437182187,
       "tag": "0028_handoff",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1793488319647,
+      "tag": "0029_agent_settings",
+      "breakpoints": true
     }
   ]
 }
