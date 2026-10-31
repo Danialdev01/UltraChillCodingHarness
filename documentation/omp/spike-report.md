@@ -332,6 +332,7 @@ Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`)
 - **`omp -p` reads stdin** (OM4.4): the piped text is put ahead of the prompt argument in the one user message (`<stdin>\n\n<prompt>`), so a long transcript goes on stdin, clear of Linux's 128 KiB limit on a single argument.
 - **`--model @smol`** (OM4.4): takes the `smol` role of the config, the overlay included (`--config`); a name that resolves to nothing fails with `Model "…" not found`.
 - **`--no-tools`** (OM4.4): the request carries an empty `tools` array.
+- **`task.maxConcurrency`** (OM5.4): with UCCH's own overlay (`ompOverlay`, `workersPerTurn: 4`, under `--no-extensions --no-rules --no-lsp`), one `task` call of 10 scouts, each model reply taking 1.5 s, ran them in waves of 4, 4 and 2: `subagent_lifecycle` never showed more than 4 started and not yet completed. The same run with `workersPerTurn: 10` had all 10 running at once, so the overlay's value is what holds it. Under the default permission mode `task` asks first (`Allow tool: task … Batch agents: scout ×10`), once for the whole batch.
 
 ## Corrections made to `solution.md`
 

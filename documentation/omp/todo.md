@@ -436,13 +436,17 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Live.** `agent.subagent_progress` joins the thread store's live events, one run per subagent. The closed work line shows the running subagent's latest progress, so it is live without opening anything.
     - **Bridge.** `mcp__omp__omp_task` draws as a card from the call alone (its result), since the bridge sends no subagent events.
     - **e2e.** `fake-omp.mjs` now replays a background task past its `prompt_result` to the terminal `agent_end`. `e2e/subagent.spec.ts` runs on `OMP_BIN=scripts/load/fake-omp-subagent.sh` (`pnpm --filter @ucch/web e2e subagent`, without the `--`).
-- [ ] **OM5.4 — Caps and metrics**
+- [x] **OM5.4 — Caps and metrics** — 15d2a6e
 
   - **Depends:** OM5.1, OM0.6
   - **Files:** `omp-overlay.ts` (`task.*`), `turn-scheduler.ts` (count worker subprocesses if OM0.3 Q6 says they are processes), `metrics.ts`
   - **Steps:** apply `OMP_WORKERS_PER_TURN` and `maxRecursionDepth: 1`, and export `omp_subagents_total`.
   - **Acceptance:** a turn asking for 10 parallel scouts never has more than 4 running, as the progress events show.
   - **Verify:** `pnpm test`, plus a manual run
+  - **As built:**
+    - **Caps.** The overlay already set `task.maxConcurrency` from `OMP_WORKERS_PER_TURN` and `maxRecursionDepth: 1` (OM2.5). OM0 found workers run inside the one `omp` process, so `TurnScheduler` counts no more than it did.
+    - **Metric.** `omp_subagents_total{provider, status}` counts each `agent.subagent_finished` a turn writes, Claude Code's subagents included, under `provider`.
+    - **Manual run.** Real OMP on the overlay against the scripted model: 10 scouts ran 4, 4, 2, never more than 4 (spike report, "Measured later").
 - [ ] **OM5.5 — Isolated fan-out edits (opt-in)**
 
   - **Depends:** OM5.4
