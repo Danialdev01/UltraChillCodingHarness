@@ -268,6 +268,61 @@ describe("OmpNormaliser", () => {
     expect(events.find((e) => e.type === "agent.tool_result" && e.toolUseId === "call_2")).toMatchObject({ isError: true });
   });
 
+  it("gives the recorded scout one start and one finish, with its progress between (solution §6.2)", () => {
+    const { events } = replay("omp-subagent");
+    const subagent = events.filter((e) => e.type.startsWith("agent.subagent_"));
+    expect(subagent[0]).toEqual({
+      type: "agent.subagent_started",
+      ...pick(ids),
+      subagentId: "ScoutSrc",
+      parentToolUseId: "call_1",
+      agent: "scout",
+      description: "List what src/ exports.",
+      model: null,
+    });
+    expect(subagent.filter((e) => e.type === "agent.subagent_started")).toHaveLength(1);
+    expect(subagent.at(-1)).toEqual({
+      type: "agent.subagent_finished",
+      ...pick(ids),
+      subagentId: "ScoutSrc",
+      status: "completed",
+      result: "src/a.ts exports `a`.",
+      costUsd: 0,
+      toolCalls: 0,
+      durationMs: 72,
+    });
+    expect(subagent.filter((e) => e.type === "agent.subagent_finished")).toHaveLength(1);
+    const progress = subagent.slice(1, -1);
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.every((e) => e.type === "agent.subagent_progress" && e.subagentId === "ScoutSrc")).toBe(true);
+    expect(progress.at(-1)).toMatchObject({ summary: "src/a.ts exports `a`.", model: "scripted/scripted" });
+    // Inside the turn: after the task call that spawned it, before the turn closes.
+    const order = events.map((e) => e.type);
+    expect(order.indexOf("agent.subagent_started")).toBeGreaterThan(order.indexOf("agent.tool_use"));
+    expect(order.indexOf("agent.subagent_finished")).toBeLessThan(order.indexOf("agent.turn_completed"));
+  });
+
+  it("finishes a subagent the turn outlived, keeping the status it ended with", () => {
+    const normaliser = new OmpNormaliser({ ...ids, workspace: WORKSPACE });
+    const lifecycle = (status: string) => ({ type: "subagent_lifecycle", payload: { id: "W", agent: "task", status, index: 0 } });
+    normaliser.push(lifecycle("started"));
+    normaliser.push({
+      type: "subagent_progress",
+      payload: { index: 0, agent: "task", task: "t", progress: { id: "W", status: "running", recentOutput: ["half done"], toolCount: 3 } },
+    });
+    normaliser.push(lifecycle("failed"));
+    const events = normaliser.finish({ code: 1, signal: null, interrupted: false, stderrTail: "boom" });
+    expect(events[0]).toEqual({ type: "agent.subagent_finished", ...pick(ids), subagentId: "W", status: "failed", result: "half done", toolCalls: 3, durationMs: 0 });
+    expect(events.at(-1)).toMatchObject({ type: "agent.turn_failed" });
+  });
+
+  it("aborts the subagents still running when the turn is stopped", () => {
+    const normaliser = new OmpNormaliser({ ...ids, workspace: WORKSPACE });
+    normaliser.push({ type: "subagent_lifecycle", payload: { id: "W", agent: "scout", status: "started", index: 0 } });
+    const events = normaliser.finish({ code: 0, signal: null, interrupted: true, stderrTail: "" });
+    expect(events[0]).toMatchObject({ type: "agent.subagent_finished", subagentId: "W", status: "aborted", result: null });
+  });
+
   it("fails the turn on an API error even though OMP ended it normally", () => {
     const { events } = replay("omp-error");
     expect(events.at(-1)).toEqual({

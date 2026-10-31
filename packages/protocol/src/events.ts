@@ -563,6 +563,56 @@ const AgentTurnFailed = z.object({
   limit: z.literal(true).optional(),
 });
 
+// -- Subagents ----------------------------------------------------------------
+//
+// A worker a turn's agent started -- OMP's `task`, Claude Code's `Task`
+// (solution §6). Its own prose never becomes the turn's: what it did is a
+// card in the chat, keyed by `subagentId`, under the tool call that spawned
+// it (`parentToolUseId`).
+
+const AgentSubagentStarted = z.object({
+  type: z.literal("agent.subagent_started"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  subagentId: z.string().min(1),
+  /** The `task` / `Task` call that spawned it. */
+  parentToolUseId: z.string().nullable(),
+  /** "scout", "reviewer", "Explore", … */
+  agent: z.string(),
+  /** What it was asked to do. */
+  description: z.string().nullable(),
+  model: z.string().nullable(),
+});
+
+/** How a running subagent is getting on. Transient, like `agent.text_delta`. */
+const AgentSubagentProgress = z.object({
+  type: z.literal("agent.subagent_progress"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  subagentId: z.string(),
+  /** Its latest output or tool call, one line. */
+  summary: z.string(),
+  toolCalls: z.number().int().nonnegative().optional(),
+  /** Once known: OMP resolves a worker's model after it starts. */
+  model: z.string().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  costUsd: z.number().nonnegative().optional(),
+});
+
+const AgentSubagentFinished = z.object({
+  type: z.literal("agent.subagent_finished"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  subagentId: z.string(),
+  status: z.enum(["completed", "failed", "aborted"]),
+  /** What it reported, truncated. */
+  result: z.string().nullable(),
+  usage: TokenUsage.optional(),
+  costUsd: z.number().nonnegative().optional(),
+  toolCalls: z.number().int().nonnegative().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+});
+
 // -- Checkpoints and files ---------------------------------------------------
 
 /**
@@ -934,6 +984,9 @@ export const DomainEvent = z.discriminatedUnion("type", [
   AgentMessage,
   AgentTurnCompleted,
   AgentTurnFailed,
+  AgentSubagentStarted,
+  AgentSubagentProgress,
+  AgentSubagentFinished,
   CheckpointCaptured,
   CheckpointReverted,
   FileChanged,
@@ -978,6 +1031,7 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "terminal.output",
   "agent.thinking_delta",
   "agent.text_delta",
+  "agent.subagent_progress",
   "agent.retry",
   "context.usage",
   "agent.queued",

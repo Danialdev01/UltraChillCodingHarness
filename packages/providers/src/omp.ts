@@ -214,6 +214,26 @@ interface RunningCall {
   changes: { path: string; change: "added" | "modified" | "deleted" }[];
 }
 
+/** What a subagent's card shows, as its frames arrive (solution §6.2). */
+interface Subagent {
+  /** The lifecycle said it ended; its result has not come yet. */
+  ended: "completed" | "failed" | "aborted" | null;
+  toolCalls?: number;
+  durationMs?: number;
+  costUsd?: number;
+  model?: string;
+  /** The last progress line sent, so a repeat is not sent again. */
+  summary: string;
+  /** Its latest output lines, for a result that never arrives. */
+  output: string;
+}
+
+/** The size a subagent's result is held to on its card. */
+const SUBAGENT_RESULT_CHARS = 8_000;
+
+/** A background job's report: `<task-result id=… agent=… status=…>…<output>…</output></task-result>`. */
+const TASK_RESULT = /<task-result\b([^>]*)>([\s\S]*?)<\/task-result>/g;
+
 /**
  * Turns OMP's RPC frames into the harness's events (solution §3.4).
  *
@@ -242,6 +262,10 @@ export class OmpNormaliser {
   #io: { send(frame: OmpClientFrame): void } | null = null;
   /** The last `context.usage` sent, so an unchanged reading is not sent again. */
   #lastUsage: string | null = null;
+  /** `task` calls' arguments by call id: what each subagent was asked. */
+  #taskCalls = new Map<string, unknown>();
+  /** Subagents started this turn and not yet finished, by OMP's id. */
+  #subagents = new Map<string, Subagent>();
 
   constructor(
     private readonly ctx: {
@@ -317,6 +341,8 @@ export class OmpNormaliser {
 
       case "message_end": {
         const message = (frame as { message?: OmpMessage }).message;
+        // A background job reporting back: its subagents' results.
+        if (message?.role === "custom" && message.customType === "async-result") return this.#taskResults(message.content);
         if (message?.role !== "assistant") return [];
         this.#stopReason = message.stopReason ?? null;
         this.#lastError = message.stopReason === "error" ? (message.errorMessage ?? "the model returned an error") : null;
@@ -326,6 +352,7 @@ export class OmpNormaliser {
 
       case "tool_execution_start": {
         const start = frame as OmpToolExecutionStart;
+        if (start.toolName === "task") this.#taskCalls.set(start.toolCallId, start.args?.tasks);
         const { name, input } = this.#toolOf(start.toolName, start.args);
         this.#running.push({
           toolUseId: start.toolCallId,
@@ -405,7 +432,13 @@ export class OmpNormaliser {
       case "agent_end":
         if ((frame as OmpAgentEnd).isTerminal === false) return [];
         this.#ended = true;
-        return this.#closePrompts();
+        return [...this.#closePrompts(), ...this.#closeSubagents()];
+
+      case "subagent_lifecycle":
+        return this.#lifecycle((frame as { payload?: OmpSubagentLifecycle }).payload);
+
+      case "subagent_progress":
+        return this.#progress((frame as { payload?: OmpSubagentProgress }).payload);
 
       case "prompt_result": {
         const result = frame as OmpPromptResult;
@@ -417,8 +450,9 @@ export class OmpNormaliser {
       }
 
       default:
-        // `notice`, `session_settled`, `available_commands_update`, the
-        // subagent frames (OM5) and whatever the next version adds.
+        // `notice`, `session_settled`, `available_commands_update`,
+        // `subagent_event` (not subscribed to) and whatever the next
+        // version adds.
         return [];
     }
   }
@@ -449,7 +483,7 @@ export class OmpNormaliser {
     if (this.#closed) return [];
     this.#closed = true;
     const ids = this.#ids();
-    const events = this.#closePrompts();
+    const events = [...this.#closePrompts(), ...this.#closeSubagents()];
     const failure = this.#result?.status === "error" ? (this.#result.error ?? this.#lastError ?? "omp reported an error") : null;
     if (this.#interrupted || this.#stopReason === "aborted") {
       events.push({ type: "agent.turn_completed", ...ids, stopReason: "cancelled", ...cost(stats) });
@@ -467,7 +501,7 @@ export class OmpNormaliser {
     if (this.settled) return this.complete();
     this.#closed = true;
     const ids = this.#ids();
-    const events = this.#closePrompts();
+    const events = [...this.#closePrompts(), ...this.#closeSubagents(exit.interrupted || this.#interrupted ? "aborted" : "failed")];
     if (exit.interrupted || this.#interrupted) {
       events.push({ type: "agent.turn_completed", ...ids, stopReason: "cancelled", usage: ZERO_USAGE, costUsd: 0 });
       return events;
@@ -572,6 +606,138 @@ export class OmpNormaliser {
     return [];
   }
 
+  /**
+   * A subagent started or ended (`subagent_lifecycle`, OM0 Q6). An end is
+   * held for the result: a background job's arrives after it, in the
+   * `async-result` message.
+   */
+  #lifecycle(payload: OmpSubagentLifecycle | undefined): DomainEvent[] {
+    if (!payload || typeof payload.id !== "string" || payload.id === "") return [];
+    const events = this.#started(payload.id, payload.agent, payload.parentToolCallId, payload.description);
+    const status = payload.status;
+    if (status === "completed" || status === "failed" || status === "aborted") {
+      const subagent = this.#subagents.get(payload.id);
+      if (subagent) subagent.ended = status;
+    }
+    return events;
+  }
+
+  /** A running subagent's progress (`subagent_progress`): its card's live line. */
+  #progress(payload: OmpSubagentProgress | undefined): DomainEvent[] {
+    const progress = payload?.progress;
+    const id = typeof progress?.id === "string" && progress.id ? progress.id : null;
+    if (!payload || !progress || !id) return [];
+    const events = this.#started(id, payload.agent, payload.parentToolCallId, payload.assignment);
+    const subagent = this.#subagents.get(id);
+    if (!subagent) return events;
+    const output = Array.isArray(progress.recentOutput) ? progress.recentOutput.filter((line): line is string => typeof line === "string") : [];
+    const tools = Array.isArray(progress.recentTools) ? progress.recentTools.map(describeRecentTool).filter(Boolean) : [];
+    if (output.length) subagent.output = output.join("\n");
+    subagent.toolCalls = count(progress.toolCount);
+    subagent.durationMs = count(progress.durationMs);
+    if (typeof progress.cost === "number" && Number.isFinite(progress.cost) && progress.cost >= 0) subagent.costUsd = progress.cost;
+    if (typeof progress.resolvedModel === "string" && progress.resolvedModel) subagent.model = progress.resolvedModel;
+    const summary = (output.at(-1) ?? tools.at(-1) ?? (typeof progress.status === "string" ? progress.status : "")).split("\n")[0]!.slice(0, 300);
+    const key = `${summary}|${subagent.toolCalls}|${subagent.model ?? ""}|${subagent.costUsd ?? ""}`;
+    if (key === subagent.summary || subagent.ended) return events;
+    subagent.summary = key;
+    events.push({
+      type: "agent.subagent_progress",
+      ...this.#ids(),
+      subagentId: id,
+      summary,
+      toolCalls: subagent.toolCalls,
+      durationMs: subagent.durationMs,
+      ...(subagent.model ? { model: subagent.model } : {}),
+      ...(subagent.costUsd !== undefined ? { costUsd: subagent.costUsd } : {}),
+    });
+    return events;
+  }
+
+  /** `agent.subagent_started`, the first time a subagent is heard of. */
+  #started(id: string, agent: unknown, parent: unknown, description: unknown): DomainEvent[] {
+    if (this.#subagents.has(id)) return [];
+    this.#subagents.set(id, { ended: null, summary: "", output: "" });
+    const parentToolUseId = typeof parent === "string" && parent ? parent : null;
+    const asked = typeof description === "string" && description ? description : this.#assignment(parentToolUseId, id);
+    return [
+      {
+        type: "agent.subagent_started",
+        ...this.#ids(),
+        subagentId: id,
+        parentToolUseId,
+        agent: typeof agent === "string" && agent ? agent : "task",
+        description: asked,
+        model: null,
+      },
+    ];
+  }
+
+  /** What the `task` call asked the subagent named `id`: its `tasks[]` entry's `task`. */
+  #assignment(parent: string | null, id: string): string | null {
+    const tasks = parent ? this.#taskCalls.get(parent) : undefined;
+    if (!Array.isArray(tasks)) return null;
+    const task = tasks.find((t: unknown) => typeof t === "object" && t !== null && (t as { name?: unknown }).name === id) as
+      | { task?: unknown }
+      | undefined;
+    return typeof task?.task === "string" && task.task ? task.task : null;
+  }
+
+  /** A background job's report: each `<task-result>` in it finishes its subagent. */
+  #taskResults(content: unknown): DomainEvent[] {
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content.map((block) => (typeof block === "object" && block && "text" in block ? String((block as { text: unknown }).text) : "")).join("")
+          : "";
+    const events: DomainEvent[] = [];
+    for (const [, attributes, body] of text.matchAll(TASK_RESULT)) {
+      const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(attributes ?? "")?.[1];
+      const id = attr("id");
+      if (!id) continue;
+      events.push(...this.#started(id, attr("agent"), null, null));
+      const output = /<output>\n?([\s\S]*?)\n?<\/output>/.exec(body ?? "")?.[1] ?? body?.trim() ?? "";
+      const status = attr("status");
+      const duration = /^(\d+(?:\.\d+)?)(ms|s)$/.exec(attr("duration") ?? "");
+      const subagent = this.#subagents.get(id);
+      if (subagent && duration) subagent.durationMs = Math.round(Number(duration[1]) * (duration[2] === "s" ? 1000 : 1));
+      events.push(...this.#finished(id, status === "completed" || status === "failed" || status === "aborted" ? status : (subagent?.ended ?? "completed"), output));
+    }
+    return events;
+  }
+
+  /** `agent.subagent_finished`, once per subagent. */
+  #finished(id: string, status: "completed" | "failed" | "aborted", result: string | null): DomainEvent[] {
+    const subagent = this.#subagents.get(id);
+    if (!subagent) return [];
+    this.#subagents.delete(id);
+    const text = result?.trim() || subagent.output.trim() || null;
+    return [
+      {
+        type: "agent.subagent_finished",
+        ...this.#ids(),
+        subagentId: id,
+        status,
+        result: text && text.length > SUBAGENT_RESULT_CHARS ? `${text.slice(0, SUBAGENT_RESULT_CHARS)}\n[… truncated]` : text,
+        ...(subagent.costUsd !== undefined ? { costUsd: subagent.costUsd } : {}),
+        ...(subagent.toolCalls !== undefined ? { toolCalls: subagent.toolCalls } : {}),
+        ...(subagent.durationMs !== undefined ? { durationMs: subagent.durationMs } : {}),
+      },
+    ];
+  }
+
+  /**
+   * The turn is over with subagents unfinished: one whose end was heard
+   * keeps its status, with its last output as the result; one still
+   * running ends as the turn did.
+   */
+  #closeSubagents(running: "aborted" | "failed" = "aborted"): DomainEvent[] {
+    const events: DomainEvent[] = [];
+    for (const [id, subagent] of [...this.#subagents]) events.push(...this.#finished(id, subagent.ended ?? running, null));
+    return events;
+  }
+
   /** A turn that ends with approvals open answers them: nobody else will. */
   #closePrompts(): DomainEvent[] {
     const events: DomainEvent[] = [];
@@ -593,7 +759,9 @@ export class OmpNormaliser {
 
 interface OmpMessage {
   role?: string;
-  content?: unknown[];
+  /** Blocks, or text for a `custom` message such as `async-result`. */
+  content?: unknown[] | string;
+  customType?: string;
   stopReason?: string;
   errorMessage?: string;
 }
@@ -610,6 +778,40 @@ function stopReasonOf(reason: string | null): string | null {
     default:
       return reason;
   }
+}
+
+/** `subagent_lifecycle.payload` (18.14.1's `SubagentLifecyclePayload`). */
+interface OmpSubagentLifecycle {
+  id?: unknown;
+  agent?: unknown;
+  description?: unknown;
+  status?: unknown;
+  parentToolCallId?: unknown;
+}
+
+/** `subagent_progress.payload`: the subagent's id is the progress record's. */
+interface OmpSubagentProgress {
+  agent?: unknown;
+  assignment?: unknown;
+  parentToolCallId?: unknown;
+  progress?: {
+    id?: unknown;
+    status?: unknown;
+    recentTools?: unknown;
+    recentOutput?: unknown;
+    toolCount?: unknown;
+    cost?: unknown;
+    durationMs?: unknown;
+    resolvedModel?: unknown;
+  };
+}
+
+/** One of a subagent's recent tool calls, as a line: its name, or its text. */
+function describeRecentTool(tool: unknown): string {
+  if (typeof tool === "string") return tool;
+  if (typeof tool !== "object" || tool === null) return "";
+  const named = (tool as { tool?: unknown; name?: unknown }).tool ?? (tool as { name?: unknown }).name;
+  return typeof named === "string" ? named : "";
 }
 
 function count(value: unknown): number {
