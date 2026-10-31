@@ -21,6 +21,7 @@ import { readProjectKnowledge } from "./dev-database.js";
 import type { EventStore } from "./eventstore.js";
 import { ProviderService } from "./providers.js";
 import { TurnScheduler } from "./turn-scheduler.js";
+import { registry as metrics } from "./metrics.js";
 
 describe("resolveModel", () => {
   const SERVER = "anthropic/claude-sonnet-5";
@@ -492,10 +493,13 @@ describe("an OMP turn", () => {
     await eventually(() => scheduler.stats().running.omp, 0);
   });
 
-  it("carries a background task to its answer before the turn ends (OM5.3)", async () => {
+  it("carries a background task to its answer before the turn ends (OM5.3), and counts it (OM5.4)", async () => {
     // The scout runs after the prompt_result; the turn is over only at the
     // terminal agent_end, after the task's result and the answer to it.
     process.env.FAKE_OMP_FIXTURE = join(FIXTURES, "omp-subagent.jsonl");
+    const series = 'omp_subagents_total{provider="omp",status="completed"}';
+    const counted = async () => Number((await metrics.render()).split("\n").find((line) => line.startsWith(`${series} `))?.split(" ")[1] ?? 0);
+    const before = await counted();
     const { agent, appended } = ompReactor(thread, keyed);
     agent.react(omp, [message]);
     await until(appended, closed);
@@ -506,6 +510,7 @@ describe("an OMP turn", () => {
     expect(types.indexOf("agent.subagent_finished")).toBeLessThan(types.indexOf("agent.turn_completed"));
     expect(appended.flat().find((e) => e.type === "agent.subagent_finished")).toMatchObject({ status: "completed" });
     expect(appended.flat().at(-1)).toMatchObject({ type: "agent.turn_completed" });
+    expect(await counted()).toBe(before + 1);
   });
 
   it("asks in the chat under Strict, and delivers the answers", async () => {

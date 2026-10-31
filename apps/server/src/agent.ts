@@ -61,6 +61,7 @@ import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 import { TurnScheduler, type TurnKind } from "./turn-scheduler.js";
 import { DEFAULT_OMP_SETTINGS, writeOmpOverlay, type OmpPreset } from "./omp-overlay.js";
 import type { ArgvWrapper } from "./child-priority.js";
+import { registry as metrics } from "./metrics.js";
 
 export interface AgentOptions {
   secretKey: string | undefined;
@@ -206,6 +207,16 @@ export function resolveProvider(
  * loop must not know about: the database, the key, the event store, and the
  * workspace directory.
  */
+/**
+ * Subagents the turns ran (OMP OM5.4), counted as each ends: OMP's `task`
+ * workers and Claude Code's `Agent` subagents, by provider and how they
+ * ended. Named for OMP, whose worker fan-out is what it watches.
+ */
+const subagentsTotal = metrics.counter("omp_subagents_total", "Subagents agent turns ran, by provider and how they ended", [
+  "provider",
+  "status",
+]);
+
 export class AgentTurnReactor {
   /**
    * One controller per running turn.
@@ -526,9 +537,14 @@ export class AgentTurnReactor {
 
     // The turn failed on its plan's usage limit (OM4.6): `#run` may hand it off.
     let limited = false;
+    // Who runs it, once resolved below: the subagent count's label.
+    let runsOn: ProviderId = "native";
     const write = (batch: readonly DomainEvent[]) => {
       if (batch.length === 0) return Promise.resolve([]);
       if (batch.some((event) => event.type === "agent.turn_failed" && event.limit)) limited = true;
+      for (const event of batch) {
+        if (event.type === "agent.subagent_finished") subagentsTotal.inc({ provider: runsOn, status: event.status });
+      }
       const events = worktreeId
         ? batch.map((event) => (event.type === "file.changed" ? { ...event, worktreeId } : event))
         : batch;
@@ -587,6 +603,7 @@ export class AgentTurnReactor {
       const provider = resolveProvider(requestedProvider, thread.provider, owner.defaultProvider, {
         ompEnabled: this.options.ompEnabled ?? false,
       });
+      runsOn = provider;
 
       // A slot, before the turn opens: over the server's limits the turn
       // waits here, with no `turns` row and nothing billed, and the thread
