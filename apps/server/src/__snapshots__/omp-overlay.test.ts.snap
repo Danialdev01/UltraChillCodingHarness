@@ -1,0 +1,1549 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ompOverlay > writes the documentation preset under allow_all 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "allow"
+    edit: "allow"
+    ast_edit: "allow"
+    lsp: "allow"
+    learn: "allow"
+    manage_skill: "allow"
+    bash: "allow"
+    eval: "allow"
+    task: "allow"
+    debug: "deny"
+    ida: "allow"
+    security_scan: "allow"
+    context_notes: "allow"
+    new_context: "allow"
+    goal: "allow"
+    init_experiment: "allow"
+    run_experiment: "allow"
+    log_experiment: "allow"
+    update_notes: "allow"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the documentation preset under default 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "allow"
+    edit: "allow"
+    ast_edit: "allow"
+    lsp: "allow"
+    learn: "allow"
+    manage_skill: "allow"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the documentation preset under normal 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "allow"
+    edit: "allow"
+    ast_edit: "allow"
+    lsp: "allow"
+    learn: "allow"
+    manage_skill: "allow"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the documentation preset under strict 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "prompt"
+    edit: "prompt"
+    ast_edit: "prompt"
+    lsp: "prompt"
+    learn: "prompt"
+    manage_skill: "prompt"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the research preset under allow_all 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "deny"
+    edit: "deny"
+    ast_edit: "deny"
+    lsp: "allow"
+    learn: "deny"
+    manage_skill: "deny"
+    bash: "allow"
+    eval: "allow"
+    task: "allow"
+    debug: "deny"
+    ida: "allow"
+    security_scan: "allow"
+    context_notes: "allow"
+    new_context: "allow"
+    goal: "allow"
+    init_experiment: "allow"
+    run_experiment: "allow"
+    log_experiment: "allow"
+    update_notes: "allow"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the research preset under default 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "deny"
+    edit: "deny"
+    ast_edit: "deny"
+    lsp: "allow"
+    learn: "deny"
+    manage_skill: "deny"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the research preset under normal 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "deny"
+    edit: "deny"
+    ast_edit: "deny"
+    lsp: "allow"
+    learn: "deny"
+    manage_skill: "deny"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the research preset under strict 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "deny"
+    edit: "deny"
+    ast_edit: "deny"
+    lsp: "prompt"
+    learn: "deny"
+    manage_skill: "deny"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the standard preset under allow_all 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "allow"
+    edit: "allow"
+    ast_edit: "allow"
+    lsp: "allow"
+    learn: "allow"
+    manage_skill: "allow"
+    bash: "allow"
+    eval: "allow"
+    task: "allow"
+    debug: "deny"
+    ida: "allow"
+    security_scan: "allow"
+    context_notes: "allow"
+    new_context: "allow"
+    goal: "allow"
+    init_experiment: "allow"
+    run_experiment: "allow"
+    log_experiment: "allow"
+    update_notes: "allow"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the standard preset under default 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "allow"
+    edit: "allow"
+    ast_edit: "allow"
+    lsp: "allow"
+    learn: "allow"
+    manage_skill: "allow"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the standard preset under normal 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "allow"
+    edit: "allow"
+    ast_edit: "allow"
+    lsp: "allow"
+    learn: "allow"
+    manage_skill: "allow"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;
+
+exports[`ompOverlay > writes the standard preset under strict 1`] = `
+"compaction:
+  enabled: true
+  methodOrder: ["handoff", "remote", "shake", "soft"]
+  keepRecentTokens: 20000
+  midTurnEnabled: true
+  asyncEnabled: true
+  autoContinue: true
+  idleEnabled: false
+  handoffSaveToDisk: true
+  supersedeReads: true
+  dropUseless: true
+contextPromotion:
+  enabled: false
+memory:
+  backend: "off"
+autolearn:
+  enabled: false
+task:
+  maxConcurrency: 4
+  maxRecursionDepth: 1
+  softRequestBudget: 120
+  maxRuntimeMs: 900000
+  agentIdleTtlMs: 60000
+  isolation:
+    enabled: false
+    apply: true
+    merge: "patch"
+async:
+  enabled: true
+retry:
+  modelFallback: false
+providers:
+  cacheWarming: "idle"
+lsp:
+  enabled: true
+  lazy: true
+  shared: true
+  formatOnWrite: false
+  diagnosticsOnWrite: true
+  diagnosticsDeduplicate: true
+astEdit:
+  enabled: true
+debug:
+  enabled: false
+tools:
+  approval:
+    read: "allow"
+    glob: "allow"
+    grep: "allow"
+    find: "allow"
+    ast_grep: "allow"
+    inspect_image: "allow"
+    web_search: "deny"
+    todo: "allow"
+    checkpoint: "allow"
+    rewind: "allow"
+    recall: "allow"
+    retain: "allow"
+    reflect: "allow"
+    memory_edit: "allow"
+    wait: "allow"
+    write: "prompt"
+    edit: "prompt"
+    ast_edit: "prompt"
+    lsp: "prompt"
+    learn: "prompt"
+    manage_skill: "prompt"
+    bash: "prompt"
+    eval: "prompt"
+    task: "prompt"
+    debug: "deny"
+    ida: "prompt"
+    security_scan: "prompt"
+    context_notes: "prompt"
+    new_context: "prompt"
+    goal: "prompt"
+    init_experiment: "prompt"
+    run_experiment: "prompt"
+    log_experiment: "prompt"
+    update_notes: "prompt"
+    ask: "deny"
+    github: "deny"
+    browser: "deny"
+    computer: "deny"
+    generate_image: "deny"
+    tts: "deny"
+    hub: "deny"
+    report_issue: "deny"
+ask:
+  enabled: false
+github:
+  enabled: false
+browser:
+  enabled: false
+computer:
+  enabled: false
+generate_image:
+  enabled: false
+speechgen:
+  enabled: false
+speech:
+  enabled: false
+web_search:
+  enabled: false
+dev:
+  autoqa: false
+plan:
+  enabled: true
+prewalk:
+  enabled: false
+advisor:
+  enabled: false
+recap:
+  enabled: false
+telemetry:
+  otlpExportEnabled: false
+skills:
+  enableClaudeProject: false
+  enablePiProject: false
+  enableAgentsProject: false
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false
+mcp:
+  enableProjectConfig: false
+"
+`;

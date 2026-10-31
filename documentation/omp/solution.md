@@ -32,7 +32,7 @@ UCCH clones untrusted repositories. `claudeArgv` already refuses project setting
 
 | Source | Doc | Risk | Control |
 |---|---|---|---|
-| `<cwd>/.omp/config.yml` | [settings](https://omp.sh/docs/settings) | sets `tools.approval.bash: allow`, `tools.approvalMode`, providers, … | always read; nothing turns it off. `--approval-mode` outranks its `approvalMode`, and the overlay outranks it **only for keys the overlay names**: `tools.approval` is a record and records merge, so a project's `bash: allow` survives an overlay that does not name `bash` **(OM0)**. The overlay therefore writes the whole `tools.approval` table (§4) |
+| `<cwd>/.omp/config.yml` | [settings](https://omp.sh/docs/settings) | sets `tools.approval.bash: allow`, `tools.approvalMode`, providers, … | always read; nothing turns it off. `--approval-mode` outranks its `approvalMode`, and the overlay outranks it **only for keys the overlay names**: `tools.approval` is a record and records merge, so a project's `bash: allow` survives an overlay that does not name `bash` **(OM0)**. The overlay therefore writes the whole `tools.approval` table, every model role and every paid or outward-facing switch (§4). A project cannot define or move a provider: `.omp/models.yml`, a root `models.yml` and `providers.<id>.baseUrl` are not read (OM2.5), so the key only goes to OpenRouter |
 | `.omp/hooks/pre\|post/*.ts` | [hooks](https://omp.sh/docs/hooks) | arbitrary code as the server user | `--no-extensions` (OM0: covered). `PI_CONFIG_DIR` renames only the *user* directory, not project `.omp/`, so it is not used |
 | `.omp/lsp.json`, root `lsp.json` | [code intelligence](https://omp.sh/docs/code-intelligence) | arbitrary `command` | both load until `--no-lsp` (OM0), so untrusted projects run `--no-lsp` |
 | `.omp/dap.json`, root `dap.json` | [debugging](https://omp.sh/docs/debugging) | arbitrary `command` | load under every flag; untrusted projects get `debug.enabled: false` in the overlay, which stops both (OM0) |
@@ -179,7 +179,7 @@ export function ompArgv(input: {
 | effort `off` or absent | no flag |
 | `model` | `openrouter/<account model id>`, the OpenRouter id unchanged: `openrouter/anthropic/claude-sonnet-4.5` (OM0) |
 
-**Under every mode** the overlay's `tools.approval` sets `computer: deny`, `generate_image: deny` and `tts: deny`, and sets `browser: deny` unless the workspace enables it. `deny` "always wins".
+**Under every mode** the overlay's `tools.approval` denies `ask`, `github`, `computer`, `generate_image`, `tts`, `hub` and `report_issue`, and `browser` unless the workspace enables it; `deny` "always wins". Every other tool gets its tier's policy for the mode, written out (§4). In 18.14.1 `browser` and `computer` are eval preludes, not tools, so the overlay also sets `browser.enabled` / `computer.enabled` (OM2.5).
 
 ### 3.3 Environment (`ProviderService.providerEnv("omp")`)
 - Start from `terminalEnv()` as today, with `TERM=dumb` and `CI=1`.
@@ -337,13 +337,25 @@ async:
   enabled: true
 
 # Roles — /docs/agents-and-roles (values from workspace settings; OpenRouter ids)
+# modelRoles is a record, so EVERY role is named, or a project could point
+# one at any model on the workspace's key (OM2.5: a project modelRoles.default
+# is honoured). The binary's roles are default, smol, slow, plan, vision,
+# commit, plus advisor; there is no task or tiny role (tiny is a local-model
+# kind; mnemopi's tiny lookup falls back to smol).
 modelRoles:
   default: openrouter/<workspace default>
   smol: openrouter/<workspace fast model>
   slow: openrouter/<workspace deep model>
-  task: openrouter/<workspace default>
-  tiny: openrouter/<workspace fast model>
   plan: openrouter/<workspace deep model>
+  vision: openrouter/<workspace default>
+  commit: openrouter/<workspace fast model>
+  advisor: openrouter/<workspace deep model>
+retry:
+  modelFallback: false      # else a project's retry.fallbackChains picks the model
+contextPromotion:
+  enabled: false            # else overflow switches to a bigger model
+providers:
+  cacheWarming: idle        # OMP's default, named so a project cannot pick "streaming"
 
 # Code intelligence / edits / debug — /docs/code-intelligence, /docs/editing, /docs/debugging
 lsp:
@@ -363,20 +375,45 @@ debug:
 # (OM0), so the writer names EVERY tool, per permission mode: prompt for what
 # the mode asks for, allow for what it runs, deny for what is off. A tool the
 # overlay leaves out can be set to allow by a cloned repository.
+# The list (OMP_TOOL_TIERS in omp-overlay.ts) is the binary's own tool list
+# (fixtures/omp-tools.txt) plus the xd:// devices, each with its tier from
+# /docs/tools; mixed tiers take the highest, undocumented ones are exec.
+# Devices must be named too: an xd:// write checks the device's own policy,
+# then falls back to `write` (OM2.5: `write: allow` alone ran a host tool
+# unasked under --approval-mode write).
+# Per mode: read → allow; write → prompt under strict, else allow;
+# exec → prompt, allow under allow_all.
 tools:
   approval:
-    bash: prompt            # normal/strict; allow under allow_all
-    eval: prompt
-    edit: allow             # prompt under strict
-    write: allow            # prompt under strict; host-tool device writes are allowed by name (§3.7)
-    # … one entry per tool in the pinned version's tool list
+    bash: prompt            # exec
+    edit: allow             # write
+    read: allow             # read
+    # … every tool and device of the pinned version, and each host tool
+    debug: deny             # untrusted projects; exec tier when trusted
+    web_search: deny        # without a search key
+    browser: deny           # workspace setting may lift
+    ask: deny               # questions go to the chat
+    github: deny            # UCCH's Git view owns remotes
     computer: deny
     generate_image: deny
     tts: deny
-    github: deny            # UCCH's Git view owns remotes
-    ask: deny               # questions go to the chat
-    browser: deny           # workspace setting may lift
-    security_scan: allow    # opt-in tool; harmless when enabled
+    hub: deny               # collaboration with other OMP processes
+    report_issue: deny      # tool QA; can report to qa.omp.sh
+
+# Tools and features switched off, or by the workspace (records aside, a
+# project can flip any of these on, so each is named)
+ask: { enabled: false }
+github: { enabled: false }
+browser: { enabled: false } # workspace toggle; an eval prelude in 18.14.1
+computer: { enabled: false }
+generate_image: { enabled: false }
+speechgen: { enabled: false }
+speech: { enabled: false }
+web_search: { enabled: <search key configured> }
+autolearn: { enabled: false }
+recap: { enabled: false }
+dev: { autoqa: false }
+telemetry: { otlpExportEnabled: false }   # traces to any OTEL_* endpoint otherwise
 
 # Plan / prewalk / advisor — /docs/plan, /docs/prewalk, /docs/advisor
 plan:
@@ -399,7 +436,8 @@ mcp:
 ```
 
 - **Workspace overrides.** `workspace-harness-settings.tsx` stores the workspace values: models per role, memory on or off, `llmMode`, economy, advisor, browser. The overlay writer (`apps/server/src/omp-overlay.ts`) merges them in.
-- **Unit tests.** One snapshot per preset and permission mode, plus a test that every key appears in `omp config list --json` for the pinned version (an OM0 fixture, `fixtures/omp-config-list.json`). A setting renamed upstream then fails CI, instead of being silently ignored.
+- **Unit tests.** One snapshot per preset and permission mode, plus a test that every key appears in `omp config list --json` for the pinned version (an OM0 fixture, `fixtures/omp-config-list.json`), and one that `tools.approval` names every tool in `fixtures/omp-tools.txt`. A setting renamed or a tool added upstream then fails CI, instead of being silently ignored.
+- **Presets.** `research` denies `write`, `edit`, `ast_edit`, `learn`, `manage_skill`; `documentation` keeps writes and leaves the `docs/` rule to the guard hook (§3.9). Memory (`memory.backend: mnemopi` and the `mnemopi` block) is written only when the workspace turns it on (OM7.1); until then `memory.backend: off`.
 
 ---
 
