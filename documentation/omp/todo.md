@@ -326,7 +326,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
 
 ## Phase OM4: Context management and handoff
 
-- [ ] **OM4.1 — Compaction events and dividers**
+- [x] **OM4.1 — Compaction events and dividers** — f5da7ae
 
   - **Depends:** OM2.3
   - **Files:** `packages/providers/src/omp.ts`, `apps/web/src/components/project-chat.tsx`
@@ -334,8 +334,9 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     1. `auto_compaction_end` becomes `context.injected` (`compaction`), per solution §5.1.
     2. The chat renders a collapsible divider with the method and the tokens before and after.
   - **Acceptance:** the compaction fixture produces the event, and the divider renders in the Playwright test.
-  - **Verify:** `pnpm test -- omp && pnpm --filter @ucch/web e2e -- compaction`
-- [ ] **OM4.2 — `context.usage` and the meter**
+  - **Verify:** `pnpm test -- omp && pnpm --filter @ucch/web e2e compaction`
+  > Note: `e2e -- compaction` passes the `--` on to Playwright, which then runs every spec; the filter goes without it. The spec needs a server with `OMP_ENABLED=true` and `OMP_BIN=scripts/load/fake-omp-compaction.sh` (its header says how).
+- [x] **OM4.2 — `context.usage` and the meter** — d0e25e4
 
   - **Depends:** OM2.6, OM0.3
   - **Files:** `packages/protocol/src/events.ts`, `apps/server/src/agent.ts`, `apps/web/src/components/context-meter.tsx`, `lib/context-window.ts`
@@ -344,7 +345,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     2. The meter shows used / window / threshold for OMP threads, and keeps today's estimate for the others.
   - **Acceptance:** the meter moves during an OMP turn and drops after compaction.
   - **Verify:** `pnpm typecheck && pnpm test && pnpm --filter @ucch/web build`
-- [ ] **OM4.3 — Compact and Hand off actions (OMP threads)**
+- [x] **OM4.3 — Compact and Hand off actions (OMP threads)** — 0f317d8
 
   - **Depends:** OM4.1
   - **Files:** `packages/protocol/src/commands.ts` (`thread.compact`, `thread.handoff`), the server decide and reactor, a thread menu component
@@ -353,7 +354,8 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - Both actions shrink the context (as the meter shows) and add a divider.
     - On a running thread they are refused with a clear message.
   - **Verify:** `pnpm test`, plus a manual run
-- [ ] **OM4.4 — Brief builder (`omp-handoff.ts`)**
+  > As built: the actions are the composer's `/compact` and `/handoff` (the chat has no thread menu); `e2e/compact.spec.ts` drives both against fake-omp and checks the dividers and the meter. Solution §5.3 updated.
+- [x] **OM4.4 — Brief builder (`omp-handoff.ts`)** — af452ed
 
   - **Depends:** OM2.1
   - **Files:** new `apps/server/src/omp-handoff.ts` and its test

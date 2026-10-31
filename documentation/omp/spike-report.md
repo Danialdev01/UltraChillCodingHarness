@@ -323,6 +323,16 @@ LSP changes that budget. Untrusted projects run `--no-lsp` anyway (OM0.4). For t
 
 ---
 
+## Measured later, during the tasks
+
+Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`) in a throwaway `HOME`, unless it says otherwise.
+
+- **`compaction.thresholdPercent`** (OM4.2), read from the binary: a value of 0 or below means unset; otherwise it is clamped to 1-99 and the threshold is `floor(window × percent / 100)`. `thresholdTokens` overrides it when set. Both default to -1.
+- **`omp -p` text mode** (OM4.4): exit 0, the answer alone on stdout (with a trailing newline), `Working...` on stderr. An error exits 1 with the message on stderr and nothing on stdout.
+- **`omp -p` reads stdin** (OM4.4): the piped text is put ahead of the prompt argument in the one user message (`<stdin>\n\n<prompt>`), so a long transcript goes on stdin, clear of Linux's 128 KiB limit on a single argument.
+- **`--model @smol`** (OM4.4): takes the `smol` role of the config, the overlay included (`--config`); a name that resolves to nothing fails with `Model "…" not found`.
+- **`--no-tools`** (OM4.4): the request carries an empty `tools` array.
+
 ## Corrections made to `solution.md`
 
 | Section | Was | Now |

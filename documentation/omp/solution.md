@@ -458,6 +458,8 @@ Two new commands in `packages/protocol/src/commands.ts`:
 
 `decide()` accepts them only when the thread is bound to `omp` and idle. The reactor starts a short OMP process on the thread's session and sends `compact { customInstructions: focus }` or `handoff { customInstructions: focus }`, then emits the resulting `context.injected`. The UI puts them in the thread menu as **Compact** and **Hand off…**.
 
+As built (OM4.3): the accepted command emits `thread.compaction_requested { threadId, method, focus? }`, which claims the thread as `running` (so Stop reaches the process), and every way out ends with `thread.compaction_finished { threadId, method, error? }`, which frees it. No turn opens; the divider is a `context.injected` with no `turnId`, drawn under the last answer, followed by a `context.usage` with no `turnId`. OMP answers `handoff` with `{}`, so both read the new summary back from `get_messages`. The chat has no thread menu; the actions are the composer's `/compact` and `/handoff` commands, each taking what to keep as free text.
+
 ### 5.4 Cross-provider handoff (any provider → any provider)
 
 **Command:** `thread.handoff_to { threadId, targetProvider, focus? }`.
@@ -466,7 +468,7 @@ Two new commands in `packages/protocol/src/commands.ts`:
 1. `decide()` checks that the source thread is idle. It emits `thread.handoff_requested`.
 2. **The reactor builds the brief.**
    - It renders the source thread's transcript from the event log as plain text: user messages, assistant text, tool calls with truncated results, and the files changed according to `file.changed` / the checkpoints.
-   - It runs a one-shot OMP call: `omp -p --no-session --no-tools --model @smol --config <overlay>`.
+   - It runs a one-shot OMP call: `omp -p --no-session --no-tools --model @smol --config <overlay>`, with a turn's guard flags (`--no-extensions --no-rules --no-lsp --hook`). The transcript goes on stdin and the instruction is the prompt argument (measured: spike report, "Measured later").
    - The prompt is a fixed instruction modelled on OMP's handoff contents ("the work completed so far, the decisions that matter, and the next steps", [handoff](https://omp.sh/docs/handoff)), with `focus` appended.
    - `--no-tools` because the brief is built from the transcript alone.
 3. A new thread is created on `targetProvider` in **the same worktree** (`thread.create` with `worktreeOf: sourceThreadId`, plus a new optional field). Its first `user.message` is the brief inside `<handoff-brief>`, followed by "Continue from here."
