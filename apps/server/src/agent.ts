@@ -803,9 +803,18 @@ export class AgentTurnReactor {
         this.onError(error);
         return null;
       });
+      // OMP is handed the knowledge inside its own section of the system
+      // prompt (solution §3.8). It reads the worktree's AGENTS.md itself, so
+      // that is never added here.
+      const instructions = provider === "omp" ? ompInstructions(input.workspace, knowledge) : knowledge;
       // Logged as the native loop logs its prompt parts, so the thread says
-      // exactly what the CLI was handed on top of the message.
-      if (knowledge) {
+      // exactly what the CLI was handed on top of the message: for OMP the
+      // whole appended prompt, byte for byte.
+      if (provider === "omp") {
+        await input.append([
+          { type: "context.injected", threadId: input.threadId, source: "system_prompt", content: instructions! },
+        ]);
+      } else if (knowledge) {
         await input.append([
           { type: "context.injected", threadId: input.threadId, source: "project_context", content: knowledge },
         ]);
@@ -854,7 +863,6 @@ export class AgentTurnReactor {
             }),
         };
       }
-      const instructions = provider === "omp" ? ompInstructions(input.workspace, knowledge) : knowledge;
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
         prompt: input.text,

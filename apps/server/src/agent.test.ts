@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,6 +16,7 @@ import {
 } from "./agent.js";
 import type { Config } from "./config.js";
 import { encryptSecret } from "./crypto.js";
+import { readProjectKnowledge } from "./dev-database.js";
 import type { EventStore } from "./eventstore.js";
 import { ProviderService } from "./providers.js";
 import { TurnScheduler } from "./turn-scheduler.js";
@@ -576,6 +577,24 @@ describe("an OMP turn", () => {
         content: 'There is no host tool called "ucch_echo".',
       });
     });
+  });
+
+  it("logs the exact prompt it appends, the knowledge inside it, and no AGENTS.md", async () => {
+    const workspace = join(root, "workspaces", PROJECT);
+    await mkdir(join(workspace, ".ucch"), { recursive: true });
+    await writeFile(join(workspace, ".ucch", "INFO.md"), "# Info\nUses pnpm.\n");
+    await writeFile(join(workspace, "AGENTS.md"), "Agents file.\n");
+    const { agent, appended } = ompReactor(thread, keyed);
+    agent.react(omp, [message]);
+    await until(appended, closed);
+    const injected = appended.flat().filter((e) => e.type === "context.injected");
+    expect(injected).toHaveLength(1);
+    const [prompt] = injected as Extract<DomainEvent, { type: "context.injected" }>[];
+    expect(prompt!.source).toBe("system_prompt");
+    expect(prompt!.content).toBe(ompInstructions(workspace, await readProjectKnowledge(workspace)));
+    expect(prompt!.content).toContain("Uses pnpm.");
+    expect(prompt!.content).toContain("## Working in UCCH");
+    expect(prompt!.content).not.toContain("Agents file.");
   });
 
   it("fails the turn, spawning nothing, without an OpenRouter key", async () => {
