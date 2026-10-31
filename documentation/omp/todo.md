@@ -285,14 +285,14 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
 
 ## Phase OM3: Host tools, knowledge, presets
 
-- [ ] **OM3.1 — Factor out `runTool`**
+- [x] **OM3.1 — Factor out `runTool`** — 76f62b9
 
   - **Depends:** —
   - **Files:** `packages/agent/src/loop.ts`, new `packages/agent/src/run-tool.ts`, `index.ts` exports
   - **Steps:** move `runTool` and its confinement and executor plumbing out of `loop.ts` without changing behaviour.
   - **Acceptance:** `loop.test.ts` passes unchanged.
   - **Verify:** `pnpm test -- agent`
-- [ ] **OM3.2 — Host-tool runner**
+- [x] **OM3.2 — Host-tool runner** — e3ce950
 
   - **Depends:** OM3.1, OM2.6, OM0.3
   - **Files:** `packages/providers/src/omp.ts` (`set_host_tools`, `host_tool_call` → `onHostToolCall` → `host_tool_result`, `host_tool_cancel`), `apps/server/src/agent.ts` (the runner using `run-tool.ts`), `packages/agent/src/registry.ts` (a `hostToolsFor(preset)` list)
@@ -302,7 +302,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - A document render from an OMP turn produces the same `upload.changed` / document events as a native turn.
     - Cancel stops a running research fetch.
   - **Verify:** `pnpm test -- omp agent`
-- [ ] **OM3.3 — Knowledge and the UCCH prompt section**
+- [x] **OM3.3 — Knowledge and the UCCH prompt section** — a876e12
 
   - **Depends:** OM2.6
   - **Files:** `apps/server/src/agent.ts`, `packages/agent/src/prompt.ts` (`renderKnowledge`)
@@ -312,7 +312,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     3. Don't inject AGENTS.md separately for OMP.
   - **Acceptance:** the thread log shows the exact appended prompt, and AGENTS.md is not duplicated.
   - **Verify:** `pnpm test -- agent prompt`
-- [ ] **OM3.4 — Research and documentation presets on OMP**
+- [x] **OM3.4 — Research and documentation presets on OMP** — 605debc
 
   - **Depends:** OM3.2
   - **Files:** `apps/server/src/agent.ts` (research path, line 844; documentation path, line 939), `omp-overlay.ts`, the guard hook
