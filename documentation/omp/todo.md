@@ -34,7 +34,7 @@ pnpm --filter @ucch/web build
 
 The output of this phase is knowledge, not product code: `documentation/omp/spike-report.md`, recorded fixtures, and measured numbers. Use a cheap OpenRouter model throughout and record its id in the report.
 
-- [ ] **OM0.1 — Install and pin OMP**
+- [x] **OM0.1 — Install and pin OMP** — 83c953e
 
   - **Depends:** —
   - **Files:** new `documentation/omp/spike-report.md`
@@ -45,7 +45,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     4. In a disposable `OMP_PROFILE`, record `omp --help` and `omp config list --json` to `packages/providers/src/fixtures/omp-help.txt` and `omp-config-list.json`.
   - **Acceptance:** the report names the version, the install route for the image, and the runtime dependencies.
   - **Verify:** `omp --version` prints the pinned version
-- [ ] **OM0.2 — RPC transcripts for the provider**
+- [x] **OM0.2 — RPC transcripts for the provider** — 83c953e
 
   - **Depends:** OM0.1
   - **Files:** new `scripts/omp/record-rpc.mjs`, new `packages/providers/src/fixtures/omp-*.jsonl`
@@ -63,7 +63,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     3. Do it once with `negotiate_protocol` v2 and confirm `rpc_chunk` appears for a large read.
   - **Acceptance:** all eight fixtures exist and contain a terminal `agent_end` (or the error).
   - **Verify:** `node scripts/omp/record-rpc.mjs --check` re-parses every fixture
-- [ ] **OM0.3 — Answer the RPC questions**
+- [x] **OM0.3 — Answer the RPC questions** — 83c953e
 
   - **Depends:** OM0.2
   - **Files:** `documentation/omp/spike-report.md`
@@ -77,7 +77,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     7. What is the OpenRouter model id syntax, from `get_available_models`? (§3.2)
   - **Acceptance:** every RPC question in solution §2–§6 marked **(verify in OM0)** has an answer.
   - **Verify:** review the report against the solution's markers (`grep -n "verify in OM0" documentation/omp/solution.md`)
-- [ ] **OM0.4 — Answer the safety questions**
+- [x] **OM0.4 — Answer the safety questions** — 83c953e
 
   - **Depends:** OM0.1
   - **Files:** `documentation/omp/spike-report.md`
@@ -103,7 +103,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     Also check that a user-scope hook under `PI_CODING_AGENT_DIR/hooks/pre/` still loads with `--no-extensions`, and that `--hook <abs>` does.
   - **Acceptance:** a table of plant × configuration → loaded / not loaded, and the minimal flag set for untrusted projects. Update solution §0.3 to match.
   - **Verify:** the marker files exist only where the table says "loaded"
-- [ ] **OM0.5 — Bridge and CLI questions**
+- [x] **OM0.5 — Bridge and CLI questions** — 83c953e
 
   - **Depends:** OM0.1
   - **Files:** `documentation/omp/spike-report.md`
@@ -115,7 +115,8 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     5. How does mnemopi key the project? Is it stable across two worktrees of one repository? (§7.1)
   - **Acceptance:** each question has an answer, and the solution sections are updated where the answer differs.
   - **Verify:** the commands and outputs are pasted in the report
-- [ ] **OM0.6 — Measure**
+  > BLOCKED (part): Q2's runtime half (does `codex exec` call the MCP tool, and does the server have network under `workspace-write`) needs a logged-in Codex. Syntax is confirmed; the runtime check moves to OM6.5.
+- [x] **OM0.6 — Measure** — 83c953e
 
   - **Depends:** OM0.2
   - **Files:** `documentation/omp/spike-report.md`, new `documentation/perf/omp-rss-<date>.json`
