@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./process.js";
 export { runCli, type Normaliser } from "./run.js";
 export { OMP_CREDENTIAL_ENV, isOmpCredentialEnv } from "./omp-credentials.js";
+export { ompGuardHookSource } from "./omp-assets.js";
 export {
   ClaudeProvider,
   ClaudeNormaliser,

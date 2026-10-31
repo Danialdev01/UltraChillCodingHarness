@@ -9,7 +9,8 @@
  * the rest gain nothing from it but a fragile build.
  *
  * What the sources find beside themselves at runtime comes along: the shell
- * init files `terminals.ts` locates with `import.meta.url`. The migrations
+ * init files `terminals.ts` locates with `import.meta.url`, and the OMP guard
+ * hook `@ucch/providers` does (`omp-assets.ts`). The migrations
  * and the document kit are found through MIGRATIONS_DIR and DOC_KIT_DIR.
  */
 import { build } from "esbuild";
@@ -51,6 +52,11 @@ await build({
   banner: {
     js: "import { createRequire as __ucchCreateRequire } from 'node:module'; const require = __ucchCreateRequire(import.meta.url);",
   },
+});
+
+cpSync(join(here, "../../packages/providers/assets/omp-hooks"), join(out, "omp-hooks"), {
+  recursive: true,
+  filter: (path) => !path.endsWith(".test.ts"),
 });
 
 cpSync(join(here, "src/shell"), join(out, "shell"), {

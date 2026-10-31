@@ -169,6 +169,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
   - **Steps:**
     1. `ensureCredsDir("omp")` creates `agent/`, `sessions/`, `run/` and `wt/` with mode 0700.
     2. It installs the guard hook (solution §3.9) and the UCCH agents (§6.4), refreshed when their content hash changes.
+       *(OM0: custom agent files do not run under `--no-extensions`, so there are no UCCH agents to install; solution §6.4. The hook goes to `agent/ucch-guard.ts`, for `--hook`.)*
     3. It writes `agent/config.yml` with `autoResume: false`.
     4. `providerEnv("omp", { openrouterKey })` follows §3.3.
   - **Acceptance:**

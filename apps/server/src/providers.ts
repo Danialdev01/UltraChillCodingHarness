@@ -1,10 +1,12 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { users, workspaces, type Database } from "@ucch/db";
 import type { CliProviderId, ProviderId, ReasoningEffort } from "@ucch/protocol";
 import {
+  isOmpCredentialEnv,
+  ompGuardHookSource,
   PROVIDER_LABELS,
   type AgentProvider,
   type CliProviders,
@@ -37,6 +39,23 @@ import { terminalEnv } from "./terminals.js";
 
 /** A probe is cached this long per user, so the settings page is cheap to refresh. */
 const HEALTH_TTL_MS = 30_000;
+
+/**
+ * The subject's OMP settings, below every run's overlay. Only what must hold
+ * for every turn: a process started without `--resume` is a new session,
+ * never "the most recent one in this directory", which would be another
+ * thread's.
+ */
+const OMP_AGENT_CONFIG = "# Managed by UCCH; rewritten when it differs.\nautoResume: false\n";
+
+/** Worker output an OMP turn keeps per subagent (solution §3.3). */
+const OMP_TASK_MAX_OUTPUT_BYTES = "65536";
+
+/** Writes `content` to `path` unless it already holds exactly that. */
+function writeIfChanged(path: string, content: string): void {
+  if (existsSync(path) && readFileSync(path, "utf8") === content) return;
+  writeFileSync(path, content, { mode: 0o600 });
+}
 
 /** A `setup-token` lives a year; the settings page warns from here on. */
 export const TOKEN_WARN_AFTER_MS = 11 * 30 * 24 * 3600_000;
@@ -113,7 +132,22 @@ export class ProviderService {
         writeFileSync(config, 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
       }
     }
+    if (id === "omp") {
+      // `agent/` is PI_CODING_AGENT_DIR: OMP's settings and any login.
+      // Sessions, per-turn overlays and isolated workers' worktrees each
+      // get their own directory beside it.
+      for (const sub of ["agent", "sessions", "run", "wt"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 });
+      writeIfChanged(join(dir, "agent", "config.yml"), OMP_AGENT_CONFIG);
+      // Loaded with `--hook`, the one hook path `--no-extensions` leaves
+      // open. Refreshed whenever the server ships a different one.
+      writeIfChanged(this.ompGuardHook(userId), ompGuardHookSource());
+    }
     return dir;
+  }
+
+  /** Where the subject's copy of the OMP guard hook lives (`--hook`). */
+  ompGuardHook(userId: string): string {
+    return join(this.credsDir(userId, "omp"), "agent", "ucch-guard.ts");
   }
 
   /**
@@ -125,8 +159,17 @@ export class ProviderService {
    * and, in token mode, the token itself. `terminalEnv` already strips every
    * `*_API_KEY`, which is the assertion the spec asks for: nothing here can
    * put a run onto API billing.
+   *
+   * OMP is billed to the workspace's OpenRouter key, which it is handed
+   * here, and nothing else: every other variable it would read as a
+   * credential is dropped, including the ones `terminalEnv` lets through
+   * because they are not named like secrets (`AWS_ACCESS_KEY_ID`).
    */
-  providerEnv(userId: string, id: CliProviderId, options: { token?: string } = {}): Record<string, string> {
+  providerEnv(
+    userId: string,
+    id: CliProviderId,
+    options: { token?: string; openrouterKey?: string } = {},
+  ): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(terminalEnv())) if (value !== undefined) env[name] = value;
     // Not a terminal: no colour, no progress bars, and the CLIs treat CI as
@@ -140,6 +183,13 @@ export class ProviderService {
       if (options.token) env.CLAUDE_CODE_OAUTH_TOKEN = options.token;
     } else if (id === "codex") {
       env.CODEX_HOME = dir;
+    } else {
+      for (const name of Object.keys(env)) if (isOmpCredentialEnv(name)) delete env[name];
+      env.PI_CODING_AGENT_DIR = join(dir, "agent");
+      env.OMP_WORKTREE_DIR = join(dir, "wt");
+      env.OMP_SKIP_SETUP = "1";
+      env.PI_TASK_MAX_OUTPUT_BYTES = OMP_TASK_MAX_OUTPUT_BYTES;
+      if (options.openrouterKey) env.OPENROUTER_API_KEY = options.openrouterKey;
     }
     return env;
   }

@@ -2,12 +2,13 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createProviders } from "@ucch/providers";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createProviders, forbiddenEnvFor, ompGuardHookSource } from "@ucch/providers";
 import { FakeProcessHost, stdout } from "@ucch/providers/testing";
 import { loadConfig } from "./config.js";
 import { encryptSecret } from "./crypto.js";
 import { ProviderService } from "./providers.js";
+import { terminalEnv } from "./terminals.js";
 
 const USER = "11111111-1111-1111-1111-111111111111";
 const SECRET = "ab".repeat(32);
@@ -75,6 +76,30 @@ describe("credential directories", () => {
     svc.ensureCredsDir(USER, "codex");
     expect(await readFile(config, "utf8")).toBe("# edited by hand\n");
   });
+
+  it("lay out the OMP directory, private, with its settings and the guard hook", async () => {
+    const svc = service(new FakeProcessHost([]));
+    const dir = svc.ensureCredsDir(USER, "omp");
+    expect(dir).toBe(join(root, USER, "omp"));
+    for (const sub of ["", "agent", "sessions", "run", "wt"]) {
+      expect((await stat(join(dir, sub))).mode & 0o777, sub || "omp").toBe(0o700);
+    }
+    expect(await readFile(join(dir, "agent", "config.yml"), "utf8")).toContain("autoResume: false");
+    expect(svc.ompGuardHook(USER)).toBe(join(dir, "agent", "ucch-guard.ts"));
+    expect(await readFile(svc.ompGuardHook(USER), "utf8")).toBe(ompGuardHookSource());
+  });
+
+  // A server upgrade ships a new hook; the subject's copy must follow it,
+  // or turns would run under the old rules.
+  it("refresh the OMP guard hook and settings when they differ from the server's", async () => {
+    const svc = service(new FakeProcessHost([]));
+    const dir = svc.ensureCredsDir(USER, "omp");
+    await writeFile(svc.ompGuardHook(USER), "export default function () {}\n");
+    await writeFile(join(dir, "agent", "config.yml"), "autoResume: true\n");
+    svc.ensureCredsDir(USER, "omp");
+    expect(await readFile(svc.ompGuardHook(USER), "utf8")).toBe(ompGuardHookSource());
+    expect(await readFile(join(dir, "agent", "config.yml"), "utf8")).toContain("autoResume: false");
+  });
 });
 
 describe("the environment a provider gets", () => {
@@ -95,6 +120,53 @@ describe("the environment a provider gets", () => {
     expect(svc.providerEnv(USER, "claude").CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(svc.providerEnv(USER, "claude", { token: "tok" }).CLAUDE_CODE_OAUTH_TOKEN).toBe("tok");
     expect(svc.providerEnv(USER, "codex", { token: "tok" }).CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  describe("for omp", () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("holds exactly the terminal's environment plus OMP's own variables and the OpenRouter key", () => {
+      const svc = service(new FakeProcessHost([]));
+      const dir = join(root, USER, "omp");
+      const expected: Record<string, string> = {};
+      for (const [name, value] of Object.entries(terminalEnv())) if (value !== undefined) expected[name] = value;
+      Object.assign(expected, {
+        TERM: "dumb",
+        CI: "1",
+        PI_CODING_AGENT_DIR: join(dir, "agent"),
+        OMP_WORKTREE_DIR: join(dir, "wt"),
+        OMP_SKIP_SETUP: "1",
+        PI_TASK_MAX_OUTPUT_BYTES: "65536",
+        OPENROUTER_API_KEY: "sk-or-v1-test",
+      });
+      const env = svc.providerEnv(USER, "omp", { openrouterKey: "sk-or-v1-test" });
+      expect(env).toEqual(expected);
+      expect(forbiddenEnvFor("omp", env)).toBeNull();
+    });
+
+    // Not named like secrets, so the terminal keeps them; OMP would bill
+    // Bedrock or send the headers, so its process must not.
+    it("drops every credential OMP would read, even ones a terminal keeps", () => {
+      vi.stubEnv("AWS_ACCESS_KEY_ID", "AKIA");
+      vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "x-api-key: k");
+      vi.stubEnv("PERPLEXITY_COOKIES", "c");
+      const svc = service(new FakeProcessHost([]));
+      expect(terminalEnv().AWS_ACCESS_KEY_ID).toBe("AKIA");
+      const env = svc.providerEnv(USER, "omp", { openrouterKey: "sk-or-v1-test" });
+      for (const name of ["AWS_ACCESS_KEY_ID", "ANTHROPIC_CUSTOM_HEADERS", "PERPLEXITY_COOKIES"]) {
+        expect(env[name], name).toBeUndefined();
+      }
+      expect(forbiddenEnvFor("omp", env)).toBeNull();
+    });
+
+    it("carries no OpenRouter key unless given one, and none of the CLIs' variables", () => {
+      const svc = service(new FakeProcessHost([]));
+      const env = svc.providerEnv(USER, "omp", { token: "tok" });
+      expect(env.OPENROUTER_API_KEY).toBeUndefined();
+      expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(env.CODEX_HOME).toBeUndefined();
+    });
   });
 
   it("gives a login terminal a real TERM and CODEX_HOME for codex", () => {
