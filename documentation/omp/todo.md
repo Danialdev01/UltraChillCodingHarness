@@ -176,7 +176,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - A test shows the environment holds exactly the §3.3 variables plus `terminalEnv()`, with no other credentials.
     - A test shows the guard hook blocks `git push` in a fake `tool_call` event.
   - **Verify:** `pnpm test -- providers`
-- [ ] **OM1.5 — Install OMP in the image**
+- [x] **OM1.5 — Install OMP in the image** — 6bbfc80
 
   - **Depends:** OM0.1
   - **Files:** `Dockerfile`, `deploy.md`, `README.md`
@@ -192,7 +192,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
 
 ## Phase OM2: RPC client and `OmpProvider`
 
-- [ ] **OM2.1 — `omp-rpc.ts`**
+- [x] **OM2.1 — `omp-rpc.ts`** — 8a6beca
 
   - **Depends:** OM0.3
   - **Files:** new `packages/providers/src/omp-rpc.ts`, `omp-rpc-types.ts` and `omp-rpc.test.ts`; reuses `process.ts` (`ProcessHost`, `splitLines`) and `testing.ts`
@@ -206,7 +206,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - `close()` exit 0
     - `kill()` escalation
   - **Verify:** `pnpm test -- omp-rpc`
-- [ ] **OM2.2 — `ompArgv` and mappings**
+- [x] **OM2.2 — `ompArgv` and mappings** — 3e34776
 
   - **Depends:** OM2.1, OM0.4
   - **Files:** new `packages/providers/src/omp.ts`, `omp.test.ts`
@@ -216,7 +216,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     3. Write a block comment on the load-bearing flags: `rpc-ui`, `--no-extensions`, `--config`.
   - **Acceptance:** snapshot tests for every permission mode × effort × resume × trusted combination. A test that `--yolo` never appears outside `allow_all`.
   - **Verify:** `pnpm test -- omp`
-- [ ] **OM2.3 — `OmpNormaliser`**
+- [x] **OM2.3 — `OmpNormaliser`** — 5be8559
 
   - **Depends:** OM2.1, OM0.2
   - **Files:** `packages/providers/src/omp.ts`, `omp.test.ts`
