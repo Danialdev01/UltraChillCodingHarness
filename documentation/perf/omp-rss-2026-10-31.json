@@ -1,0 +1,438 @@
+{
+  "label": "omp-rss-2026-10-31",
+  "at": "2026-10-31T03:50:34.180Z",
+  "omp": "omp/18.14.1",
+  "runs": 5,
+  "summary": {
+    "idle": {
+      "readyMsMedian": 317,
+      "rssMbMedian": 274,
+      "pssMbMedian": 226,
+      "rssMbMax": 285,
+      "lspRssMbMedian": 0,
+      "lspAfterExitRssMbMedian": 0,
+      "lspLingerMsMedian": 0,
+      "processesMax": 1
+    },
+    "busy": {
+      "readyMsMedian": 317,
+      "rssMbMedian": 270,
+      "pssMbMedian": 219,
+      "rssMbMax": 283,
+      "lspRssMbMedian": 0,
+      "lspAfterExitRssMbMedian": 0,
+      "lspLingerMsMedian": 0,
+      "processesMax": 1
+    },
+    "scouts": {
+      "readyMsMedian": 334,
+      "rssMbMedian": 318,
+      "pssMbMedian": 266,
+      "rssMbMax": 321,
+      "lspRssMbMedian": 0,
+      "lspAfterExitRssMbMedian": 0,
+      "lspLingerMsMedian": 0,
+      "processesMax": 1
+    },
+    "lsp": {
+      "readyMsMedian": 339,
+      "rssMbMedian": 1169,
+      "pssMbMedian": 863,
+      "rssMbMax": 1174,
+      "lspRssMbMedian": 725,
+      "lspAfterExitRssMbMedian": 725,
+      "lspLingerMsMedian": 3063,
+      "processesMax": 7
+    }
+  },
+  "results": {
+    "idle": [
+      {
+        "readyMs": 310,
+        "peak": {
+          "omp": {
+            "rss": 274,
+            "pss": 226
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 334,
+        "peak": {
+          "omp": {
+            "rss": 268,
+            "pss": 219
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 327,
+        "peak": {
+          "omp": {
+            "rss": 285,
+            "pss": 282
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 317,
+        "peak": {
+          "omp": {
+            "rss": 270,
+            "pss": 222
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 287,
+        "peak": {
+          "omp": {
+            "rss": 285,
+            "pss": 237
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      }
+    ],
+    "busy": [
+      {
+        "readyMs": 325,
+        "peak": {
+          "omp": {
+            "rss": 270,
+            "pss": 219
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 317,
+        "peak": {
+          "omp": {
+            "rss": 283,
+            "pss": 232
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 319,
+        "peak": {
+          "omp": {
+            "rss": 275,
+            "pss": 224
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 309,
+        "peak": {
+          "omp": {
+            "rss": 270,
+            "pss": 219
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 308,
+        "peak": {
+          "omp": {
+            "rss": 268,
+            "pss": 216
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      }
+    ],
+    "scouts": [
+      {
+        "readyMs": 331,
+        "peak": {
+          "omp": {
+            "rss": 316,
+            "pss": 263
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 315,
+        "peak": {
+          "omp": {
+            "rss": 316,
+            "pss": 264
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 356,
+        "peak": {
+          "omp": {
+            "rss": 319,
+            "pss": 289
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 334,
+        "peak": {
+          "omp": {
+            "rss": 321,
+            "pss": 269
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      },
+      {
+        "readyMs": 368,
+        "peak": {
+          "omp": {
+            "rss": 318,
+            "pss": 266
+          },
+          "lsp": {
+            "rss": 0,
+            "pss": 0
+          },
+          "processes": 1
+        },
+        "afterExit": {
+          "rss": 0,
+          "pss": 0
+        },
+        "lingerMs": 0
+      }
+    ],
+    "lsp": [
+      {
+        "readyMs": 312,
+        "peak": {
+          "omp": {
+            "rss": 1170,
+            "pss": 860
+          },
+          "lsp": {
+            "rss": 728,
+            "pss": 563
+          },
+          "processes": 7
+        },
+        "afterExit": {
+          "rss": 729,
+          "pss": 563
+        },
+        "lingerMs": 3048
+      },
+      {
+        "readyMs": 342,
+        "peak": {
+          "omp": {
+            "rss": 1160,
+            "pss": 863
+          },
+          "lsp": {
+            "rss": 718,
+            "pss": 552
+          },
+          "processes": 7
+        },
+        "afterExit": {
+          "rss": 718,
+          "pss": 553
+        },
+        "lingerMs": 3063
+      },
+      {
+        "readyMs": 308,
+        "peak": {
+          "omp": {
+            "rss": 1174,
+            "pss": 863
+          },
+          "lsp": {
+            "rss": 725,
+            "pss": 560
+          },
+          "processes": 7
+        },
+        "afterExit": {
+          "rss": 725,
+          "pss": 560
+        },
+        "lingerMs": 3056
+      },
+      {
+        "readyMs": 347,
+        "peak": {
+          "omp": {
+            "rss": 1169,
+            "pss": 895
+          },
+          "lsp": {
+            "rss": 729,
+            "pss": 564
+          },
+          "processes": 7
+        },
+        "afterExit": {
+          "rss": 729,
+          "pss": 564
+        },
+        "lingerMs": 3066
+      },
+      {
+        "readyMs": 339,
+        "peak": {
+          "omp": {
+            "rss": 1165,
+            "pss": 854
+          },
+          "lsp": {
+            "rss": 721,
+            "pss": 556
+          },
+          "processes": 7
+        },
+        "afterExit": {
+          "rss": 721,
+          "pss": 556
+        },
+        "lingerMs": 3064
+      }
+    ]
+  }
+}
