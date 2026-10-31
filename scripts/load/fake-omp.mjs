@@ -29,7 +29,11 @@
  *                         to need chunking)
  *     get_state           the session id
  *     get_session_stats   fixed numbers per completed turn, cumulative over
- *                         the session, as OMP's totals are
+ *                         the session, as OMP's totals are. Its context
+ *                         size grows with each model call (`turn_end`) of
+ *                         the turn, to the turn's tokens by its end, and a
+ *                         compaction (`auto_compaction_end`) cuts it to a
+ *                         quarter, so a meter can be seen to move and drop
  *     get_messages        the recording's own answer to it, if it has one
  *     prompt              the recording's chosen prompt, from just after its
  *                         response to its `prompt_result`. A dialog
@@ -109,6 +113,8 @@ const resume = flag("--resume");
 let sessionId;
 let sessionFile = null;
 let turnsBefore = 0;
+/** The context's size the resumed session ended on, if it recorded one. */
+let resumedContext = null;
 if (resume) {
   const names = sessionDir && existsSync(sessionDir) ? readdirSync(sessionDir) : [];
   const matches = names.filter((name) => SESSION_FILE.exec(name)?.[1].startsWith(resume));
@@ -118,9 +124,12 @@ if (resume) {
   }
   sessionId = SESSION_FILE.exec(matches[0])[1];
   sessionFile = join(sessionDir, matches[0]);
-  turnsBefore = readFileSync(sessionFile, "utf8")
+  const entries = readFileSync(sessionFile, "utf8")
     .split("\n")
-    .filter((line) => line.trim() !== "" && JSON.parse(line).type === "turn_end").length;
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line));
+  turnsBefore = entries.filter((entry) => entry.type === "turn_end").length;
+  resumedContext = entries.findLast((entry) => entry.type === "context")?.tokens ?? null;
 } else {
   sessionId = randomUUID();
   if (sessionDir) sessionFile = join(sessionDir, `${new Date().toISOString().replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
@@ -137,6 +146,8 @@ const record = (entry) => {
 /** What one completed turn adds to the session's totals. */
 const PER_TURN = { input: 1200, output: length ?? 80, cacheRead: 0, cacheWrite: 0, cost: 0.0012 };
 const CONTEXT_WINDOW = 200_000;
+/** Tokens in the context now: see `get_session_stats` above. */
+let contextTokens = resumedContext ?? turnsBefore * (PER_TURN.input + PER_TURN.output);
 
 function stats() {
   const turns = turnsBefore + turnsHere;
@@ -153,9 +164,9 @@ function stats() {
     tokens: { input, output, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: input + output },
     cost: Math.round(turns * PER_TURN.cost * 1e6) / 1e6,
     contextUsage: {
-      tokens: input + output,
+      tokens: contextTokens,
       contextWindow: CONTEXT_WINDOW,
-      percent: Math.round(((input + output) / CONTEXT_WINDOW) * 10_000) / 100,
+      percent: Math.round((contextTokens / CONTEXT_WINDOW) * 10_000) / 100,
     },
   };
 }
@@ -184,6 +195,8 @@ if (promptAt < 0 || resultAt < 0) {
   process.exit(2);
 }
 const turnFrames = recorded.slice(promptAt + 1, resultAt + 1).filter((frame) => frame.type !== "response");
+/** What one model call adds to the context: the turn's tokens over its calls. */
+const PER_CALL = (PER_TURN.input + PER_TURN.output) / Math.max(1, turnFrames.filter((frame) => frame.type === "turn_end").length);
 const READY = recorded.find((frame) => frame.type === "ready") ?? {
   type: "ready",
   protocolVersion: 1,
@@ -262,7 +275,13 @@ async function play(prompt) {
       }
       continue;
     }
+    // Before the frame: whoever hears it and asks for stats sees the change.
+    if (frame.type === "turn_end") contextTokens = Math.round(contextTokens + PER_CALL);
+    if (frame.type === "auto_compaction_end" && frame.result && !frame.aborted) contextTokens = Math.round(contextTokens / 4);
     out(withHostResult(turn, withAnswer(frame)));
+    // The next model call takes time, as a real one does: what the host
+    // asked after this one (its stats) is answered before what follows.
+    if (frame.type === "turn_end") await sleep(10);
     if (frame.type === "extension_ui_request" && DIALOGS.has(frame.method)) {
       turn.dialog = frame.id;
       await new Promise((resolve) => (turn.answered = resolve));
@@ -286,6 +305,7 @@ async function play(prompt) {
   } else if (!stdinClosed) {
     turnsHere++;
     record({ type: "turn_end" });
+    record({ type: "context", tokens: contextTokens });
     out({ ...result, id: prompt.id });
     out({ type: "session_settled" });
   }

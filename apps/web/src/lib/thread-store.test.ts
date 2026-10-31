@@ -133,6 +133,25 @@ describe("ThreadStore", () => {
     expect(store.queued).toBeNull()
   })
 
+  it("holds the newest context reading as live state, never as a row", () => {
+    const store = new ThreadStore(THREAD)
+    const reading = (usedTokens: number) =>
+      live({ type: "context.usage", threadId: THREAD, turnId: TURN, usedTokens, windowTokens: 128000, thresholdTokens: null })
+    expect(store.contextUsage).toBeNull()
+    store.push(started(1))
+    const durableBefore = store.durableVersion
+    const liveBefore = store.liveVersion
+    store.push(reading(9000))
+    store.push(reading(2500))
+    expect(store.contextUsage).toMatchObject({ usedTokens: 2500, windowTokens: 128000 })
+    expect(store.liveVersion).toBeGreaterThan(liveBefore)
+    expect(store.durableVersion).toBe(durableBefore)
+    expect(shape(store.rows)).toEqual(["1:turn.started"])
+    // Another thread's is not this one's.
+    store.push(live({ type: "context.usage", threadId: OTHER, turnId: TURN, usedTokens: 1, windowTokens: null, thresholdTokens: null }))
+    expect(store.contextUsage?.usedTokens).toBe(2500)
+  })
+
   it("says which layer changed", () => {
     const store = new ThreadStore(THREAD)
     store.push(started(1))

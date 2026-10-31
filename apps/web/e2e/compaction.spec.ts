@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * A compaction mid-turn draws as a divider in the answer (OMP OM4.1).
+ * A compaction mid-turn draws as a divider in the answer (OMP OM4.1), and
+ * the context meter drops with it (OM4.2).
  *
  * The server must run OMP turns on the replay of a compacting turn, with no
  * network: `OMP_ENABLED=true`, `OMP_BIN=scripts/load/fake-omp-compaction.sh`,
@@ -87,6 +88,11 @@ test("a compaction mid-turn is a divider with its figures", async ({ page, conte
   await expect(summary).toBeHidden();
   await divider.locator("summary").click();
   await expect(summary).toBeVisible();
+
+  // The meter reads the session's own measure (OMP OM4.2), which the
+  // compaction cut: fake-omp's 1280 tokens after the model call, a quarter
+  // of that after -- not the turn's usage, and not the catalogue's window.
+  await expect(page.locator('button[title^="Context "]')).toHaveAttribute("title", /\(320 \/ 200k tokens\)/, { timeout: 15_000 });
 
   // And it stays where it was once the page is drawn from the log.
   await page.reload();

@@ -352,6 +352,23 @@ const AgentRetry = z.object({
   category: z.string(),
 });
 
+/**
+ * How full the session's context is, as the provider measured it (OMP's
+ * `get_session_stats`, solution §5.2), after each model call of a turn.
+ * Transient: the meter's live reading, superseded by the next one; a thread
+ * whose provider sends none keeps the estimate from its turns' usage.
+ * `windowTokens` is null when the provider does not know the model's
+ * window, `thresholdTokens` when nothing set where compaction starts.
+ */
+const ContextUsage = z.object({
+  type: z.literal("context.usage"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  usedTokens: z.number().int().nonnegative(),
+  windowTokens: z.number().int().positive().nullable(),
+  thresholdTokens: z.number().int().positive().nullable(),
+});
+
 const AgentThinkingDelta = z.object({
   type: z.literal("agent.thinking_delta"),
   threadId: z.string().uuid(),
@@ -826,6 +843,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   TurnStarted,
   AgentSessionStarted,
   AgentRetry,
+  ContextUsage,
   AgentThinkingDelta,
   AgentTextDelta,
   AgentToolUse,
@@ -880,6 +898,7 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "agent.thinking_delta",
   "agent.text_delta",
   "agent.retry",
+  "context.usage",
   "agent.queued",
   "note.changed",
   "timeline.changed",

@@ -44,6 +44,16 @@ describe("the meter", () => {
   });
 });
 
+describe("the compaction threshold", () => {
+  it("is placed on the window, and only where there is one", () => {
+    expect(contextUsage(50_000, 200_000, 160_000).thresholdRatio).toBeCloseTo(0.8, 6);
+    expect(contextUsage(null, 200_000, 160_000).thresholdRatio).toBeCloseTo(0.8, 6);
+    expect(contextUsage(50_000, null, 160_000).thresholdRatio).toBeNull();
+    expect(contextUsage(50_000, 200_000).thresholdRatio).toBeNull();
+    expect(contextUsage(50_000, 200_000, 400_000).thresholdRatio).toBe(1);
+  });
+});
+
 describe("what it says when it does not know", () => {
   it("distinguishes no turns yet from a model with no published window", () => {
     // Two different unknowns: one resolves after the first reply, the other

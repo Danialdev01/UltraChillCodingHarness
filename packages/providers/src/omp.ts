@@ -200,6 +200,8 @@ export class OmpNormaliser {
   #running: RunningCall[] = [];
   #prompts = new Map<string, true>();
   #io: { send(frame: OmpClientFrame): void } | null = null;
+  /** The last `context.usage` sent, so an unchanged reading is not sent again. */
+  #lastUsage: string | null = null;
 
   constructor(
     private readonly ctx: {
@@ -379,6 +381,31 @@ export class OmpNormaliser {
         // subagent frames (OM5) and whatever the next version adds.
         return [];
     }
+  }
+
+  /**
+   * How full the session's context is, from a `get_session_stats` answer
+   * (solution §5.2): `contextUsage.tokens` of `contextUsage.contextWindow`.
+   * The stats carry no threshold; it is the overlay's, resolved as OMP
+   * resolves it -- `tokens` wins, else `percent` (clamped to 1-99) of the
+   * window, rounded down. Nothing for stats without a size, or for the same
+   * reading twice.
+   */
+  usage(stats: OmpSessionStats | null | undefined, threshold: { tokens?: number; percent?: number } = {}): DomainEvent[] {
+    if (this.#closed) return [];
+    const usedTokens = tokenCount(stats?.contextUsage?.tokens);
+    if (usedTokens === undefined) return [];
+    const window = tokenCount(stats?.contextUsage?.contextWindow);
+    const windowTokens = window ? window : null;
+    let thresholdTokens: number | null = null;
+    if (threshold.tokens !== undefined && threshold.tokens > 0) thresholdTokens = Math.floor(threshold.tokens) || null;
+    else if (threshold.percent !== undefined && threshold.percent > 0 && windowTokens !== null) {
+      thresholdTokens = Math.floor(windowTokens * (Math.min(99, Math.max(1, threshold.percent)) / 100)) || null;
+    }
+    const key = `${usedTokens}/${windowTokens}/${thresholdTokens}`;
+    if (key === this.#lastUsage) return [];
+    this.#lastUsage = key;
+    return [{ type: "context.usage", ...this.#ids(), usedTokens, windowTokens, thresholdTokens }];
   }
 
   /**
@@ -778,6 +805,8 @@ class OmpTurn implements AgentRun {
    */
   #held: DomainEvent[] | null = null;
   #described: Promise<void> = Promise.resolve();
+  /** The context readings asked for after each model call, sent in the order asked. */
+  #measured: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly input: ProviderRunInput,
@@ -879,7 +908,11 @@ class OmpTurn implements AgentRun {
     // Gone before the turn settled: `#end` reports how.
     if (outcome === "exited") return;
     await this.#described;
+    await this.#measured;
     const after = await this.#stats(rpc);
+    // The reading the turn ends on, so the meter holds what is in the
+    // session now, not as of its last model call.
+    this.#emit(this.#normaliser.usage(after, this.input.omp?.contextThreshold));
     this.#emit(this.#normaliser.complete({ before, after }));
     await this.#close(rpc);
   }
@@ -903,7 +936,20 @@ class OmpTurn implements AgentRun {
       this.#held = events.slice(at);
       this.#described = this.#describe(this.#rpc);
     } else this.#emit(events);
+    if (frame.type === "turn_end" && this.#rpc) this.#measure(this.#rpc);
     if (this.#normaliser.settled) this.#settle();
+  }
+
+  /**
+   * Asks how full the context is after a model call (solution §5.2), off
+   * the read loop. A reading that cannot be had is skipped: the next one,
+   * or the one the turn ends on, takes its place.
+   */
+  #measure(rpc: OmpRpc): void {
+    const stats = this.#stats(rpc).catch(() => null);
+    this.#measured = this.#measured
+      .then(() => stats)
+      .then((answer) => this.#emit(this.#normaliser.usage(answer, this.input.omp?.contextThreshold)));
   }
 
   /** Events out, behind any held for a compaction. */

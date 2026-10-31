@@ -333,9 +333,31 @@ export async function writeOmpOverlay(
   runDir: string,
   turnId: string,
   input: OmpOverlayInput,
-): Promise<{ path: string; dispose(): Promise<void> }> {
+): Promise<{ path: string; contextThreshold: OmpContextThreshold; dispose(): Promise<void> }> {
   if (!/^[A-Za-z0-9-]+$/.test(turnId)) throw new Error(`not a turn id: ${turnId}`);
   const path = join(runDir, `${turnId}.yml`);
-  await writeFile(path, HEADER + toYaml(ompOverlay(input)), { mode: 0o600 });
-  return { path, dispose: () => rm(path, { force: true }) };
+  const overlay = ompOverlay(input);
+  await writeFile(path, HEADER + toYaml(overlay), { mode: 0o600 });
+  return { path, contextThreshold: ompContextThreshold(overlay), dispose: () => rm(path, { force: true }) };
+}
+
+/** Where the overlay starts compaction, as OMP's two settings say it. */
+export interface OmpContextThreshold {
+  tokens?: number;
+  /** Of the model's window, 1-99. */
+  percent?: number;
+}
+
+/**
+ * The compaction threshold an overlay sets, for the context meter (solution
+ * §5.2): `get_session_stats` reports the context's size and window but not
+ * where compaction starts, so the meter takes it from what UCCH wrote. OMP
+ * reads a value of 0 or below as unset (its default is -1).
+ */
+export function ompContextThreshold(overlay: Record<string, unknown>): OmpContextThreshold {
+  const compaction = (overlay.compaction ?? {}) as { thresholdTokens?: unknown; thresholdPercent?: unknown };
+  const positive = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+  const tokens = positive(compaction.thresholdTokens);
+  const percent = positive(compaction.thresholdPercent);
+  return { ...(tokens !== undefined ? { tokens } : {}), ...(percent !== undefined ? { percent } : {}) };
 }

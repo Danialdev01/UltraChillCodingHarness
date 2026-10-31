@@ -39,6 +39,10 @@ import { frameBatcher } from "./next-frame";
  * `queued` is how many turns are ahead of the thread's sent message while
  * it waits for the server to have a slot (`agent.queued`), and null once
  * its turn starts or is dropped. Live state too: it changes `liveVersion`.
+ *
+ * `contextUsage` is the provider's newest measure of how full the context
+ * is (`context.usage`, OMP threads), or null when none has been heard since
+ * the page opened. Live state as well; a newer one replaces it.
  */
 export class ThreadStore {
   readonly threadId: string;
@@ -48,6 +52,7 @@ export class ThreadStore {
   /** Turns that have ended: their runs no longer change. */
   #ended = new Set<string>();
   #queued: number | null = null;
+  #contextUsage: ContextUsageEvent | null = null;
   #durableVersion = 0;
   #liveVersion = 0;
   #rows: { durable: number; live: number; rows: readonly ClientEvent[] } | null = null;
@@ -77,6 +82,11 @@ export class ThreadStore {
     return this.#queued;
   }
 
+  /** The provider's newest measure of the context, or null. */
+  get contextUsage(): ContextUsageEvent | null {
+    return this.#contextUsage;
+  }
+
   /** Takes one event as the client heard it; anything not of this thread is ignored. */
   push(row: ClientEvent): void {
     const event = row.event;
@@ -85,6 +95,9 @@ export class ThreadStore {
     else if (event.type === "agent.queued") {
       if (this.#queued === event.ahead) return;
       this.#queued = event.ahead;
+      this.#changed("live");
+    } else if (event.type === "context.usage") {
+      this.#contextUsage = event;
       this.#changed("live");
     } else if (LIVE.has(event.type)) this.#pushRun(row);
   }
@@ -221,6 +234,8 @@ export class ThreadStore {
     this.#notify.schedule();
   }
 }
+
+export type ContextUsageEvent = Extract<DomainEvent, { type: "context.usage" }>;
 
 type LiveEvent = Extract<DomainEvent, { type: "agent.text_delta" | "agent.thinking_delta" | "agent.retry" }>;
 

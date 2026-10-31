@@ -122,6 +122,11 @@ export interface OmpRunFiles {
   trusted: boolean;
   /** OMP's own limit on the session, e.g. "45m". */
   maxTime?: string;
+  /**
+   * Where the overlay starts compaction, for `context.usage`: OMP's stats
+   * do not say (solution §5.2). Absent or empty, the threshold is unknown.
+   */
+  contextThreshold?: { tokens?: number; percent?: number };
 }
 
 /** What a person said to a CLI's permission prompt. */

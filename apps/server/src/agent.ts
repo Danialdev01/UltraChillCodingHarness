@@ -862,6 +862,7 @@ export class AgentTurnReactor {
           sessionDir: providers.ompSessionDir(input.ownerId, input.projectId),
           guardHookPath: providers.ompGuardHook(input.ownerId),
           trusted: false,
+          contextThreshold: written.contextThreshold,
         };
         host = {
           hostTools,

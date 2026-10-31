@@ -459,6 +459,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     () => threadStore?.queued ?? null,
     () => null,
   );
+  // The provider's own measure of the context, where it sends one (OMP):
+  // live, and in place of the estimate from the last turn's usage.
+  const measuredContext = useSyncExternalStore(
+    threadStore?.subscribe ?? subscribeToNothing,
+    () => threadStore?.contextUsage ?? null,
+    () => null,
+  );
 
   useEffect(() => {
     const client = sharedClient;
@@ -1796,8 +1803,12 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                 disabled={sending || running}
               />
               <ContextMeter
-                tokens={contextTokens}
-                limit={models.find((m) => m.id === model)?.contextLength ?? null}
+                tokens={measuredContext?.usedTokens ?? contextTokens}
+                limit={
+                  measuredContext?.windowTokens ?? models.find((m) => m.id === model)?.contextLength ?? null
+                }
+                threshold={measuredContext?.thresholdTokens ?? null}
+                live={measuredContext !== null}
                 onClear={() => void clearContext()}
                 clearing={clearing}
                 // Mid-turn the history is still being written; clearing under

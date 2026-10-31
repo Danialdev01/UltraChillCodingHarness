@@ -16,6 +16,11 @@ import { contextPercent, contextUsage, formatContextTokens } from "@/lib/context
  * a meter that quietly showed an estimate would be worse than one that
  * admits when it last looked.
  *
+ * A provider that measures its own session (OMP, `context.usage`) is read
+ * live instead: after each model call, so the bar moves while the turn
+ * runs and drops when the session compacts. Its compaction threshold, when
+ * known, is a tick on the bar.
+ *
  * In a narrow panel the bar and the eraser fold into one ring: the share
  * used, drawn round a circle with the percentage inside, and pressing it
  * asks whether to clear. A phone has no hover for the tooltip, and no room
@@ -24,18 +29,24 @@ import { contextPercent, contextUsage, formatContextTokens } from "@/lib/context
 export function ContextMeter({
   tokens,
   limit,
+  threshold = null,
+  live = false,
   onClear,
   clearing,
   disabled,
 }: {
   tokens: number | null
   limit: number | null
+  /** Where the provider compacts, in tokens, or null when it did not say. */
+  threshold?: number | null
+  /** The provider measured it after its last model call, not a turn's usage. */
+  live?: boolean
   onClear: () => void
   clearing: boolean
   /** No turn may start, so there is nothing to clear either. */
   disabled: boolean
 }) {
-  const usage = contextUsage(tokens, limit)
+  const usage = contextUsage(tokens, limit, threshold)
 
   // Clearing loses the visible conversation, so the button asks once. A
   // second click within a few seconds does it; anything else puts it back.
@@ -134,11 +145,18 @@ export function ContextMeter({
               <div className="flex cursor-default items-center gap-1.5" />
             }
           >
-            <div className="bg-muted h-1.5 w-6 overflow-hidden rounded-full @md:w-16">
+            <div className="bg-muted relative h-1.5 w-6 overflow-hidden rounded-full @md:w-16">
               <div
                 className={`h-full rounded-full transition-[width] duration-500 ${fill}`}
                 style={{ width: `${(usage.ratio ?? 0) * 100}%` }}
               />
+              {usage.thresholdRatio !== null && (
+                <div
+                  aria-hidden
+                  className="bg-foreground/50 absolute inset-y-0 w-px"
+                  style={{ left: `${usage.thresholdRatio * 100}%` }}
+                />
+              )}
             </div>
             <span className="text-muted-foreground hidden font-mono text-[10px] tabular-nums @md:inline">
               {usage.ratio === null ? usage.label : `${contextPercent(usage.ratio)}%`}
@@ -154,9 +172,14 @@ export function ContextMeter({
                   ? `${formatContextTokens(usage.tokens)} tokens in this conversation. This model publishes no window size.`
                   : `${usage.label} tokens used.`}
             </p>
+            {threshold !== null && usage.limit !== null && (
+              <p className="text-xs">Compacts at {formatContextTokens(threshold)} tokens.</p>
+            )}
             {usage.tokens !== null && (
               <p className="text-xs">
-                Counted at the last completed turn, so it lags the newest message.
+                {live
+                  ? "Measured by the session after the model's last call."
+                  : "Counted at the last completed turn, so it lags the newest message."}
               </p>
             )}
           </TooltipContent>

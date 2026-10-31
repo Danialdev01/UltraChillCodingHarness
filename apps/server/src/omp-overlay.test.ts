@@ -7,6 +7,7 @@ import {
   DEFAULT_OMP_SETTINGS,
   OMP_TOOL_TIERS,
   ompApprovals,
+  ompContextThreshold,
   ompOverlay,
   overlayKeyPaths,
   toYaml,
@@ -186,6 +187,15 @@ describe("ompOverlay", () => {
   });
 });
 
+describe("ompContextThreshold", () => {
+  it("reads OMP's two settings, taking 0 or below as unset", () => {
+    expect(ompContextThreshold({ compaction: { thresholdTokens: 90000, thresholdPercent: 80 } })).toEqual({ tokens: 90000, percent: 80 });
+    expect(ompContextThreshold({ compaction: { thresholdTokens: -1, thresholdPercent: 0 } })).toEqual({});
+    expect(ompContextThreshold({ compaction: { thresholdPercent: "80" } })).toEqual({});
+    expect(ompContextThreshold({})).toEqual({});
+  });
+});
+
 describe("toYaml", () => {
   it("quotes every string, so a value cannot become YAML", () => {
     expect(toYaml({ a: { b: "x: #y\n- z", c: ["p", "q"], d: true, e: 3 } })).toBe(
@@ -209,6 +219,14 @@ describe("writeOmpOverlay", () => {
     await dispose();
     expect(existsSync(path)).toBe(false);
     await dispose();
+  });
+
+  it("returns where its compaction starts, for the context meter", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-overlay-"));
+    const written = await writeOmpOverlay(dir, "00000000-0000-4000-8000-000000000004", base);
+    // UCCH leaves OMP's own threshold in place, so the meter knows none.
+    expect(written.contextThreshold).toEqual({});
+    await written.dispose();
   });
 
   it("refuses a turn id that is not one", async () => {

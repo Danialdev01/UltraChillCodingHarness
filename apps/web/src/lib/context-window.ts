@@ -30,6 +30,11 @@ export interface ContextUsage {
   tone: ContextTone;
   /** What the bar reads out, e.g. "12.4k / 200k". */
   label: string;
+  /**
+   * Where the provider compacts, as a share of the window (0-1), or null
+   * when it did not say or there is no window to place it in.
+   */
+  thresholdRatio: number | null;
 }
 
 /**
@@ -55,7 +60,8 @@ export function formatContextTokens(tokens: number): string {
  * means the catalogue does not publish a window for this model. Either way
  * the meter shows what it does know rather than inventing the rest.
  */
-export function contextUsage(tokens: number | null, limit: number | null): ContextUsage {
+export function contextUsage(tokens: number | null, limit: number | null, threshold: number | null = null): ContextUsage {
+  const thresholdRatio = limit && limit > 0 && threshold && threshold > 0 ? Math.min(1, threshold / limit) : null;
   if (tokens === null || tokens <= 0) {
     return {
       tokens,
@@ -63,11 +69,12 @@ export function contextUsage(tokens: number | null, limit: number | null): Conte
       ratio: null,
       tone: "idle",
       label: limit ? `0 / ${formatContextTokens(limit)}` : "no turns yet",
+      thresholdRatio,
     };
   }
 
   if (!limit || limit <= 0) {
-    return { tokens, limit: null, ratio: null, tone: "normal", label: formatContextTokens(tokens) };
+    return { tokens, limit: null, ratio: null, tone: "normal", label: formatContextTokens(tokens), thresholdRatio: null };
   }
 
   // Capped at 1: a provider counting a little differently from the published
@@ -79,6 +86,7 @@ export function contextUsage(tokens: number | null, limit: number | null): Conte
     ratio,
     tone: ratio >= FULL_RATIO ? "full" : ratio >= WARN_RATIO ? "warn" : "normal",
     label: `${formatContextTokens(tokens)} / ${formatContextTokens(limit)}`,
+    thresholdRatio,
   };
 }
 

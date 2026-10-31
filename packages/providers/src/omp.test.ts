@@ -326,6 +326,33 @@ describe("OmpNormaliser", () => {
     expect(describeCompaction(injected as never, undefined)).toEqual(injected);
   });
 
+  it("reads the context's size from the stats, resolving the threshold as OMP does", () => {
+    const stats = (tokens: unknown, contextWindow?: unknown): OmpSessionStats => ({ contextUsage: { tokens, contextWindow } as never });
+    const usage = (normaliser: OmpNormaliser, ...args: Parameters<OmpNormaliser["usage"]>) =>
+      normaliser.usage(...args).map((e) => {
+        const { usedTokens, windowTokens, thresholdTokens } = e as Extract<DomainEvent, { type: "context.usage" }>;
+        return [usedTokens, windowTokens, thresholdTokens];
+      });
+    const n = () => new OmpNormaliser({ ...ids, workspace: WORKSPACE });
+    expect(usage(n(), stats(100, 128000))).toEqual([[100, 128000, null]]);
+    // Tokens win over a percent; a percent is of the window, clamped to 1-99, rounded down.
+    expect(usage(n(), stats(100, 128000), { tokens: 90000, percent: 50 })).toEqual([[100, 128000, 90000]]);
+    expect(usage(n(), stats(100, 1001), { percent: 50 })).toEqual([[100, 1001, 500]]);
+    expect(usage(n(), stats(100, 1000), { percent: 150 })).toEqual([[100, 1000, 990]]);
+    // A percent with no window to take it of is no threshold.
+    expect(usage(n(), stats(100), { percent: 50 })).toEqual([[100, null, null]]);
+    // No size, no reading.
+    expect(usage(n(), { tokens: { input: 1 } })).toEqual([]);
+    expect(usage(n(), null)).toEqual([]);
+    // The same reading twice is sent once; a closed turn sends none.
+    const once = n();
+    expect(usage(once, stats(100, 128000))).toHaveLength(1);
+    expect(usage(once, stats(100, 128000))).toEqual([]);
+    expect(usage(once, stats(120, 128000))).toHaveLength(1);
+    once.complete();
+    expect(usage(once, stats(140, 128000))).toEqual([]);
+  });
+
   it("waits for the terminal agent_end, not the one before background work", () => {
     const normaliser = new OmpNormaliser({ ...ids, workspace: WORKSPACE });
     normaliser.push({ type: "agent_end", isTerminal: false, awaitingAsyncWork: true });
@@ -419,6 +446,8 @@ interface FakeOptions {
   refuseHostTools?: string;
   /** What `get_messages` answers; `false` refuses it. */
   messages?: unknown[] | false;
+  /** What each `get_session_stats` answers, in turn; the last repeats. Default: before, then after. */
+  stats?: OmpSessionStats[];
 }
 
 /** The frames a recording streamed for its first prompt, up to its `prompt_result`. */
@@ -483,6 +512,7 @@ function fakeOmp(options: FakeOptions = {}) {
         case "get_state":
           return respond(frame, { sessionId: SESSION });
         case "get_session_stats":
+          if (options.stats) return respond(frame, options.stats[Math.min(stats++, options.stats.length - 1)]);
           return respond(frame, stats++ === 0 ? STATS_BEFORE : STATS_AFTER);
         case "prompt":
           if (options.refusePrompt) return respond(frame, undefined, { success: false, error: options.refusePrompt });
@@ -554,6 +584,52 @@ async function drain(run: AgentRun, onEvent: (event: DomainEvent) => void = () =
 const closing = (events: DomainEvent[]) => events.filter((e) => e.type === "agent.turn_completed" || e.type === "agent.turn_failed");
 
 describe("OmpProvider", () => {
+  describe("the context meter's readings", () => {
+    const at = (tokens: number, extra: object = {}): OmpSessionStats => ({
+      ...STATS_AFTER,
+      contextUsage: { tokens, contextWindow: 128000, percent: (tokens / 128000) * 100 },
+      ...extra,
+    });
+
+    it("asks after each model call and once at the end, in order, before the turn closes", async () => {
+      // omp-tool makes three model calls: three turn_end frames.
+      const host = fakeOmp({ turn: promptFrames("omp-tool"), stats: [STATS_BEFORE, at(4000), at(9000), at(2500), at(2600)] });
+      const events = await drain(startTurn(host));
+      const asked = host.children[0]!.frames.filter((f) => f.type === "get_session_stats");
+      expect(asked).toHaveLength(5);
+      const readings = events.filter((e) => e.type === "context.usage");
+      // Down after the third call: a compaction shrank it.
+      expect(readings.map((e) => (e as { usedTokens: number }).usedTokens)).toEqual([4000, 9000, 2500, 2600]);
+      expect(readings[0]).toEqual({
+        type: "context.usage",
+        threadId: ids.threadId,
+        turnId: ids.turnId,
+        usedTokens: 4000,
+        windowTokens: 128000,
+        thresholdTokens: null,
+      });
+      const closed = events.findIndex((e) => e.type === "agent.turn_completed");
+      expect(events.findLastIndex((e) => e.type === "context.usage")).toBeLessThan(closed);
+      expect(closed).toBe(events.length - 1);
+      // The cost is still the session's totals after, less those before.
+      expect(events[closed]).toMatchObject({ costUsd: expect.closeTo(0.004, 6) });
+    });
+
+    it("carries the overlay's threshold", async () => {
+      const host = fakeOmp({ stats: [STATS_BEFORE, at(5000)] });
+      const events = await drain(startTurn(host, { omp: { ...FILES, contextThreshold: { percent: 80 } } }));
+      expect(events.filter((e) => e.type === "context.usage")).toEqual([
+        expect.objectContaining({ usedTokens: 5000, windowTokens: 128000, thresholdTokens: 102400 }),
+      ]);
+    });
+
+    it("sends nothing when the stats carry no size", async () => {
+      const events = await drain(startTurn(fakeOmp()));
+      expect(events.some((e) => e.type === "context.usage")).toBe(false);
+      expect(events.at(-1)?.type).toBe("agent.turn_completed");
+    });
+  });
+
   describe("on a compaction mid-turn", () => {
     const SUMMARY = "Summary: the session so far.";
     const frames = (): OmpFrame[] => {
@@ -606,6 +682,8 @@ describe("OmpProvider", () => {
       "get_state",
       "get_session_stats",
       "prompt",
+      // The context's size after the model call (its `turn_end`), then the turn's totals.
+      "get_session_stats",
       "get_session_stats",
     ]);
     expect(child!.frames[4]).toMatchObject({ type: "prompt", message: "go" });

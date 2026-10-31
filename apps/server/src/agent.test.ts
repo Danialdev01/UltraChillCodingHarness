@@ -455,6 +455,15 @@ describe("an OMP turn", () => {
       usage: { inputTokens: 1200, outputTokens: 80 },
       costUsd: 0.0012,
     });
+    // The meter's live reading, ending on the session as the turn left it.
+    expect(events.filter((e) => e.type === "context.usage").at(-1)).toEqual({
+      type: "context.usage",
+      threadId: THREAD,
+      turnId: (events.find((e) => e.type === "turn.started") as { turnId: string }).turnId,
+      usedTokens: 1280,
+      windowTokens: 200000,
+      thresholdTokens: null,
+    });
     // The session is the project's, under the subject; the overlay is gone.
     expect(await readdir(join(first.creds, USER, "omp", "sessions", PROJECT))).toHaveLength(1);
     await eventually(() => readdir(join(first.creds, USER, "omp", "run")), []);
@@ -466,6 +475,8 @@ describe("an OMP turn", () => {
     expect(resumed.find((e) => e.type === "agent.session_started")).toMatchObject({ sessionId });
     // The session's totals now cover two turns; the turn is billed its own.
     expect(resumed.at(-1)).toMatchObject({ type: "agent.turn_completed", usage: { inputTokens: 1200 }, costUsd: 0.0012 });
+    // The context, unlike the bill, is the whole session's.
+    expect(resumed.filter((e) => e.type === "context.usage").at(-1)).toMatchObject({ usedTokens: 2560 });
     expect(await readdir(join(second.creds, USER, "omp", "sessions", PROJECT))).toHaveLength(1);
   });
 
@@ -753,6 +764,12 @@ describe("an OMP turn", () => {
       content: expect.stringContaining("Summary: the session so far."),
       compaction: { method: "soft", tokensBefore: 7383, tokensAfter: 7363 },
     });
+    // The meter's readings: up with the model's calls, down after the compaction.
+    const readings = events.filter((e) => e.type === "context.usage").map((e) => (e as { usedTokens: number }).usedTokens);
+    const dividerAt = events.findIndex((e) => e.type === "context.injected" && e.source === "compaction");
+    const after = events.slice(dividerAt).find((e) => e.type === "context.usage") as { usedTokens: number } | undefined;
+    expect(readings.length).toBeGreaterThan(1);
+    expect(after!.usedTokens).toBeLessThan(Math.max(...readings));
     expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
   });
 
