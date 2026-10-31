@@ -465,13 +465,19 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
 
 ## Phase OM6: `omp-bridge` for Claude Code and Codex
 
-- [ ] **OM6.1 — Package skeleton**
+- [x] **OM6.1 — Package skeleton** — b97da35
 
   - **Depends:** OM2.1
   - **Files:** new `packages/omp-bridge/` (`package.json`, `src/index.ts`, `build.mjs`, `tsconfig.json`), `pnpm-workspace.yaml`, root `vitest.config.ts` include
   - **Steps:** an MCP stdio server on `@modelcontextprotocol/sdk` that reads the solution §10.1 environment and imports `omp-rpc.ts`. One tool, `omp_ping`, returns `omp --version`.
   - **Acceptance:** `claude -p --mcp-config` (OM0.5 setup) can call `omp_ping`.
   - **Verify:** `pnpm typecheck && pnpm test -- omp-bridge`
+  - **As built:**
+    - **Workspace.** `pnpm-workspace.yaml` (`packages/*`) and the root vitest include (`packages/*/src/**/*.test.ts`) already covered a new package; neither changed.
+    - **RPC.** `omp_ping` runs `omp --version` through `@ucch/providers`' `HostProcessHost`. `OmpRpc` is imported by the first RPC tool, in OM6.2.
+    - **Bundle.** Unlike the server's, the bundle takes the MCP SDK (pinned 1.32.1) in with it, so `dist/omp-bridge.mjs` runs as `node <file>` with nothing beside it.
+    - **Billing.** The `omp` it starts gets its environment as `providerEnv` builds an OMP turn's: credential-shaped variables dropped, the workspace's OpenRouter key put back, and `forbiddenEnvFor("omp")` refusing anything else (`config.test.ts`).
+    - **Manual run.** Claude Code 2.1.316 with `--mcp-config … --strict-mcp-config --allowedTools mcp__omp__omp_ping`, against a scripted API: `mcp_servers: [{name: "omp", status: "connected"}]`, and the call answered `omp/18.14.1`.
 - [ ] **OM6.2 — `omp_task`, `omp_review`, `omp_symbols`, `omp_rename`, `omp_codemod`, `omp_debug`, `omp_recall`, `omp_retain`, `omp_handoff_brief`**
 
   - **Depends:** OM6.1
