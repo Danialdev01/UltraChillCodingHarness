@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowRightLeftIcon, BotIcon, KeyRoundIcon, Loader2Icon, TrashIcon } from "lucide-react"
+import { ArrowRightLeftIcon, BotIcon, GitForkIcon, KeyRoundIcon, Loader2Icon, TrashIcon } from "lucide-react"
 import type { CredentialPolicy, CredentialSource, ProviderId } from "@ucch/protocol"
 
 import { ProviderSettings } from "@/components/provider-settings"
@@ -74,6 +74,9 @@ export function WorkspaceHarnessSettings({
       {settings?.credentialPolicy === "either" && <MyChoice workspaceId={workspace.id} />}
       {settings && (
         <AutoHandoffSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+      )}
+      {settings && (
+        <IsolatedFanOutSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
       )}
       {settings && settings.credentialPolicy !== "member" && (
         <>
@@ -300,6 +303,57 @@ function AutoHandoffSection({
           </NativeSelect>
         </div>
       </div>
+      {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
+      <Outcome error={error} done={done} />
+    </section>
+  )
+}
+
+/**
+ * Isolated fan-out edits (OMP OM5.5, solution §6.5): an OMP turn's workers
+ * may each edit a copy of the files, their changes patched back when they
+ * finish. Off by default -- a thread already has a worktree of its own.
+ */
+function IsolatedFanOutSection({
+  workspaceId,
+  settings,
+  manages,
+  onChange,
+}: {
+  workspaceId: string
+  settings: HarnessSettings
+  manages: boolean
+  onChange: (settings: HarnessSettings) => void
+}) {
+  const { busy, error, done, run } = useOutcome()
+  const { enabled } = settings.agent.isolatedFanOut
+  const save = (next: boolean) =>
+    void run(async () => {
+      onChange(await setAgentSettings(workspaceId, { isolatedFanOut: { enabled: next } }))
+      return "Saved."
+    })
+
+  return (
+    <section className="rounded-lg border p-6">
+      <h2 className="flex items-center gap-2 text-sm font-medium">
+        <GitForkIcon className="text-muted-foreground size-4" />
+        Isolated parallel edits
+      </h2>
+      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
+        Lets a Custom turn give each of its parallel workers its own copy of the files to edit. When a worker
+        finishes, its changes are applied back to the thread&apos;s files as a patch. A worker whose changes clash
+        with another&apos;s shows as failed, with its changes left out.
+      </p>
+      <label className="mt-4 flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={!manages || busy}
+          onChange={(e) => save(e.target.checked)}
+          aria-label="Isolated parallel edits"
+        />
+        On
+      </label>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
     </section>

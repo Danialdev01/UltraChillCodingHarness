@@ -20,6 +20,14 @@ export const WorkspaceAgentSettings = z.object({
       fallbackProvider: ProviderId.nullable().default(null),
     })
     .default({}),
+  /**
+   * Isolated fan-out edits (solution §6.5, OM5.5): an OMP turn's workers
+   * may each run in a copy of the worktree (`task.isolation.enabled`, a
+   * task asking with `isolated: true`), their changes applied back to the
+   * thread's worktree as a patch. Off: workers share the worktree, which
+   * is already the thread's own.
+   */
+  isolatedFanOut: z.object({ enabled: z.boolean().default(false) }).default({}),
 });
 export type WorkspaceAgentSettings = z.infer<typeof WorkspaceAgentSettings>;
 

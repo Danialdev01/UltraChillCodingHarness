@@ -316,6 +316,36 @@ describe("OmpNormaliser", () => {
     expect(events.at(-1)).toMatchObject({ type: "agent.turn_failed" });
   });
 
+  it("fails an isolated worker whose patch did not apply, saying why (OM5.5)", () => {
+    // Recorded from 18.14.1: two isolated workers editing the same line; the
+    // second still reports `completed`, and only its merge summary says its
+    // patch was left out.
+    const report = (id: string, merge: string) => ({
+      type: "message_end",
+      message: {
+        role: "custom",
+        customType: "async-result",
+        content: `<system-notice>\nBackground job ${id} has completed. Resume your work using the result below.\n<task-result id="${id}" agent="task" status="completed" duration="1.1s">\n\n<output>\nWrote src/a.ts.\n</output>\n<merge-summary>\n${merge}\n</merge-summary>\n</task-result>\n\n${id} ran isolated and cannot be resumed or messaged — transcript at history://${id}\n</system-notice>`,
+      },
+    });
+    const normaliser = new OmpNormaliser({ ...ids, workspace: WORKSPACE });
+    for (const id of ["EditA1", "EditA2"]) normaliser.push({ type: "subagent_lifecycle", payload: { id, agent: "task", status: "started", index: 0 } });
+    const applied = normaliser.push(report("EditA1", "Applied patches: yes"));
+    const unmerged = normaliser.push(
+      report(
+        "EditA2",
+        "&lt;system-notification>Patches were not applied and must be handled manually.&lt;/system-notification>\n\nPatch artifact:\n- <home>/.omp/agent/sessions/-<cwd>/s/EditA2.patch",
+      ),
+    );
+    expect(applied).toEqual([expect.objectContaining({ type: "agent.subagent_finished", subagentId: "EditA1", status: "completed", result: "Wrote src/a.ts." })]);
+    expect(unmerged).toEqual([expect.objectContaining({ type: "agent.subagent_finished", subagentId: "EditA2", status: "failed" })]);
+    const result = (unmerged[0] as { result: string }).result;
+    expect(result).toMatch(/^Its changes were not applied to the worktree/);
+    expect(result).toContain("Wrote src/a.ts.");
+    // OMP's own path to the patch is the server's, not the reader's.
+    expect(result).not.toContain(".patch");
+  });
+
   it("aborts the subagents still running when the turn is stopped", () => {
     const normaliser = new OmpNormaliser({ ...ids, workspace: WORKSPACE });
     normaliser.push({ type: "subagent_lifecycle", payload: { id: "W", agent: "scout", status: "started", index: 0 } });

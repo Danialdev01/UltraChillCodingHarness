@@ -34,6 +34,7 @@ import {
   type ProviderId,
   type ReasoningEffort,
   type TokenUsage,
+  type WorkspaceAgentSettings,
 } from "@ucch/protocol";
 import type {
   AgentRun,
@@ -504,12 +505,14 @@ export class AgentTurnReactor {
         .then(() => {}, this.onError);
     };
 
-    let project: { stack: string | null } | undefined;
+    let project: { stack: string | null; agent?: unknown } | undefined;
     let owner: TurnOwner | null;
     try {
+      // With the workspace's agent settings, which an OMP turn's overlay reads.
       [project] = await this.db
-        .select({ stack: projects.stack })
+        .select({ stack: projects.stack, agent: workspaces.agentSettings })
         .from(projects)
+        .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
         .where(eq(projects.id, thread.projectId))
         .limit(1);
       // Whose subscription pays, by the workspace's policy and what the
@@ -705,6 +708,7 @@ export class AgentTurnReactor {
           effort,
           signal: controller.signal,
           append,
+          agentSettings: readAgentSettings(project.agent),
           ...(mode ? { mode } : {}),
           ...(researched ? { researched } : {}),
         });
@@ -1100,6 +1104,8 @@ export class AgentTurnReactor {
       effort: ReasoningEffort | undefined;
       signal: AbortSignal;
       append: (events: readonly DomainEvent[]) => Promise<unknown>;
+      /** The workspace's choices; OMP's overlay reads them. Defaults when absent. */
+      agentSettings?: WorkspaceAgentSettings;
       /** The composer mode. Only OMP reads it: the CLIs' prompt already carries it. */
       mode?: MessageMode;
       /**
@@ -1162,7 +1168,11 @@ export class AgentTurnReactor {
         const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), input.turnId, {
           // Every model role is the turn's model until the workspace picks
           // its own (OM8.1): a role left unnamed is the repository's to set.
-          settings: { ...DEFAULT_OMP_SETTINGS, models: input.model ? { default: input.model } : {} },
+          settings: {
+            ...DEFAULT_OMP_SETTINGS,
+            models: input.model ? { default: input.model } : {},
+            isolatedFanOut: input.agentSettings?.isolatedFanOut.enabled ?? false,
+          },
           preset,
           permissionMode,
           // No project is trusted until a person can say so (OM7.6).

@@ -239,7 +239,7 @@ describe("workspace member routes", () => {
     expect(refused.statusCode).toBe(403);
     const ok = await app.inject({ method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN), payload: body });
     expect(ok.statusCode).toBe(200);
-    expect(ok.json().agent).toEqual({ autoHandoff: { enabled: true, fallbackProvider: "codex" } });
+    expect(ok.json().agent).toEqual({ autoHandoff: { enabled: true, fallbackProvider: "codex" }, isolatedFanOut: { enabled: false } });
     const bad = await app.inject({
       method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN),
       payload: { agent: { autoHandoff: { enabled: true, fallbackProvider: "gemini" } } },

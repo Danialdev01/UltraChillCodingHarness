@@ -120,6 +120,12 @@ export interface OmpWorkspaceSettings {
   advisor: boolean;
   /** The browser eval prelude. */
   browser: boolean;
+  /**
+   * Workers may run isolated, a patch applied back (OM5.5): the workspace's
+   * `isolatedFanOut`. Their copies live under `OMP_WORKTREE_DIR`, the
+   * subject's own (`providers.ts`).
+   */
+  isolatedFanOut: boolean;
 }
 
 export const DEFAULT_OMP_SETTINGS: OmpWorkspaceSettings = {
@@ -128,6 +134,7 @@ export const DEFAULT_OMP_SETTINGS: OmpWorkspaceSettings = {
   economy: false,
   advisor: false,
   browser: false,
+  isolatedFanOut: false,
 };
 
 export interface OmpOverlayInput {
@@ -235,7 +242,7 @@ export function ompOverlay(input: OmpOverlayInput): Record<string, unknown> {
       softRequestBudget: 120,
       maxRuntimeMs: 900000,
       agentIdleTtlMs: 60000,
-      isolation: { enabled: false, apply: true, merge: "patch" },
+      isolation: { enabled: settings.isolatedFanOut, apply: true, merge: "patch" },
     },
     async: { enabled: true },
 

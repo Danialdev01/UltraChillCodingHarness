@@ -231,6 +231,11 @@ interface Subagent {
 /** The size a subagent's result is held to on its card. */
 const SUBAGENT_RESULT_CHARS = 8_000;
 
+/** An isolated worker's merge summary when its patch was not applied (18.14.1). */
+const UNMERGED = /Patches were not applied/;
+const UNMERGED_REASON =
+  "Its changes were not applied to the worktree: its patch did not apply cleanly, most likely because another worker changed the same lines.";
+
 /** A background job's report: `<task-result id=… agent=… status=…>…<output>…</output></task-result>`. */
 const TASK_RESULT = /<task-result\b([^>]*)>([\s\S]*?)<\/task-result>/g;
 
@@ -698,6 +703,14 @@ export class OmpNormaliser {
       if (!id) continue;
       events.push(...this.#started(id, attr("agent"), null, null));
       const output = /<output>\n?([\s\S]*?)\n?<\/output>/.exec(body ?? "")?.[1] ?? body?.trim() ?? "";
+      // An isolated worker (OM5.5) whose patch did not apply still reports
+      // `completed`; only its merge summary says its work is not in the
+      // worktree. That is a failure, with the reason as the card's result.
+      // The patch artifact's path is OMP's, under the server's own dirs.
+      if (UNMERGED.test(/<merge-summary>([\s\S]*?)<\/merge-summary>/.exec(body ?? "")?.[1] ?? "")) {
+        events.push(...this.#finished(id, "failed", `${UNMERGED_REASON}${output.trim() ? `\n\n${output.trim()}` : ""}`));
+        continue;
+      }
       const status = attr("status");
       const duration = /^(\d+(?:\.\d+)?)(ms|s)$/.exec(attr("duration") ?? "");
       const subagent = this.#subagents.get(id);

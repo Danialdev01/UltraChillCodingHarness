@@ -46,6 +46,7 @@ const everything: OmpOverlayInput = {
     economy: true,
     advisor: true,
     browser: true,
+    isolatedFanOut: true,
   },
   trusted: true,
   webSearch: true,
@@ -184,6 +185,13 @@ describe("ompOverlay", () => {
 
   it("sizes the worker pool from the server's cap", () => {
     expect(ompOverlay({ ...base, workersPerTurn: 2 })).toMatchObject({ task: { maxConcurrency: 2, maxRecursionDepth: 1 } });
+  });
+
+  it("lets workers run isolated, patched back, only when the workspace says so (OM5.5)", () => {
+    expect(ompOverlay(base)).toMatchObject({ task: { isolation: { enabled: false } } });
+    expect(ompOverlay({ ...base, settings: { ...DEFAULT_OMP_SETTINGS, isolatedFanOut: true } })).toMatchObject({
+      task: { isolation: { enabled: true, apply: true, merge: "patch" } },
+    });
   });
 });
 

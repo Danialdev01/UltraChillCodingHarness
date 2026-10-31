@@ -386,7 +386,13 @@ describe("an OMP turn", () => {
 
   /** Rows as the database returns them: a thread, and the person it is billed to. */
   type Row = Record<string, unknown>;
-  function ompReactor(threadRow: Row, personRow: Row, extra: Partial<AgentOptions> = {}, ompProvider?: AgentProvider) {
+  function ompReactor(
+    threadRow: Row,
+    personRow: Row,
+    extra: Partial<AgentOptions> = {},
+    ompProvider?: AgentProvider,
+    projectRow: Row = { stack: null },
+  ) {
     const creds = join(root, "creds");
     const real = createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: OMP_BIN });
     const providers = new ProviderService(
@@ -407,7 +413,7 @@ describe("an OMP turn", () => {
         ...extra,
       },
       [threadRow],
-      [{ stack: null }],
+      [projectRow],
       [owner],
       [personRow],
     );
@@ -629,6 +635,41 @@ describe("an OMP turn", () => {
     expect(prompt!.content).toContain("Uses pnpm.");
     expect(prompt!.content).toContain("## Working in UCCH");
     expect(prompt!.content).not.toContain("Agents file.");
+  });
+
+  it("lets workers run isolated only when the workspace turned it on (OM5.5)", async () => {
+    // An OMP that runs nothing, keeping the overlay the turn wrote for it.
+    const overlays: string[] = [];
+    const provider: AgentProvider = {
+      id: "omp",
+      label: "Custom",
+      models: [],
+      probe: async () => ({ installed: true, authenticated: true, authMode: "api-key" }),
+      run: (input) => {
+        overlays.push(readFileSync(input.omp!.overlayPath, "utf8"));
+        return {
+          events: (async function* () {
+            yield {
+              type: "agent.turn_completed",
+              threadId: input.threadId,
+              turnId: input.turnId,
+              stopReason: "end_turn",
+              usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+              costUsd: 0,
+            } satisfies DomainEvent;
+          })(),
+          interrupt: async () => {},
+          kill: async () => {},
+        };
+      },
+    };
+    const isolation = (overlay: string) => /\n  isolation:\n    enabled: (\w+)\n/.exec(overlay)?.[1];
+    for (const agentSettings of [undefined, { isolatedFanOut: { enabled: true } }]) {
+      const { agent, appended } = ompReactor(thread, keyed, {}, provider, { stack: null, agent: agentSettings });
+      agent.react(omp, [message]);
+      await until(appended, closed);
+    }
+    expect(overlays.map(isolation)).toEqual(["false", "true"]);
   });
 
   describe("in research and documentation mode", () => {
