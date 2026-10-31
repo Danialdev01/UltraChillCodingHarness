@@ -150,6 +150,22 @@ export class ProviderService {
     return join(this.credsDir(userId, "omp"), "agent", "ucch-guard.ts");
   }
 
+  /** Where the subject's per-turn OMP overlays are written (`omp-overlay.ts`). */
+  ompRunDir(userId: string): string {
+    return join(this.ensureCredsDir(userId, "omp"), "run");
+  }
+
+  /**
+   * A project's OMP sessions under the subject (`--session-dir`), made
+   * `0700` on first use. Per project, so `--resume` only ever finds a
+   * session of the project it runs in.
+   */
+  ompSessionDir(userId: string, projectId: string): string {
+    const dir = join(this.ensureCredsDir(userId, "omp"), "sessions", projectId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return dir;
+  }
+
   /**
    * The environment a provider process gets.
    *
@@ -204,15 +220,23 @@ export class ProviderService {
     return env;
   }
 
-  /** What a provider run needs: the provider, and a context for a workspace. */
+  /**
+   * What a provider run needs: the provider, and a context for a workspace.
+   * `openrouterKey` is an OMP run's, decrypted by the caller for this one
+   * run; the CLIs never get it.
+   */
   async resolve(
     userId: string,
     id: CliProviderId,
+    options: { openrouterKey?: string } = {},
   ): Promise<{ provider: AgentProvider; ctx: (cwd: string) => RunContext }> {
     const provider = this.providers[id];
     if (!provider) throw new Error(`The ${id} provider is not available on this server.`);
     const token = id === "claude" ? await this.claudeToken(userId) : null;
-    const env = this.providerEnv(userId, id, token ? { token } : {});
+    const env = this.providerEnv(userId, id, {
+      ...(token ? { token } : {}),
+      ...(id === "omp" && options.openrouterKey ? { openrouterKey: options.openrouterKey } : {}),
+    });
     return { provider, ctx: (cwd) => ({ cwd, env, host: this.host }) };
   }
 
@@ -271,7 +295,8 @@ export class ProviderService {
         enabled,
         models: this.providers.codex.models,
       },
-      // Not runnable yet (OMP plan, OM2): shown as not installed, and off.
+      // A turn that names `omp` runs on it, but the card stays off until the
+      // settings page has an OMP card to show (OMP plan, OM8.1).
       omp: {
         id: "omp",
         label: PROVIDER_LABELS.omp,

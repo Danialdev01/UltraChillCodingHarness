@@ -230,6 +230,7 @@ const providerService = new ProviderService(
   createProviders({
     claudeBin: config.CLAUDE_BIN,
     codexBin: config.CODEX_BIN,
+    ompBin: config.OMP_BIN,
     isRepo: (cwd) => existsSync(join(cwd, ".git")),
   }),
 );
@@ -239,6 +240,7 @@ const turnScheduler = new TurnScheduler({
   cliPerUser: config.AGENT_MAX_CONCURRENT_PER_USER,
   cliTotal: config.AGENT_MAX_CONCURRENT_TOTAL,
   nativeTotal: config.AGENT_MAX_NATIVE_TOTAL,
+  ompTotal: config.OMP_TURN_TOTAL,
 });
 
 /**
@@ -267,6 +269,7 @@ const agentTurns = new AgentTurnReactor(
     cliEnabled: cliProvidersEnabled(config),
     scheduler: turnScheduler,
     streamFlushMs: config.STREAM_FLUSH_MS,
+    ompWorkersPerTurn: config.OMP_WORKERS_PER_TURN,
   },
   (error) => app.log.error({ err: error }, "agent turn failed"),
 );

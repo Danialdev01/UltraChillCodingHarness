@@ -20,6 +20,7 @@ import {
   DEFAULT_AGENT_PERMISSION_MODE,
   effectiveCredentialSource,
   isTransient,
+  isRiskyCommand,
   needsApproval,
   type CliProviderId,
   type Command,
@@ -29,7 +30,7 @@ import {
   type ReasoningEffort,
   type TokenUsage,
 } from "@ucch/protocol";
-import type { AgentRun } from "@ucch/providers";
+import type { AgentRun, OmpRunFiles } from "@ucch/providers";
 import { detectStack } from "./clone.js";
 import { decryptSecret } from "./crypto.js";
 import { ensureProjectInfo, readProjectKnowledge } from "./dev-database.js";
@@ -42,7 +43,8 @@ import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter
 import { documentationPrompt } from "./documents.js";
 import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
-import { TurnScheduler } from "./turn-scheduler.js";
+import { TurnScheduler, type TurnKind } from "./turn-scheduler.js";
+import { DEFAULT_OMP_SETTINGS, writeOmpOverlay } from "./omp-overlay.js";
 import type { ArgvWrapper } from "./child-priority.js";
 
 export interface AgentOptions {
@@ -91,6 +93,8 @@ export interface AgentOptions {
   scheduler?: TurnScheduler;
   /** How long streamed tokens are held to be sent together; see `DeltaCoalescer`. 40 ms when absent. */
   streamFlushMs?: number;
+  /** Subagents one OMP turn may run at once (`OMP_WORKERS_PER_TURN`). 4 when absent. */
+  ompWorkersPerTurn?: number;
 }
 
 /** How a turn was asked for: carried on the command, not the event. */
@@ -133,6 +137,11 @@ export function resolveModel(
   serverDefault: string,
 ): string {
   return requested?.trim() || accountDefault?.trim() || serverDefault;
+}
+
+/** Which of the scheduler's limits a provider's turn counts against. */
+export function turnKindOf(provider: ProviderId): TurnKind {
+  return provider === "native" ? "native" : provider === "omp" ? "omp" : "cli";
 }
 
 /**
@@ -493,7 +502,7 @@ export class AgentTurnReactor {
       try {
         release = await this.#scheduler.acquire({
           ownerId: owner.id,
-          kind: provider === "native" ? "native" : "cli",
+          kind: turnKindOf(provider),
           threadId,
           signal: controller.signal,
           onAhead: (ahead) => void write([{ type: "agent.queued", threadId, ahead }]).catch(this.onError),
@@ -507,8 +516,12 @@ export class AgentTurnReactor {
       if (provider !== "native") {
         // A CLI provider names its own models; the OpenRouter defaults are
         // not for it. What the composer sent, or nothing -- the CLI's own.
+        // OMP is the exception: it bills the account's OpenRouter key, so it
+        // runs on an OpenRouter model resolved as a native turn's is, and
+        // the turn records which.
+        const cliModel = provider === "omp" ? resolveModel(model, owner.defaultModel, this.options.defaultModel) : model;
         await append([
-          { type: "turn.started", threadId, turnId, provider, ...(model ? { model } : {}) },
+          { type: "turn.started", threadId, turnId, provider, ...(cliModel ? { model: cliModel } : {}) },
         ]);
 
         // A research turn on a CLI is two phases under one turn id: the
@@ -573,7 +586,7 @@ export class AgentTurnReactor {
           workspace,
           text: prompt,
           resumeToken: thread.providerSessionId,
-          model,
+          model: cliModel,
           effort,
           signal: controller.signal,
           append,
@@ -727,12 +740,17 @@ export class AgentTurnReactor {
    * does around `runTurn`: the gate, the cancel hook, and writing
    * each event through the same `append` -- which is what keeps the file
    * tree cache and the projection honest for both.
+   *
+   * An OMP turn takes the same path with three things more: the account's
+   * OpenRouter key, decrypted for this one process; the turn's overlay
+   * (`omp-overlay.ts`), written before the spawn and deleted after it,
+   * however the turn ends; and the UCCH section of its system prompt.
    */
   async #runCli(
     provider: CliProviderId,
     input: {
       ownerId: string;
-      owner: { agentPermissionMode: string | null };
+      owner: { agentPermissionMode: string | null; openrouterKeyEncrypted: string | null };
       threadId: string;
       turnId: string;
       projectId: string;
@@ -758,7 +776,12 @@ export class AgentTurnReactor {
       );
     }
 
+    // Before anything else, so a missing key fails the turn at once with
+    // the message that says where to add one.
+    const openrouterKey = provider === "omp" ? this.#decryptKey(input.owner.openrouterKeyEncrypted) : undefined;
+
     let run: AgentRun | undefined;
+    let overlay: { dispose(): Promise<void> } | undefined;
     try {
       await this.#prepareWorkspace(input.workspace);
       const knowledge = await readProjectKnowledge(input.workspace).catch((error: unknown) => {
@@ -772,7 +795,37 @@ export class AgentTurnReactor {
           { type: "context.injected", threadId: input.threadId, source: "project_context", content: knowledge },
         ]);
       }
-      const resolved = await this.options.providers.resolve(input.ownerId, provider);
+      const resolved = await this.options.providers.resolve(
+        input.ownerId,
+        provider,
+        openrouterKey ? { openrouterKey } : {},
+      );
+      const permissionMode = this.#modeFor(input.threadId, input.owner);
+      let omp: OmpRunFiles | undefined;
+      if (provider === "omp") {
+        const providers = this.options.providers;
+        const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), input.turnId, {
+          // Every model role is the turn's model until the workspace picks
+          // its own (OM8.1): a role left unnamed is the repository's to set.
+          settings: { ...DEFAULT_OMP_SETTINGS, models: input.model ? { default: input.model } : {} },
+          preset: "standard",
+          permissionMode,
+          // No project is trusted until a person can say so (OM7.6).
+          trusted: false,
+          workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
+          // OMP's own search needs a search provider's key, and its
+          // environment carries the OpenRouter key alone (solution §3.3).
+          webSearch: false,
+        });
+        overlay = written;
+        omp = {
+          overlayPath: written.path,
+          sessionDir: providers.ompSessionDir(input.ownerId, input.projectId),
+          guardHookPath: providers.ompGuardHook(input.ownerId),
+          trusted: false,
+        };
+      }
+      const instructions = provider === "omp" ? ompInstructions(input.workspace, knowledge) : knowledge;
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
         prompt: input.text,
@@ -782,8 +835,9 @@ export class AgentTurnReactor {
         ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
-        permissionMode: this.#modeFor(input.threadId, input.owner),
-        ...(knowledge ? { instructions: knowledge } : {}),
+        permissionMode,
+        ...(instructions ? { instructions } : {}),
+        ...(omp ? { omp } : {}),
       });
       this.#cliRuns.add(run);
       this.#cliByThread.set(input.threadId, run);
@@ -805,8 +859,12 @@ export class AgentTurnReactor {
         for await (const event of run.events) {
           if (event.type === "agent.permission_requested") {
             const mode = this.#modeFor(input.threadId, input.owner);
+            const needsPerson =
+              provider === "omp"
+                ? ompPromptNeedsPerson(mode, event.toolName, event.input)
+                : claudePromptNeedsPerson(mode, event.toolName, event.input);
             if (
-              !claudePromptNeedsPerson(mode, event.toolName, event.input) &&
+              !needsPerson &&
               current.answerPermission?.(event.requestId, { behavior: "allow" })
             ) {
               autoAnswered.add(event.requestId);
@@ -836,6 +894,9 @@ export class AgentTurnReactor {
         this.#cliRuns.delete(run);
         if (this.#cliByThread.get(input.threadId) === run) this.#cliByThread.delete(input.threadId);
       }
+      // The events end when the process has exited, so nothing reads the
+      // overlay any more. A failure to delete it is the operator's to hear.
+      await overlay?.dispose().catch(this.onError);
     }
   }
 
@@ -1098,6 +1159,42 @@ function claudePromptNeedsPerson(mode: AgentPermissionMode, toolName: string, in
   if (CLAUDE_EDIT_TOOLS.has(toolName)) return mode !== "allow_all";
   const kind = toolName === "Bash" ? "exec" : "other";
   return needsApproval(mode, { kind, command: shellCommandOf(input) });
+}
+
+/**
+ * Whether an OMP approval goes to a person under `mode`.
+ *
+ * OMP runs under the approval mode `mode` maps to (`approvalFor`), so it
+ * only asks about what that mode holds back: under Strict, every write and
+ * command, all of which a person answers. Under Normal it asks about every
+ * `bash` call, where UCCH's Normal asks only about risky ones -- so the rest
+ * are allowed here, as Claude Code's are. Its other commands (`eval`,
+ * `task`, a host tool's device call) run code the harness cannot read the
+ * risk of, and go to the person. After "Allow All", nothing does.
+ */
+function ompPromptNeedsPerson(mode: AgentPermissionMode, toolName: string, input: unknown): boolean {
+  if (mode === "allow_all") return false;
+  if (mode === "normal" && toolName === "bash") {
+    const command = shellCommandOf(input);
+    return command === null || isRiskyCommand(command);
+  }
+  return true;
+}
+
+/**
+ * What an OMP turn adds to OMP's system prompt (solution §3.8): the
+ * project's `.ucch/` knowledge, then the few rules that are UCCH's rather
+ * than the project's. OMP reads the worktree's AGENTS.md itself.
+ */
+export function ompInstructions(workspace: string, knowledge: string | null): string {
+  const rules = [
+    "## Working in UCCH",
+    "",
+    `You are working in ${workspace}, a checkout UCCH manages. Keep your changes inside it.`,
+    "- Ask any question in your reply: the chat is where the person reads and answers it.",
+    "- Never commit or push. The person reviews and commits your changes from UCCH's Git view.",
+  ].join("\n");
+  return knowledge ? `${knowledge.trimEnd()}\n\n${rules}\n` : `${rules}\n`;
 }
 
 /** The shell line a call runs, when it is one: `bash`'s and `Bash`'s `command`. */

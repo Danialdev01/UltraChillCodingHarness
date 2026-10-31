@@ -1,11 +1,23 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
 import type { Command, DomainEvent } from "@ucch/protocol";
-import { AgentTurnReactor, resolveModel, resolveProvider, shouldRecheckStack, type AgentOptions } from "./agent.js";
+import { createProviders, HostProcessHost } from "@ucch/providers";
+import {
+  AgentTurnReactor,
+  ompInstructions,
+  resolveModel,
+  resolveProvider,
+  shouldRecheckStack,
+  turnKindOf,
+  type AgentOptions,
+} from "./agent.js";
+import type { Config } from "./config.js";
+import { encryptSecret } from "./crypto.js";
 import type { EventStore } from "./eventstore.js";
+import { ProviderService } from "./providers.js";
 import { TurnScheduler } from "./turn-scheduler.js";
 
 describe("resolveModel", () => {
@@ -56,6 +68,26 @@ describe("resolveProvider", () => {
   it("ignores a value it does not know", () => {
     // A column written by a future version, or a hand-edited row.
     expect(resolveProvider(undefined, "gemini", null)).toBe("native");
+  });
+});
+
+describe("turnKindOf", () => {
+  it("counts each provider's turns against its own limit", () => {
+    expect(["native", "claude", "codex", "omp"].map((id) => turnKindOf(id as never))).toEqual(["native", "cli", "cli", "omp"]);
+  });
+});
+
+describe("ompInstructions", () => {
+  it("puts the project's knowledge first, then UCCH's rules", () => {
+    const text = ompInstructions("/work/p", "# Project\nUses pnpm.\n");
+    expect(text.startsWith("# Project\nUses pnpm.\n\n## Working in UCCH\n")).toBe(true);
+    expect(text).toContain("You are working in /work/p");
+    expect(text).toContain("Never commit or push");
+    expect(text.endsWith("\n")).toBe(true);
+  });
+
+  it("is UCCH's rules alone when the project has no knowledge", () => {
+    expect(ompInstructions("/work/p", null).startsWith("## Working in UCCH\n")).toBe(true);
   });
 });
 
@@ -284,5 +316,186 @@ describe("a turn's streamed tokens", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("an OMP turn", () => {
+  /**
+   * The real path below the reactor: `ProviderService`, `OmpProvider` and a
+   * process on the host -- `fake-omp.mjs`, which speaks OMP's RPC protocol
+   * from a recording, so no key and no network are needed. `OMP_BIN` points
+   * the test elsewhere.
+   */
+  const OMP_BIN = resolve(process.env.OMP_BIN ?? join(import.meta.dirname, "../../../scripts/load/fake-omp.mjs"));
+  const FIXTURES = join(import.meta.dirname, "../../../packages/providers/src/fixtures");
+  const SECRET = "ab".repeat(32);
+  const keyed = { ...person, openrouterKeyEncrypted: encryptSecret("sk-or-test", SECRET) };
+  const omp: Command = { type: "thread.send", threadId: THREAD, text: "hi", provider: "omp" };
+  let root: string;
+  const saved = { fixture: process.env.FAKE_OMP_FIXTURE, length: process.env.FAKE_OMP_LENGTH, rate: process.env.FAKE_OMP_RATE };
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "ucch-omp-"));
+  });
+  afterEach(async () => {
+    for (const [name, value] of [
+      ["FAKE_OMP_FIXTURE", saved.fixture],
+      ["FAKE_OMP_LENGTH", saved.length],
+      ["FAKE_OMP_RATE", saved.rate],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** Rows as the database returns them: a thread, and the person it is billed to. */
+  type Row = Record<string, unknown>;
+  function ompReactor(threadRow: Row, personRow: Row, extra: Partial<AgentOptions> = {}) {
+    const creds = join(root, "creds");
+    const providers = new ProviderService(
+      {} as Database,
+      { CREDS_ROOT: creds } as Config,
+      new HostProcessHost(),
+      createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: OMP_BIN }),
+    );
+    const scheduler = new TurnScheduler({ cliPerUser: 2, cliTotal: 2, nativeTotal: 2, ompTotal: 1 });
+    const built = reactorWith(
+      {
+        workspaceRoot: join(root, "workspaces"),
+        secretKey: SECRET,
+        defaultModel: "anthropic/claude-sonnet-4.5",
+        cliEnabled: true,
+        providers,
+        scheduler,
+        ...extra,
+      },
+      [threadRow],
+      [{ stack: null }],
+      [owner],
+      [personRow],
+    );
+    return { ...built, scheduler, creds };
+  }
+
+  async function until(appended: DomainEvent[][], done: (event: DomainEvent) => boolean, ms = 10_000) {
+    const deadline = Date.now() + ms;
+    while (!appended.flat().some(done) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    expect(appended.flat().some(done)).toBe(true);
+  }
+  const closed = (event: DomainEvent) => event.type === "agent.turn_completed" || event.type === "agent.turn_failed";
+  /**
+   * What the turn does once its events have ended -- the overlay deleted
+   * when the process has exited, the slot given back in `finally` -- lands
+   * just after its last event, not with it.
+   */
+  async function eventually<T>(read: () => Promise<T> | T, expected: T) {
+    const deadline = Date.now() + 2_000;
+    let value = await read();
+    while (JSON.stringify(value) !== JSON.stringify(expected) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+      value = await read();
+    }
+    expect(value).toEqual(expected);
+  }
+
+  it("streams on the OpenRouter model, binds its session, and resumes it on the next turn", async () => {
+    const first = ompReactor(thread, keyed);
+    first.agent.react(omp, [message]);
+    await until(first.appended, closed);
+    const events = first.appended.flat();
+    expect(events.find((e) => e.type === "turn.started")).toMatchObject({
+      provider: "omp",
+      model: "anthropic/claude-sonnet-4.5",
+    });
+    const session = events.find((e) => e.type === "agent.session_started");
+    expect(session).toMatchObject({ provider: "omp" });
+    const sessionId = (session as Extract<DomainEvent, { type: "agent.session_started" }>).sessionId;
+    expect(
+      events.filter((e) => e.type === "agent.text_delta").map((e) => (e as { text: string }).text).join(""),
+    ).toBe("Hello from the scripted model.");
+    expect(events.at(-1)).toMatchObject({
+      type: "agent.turn_completed",
+      stopReason: "end_turn",
+      usage: { inputTokens: 1200, outputTokens: 80 },
+      costUsd: 0.0012,
+    });
+    // The session is the project's, under the subject; the overlay is gone.
+    expect(await readdir(join(first.creds, USER, "omp", "sessions", PROJECT))).toHaveLength(1);
+    await eventually(() => readdir(join(first.creds, USER, "omp", "run")), []);
+
+    const second = ompReactor({ ...thread, provider: "omp", providerSessionId: sessionId }, keyed);
+    second.agent.react(omp, [message]);
+    await until(second.appended, closed);
+    const resumed = second.appended.flat();
+    expect(resumed.find((e) => e.type === "agent.session_started")).toMatchObject({ sessionId });
+    // The session's totals now cover two turns; the turn is billed its own.
+    expect(resumed.at(-1)).toMatchObject({ type: "agent.turn_completed", usage: { inputTokens: 1200 }, costUsd: 0.0012 });
+    expect(await readdir(join(second.creds, USER, "omp", "sessions", PROJECT))).toHaveLength(1);
+  });
+
+  it("waits for an OMP slot, not a CLI one, and gives it back", async () => {
+    const { agent, appended, scheduler } = ompReactor(thread, keyed);
+    const taken = await scheduler.acquire({ ownerId: "someone-else", kind: "omp", threadId: "elsewhere" });
+    agent.react(omp, [message]);
+    await until(appended, (e) => e.type === "agent.queued");
+    expect(scheduler.stats().running).toEqual({ cli: 0, native: 0, omp: 1 });
+    taken();
+    await until(appended, closed);
+    expect(appended.flat().at(-1)).toMatchObject({ type: "agent.turn_completed" });
+    await eventually(() => scheduler.stats().running.omp, 0);
+  });
+
+  it("asks in the chat under Strict, and delivers the answers", async () => {
+    process.env.FAKE_OMP_FIXTURE = join(FIXTURES, "omp-confirm.jsonl");
+    const { agent, appended } = ompReactor(thread, { ...keyed, agentPermissionMode: "strict" });
+    agent.react(omp, [message]);
+    for (const behavior of ["allow", "deny"] as const) {
+      const asked = appended.flat().filter((e) => e.type === "agent.permission_requested").length;
+      await until(appended, () => appended.flat().filter((e) => e.type === "agent.permission_requested").length > asked);
+      const request = appended.flat().filter((e) => e.type === "agent.permission_requested").at(-1) as Extract<
+        DomainEvent,
+        { type: "agent.permission_requested" }
+      >;
+      expect(request).toMatchObject({ toolName: "bash" });
+      agent.react({ type: "thread.permission_reply", threadId: THREAD, requestId: request.requestId, behavior }, []);
+    }
+    await until(appended, closed);
+    const events = appended.flat();
+    expect(events.filter((e) => e.type === "agent.permission_resolved").map((e) => (e as { behavior: string }).behavior)).toEqual([
+      "allow",
+      "deny",
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
+  });
+
+  it("answers a safe command itself under Normal, as for Claude Code", async () => {
+    process.env.FAKE_OMP_FIXTURE = join(FIXTURES, "omp-confirm.jsonl");
+    const { agent, appended } = ompReactor(thread, keyed);
+    agent.react(omp, [message]);
+    await until(appended, closed);
+    const events = appended.flat();
+    expect(events.some((e) => e.type === "agent.permission_requested" || e.type === "agent.permission_resolved")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
+  });
+
+  it("stops on the stop button, closing the turn as cancelled", async () => {
+    process.env.FAKE_OMP_LENGTH = "5000";
+    process.env.FAKE_OMP_RATE = "200";
+    const { agent, appended, creds } = ompReactor(thread, keyed);
+    agent.react(omp, [message]);
+    await until(appended, (e) => e.type === "agent.text_delta");
+    agent.react({ type: "thread.cancel", threadId: THREAD }, []);
+    await until(appended, closed);
+    expect(appended.flat().at(-1)).toMatchObject({ type: "agent.turn_completed", stopReason: "cancelled" });
+    await eventually(() => readdir(join(creds, USER, "omp", "run")), []);
+  });
+
+  it("fails the turn, spawning nothing, without an OpenRouter key", async () => {
+    const { agent, appended, creds } = ompReactor(thread, person);
+    agent.react(omp, [message]);
+    await until(appended, closed);
+    expect(appended.flat().at(-1)).toMatchObject({ type: "agent.turn_failed", error: expect.stringContaining("No OpenRouter API key") });
+    await expect(readdir(join(creds, USER, "omp", "sessions"))).rejects.toThrow();
   });
 });
