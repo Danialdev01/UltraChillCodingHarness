@@ -4,20 +4,32 @@ import { CodexProvider } from "./codex.js";
 import type { AgentProvider } from "./types.js";
 
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
-  native: "Custom",
+  native: "Custom (legacy)",
   claude: "Claude Code",
   codex: "Codex",
+  omp: "Custom",
 };
 
 export function isCliProviderId(value: unknown): value is CliProviderId {
-  return value === "claude" || value === "codex";
+  return value === "claude" || value === "codex" || value === "omp";
+}
+
+/**
+ * The provider objects the server runs turns through. `omp` is optional
+ * until its provider exists (OMP plan, OM2): where it is missing, an `omp`
+ * thread finds no provider and its turn fails the way an unknown one does.
+ */
+export interface CliProviders {
+  claude: AgentProvider;
+  codex: AgentProvider;
+  omp?: AgentProvider;
 }
 
 export function createProviders(options: {
   claudeBin: string;
   codexBin: string;
   isRepo?: (cwd: string) => boolean;
-}): Record<CliProviderId, AgentProvider> {
+}): CliProviders {
   return {
     claude: new ClaudeProvider(options.claudeBin),
     codex: new CodexProvider(options.codexBin, options.isRepo),

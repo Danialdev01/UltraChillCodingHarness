@@ -3109,10 +3109,14 @@ async function sessionQuotasFor(userId: string): Promise<SessionQuotas> {
     }
   })();
 
+  // OMP turns are billed to the same OpenRouter key as the native loop, so
+  // they share its windows.
+  const openRouter = await native;
   const quotas: SessionQuotas = {
     claude: await claude,
     codex: await codex,
-    native: await native,
+    native: openRouter,
+    omp: { ...openRouter, provider: "omp" },
   };
   sessionQuotaCache.set(userId, { at: Date.now(), quotas });
   return quotas;

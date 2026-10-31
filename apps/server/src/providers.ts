@@ -7,6 +7,7 @@ import type { CliProviderId, ProviderId, ReasoningEffort } from "@ucch/protocol"
 import {
   PROVIDER_LABELS,
   type AgentProvider,
+  type CliProviders,
   type ProcessHost,
   type ProviderHealth,
   type RunContext,
@@ -79,12 +80,15 @@ export class ProviderService {
     private readonly db: Database,
     private readonly config: Config,
     private readonly host: ProcessHost,
-    private readonly providers: Record<CliProviderId, AgentProvider>,
+    private readonly providers: CliProviders,
   ) {}
 
-  /** The provider object, or null for the native loop and for anything unknown. */
+  /**
+   * The provider object, or null for the native loop, for anything unknown,
+   * and for `omp` until its provider is registered.
+   */
   provider(id: ProviderId): AgentProvider | null {
-    return id === "claude" || id === "codex" ? this.providers[id] : null;
+    return id === "native" ? null : (this.providers[id] ?? null);
   }
 
   credsDir(userId: string, id: CliProviderId): string {
@@ -134,7 +138,7 @@ export class ProviderService {
     if (id === "claude") {
       env.CLAUDE_CONFIG_DIR = dir;
       if (options.token) env.CLAUDE_CODE_OAUTH_TOKEN = options.token;
-    } else {
+    } else if (id === "codex") {
       env.CODEX_HOME = dir;
     }
     return env;
@@ -156,6 +160,7 @@ export class ProviderService {
     id: CliProviderId,
   ): Promise<{ provider: AgentProvider; ctx: (cwd: string) => RunContext }> {
     const provider = this.providers[id];
+    if (!provider) throw new Error(`The ${id} provider is not available on this server.`);
     const token = id === "claude" ? await this.claudeToken(userId) : null;
     const env = this.providerEnv(userId, id, token ? { token } : {});
     return { provider, ctx: (cwd) => ({ cwd, env, host: this.host }) };
@@ -215,6 +220,16 @@ export class ProviderService {
         ...codex,
         enabled,
         models: this.providers.codex.models,
+      },
+      // Not runnable yet (OMP plan, OM2): shown as not installed, and off.
+      omp: {
+        id: "omp",
+        label: PROVIDER_LABELS.omp,
+        installed: false,
+        authenticated: false,
+        authMode: "none",
+        enabled: false,
+        models: [],
       },
     };
     this.#cache.set(userId, { at: Date.now(), cards });

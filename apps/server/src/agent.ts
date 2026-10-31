@@ -21,6 +21,7 @@ import {
   effectiveCredentialSource,
   isTransient,
   needsApproval,
+  type CliProviderId,
   type Command,
   type DomainEvent,
   type MessageMode,
@@ -148,7 +149,7 @@ export function resolveProvider(
   accountDefault: string | null,
 ): ProviderId {
   const known = (value: string | null | undefined): ProviderId | null =>
-    value === "native" || value === "claude" || value === "codex" ? value : null;
+    value === "native" || value === "claude" || value === "codex" || value === "omp" ? value : null;
   return known(threadBound) ?? known(requested) ?? known(accountDefault) ?? "native";
 }
 
@@ -728,7 +729,7 @@ export class AgentTurnReactor {
    * tree cache and the projection honest for both.
    */
   async #runCli(
-    provider: "claude" | "codex",
+    provider: CliProviderId,
     input: {
       ownerId: string;
       owner: { agentPermissionMode: string | null };

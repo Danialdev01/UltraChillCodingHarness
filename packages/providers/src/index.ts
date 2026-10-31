@@ -18,4 +18,4 @@ export {
   codexArgv,
   probeCodex,
 } from "./codex.js";
-export { createProviders, isCliProviderId, PROVIDER_LABELS } from "./registry.js";
+export { createProviders, isCliProviderId, PROVIDER_LABELS, type CliProviders } from "./registry.js";

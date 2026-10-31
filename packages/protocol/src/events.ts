@@ -263,14 +263,16 @@ const ContextInjected = z.object({
  *
  * `native` is the harness's own loop against OpenRouter. `claude` and `codex`
  * are the vendors' CLIs, run as processes and billed to the person's own
- * subscription. Every provider normalises into the same events below: the
- * browser never needs to know which one produced a line, and must not.
+ * subscription. `omp` is the oh-my-pi agent, also a process, billed to the
+ * workspace's OpenRouter key like `native`, which it replaces. Every provider
+ * normalises into the same events below: the browser never needs to know
+ * which one produced a line, and must not.
  */
-export const ProviderId = z.enum(["native", "claude", "codex"]);
+export const ProviderId = z.enum(["native", "claude", "codex", "omp"]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
 /** The providers that keep a session of their own to resume. */
-export const CliProviderId = z.enum(["claude", "codex"]);
+export const CliProviderId = z.enum(["claude", "codex", "omp"]);
 export type CliProviderId = z.infer<typeof CliProviderId>;
 
 /**

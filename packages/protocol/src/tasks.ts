@@ -81,7 +81,7 @@ export const TASK_AUTO_RUN_USAGE_LIMIT = 80;
 
 export interface TaskSettings {
   /** Null falls back to the account default. */
-  provider: "native" | "claude" | "codex" | null;
+  provider: "native" | "claude" | "codex" | "omp" | null;
   model: string | null;
   autoRun: TaskAutoRun;
 }

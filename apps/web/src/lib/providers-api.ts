@@ -7,7 +7,7 @@
 
 import type { ReasoningEffort } from "@ucch/protocol"
 
-export type ProviderId = "native" | "claude" | "codex";
+export type ProviderId = "native" | "claude" | "codex" | "omp";
 
 export interface ProviderCard {
   id: ProviderId;
