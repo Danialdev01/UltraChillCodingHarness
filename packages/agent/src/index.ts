@@ -12,6 +12,7 @@ export * from "./research.js";
 export * from "./documents.js";
 export * from "./executor.js";
 export * from "./loop.js";
+export * from "./run-tool.js";
 export * from "./prompt.js";
 export * from "./session-log.js";
 export * from "./executors/host.js";
