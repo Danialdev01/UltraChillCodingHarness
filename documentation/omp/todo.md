@@ -227,7 +227,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - `agent.session_started` comes before the first delta.
     - Unknown frames produce nothing.
   - **Verify:** `pnpm test -- omp`
-- [ ] **OM2.4 — `OmpProvider.run`, `probe` and permissions**
+- [x] **OM2.4 — `OmpProvider.run`, `probe` and permissions** — 4d996c0
 
   - **Depends:** OM2.2, OM2.3, OM1.4
   - **Files:** `packages/providers/src/omp.ts`, `registry.ts` (`createProviders({ ompBin })`), `omp.test.ts`
