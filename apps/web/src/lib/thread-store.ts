@@ -205,6 +205,15 @@ export class ThreadStore {
     ) {
       const merged = last.row.event as Extract<LiveEvent, { text: string }>;
       last.row = { ...last.row, event: { ...merged, text: merged.text + event.text } };
+    } else if (
+      last &&
+      last.after === after &&
+      event.type === "agent.subagent_progress" &&
+      last.row.event.type === event.type &&
+      last.row.event.subagentId === event.subagentId
+    ) {
+      // Only the latest line is drawn, so a busy subagent keeps one run, not one a second.
+      last.row = row;
     } else {
       this.#runs.push({ after, turnId: event.turnId, row });
     }
@@ -237,10 +246,18 @@ export class ThreadStore {
 
 export type ContextUsageEvent = Extract<DomainEvent, { type: "context.usage" }>;
 
-type LiveEvent = Extract<DomainEvent, { type: "agent.text_delta" | "agent.thinking_delta" | "agent.retry" }>;
+type LiveEvent = Extract<
+  DomainEvent,
+  { type: "agent.text_delta" | "agent.thinking_delta" | "agent.retry" | "agent.subagent_progress" }
+>;
 
 /** The unlogged events the chat draws. Composer and presence state are read elsewhere. */
-const LIVE: ReadonlySet<DomainEvent["type"]> = new Set(["agent.text_delta", "agent.thinking_delta", "agent.retry"]);
+const LIVE: ReadonlySet<DomainEvent["type"]> = new Set([
+  "agent.text_delta",
+  "agent.thinking_delta",
+  "agent.retry",
+  "agent.subagent_progress",
+]);
 
 /** A turn still streaming, as `overlayLive` reads it. */
 export interface LiveTurn {

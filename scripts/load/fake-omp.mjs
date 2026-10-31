@@ -242,7 +242,21 @@ if (promptAt < 0 || resultAt < 0) {
   process.stderr.write(`fake-omp: ${fixture} has no prompt to replay\n`);
   process.exit(2);
 }
-const turnFrames = recorded.slice(promptAt + 1, resultAt + 1).filter((frame) => frame.type !== "response");
+// A turn with a background task (omp-subagent.jsonl) goes on past its
+// `prompt_result`: the first `agent_end` is not terminal, and the task's
+// frames, its result and the answer to it follow, to the terminal one.
+const nextPromptAt = recorded.findIndex((frame, i) => i > resultAt && frame.type === "response" && frame.command === "prompt");
+const backgrounded = recorded
+  .slice(promptAt + 1, resultAt)
+  .some((frame) => frame.type === "agent_end" && frame.isTerminal === false);
+const terminalAt = backgrounded
+  ? recorded.findIndex(
+      (frame, i) => i > resultAt && (nextPromptAt < 0 || i < nextPromptAt) && frame.type === "agent_end" && frame.isTerminal !== false,
+    )
+  : -1;
+const turnFrames = recorded
+  .slice(promptAt + 1, (terminalAt > resultAt ? terminalAt : resultAt) + 1)
+  .filter((frame) => frame.type !== "response");
 /** What one model call adds to the context: the turn's tokens over its calls. */
 const PER_CALL = (PER_TURN.input + PER_TURN.output) / Math.max(1, turnFrames.filter((frame) => frame.type === "turn_end").length);
 const READY = recorded.find((frame) => frame.type === "ready") ?? {
@@ -308,11 +322,16 @@ async function play(prompt) {
   record({ type: "user", text: typeof prompt.message === "string" ? prompt.message : "" });
   let streamed = false;
   let result = null;
+  let resultSent = false;
   for (const frame of turnFrames) {
     if (turn.aborted || stdinClosed) break;
     if (frame.type === "prompt_result") {
       result = frame;
-      break;
+      if (frame === turnFrames.at(-1)) break;
+      // A background task still runs: the prompt is answered, the turn is not over.
+      out({ ...frame, id: prompt.id });
+      resultSent = true;
+      continue;
     }
     const event = frame.type === "message_update" ? frame.assistantMessageEvent : null;
     if (answer !== null && event?.type === "text_delta") {
@@ -349,12 +368,12 @@ async function play(prompt) {
       message: { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Interrupted by user" },
     });
     out({ type: "agent_end", messages: [], isTerminal: true });
-    out({ type: "prompt_result", id: prompt.id, agentInvoked: true, status: "aborted", sessionSettled: true });
+    if (!resultSent) out({ type: "prompt_result", id: prompt.id, agentInvoked: true, status: "aborted", sessionSettled: true });
   } else if (!stdinClosed) {
     turnsHere++;
     record({ type: "turn_end" });
     record({ type: "context", tokens: contextTokens });
-    out({ ...result, id: prompt.id });
+    if (!resultSent) out({ ...result, id: prompt.id });
     out({ type: "session_settled" });
   }
   current = null;

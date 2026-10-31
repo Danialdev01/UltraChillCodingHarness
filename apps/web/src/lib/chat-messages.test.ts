@@ -8,6 +8,7 @@ import {
   estimateTokens,
   formatCookTime,
   formatDuration,
+  isSubagentCall,
   overlayLive,
   splitBrief,
   splitThinking,
@@ -864,5 +865,103 @@ describe("overlayLive", () => {
     expect(shown.active).toMatchObject({ chars: 5 });
     expect(overlayLive(base, [])).toBe(base);
     store.dispose();
+  });
+});
+
+describe("subagents (OM5.3)", () => {
+  const ids = { threadId: THREAD, turnId: TURN };
+  const call = (name: string, id = "call_1"): DomainEvent => ({
+    type: "agent.tool_use",
+    ...ids,
+    toolUseId: id,
+    name,
+    input: { agent: "scout", tasks: [{ task: "Look at a" }, { task: "Look at b" }] },
+  });
+  const started = (id: string, parent: string | null = "call_1"): DomainEvent => ({
+    type: "agent.subagent_started",
+    ...ids,
+    subagentId: id,
+    parentToolUseId: parent,
+    agent: "scout",
+    description: `Look at ${id}`,
+    model: null,
+  });
+  const progress = (id: string, summary: string): DomainEvent => ({
+    type: "agent.subagent_progress",
+    ...ids,
+    subagentId: id,
+    summary,
+    toolCalls: 2,
+    model: "m/cheap",
+    durationMs: 900,
+  });
+  const finished = (id: string, status: "completed" | "failed" | "aborted" = "completed"): DomainEvent => ({
+    type: "agent.subagent_finished",
+    ...ids,
+    subagentId: id,
+    status,
+    result: `${id} is fine.`,
+    toolCalls: 3,
+    durationMs: 1200,
+    costUsd: 0.002,
+  });
+
+  it("names the calls that spawn subagents", () => {
+    for (const name of ["task", "Task", "Agent", "mcp__omp__omp_task"]) expect(isSubagentCall(name)).toBe(true);
+    expect(isSubagentCall("read")).toBe(false);
+  });
+
+  it("hangs each subagent on its call, with its live line while it runs", () => {
+    const state = log({ type: "turn.started", ...ids }, call("task"), started("a"), started("b"), progress("a", "Reading a.ts"));
+    const part = state.messages[0]!.parts[0]!;
+    expect(part.kind === "tool" && part.subagents).toEqual([
+      { id: "a", agent: "scout", description: "Look at a", model: "m/cheap", status: "running", summary: "Reading a.ts", toolCalls: 2, durationMs: 900, costUsd: null, result: null },
+      { id: "b", agent: "scout", description: "Look at b", model: null, status: "running", summary: null, toolCalls: null, durationMs: null, costUsd: null, result: null },
+    ]);
+  });
+
+  it("keeps the latest progress only, and the result once it is done", () => {
+    const state = log(
+      { type: "turn.started", ...ids },
+      call("Agent"),
+      started("a"),
+      progress("a", "one"),
+      progress("a", "two"),
+      finished("a"),
+      { type: "agent.tool_result", ...ids, toolUseId: "call_1", content: "Async agent launched", isError: false, durationMs: 5 },
+    );
+    const part = state.messages[0]!.parts[0]!;
+    expect(part.kind === "tool" && part.subagents?.[0]).toMatchObject({
+      status: "completed",
+      summary: "two",
+      result: "a is fine.",
+      toolCalls: 3,
+      durationMs: 1200,
+      costUsd: 0.002,
+    });
+  });
+
+  it("gives a subagent whose call was never seen a card of its own", () => {
+    const state = log({ type: "turn.started", ...ids }, started("x", null), finished("x", "failed"));
+    const part = state.messages[0]!.parts[0]!;
+    expect(part).toMatchObject({ kind: "tool", name: "task", orphan: true, result: "", isError: true });
+    expect(part.kind === "tool" && part.subagents?.[0]?.status).toBe("failed");
+  });
+
+  it("stops what is still running when the turn ends", () => {
+    const state = log(
+      { type: "turn.started", ...ids },
+      call("task"),
+      started("a"),
+      { type: "agent.turn_completed", ...ids, stopReason: "cancelled", usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }, costUsd: 0 },
+    );
+    const part = state.messages[0]!.parts[0]!;
+    expect(part.kind === "tool" && part.subagents?.[0]?.status).toBe("aborted");
+  });
+
+  it("ignores a repeated start", () => {
+    const state = log({ type: "turn.started", ...ids }, call("task"), started("a"), started("a"));
+    const part = state.messages[0]!.parts[0]!;
+    expect(part.kind === "tool" && part.subagents).toHaveLength(1);
   });
 });

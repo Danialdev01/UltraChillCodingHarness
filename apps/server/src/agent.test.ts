@@ -492,6 +492,22 @@ describe("an OMP turn", () => {
     await eventually(() => scheduler.stats().running.omp, 0);
   });
 
+  it("carries a background task to its answer before the turn ends (OM5.3)", async () => {
+    // The scout runs after the prompt_result; the turn is over only at the
+    // terminal agent_end, after the task's result and the answer to it.
+    process.env.FAKE_OMP_FIXTURE = join(FIXTURES, "omp-subagent.jsonl");
+    const { agent, appended } = ompReactor(thread, keyed);
+    agent.react(omp, [message]);
+    await until(appended, closed);
+    const types = appended.flat().map((e) => e.type);
+    expect(types.filter((t) => t === "agent.subagent_started")).toHaveLength(1);
+    expect(types.filter((t) => t === "agent.subagent_finished")).toHaveLength(1);
+    expect(types.indexOf("agent.subagent_started")).toBeLessThan(types.indexOf("agent.subagent_finished"));
+    expect(types.indexOf("agent.subagent_finished")).toBeLessThan(types.indexOf("agent.turn_completed"));
+    expect(appended.flat().find((e) => e.type === "agent.subagent_finished")).toMatchObject({ status: "completed" });
+    expect(appended.flat().at(-1)).toMatchObject({ type: "agent.turn_completed" });
+  });
+
   it("asks in the chat under Strict, and delivers the answers", async () => {
     process.env.FAKE_OMP_FIXTURE = join(FIXTURES, "omp-confirm.jsonl");
     const { agent, appended } = ompReactor(thread, { ...keyed, agentPermissionMode: "strict" });

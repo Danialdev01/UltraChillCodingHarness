@@ -33,6 +33,39 @@ export interface ToolPart {
   durationMs: number | null;
   /** Paused on a permission prompt: the CLI is waiting, not working. */
   awaitingApproval?: boolean;
+  /**
+   * The subagents this call spawned (solution §6.3), in the order they
+   * started: one per task for OMP's `task`, one for Claude Code's `Agent`.
+   * Absent on any other call, and on a subagent call whose provider says
+   * nothing about it (the bridge's `mcp__omp__omp_task`).
+   */
+  subagents?: SubagentRun[];
+  /** Made for subagents whose call was never seen: it has no result of its own. */
+  orphan?: true;
+}
+
+/** One subagent, as its events tell it: started, its latest progress, how it ended. */
+export interface SubagentRun {
+  id: string;
+  /** The agent it runs as: OMP's `scout`, Claude Code's `Explore`, ... */
+  agent: string;
+  description: string | null;
+  model: string | null;
+  status: "running" | "completed" | "failed" | "aborted";
+  /** The latest progress line. Live only: progress is not logged, so a reload has none. */
+  summary: string | null;
+  toolCalls: number | null;
+  durationMs: number | null;
+  costUsd: number | null;
+  /** What it answered, truncated by the server. */
+  result: string | null;
+}
+
+/** The calls that spawn subagents, and draw as a subagent card. */
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(["task", "Task", "Agent", "mcp__omp__omp_task"]);
+
+export function isSubagentCall(name: string): boolean {
+  return SUBAGENT_TOOLS.has(name);
 }
 
 /**
@@ -268,7 +301,23 @@ export function toMessages(
 
   const settle = (message: ChatMessage): void => {
     message.streaming = false;
-    for (const part of message.parts) if (part.kind === "text") part.streaming = false;
+    for (const part of message.parts) {
+      if (part.kind === "text") part.streaming = false;
+      // The turn is over, so nothing it spawned still runs: the provider
+      // closes its subagents, but a window that slid past that must not
+      // leave one spinning.
+      if (part.kind === "tool") for (const run of part.subagents ?? []) if (run.status === "running") run.status = "aborted";
+    }
+  };
+
+  /** A subagent of this turn, on whichever call it hangs from. */
+  const subagent = (turnId: string, id: string): SubagentRun | undefined => {
+    for (const part of turn(turnId).parts) {
+      if (part.kind !== "tool") continue;
+      const run = part.subagents?.find((r) => r.id === id);
+      if (run) return run;
+    }
+    return undefined;
   };
 
   for (const row of events) {
@@ -419,6 +468,72 @@ export function toMessages(
             isError: event.isError,
             durationMs: event.durationMs,
           });
+        }
+        break;
+      }
+
+      case "agent.subagent_started": {
+        const message = turn(event.turnId);
+        if (subagent(event.turnId, event.subagentId)) break;
+        let call = event.parentToolUseId
+          ? message.parts.find((part): part is ToolPart => part.kind === "tool" && part.id === event.parentToolUseId)
+          : undefined;
+        if (!call) {
+          // Its call was never seen -- the window slid past it, or the
+          // provider named none. A card of its own, rather than no card.
+          call = {
+            kind: "tool",
+            id: event.parentToolUseId ?? `subagent:${event.subagentId}`,
+            name: "task",
+            input: event.description,
+            result: null,
+            isError: false,
+            durationMs: null,
+            orphan: true,
+          };
+          message.parts.push(call);
+        }
+        (call.subagents ??= []).push({
+          id: event.subagentId,
+          agent: event.agent,
+          description: event.description,
+          model: event.model,
+          status: "running",
+          summary: null,
+          toolCalls: null,
+          durationMs: null,
+          costUsd: null,
+          result: null,
+        });
+        break;
+      }
+
+      case "agent.subagent_progress": {
+        const run = subagent(event.turnId, event.subagentId);
+        if (!run || run.status !== "running") break;
+        run.summary = event.summary;
+        if (event.toolCalls !== undefined) run.toolCalls = event.toolCalls;
+        if (event.model) run.model = event.model;
+        if (event.durationMs !== undefined) run.durationMs = event.durationMs;
+        if (event.costUsd !== undefined) run.costUsd = event.costUsd;
+        break;
+      }
+
+      case "agent.subagent_finished": {
+        const run = subagent(event.turnId, event.subagentId);
+        if (!run) break;
+        run.status = event.status;
+        run.result = event.result;
+        if (event.toolCalls !== undefined) run.toolCalls = event.toolCalls;
+        if (event.durationMs !== undefined) run.durationMs = event.durationMs;
+        if (event.costUsd !== undefined) run.costUsd = event.costUsd;
+        // A card made for a call never seen has no result of its own to wait for.
+        const call = turn(event.turnId).parts.find(
+          (part): part is ToolPart => part.kind === "tool" && !!part.subagents?.includes(run),
+        );
+        if (call?.orphan && call.subagents!.every((r) => r.status !== "running")) {
+          call.result = "";
+          call.isError = call.subagents!.some((r) => r.status === "failed");
         }
         break;
       }

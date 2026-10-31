@@ -77,6 +77,7 @@ import { ContextMeter } from "@/components/context-meter";
 import { Markdown, StreamingMarkdown } from "@/components/markdown";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
+import { SubagentCard } from "@/components/subagent-card";
 import { UcchClient, type ClientEvent } from "@/lib/client";
 import { ThreadStore, type LiveTurn } from "@/lib/thread-store";
 import {
@@ -103,6 +104,7 @@ import {
   describeTiming,
   formatCookTime,
   formatDuration,
+  isSubagentCall,
   splitThinking,
   overlayLive,
   summariseInput,
@@ -2480,6 +2482,13 @@ function WorkDropdown({
   ]
     .filter(Boolean)
     .join(", ");
+  // While it works, the newest subagent still running says what it is on:
+  // the dropdown is closed by default, and the card inside it with it.
+  const subagent = working
+    ? items
+        .flatMap((i) => (i.kind === "tool" ? (i.call.subagents ?? []) : []))
+        .findLast((run) => run.status === "running")
+    : undefined;
   const elapsed =
     !working && message.startedAt !== null && message.completedAt !== null
       ? formatCookTime(message.completedAt - message.startedAt)
@@ -2499,6 +2508,11 @@ function WorkDropdown({
         )}
         <span className="text-foreground font-medium">{working ? "Working" : "Thought"}</span>
         <span className="truncate">{what}</span>
+        {subagent?.summary && (
+          <span className="truncate" data-testid="work-subagent">
+            · {subagent.agent}: {subagent.summary}
+          </span>
+        )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {failed && <span className="text-destructive">a call failed</span>}
           {elapsed && <span className="tabular-nums">{elapsed}</span>}
@@ -2651,6 +2665,8 @@ function MessageFooter({
  * answer was reached, not the answer.
  */
 function ToolRow({ call }: { call: ToolPart }) {
+  // A call that spawned subagents draws as their card (solution §6.3).
+  if (isSubagentCall(call.name) || call.subagents) return <SubagentCard call={call} />;
   const running = call.result === null;
   const duration = formatDuration(call.durationMs);
   const summary = summariseInput(call.input);
