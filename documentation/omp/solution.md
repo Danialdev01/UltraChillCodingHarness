@@ -499,6 +499,11 @@ As built (OM4.3): the accepted command emits `thread.compaction_requested { thre
 - **Context full.** Claude Code's reported context usage (`mapUsage`) passes 90% of the window. The next turn on that thread offers "Hand off" in the composer. It is not automatic, because Claude Code compacts on its own.
 - These interact with the "auto queueing" idea in `idea.md`. The handoff target can be "the same provider, after reset", which is just the existing queue.
 
+**As built (OM4.6):**
+- **Setting.** `workspaces.agent_settings` (jsonb, migration 0029) holds `WorkspaceAgentSettings` (`packages/protocol/src/agent-settings.ts`), one zod section per toggle; `autoHandoff { enabled, fallbackProvider }` is the first. A section that does not parse reads as its defaults. It is set through the workspace settings route (`agent`, beside `credentialPolicy`), needs `credentials.manage`, and is audited as `workspace.agent_settings`. Later sections (memory, bridge, isolation, verify) join the same column without a migration.
+- **Classification.** `agent.turn_failed` gains `limit: true`. Claude Code 2.1.316: a `rate_limit_event` with `status: "rejected"`, an assistant or result line with `api_error: "usage_limit_reached"` (or `error: "billing_error"`), or the CLI's "You've hit your … limit" wording. Codex 0.166.0: its error item's wording ("You've hit your usage limit", with a U+2019 apostrophe; quota, credits, spend cap); its `error` then `turn.failed` for the same failure fail the turn once. The Claude fixture is recorded; the Codex one is constructed from the binary's strings, since running the downloaded binary was not allowed here.
+- **Trigger.** `AgentTurnReactor` dispatches `thread.handoff_to { reason: "limit", message }` with the failed message, which the new thread gets in place of "Continue from here.". Once per chain: a thread whose history already holds a `thread.handed_off` with `reason: "limit"` is not handed off again, so a second limit does not loop.
+
 **Why not `omp --from-claude`?** The import is an interactive picker ([sessions](https://omp.sh/docs/sessions)), and UCCH's event log is already provider-neutral. OM0: there is no non-interactive import (`--from-claude is not supported in rpc mode`; in `-p` it draws the picker and exits), so every target gets the brief.
 
 ---
@@ -535,6 +540,8 @@ const AgentSubagentFinished = z.object({
 
 `agent.subagent_progress` joins the transient list next to `agent.text_delta` (`events.ts:861`).
 
+As built (OM5.1): progress also carries `model?`, `durationMs?` and `costUsd?`, and `finished` carries `toolCalls?` and `durationMs?`, since every source reports them. Subagents still running when the turn ends finish as `aborted` (or `failed` on a crash).
+
 ### 6.2 Sources
 - **OMP:** `subagent_lifecycle` and `subagent_progress` frames after `set_subagent_subscription progress` (OM0, `omp-subagent.jsonl`):
   - `subagent_lifecycle { payload: { id, agent, parentToolCallId, status: "started"|"completed"|…, sessionFile, index } }` starts and finishes a subagent; `subagentId` is `payload.id`, `parentToolUseId` is `payload.parentToolCallId`;
@@ -545,6 +552,7 @@ const AgentSubagentFinished = z.object({
   - assistant text and tool calls inside it become `agent.subagent_progress`, rate-limited to one event per second;
   - the Task `tool_result` emits `agent.subagent_finished`.
   - The subagent's prose still never becomes the turn's prose, which keeps the invariant the comment states.
+  - **As built (OM5.2, 2.1.316):** the tool is `Agent` (`Task` is still matched) and runs in the background: its `tool_result` is only "Async agent launched…". `system` lines `task_started { task_id, tool_use_id, description, subagent_type, is_backgrounded }`, `task_progress { usage: { tool_uses, duration_ms }, summary?, last_tool_name }` and `task_notification { status: completed|failed|stopped, summary, usage }` carry it; `subagentId` is the call's `tool_use_id`. `task_notification` finishes it (`stopped` → `aborted`), with the subagent's last text as the result. A foreground subagent finishes from its call's result. Its tool calls stay the turn's `agent.tool_use` / `agent.tool_result`.
 - **Codex:** no subagent stream today, so nothing is emitted.
 - **Bridge:** an `omp_task` call is an MCP tool call to the CLI. The bridge can additionally report progress through MCP progress notifications, which the CLI may or may not surface. No UCCH events come from the bridge directly; it has no channel back to the server.
 
