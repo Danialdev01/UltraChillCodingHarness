@@ -177,6 +177,63 @@ const Env = z.object({
   CLAUDE_BIN: z.string().default("claude"),
   CODEX_BIN: z.string().default("codex"),
 
+  /**
+   * The oh-my-pi agent (`documentation/omp/solution.md`), which takes over
+   * the "Custom" provider from the native loop. A bare name resolves through
+   * PATH; the image pins `/opt/omp/bin/omp`.
+   */
+  OMP_BIN: z.string().default("omp"),
+
+  /**
+   * New "Custom" threads run on OMP instead of the native loop. Off until the
+   * OMP provider has been through its load test (OM8.5); threads already
+   * bound to a provider keep it either way, because a session cannot move.
+   */
+  OMP_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
+
+  /**
+   * Lets threads already bound to the native loop keep running on it, and is
+   * the switch back should OMP misbehave. On by default: turning it off
+   * strands every native thread, which is only safe once none are left
+   * (solution §11).
+   */
+  NATIVE_LOOP_FALLBACK: z
+    .string()
+    .optional()
+    .transform((v) => v === undefined || v === "" || v === "true" || v === "1"),
+
+  /**
+   * The bundled `omp-bridge` MCP server Claude Code and Codex turns are
+   * given (run with `node`). The image's path by default; in development,
+   * `packages/omp-bridge/dist/omp-bridge.mjs`.
+   */
+  OMP_BRIDGE_BIN: z.string().default("/opt/ucch/omp-bridge.mjs"),
+
+  /**
+   * OMP processes running at once on the whole server: OMP turns plus bridge
+   * calls. Measured at ~270-320 MB each, four subagents included (spike
+   * report, OM0.6), so six fit in the ~2 GB the CLI cap budgets for agent
+   * processes on an 8 GB box.
+   */
+  OMP_TURN_TOTAL: z.coerce.number().int().positive().default(6),
+
+  /**
+   * Subagents one OMP turn may run at once (`task.maxConcurrency`). OMP's
+   * own default of 32 is far more than the box holds; they run inside the
+   * one process, so four costs ~45 MB, not four processes.
+   */
+  OMP_WORKERS_PER_TURN: z.coerce.number().int().positive().default(4),
+
+  /**
+   * The longest a single bridge call may run (`--max-time`). Long enough for
+   * a review or a scout over a large tree, short enough that a stuck call
+   * does not hold the CLI turn that made it.
+   */
+  OMP_BRIDGE_MAX_SECONDS: z.coerce.number().int().positive().default(300),
+
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
 

@@ -77,6 +77,29 @@ describe("provider configuration", () => {
   it("resolves the CLIs through PATH unless pinned", () => {
     expect(load().CLAUDE_BIN).toBe("claude");
     expect(load({ CODEX_BIN: "/opt/codex/bin/codex" }).CODEX_BIN).toBe("/opt/codex/bin/codex");
+    expect(load().OMP_BIN).toBe("omp");
+    expect(load({ OMP_BIN: "/opt/omp/bin/omp" }).OMP_BIN).toBe("/opt/omp/bin/omp");
+  });
+
+  it("keeps OMP off and the native loop available unless told otherwise", () => {
+    expect(load().OMP_ENABLED).toBe(false);
+    expect(load({ OMP_ENABLED: "true" }).OMP_ENABLED).toBe(true);
+    expect(load({ OMP_ENABLED: "1" }).OMP_ENABLED).toBe(true);
+    expect(load().NATIVE_LOOP_FALLBACK).toBe(true);
+    // Compose passes an unset variable through as "".
+    expect(load({ NATIVE_LOOP_FALLBACK: "" }).NATIVE_LOOP_FALLBACK).toBe(true);
+    expect(load({ NATIVE_LOOP_FALLBACK: "false" }).NATIVE_LOOP_FALLBACK).toBe(false);
+    expect(load({ NATIVE_LOOP_FALLBACK: "0" }).NATIVE_LOOP_FALLBACK).toBe(false);
+  });
+
+  it("caps OMP processes, subagents and bridge calls", () => {
+    expect(load().OMP_TURN_TOTAL).toBe(6);
+    expect(load().OMP_WORKERS_PER_TURN).toBe(4);
+    expect(load().OMP_BRIDGE_MAX_SECONDS).toBe(300);
+    expect(load().OMP_BRIDGE_BIN).toBe("/opt/ucch/omp-bridge.mjs");
+    expect(load({ OMP_TURN_TOTAL: "3" }).OMP_TURN_TOTAL).toBe(3);
+    expect(() => load({ OMP_TURN_TOTAL: "0" })).toThrow(/OMP_TURN_TOTAL/);
+    expect(() => load({ OMP_WORKERS_PER_TURN: "1.5" })).toThrow(/OMP_WORKERS_PER_TURN/);
   });
 
   // A CLI provider hands the model a host shell, which is what the shell
