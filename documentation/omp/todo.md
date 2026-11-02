@@ -620,13 +620,17 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Image.** `typescript-language-server` 6.0.2, `typescript` 5.9.3 (7.x has no `tsserver`) and `pyright` 1.1.414, installed with `npm -g` after OMP, behind `ARG OMP_LSP_*`. The build checks the server's version and that `pyright-langserver` is on `PATH`. The overlay's `lsp.*` keys and `--no-lsp` for untrusted projects were already in place (OM2.5, OM2.2).
     - **Manual turn** (`docker compose build`, then `omp -p` in the image as `node`, trusted, scripted model). The rename was semantic: `a.ts` and three uses in `b.ts`. Diagnostics after a write came as OMP's late notice, not in the `write` result, for TypeScript and for Python. RSS peaked at 408 MB for TS (the server plus two `tsserver`), 128 MB for pyright and ~400 MB for `omp`. Nothing was left 4 s after exit.
     - **Not done here.** Weighting an LSP turn as more than one scheduler slot (§8.2) waits for OM7.6, since every turn is untrusted until then.
-- [ ] **OM7.5 — Debug adapters in the image**
+- [x] **OM7.5 — Debug adapters in the image** — 6dffe59
 
   - **Depends:** OM1.5
   - **Files:** `Dockerfile` (`ARG OMP_DAP`, `JS_DEBUG_DAP_SERVER`), `<subject>/omp/agent/dap.json` generation in `providers.ts`
   - **Steps:** install `debugpy` and js-debug (solution §8.3).
   - **Acceptance:** an OMP turn can set a breakpoint in a Node script and in a Python script and report the locals there.
   - **Verify:** manual turn in the container
+  - **As built:**
+    - **Image.** debugpy 1.8.22 in a venv of its own (`/opt/debugpy`), and the js-debug DAP server 1.140.0 from its release tarball, SHA-256 checked, in `/opt/js-debug` with `JS_DEBUG_DAP_SERVER` set (`ARG OMP_DAP_*`, 43.6 MB). The build checks both.
+    - **No `dap.json` in `providers.ts`.** OMP reads user-scope `dap.json` from `$HOME/.omp/agent/` (and `$HOME/`), never from `PI_CODING_AGENT_DIR`, so a file under `<subject>/omp/agent/` is ignored (measured). The image bakes `/home/node/.omp/agent/dap.json`, the server's `HOME`, moving OMP's built-in `debugpy` adapter to the venv's Python; the image has no `python`. Solution §8.3 is corrected.
+    - **Manual turn** (`docker compose build`, then an RPC turn in the image as `node`, trusted, built by the server's `ensureCredsDir`, `writeOmpOverlay` and `ompArgv`, scripted model). Node through js-debug and Python through debugpy each launched, verified and hit a breakpoint on line 5, and `variables` gave the locals (`sum = 15`, `avg = 5`; `total = 15`, `count = 3`, `avg = 5.0`).
 - [ ] **OM7.6 — Trusted projects**
 
   - **Depends:** OM0.4, OM7.4
