@@ -22,7 +22,6 @@
 - add manage project function
   - add function share with other users.
   - add storage usage metrics and git repo settings
-- 
 
 ################### Low priority
 
@@ -46,12 +45,10 @@ create a system prompt for the AI agent to make sure that its using the best of 
 
 - inside the search function, add replace multiple keyword feature
 
-- 
-
 ############## High
 
-- refer OMP for how to make the agent more efficent
 - add colaboration management section
 - add multi claude code subscription connection
 - add auto queueing for tasks: for example "my limits finish at 400pm so it will auto run the queued task in the next 4 hours after the limit resets." the system will run it in the background. the system will only run the auto queue if the session qouta is under 50% usage.
 - add framework template
+- code review and branchcing. the top manager inside a project can see code changes before pushing to repo.
