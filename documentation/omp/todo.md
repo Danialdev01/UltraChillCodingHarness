@@ -582,13 +582,19 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Manual run.** `omp -p` under the real `writeOmpOverlay`, scripted model. In project A's first worktree `retain` stored the fact. A run in A's second worktree had it recalled into its first request, and a run in project B did not. Only the two per-project `mnemopi.db` files were created.
     - **No embeddings.** `noEmbeddings: false` downloaded ~770 MB into HOME on the first turn (bge-base ONNX, onnxruntime, npm packages), so the overlay sets `true`. Recall is then full-text: it needs shared words ("Which Fly.io region…" found the fact, "Work on the deploy." did not), under both `llmMode` values. Solution §4 and §7.1 and the spike report are updated.
     - **Tests.** `agent.test.ts` covers the overlay with memory off and on, the bank path and its mode. Also the settings defaults and the PATCH round trip.
-- [ ] **OM7.2 — Memory for CLI turns**
+- [x] **OM7.2 — Memory for CLI turns** — 50f1973
 
   - **Depends:** OM7.1, OM6.2
   - **Files:** `packages/omp-bridge/src/tools/recall.ts` and `retain.ts`, `apps/server/src/agent.ts` (end-of-turn retention, off by default)
   - **Steps:** implement solution §7.3. Retain only the final assistant text, never tool output.
   - **Acceptance:** a decision recorded in a Claude Code thread is recallable from a Codex thread and an OMP thread in the same project.
   - **Verify:** manual run, plus `pnpm test -- omp-bridge`
+  - **As built:**
+    - **Bridge.** `recall` / `retain` were already in `packages/omp-bridge/src/tools/memory.ts` (OM6.2). The overlays of `#openBridge` and `TerminalBridge` now name the project's bank when the workspace keeps memory, and `bridgeServer` sets `UCCH_OMP_MEMORY=1`.
+    - **End-of-turn retention.** `memory.retainCliTurns`, off by default, a checkbox in the "Project memory" card. After a completed Claude Code or Codex turn, `#retainAnswer` runs on an OMP slot of its own, the turn not waiting. It is `OmpProvider.ask`, which now takes `tools` (`--tools retain`), on `@smol`, with the last `agent.message`'s text on stdin (`omp-memory.ts`). There is no key, no run.
+    - **Tools only.** Bridge and retention overlays set `autoRecall`/`autoRetain: false` (`memoryToolsOnly`). Measured: `autoRetain` stored a retention run's whole prompt and stdin as a second memory.
+    - **Manual run.** Real OMP, scripted model, one bank. A Claude Code answer was retained through the real `ask` ("1 memory stored."). The bridge's `omp_recall`, as a Codex turn calls it, found exactly that fact. An OMP turn's auto-recall put it into its first request.
+    - **Tests.** Bridge memory on and off, for turns and terminals. Retention for Claude Code and Codex: final answer only, no tool output, the bank's path, `smol`, only `retain`. Nothing with the toggle off, memory off, no key, or no answer.
 - [ ] **OM7.3 — Memory card**
 
   - **Depends:** OM7.1
