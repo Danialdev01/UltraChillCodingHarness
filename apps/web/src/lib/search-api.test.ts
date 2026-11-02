@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { groupByFile, highlight, type SearchMatch } from "./search-api.js";
+import {
+  allKeys,
+  groupByFile,
+  highlight,
+  matchKey,
+  previewSegments,
+  selectionBody,
+  type SearchMatch,
+} from "./search-api.js";
 
 function match(over: Partial<SearchMatch> = {}): SearchMatch {
   return { path: "src/app.ts", line: 1, text: "const token = 1", ranges: [[6, 11]], ...over };
@@ -91,5 +99,37 @@ describe("highlight", () => {
 
   it("returns a whitespace-only line as itself", () => {
     expect(highlight("   ", [])).toEqual([]);
+  });
+});
+
+describe("selectionBody", () => {
+  it("names only the ticked occurrences, and leaves out files with none", () => {
+    const matches = [
+      match({ path: "a.ts", line: 1, text: "x x", ranges: [[0, 1], [2, 3]] }),
+      match({ path: "b.ts", line: 4, text: "x", ranges: [[0, 1]] }),
+    ];
+    const selected = allKeys(matches);
+    selected.delete(matchKey("a.ts", 1, 2));
+    selected.delete(matchKey("b.ts", 4, 0));
+    expect(selectionBody(groupByFile(matches), selected)).toEqual([
+      { path: "a.ts", matches: [{ line: 1, start: 0, end: 1 }] },
+    ]);
+  });
+});
+
+describe("previewSegments", () => {
+  it("strikes ticked matches and shows the replacement after them", () => {
+    const segments = previewSegments("  a foo foo", [[4, 7], [8, 11]], (start) => start === 4, "bar");
+    expect(segments).toEqual([
+      { text: "a ", kind: "text" },
+      { text: "foo", kind: "removed" },
+      { text: "bar", kind: "inserted" },
+      { text: " ", kind: "text" },
+      { text: "foo", kind: "match" },
+    ]);
+  });
+
+  it("shows a deletion as only the struck text", () => {
+    expect(previewSegments("foo", [[0, 3]], () => true, "")).toEqual([{ text: "foo", kind: "removed" }]);
   });
 });

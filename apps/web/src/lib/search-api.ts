@@ -6,6 +6,8 @@
  * they are now -- including whatever the agent wrote a second ago.
  */
 
+import { projectApiUrl, type ProjectTarget } from "./project-target";
+
 /** Where one match sits inside its line, as character offsets. */
 export type MatchRange = [start: number, end: number];
 
@@ -38,15 +40,17 @@ export interface SearchOptions {
  * keystroke that supersedes a search already in flight.
  */
 export async function searchFiles(
-  hash: string,
+  target: ProjectTarget,
   query: string,
   options: SearchOptions = {},
 ): Promise<SearchResult> {
-  const params = new URLSearchParams({ q: query });
-  if (options.caseSensitive) params.set("case", "1");
-  if (options.regex) params.set("regex", "1");
+  const params: Record<string, string> = { q: query };
+  if (options.caseSensitive) params.case = "1";
+  if (options.regex) params.regex = "1";
 
-  const response = await fetch(`/api/projects/${hash}/search?${params}`, {
+  // Through the target, so a session's search is of its own worktree -- the
+  // tree a replace from these results would write to.
+  const response = await fetch(projectApiUrl(target, "search", params), {
     credentials: "include",
     ...(options.signal ? { signal: options.signal } : {}),
   });
@@ -113,5 +117,118 @@ export function highlight(
   }
 
   if (at < trimmed.length) segments.push({ text: trimmed.slice(at), match: false });
+  return segments;
+}
+
+/** A match's identity, for the set of ticked ones: its file, line and where it starts. */
+export function matchKey(path: string, line: number, start: number): string {
+  return `${path}\u0000${line}\u0000${start}`;
+}
+
+/** Every match in the results, ticked -- which is how a new search starts. */
+export function allKeys(matches: readonly SearchMatch[]): Set<string> {
+  const keys = new Set<string>();
+  for (const match of matches) {
+    for (const [start] of match.ranges) keys.add(matchKey(match.path, match.line, start));
+  }
+  return keys;
+}
+
+export interface ReplaceRequest {
+  query: string;
+  caseSensitive: boolean;
+  regex: boolean;
+  replacement: string;
+  files: Array<{ path: string; matches: Array<{ line: number; start: number; end: number }> }>;
+}
+
+/**
+ * The ticked matches, file by file, as the replace request names them.
+ * A file with nothing ticked is left out altogether.
+ */
+export function selectionBody(
+  groups: readonly SearchGroup[],
+  selected: ReadonlySet<string>,
+): ReplaceRequest["files"] {
+  const files: ReplaceRequest["files"] = [];
+  for (const group of groups) {
+    const matches = [];
+    for (const match of group.matches) {
+      for (const [start, end] of match.ranges) {
+        if (selected.has(matchKey(match.path, match.line, start))) matches.push({ line: match.line, start, end });
+      }
+    }
+    if (matches.length > 0) files.push({ path: group.path, matches });
+  }
+  return files;
+}
+
+export interface ReplaceResult {
+  /** Occurrences replaced. */
+  replaced: number;
+  /** Files written. */
+  files: number;
+  /** Files, or matches in them, left as they were, and why. */
+  skipped: Array<{ path: string; reason: string }>;
+}
+
+/**
+ * Replaces the ticked matches.
+ *
+ * The server checks each one against the file as it is now, so a line that
+ * changed since the search is reported rather than overwritten.
+ */
+export async function replaceInFiles(target: ProjectTarget, body: ReplaceRequest): Promise<ReplaceResult> {
+  const response = await fetch(projectApiUrl(target, "replace"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? "The replace could not be made.");
+  }
+  return (await response.json()) as ReplaceResult;
+}
+
+export type PreviewSegment = { text: string; kind: "text" | "match" | "removed" | "inserted" };
+
+/**
+ * A line as it will read after the replace: each ticked match struck through
+ * with its replacement beside it, an unticked one highlighted as a plain
+ * match. Indentation is trimmed the way `highlight` trims it.
+ *
+ * In a regular-expression search the replacement is shown as typed, `$1` and
+ * all; the server fills the groups in.
+ */
+export function previewSegments(
+  text: string,
+  ranges: readonly MatchRange[],
+  isTicked: (start: number) => boolean,
+  replacement: string,
+): PreviewSegment[] {
+  const indent = text.length - text.trimStart().length;
+  const trimmed = text.slice(indent);
+
+  const segments: PreviewSegment[] = [];
+  let at = 0;
+
+  for (const [rawStart, rawEnd] of ranges) {
+    const start = Math.max(0, rawStart - indent);
+    const end = Math.max(0, rawEnd - indent);
+    if (end <= start || start < at || start >= trimmed.length) continue;
+    if (start > at) segments.push({ text: trimmed.slice(at, start), kind: "text" });
+    const matched = trimmed.slice(start, end);
+    if (isTicked(rawStart)) {
+      segments.push({ text: matched, kind: "removed" });
+      if (replacement) segments.push({ text: replacement, kind: "inserted" });
+    } else {
+      segments.push({ text: matched, kind: "match" });
+    }
+    at = end;
+  }
+
+  if (at < trimmed.length) segments.push({ text: trimmed.slice(at), kind: "text" });
   return segments;
 }

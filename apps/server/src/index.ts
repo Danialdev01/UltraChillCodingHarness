@@ -50,7 +50,8 @@ import { AuditLog, textDelta, type AuditInput } from "./audit.js";
 import { ComposerStore } from "./composer.js";
 import { PresenceStore } from "./presence.js";
 import { describeRoute } from "./route-audit.js";
-import { MAX_QUERY_LENGTH, SearchError, searchWorkspace } from "./search.js";
+import { MAX_QUERY_LENGTH, MAX_SEARCH_MATCHES, SearchError, searchWorkspace } from "./search.js";
+import { applyReplacements, compilePattern } from "./replace.js";
 import {
   UPLOAD_TEXT_PREVIEW_BYTES,
   UploadConflictError,
@@ -1680,6 +1681,10 @@ app.get<{
 }>("/api/projects/:hash/search", async (request, reply) => {
   const project = await projectFor(request);
   if (!project) return reply.code(404).send({ error: "project not found" });
+  // A session's search is of its own worktree: the files a replace from the
+  // results would write are that tree's, so the lines found must be too.
+  const tree = await sessionTarget(request, project);
+  if (!tree) return reply.code(404).send({ error: "session not found" });
 
   const query = request.query.q ?? "";
   // An empty box is not a search. Answering it with every line in the project
@@ -1690,7 +1695,7 @@ app.get<{
   }
 
   try {
-    return await searchWorkspace(join(config.WORKSPACE_ROOT, project.id), {
+    return await searchWorkspace(workspaceFiles.root(tree), {
       query,
       caseSensitive: request.query.case === "1",
       regex: request.query.regex === "1",
@@ -1705,6 +1710,103 @@ app.get<{
     app.log.error({ err: error, projectId: project.id }, "search failed");
     return reply.code(500).send({ error: "the search could not be run" });
   }
+});
+
+/**
+ * Replacing what a search found, for the search sidebar.
+ *
+ * The body names the matches the user left ticked, file by file, and only
+ * those are replaced -- each one checked first against the file as it is now
+ * (`replace.ts`). A file is written over the exact version this request read,
+ * so one that changes in between is skipped and reported, never overwritten.
+ * Writes, notices and the activity log go the same way an editor save does.
+ */
+const ReplaceRequest = z.object({
+  query: z.string().min(1).max(MAX_QUERY_LENGTH),
+  caseSensitive: z.boolean().default(false),
+  regex: z.boolean().default(false),
+  replacement: z.string().max(10_000),
+  files: z
+    .array(
+      z.object({
+        path: z.string().min(1).max(1024),
+        matches: z
+          .array(z.object({ line: z.number().int().min(1), start: z.number().int().min(0), end: z.number().int().min(1) }))
+          .min(1),
+      }),
+    )
+    .min(1)
+    .refine((files) => files.reduce((sum, file) => sum + file.matches.length, 0) <= MAX_SEARCH_MATCHES, {
+      message: `at most ${MAX_SEARCH_MATCHES} matches can be replaced at once`,
+    }),
+});
+
+app.post<{ Params: { hash: string } }>("/api/projects/:hash/replace", async (request, reply) => {
+  const project = await projectFor(request);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  const tree = await sessionTarget(request, project);
+  if (!tree) return reply.code(404).send({ error: "session not found" });
+
+  const parsed = ReplaceRequest.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "a search and the matches to replace are required" });
+  }
+  const { query, caseSensitive, regex, replacement, files } = parsed.data;
+
+  let pattern: RegExp;
+  try {
+    pattern = compilePattern({ query, caseSensitive, regex });
+  } catch (error) {
+    if (error instanceof SearchError) return reply.code(400).send({ error: error.message });
+    throw error;
+  }
+
+  const origin = await originOf(request);
+  let replaced = 0;
+  let changed = 0;
+  const skipped: Array<{ path: string; reason: string }> = [];
+
+  for (const file of files) {
+    try {
+      const before = await workspaceFiles.read(tree, file.path);
+      if (before.kind !== "text") {
+        skipped.push({ path: file.path, reason: before.kind === "missing" ? "deleted" : "not text" });
+        continue;
+      }
+      const outcome = applyReplacements(before.content, pattern, replacement, file.matches, regex);
+      if (outcome.replaced === 0) {
+        skipped.push({ path: file.path, reason: "changed since the search" });
+        continue;
+      }
+      const change = await workspaceFiles.write(tree, file.path, outcome.content, before.version);
+      await announceFileChange(tree, file.path, change, origin);
+      void audit.record({
+        projectId: project.id,
+        userId: origin?.userId ?? null,
+        clientId: origin?.clientId ?? null,
+        action: "file.write",
+        targetType: "file",
+        targetId: file.path,
+        summary: `Replaced ${outcome.replaced} in ${file.path}`,
+        details: textDelta(before.content, outcome.content),
+      });
+      replaced += outcome.replaced;
+      changed += 1;
+      if (outcome.stale > 0) skipped.push({ path: file.path, reason: `${outcome.stale} changed since the search` });
+    } catch (error) {
+      if (error instanceof StaleWriteError) {
+        skipped.push({ path: file.path, reason: "changed while replacing" });
+        continue;
+      }
+      if (error instanceof PathError) {
+        skipped.push({ path: file.path, reason: error.message });
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return { replaced, files: changed, skipped };
 });
 
 // -- Project files -----------------------------------------------------------
