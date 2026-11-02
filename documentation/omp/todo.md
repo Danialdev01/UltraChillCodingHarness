@@ -595,13 +595,17 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Tools only.** Bridge and retention overlays set `autoRecall`/`autoRetain: false` (`memoryToolsOnly`). Measured: `autoRetain` stored a retention run's whole prompt and stdin as a second memory.
     - **Manual run.** Real OMP, scripted model, one bank. A Claude Code answer was retained through the real `ask` ("1 memory stored."). The bridge's `omp_recall`, as a Codex turn calls it, found exactly that fact. An OMP turn's auto-recall put it into its first request.
     - **Tests.** Bridge memory on and off, for turns and terminals. Retention for Claude Code and Codex: final answer only, no tool output, the bank's path, `smol`, only `retain`. Nothing with the toggle off, memory off, no key, or no answer.
-- [ ] **OM7.3 — Memory card**
+- [x] **OM7.3 — Memory card** — 19fc631
 
   - **Depends:** OM7.1
   - **Files:** `apps/web/src/components/provider-settings.tsx`, a server endpoint
   - **Steps:** show stats and a Clear button via `omp -p "/memory stats|clear"`, or via the mnemopi files if `-p` slash commands don't work. Show the warning text from [memory](https://omp.sh/docs/memory).
   - **Acceptance:** the stats show, and Clear empties recall for the project.
   - **Verify:** `pnpm --filter @ucch/web build`, plus manual
+  - **As built:**
+    - **Server.** `-p` slash commands don't run (OM0), so `omp-memory-routes.ts` reads the bank file. `GET /api/omp-memory/:projectId[?workspace=]` returns counts only: facts, turn summaries, the total, the size and the newest time. `DELETE` removes the file and its `-wal`, `-shm` and `-journal` companions. The caller must see the project, a workspace's bank serves only its own projects, and clearing a workspace's bank takes `credentials.manage`. Clearing is audited. `node:sqlite` is loaded through `createRequire`, because Vite cannot resolve it under vitest.
+    - **Web.** An "OMP memory" card in `provider-settings.tsx` (personal settings, and the workspace's Harness page), with a project picker. It draws a skeleton while loading, shows OMP's warning about secrets, and confirms Clear inside the card.
+    - **Manual run.** Real OMP, scripted model: the stats read one retained fact. After a clear, the stats read empty and an OMP turn recalled nothing.
 - [ ] **OM7.4 — Language servers in the image**
 
   - **Depends:** OM1.5, OM0.4
