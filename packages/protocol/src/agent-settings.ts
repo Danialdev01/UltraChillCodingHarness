@@ -35,6 +35,20 @@ export const WorkspaceAgentSettings = z.object({
    * Custom turns use. Off: the CLI runs as it always has.
    */
   ompBridge: z.object({ enabled: z.boolean().default(false) }).default({}),
+  /**
+   * mnemopi memory on OMP turns (solution §7, OM7.1): OMP recalls what
+   * earlier turns of the same project learned and retains what this one
+   * does, in one bank per project shared by its threads' worktrees.
+   * `llmMode: smol` lets the bank use the workspace's fast model (billed
+   * to its OpenRouter key) to extract and match facts; `none` keeps it to
+   * full-text search. Off: OMP keeps no memory.
+   */
+  memory: z
+    .object({
+      enabled: z.boolean().default(false),
+      llmMode: z.enum(["smol", "none"]).default("smol"),
+    })
+    .default({}),
 });
 export type WorkspaceAgentSettings = z.infer<typeof WorkspaceAgentSettings>;
 

@@ -320,7 +320,7 @@ mnemopi:
   retainEveryNTurns: 4
   recallLimit: 8
   llmMode: smol             # workspace setting: smol | none
-  noEmbeddings: false       # true if OM0 shows the embedding model is too heavy for the box
+  noEmbeddings: true        # OM7.1: embeddings fetch ~770 MB into HOME on first use; recall is full-text (smol helps)
 
 # Subagents — /docs/subagents
 task:
@@ -588,6 +588,8 @@ The role prompts live in `packages/providers/src/omp-roles.ts`, next to the code
 ### 7.1 Store
 - `memory.backend: mnemopi`, `mnemopi.scoping: global` and `mnemopi.dbPath: <subject>/omp/memories/<projectId>/mnemopi.db` ([memory](https://omp.sh/docs/memory)).
 - The subject is the workspace for shared workspaces and the user for personal ones, the same rule as the credential directories, so a workspace's members share a bank.
+- **Workspace setting** (OM7.1). `memory { enabled, llmMode }` in `workspaces.agent_settings`, off by default, set in the "Project memory" card of the harness settings. With it on, an OMP turn's overlay names `ProviderService.ompMemoryDb(subject, projectId)`, made 0700 on first use.
+- **No embeddings** (OM7.1, measured). With `noEmbeddings: false`, the first memory turn downloaded a `bge-base-en-v1.5` ONNX model (209 MB), an onnxruntime package (328 MB) and 233 MB of npm packages into the server user's HOME. So the overlay sets `noEmbeddings: true`. Recall is then full-text: a fact about "Fly.io region ams" was recalled for "Which Fly.io region do deploys go to?" but not for "Work on the deploy.".
 - **Why not `per-project`** (OM0): it names the bank `<basename(cwd)>-<hash(cwd)>`, so two thread worktrees of one project got two banks. A global bank in a file chosen per project gives one bank per UCCH project, across its worktrees, with no symlink or stable `--cwd`.
 
 ### 7.2 Relationship to `.ucch/`

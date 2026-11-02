@@ -1206,6 +1206,8 @@ export class AgentTurnReactor {
       if (provider === "omp") {
         const providers = this.options.providers;
         const hostTools = hostToolSchemas(preset, this.options.registry);
+        // One bank per project, under the subject that pays (solution §7.1).
+        const memory = input.agentSettings?.memory ?? DEFAULT_OMP_SETTINGS.memory;
         const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), input.turnId, {
           // Every model role is the turn's model until the workspace picks
           // its own (OM8.1): a role left unnamed is the repository's to set.
@@ -1213,7 +1215,9 @@ export class AgentTurnReactor {
             ...DEFAULT_OMP_SETTINGS,
             models: input.model ? { default: input.model } : {},
             isolatedFanOut: input.agentSettings?.isolatedFanOut.enabled ?? false,
+            memory,
           },
+          ...(memory.enabled ? { memoryDbPath: providers.ompMemoryDb(input.ownerId, input.projectId) } : {}),
           preset,
           permissionMode,
           // No project is trusted until a person can say so (OM7.6).

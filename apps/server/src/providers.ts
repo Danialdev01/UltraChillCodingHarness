@@ -172,6 +172,17 @@ export class ProviderService {
   }
 
   /**
+   * A project's mnemopi bank under the subject (`mnemopi.dbPath`, solution
+   * §7.1), its directory made `0700` on first use. One file per project:
+   * its threads' worktrees share it, and another project never reads it.
+   */
+  ompMemoryDb(userId: string, projectId: string): string {
+    const dir = join(this.ensureCredsDir(userId, "omp"), "memories", projectId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return join(dir, "mnemopi.db");
+  }
+
+  /**
    * A project's OMP sessions under the subject (`--session-dir`), made
    * `0700` on first use. Per project, so `--resume` only ever finds a
    * session of the project it runs in.

@@ -172,7 +172,10 @@ export function ompOverlay(input: OmpOverlayInput): Record<string, unknown> {
             retainEveryNTurns: 4,
             recallLimit: 8,
             llmMode: settings.memory.llmMode,
-            noEmbeddings: false,
+            // Embeddings download ~770 MB (a bge-base ONNX model, onnxruntime,
+            // npm packages) into HOME on first use (OM7.1, measured); recall is
+            // then full-text, or helped by the fast model under `llmMode: smol`.
+            noEmbeddings: true,
           },
         }
       : {}),

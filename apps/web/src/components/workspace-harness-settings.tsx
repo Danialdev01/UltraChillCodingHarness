@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowRightLeftIcon, BotIcon, GitForkIcon, KeyRoundIcon, Loader2Icon, PlugIcon, TrashIcon } from "lucide-react"
+import { ArrowRightLeftIcon, BotIcon, BrainIcon, GitForkIcon, KeyRoundIcon, Loader2Icon, PlugIcon, TrashIcon } from "lucide-react"
 import type { CredentialPolicy, CredentialSource, ProviderId } from "@ucch/protocol"
 
 import { ProviderSettings } from "@/components/provider-settings"
@@ -77,6 +77,9 @@ export function WorkspaceHarnessSettings({
       )}
       {settings && (
         <IsolatedFanOutSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+      )}
+      {settings && (
+        <MemorySection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
       )}
       {settings && (
         <OmpBridgeSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
@@ -357,6 +360,73 @@ function IsolatedFanOutSection({
         />
         On
       </label>
+      {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
+      <Outcome error={error} done={done} />
+    </section>
+  )
+}
+
+/**
+ * mnemopi memory on Custom turns (OMP OM7.1, solution §7): one bank per
+ * project, shared by its threads. `llmMode` says whether the bank may use
+ * the fast model to extract and match facts, or full-text search only.
+ */
+function MemorySection({
+  workspaceId,
+  settings,
+  manages,
+  onChange,
+}: {
+  workspaceId: string
+  settings: HarnessSettings
+  manages: boolean
+  onChange: (settings: HarnessSettings) => void
+}) {
+  const { busy, error, done, run } = useOutcome()
+  const memory = settings.agent.memory
+  const save = (next: typeof memory) =>
+    void run(async () => {
+      onChange(await setAgentSettings(workspaceId, { memory: next }))
+      return "Saved."
+    })
+
+  return (
+    <section className="rounded-lg border p-6">
+      <h2 className="flex items-center gap-2 text-sm font-medium">
+        <BrainIcon className="text-muted-foreground size-4" />
+        Project memory
+      </h2>
+      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
+        Lets Custom turns remember what they learn about a project, such as its conventions, decisions and pitfalls,
+        and recall it in later threads of the same project. Each project has its own memory, kept privately on the
+        server rather than in the repository. Where it disagrees with the files or the request, those win.
+      </p>
+      <p className="text-warning mt-2 max-w-prose text-sm">
+        Never ask an agent to remember secrets: memory is stored as plain text and recalled into later turns.
+      </p>
+      <div className="mt-4 flex max-w-xl flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={memory.enabled}
+            disabled={!manages || busy}
+            onChange={(e) => save({ ...memory, enabled: e.target.checked })}
+            aria-label="Project memory"
+          />
+          On
+        </label>
+        <div className="w-72">
+          <NativeSelect
+            id="memory-llm-mode"
+            value={memory.llmMode}
+            disabled={!manages || busy}
+            onChange={(v) => save({ ...memory, llmMode: v === "none" ? "none" : "smol" })}
+          >
+            <option value="smol">Use the fast model to sort facts</option>
+            <option value="none">Text search only (no model calls)</option>
+          </NativeSelect>
+        </div>
+      </div>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
     </section>

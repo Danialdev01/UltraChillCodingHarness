@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
 import type { Command, DomainEvent } from "@ucch/protocol";
@@ -681,6 +681,48 @@ describe("an OMP turn", () => {
       await until(appended, closed);
     }
     expect(overlays.map(isolation)).toEqual(["false", "true"]);
+  });
+
+  it("keeps mnemopi memory only when the workspace turned it on, in one bank per project (OM7.1)", async () => {
+    const overlays: string[] = [];
+    const provider: AgentProvider = {
+      id: "omp",
+      label: "Custom",
+      models: [],
+      probe: async () => ({ installed: true, authenticated: true, authMode: "api-key" }),
+      run: (input) => {
+        overlays.push(readFileSync(input.omp!.overlayPath, "utf8"));
+        return {
+          events: (async function* () {
+            yield {
+              type: "agent.turn_completed",
+              threadId: input.threadId,
+              turnId: input.turnId,
+              stopReason: "end_turn",
+              usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+              costUsd: 0,
+            } satisfies DomainEvent;
+          })(),
+          interrupt: async () => {},
+          kill: async () => {},
+        };
+      },
+    };
+    let creds = "";
+    for (const agentSettings of [undefined, { memory: { enabled: true, llmMode: "none" } }]) {
+      const built = ompReactor(thread, keyed, {}, provider, { stack: null, agent: agentSettings });
+      creds = built.creds;
+      built.agent.react(omp, [message]);
+      await until(built.appended, closed);
+    }
+    expect(overlays[0]).toContain('memory:\n  backend: "off"\n');
+    expect(overlays[0]).not.toContain("mnemopi:");
+    expect(overlays[1]).toContain('memory:\n  backend: "mnemopi"\n');
+    expect(overlays[1]).toContain('  scoping: "global"\n');
+    expect(overlays[1]).toContain('  llmMode: "none"\n');
+    const dbPath = /\n  dbPath: "?([^"\n]+)"?\n/.exec(overlays[1]!)?.[1];
+    expect(dbPath).toMatch(new RegExp(`^${creds}/.+/omp/memories/${PROJECT}/mnemopi\\.db$`));
+    expect(statSync(dirname(dbPath!)).mode & 0o777).toBe(0o700);
   });
 
   describe("in research and documentation mode", () => {
