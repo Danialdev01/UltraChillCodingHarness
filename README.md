@@ -414,6 +414,59 @@ Stop with `docker compose down` (add `-v` to wipe all data).
 
 ---
 
+## Use the OMP bridge in your own Claude Code
+
+`packages/omp-bridge` is the MCP server UCCH gives its Claude Code and Codex turns. It lends them OMP's tools: `omp_task` subagents, `omp_symbols` / `omp_rename` code intelligence, `omp_codemod`, `omp_debug`, `omp_review`, memory and handoff briefs (`documentation/omp/solution.md` §10). It runs just as well in a personal Claude Code session on this machine, outside UCCH.
+
+**Needs:** `omp` (18.14.1, the version UCCH pins) on the `PATH` and an OpenRouter key. Every call is billed to that key, and Claude Code itself stays on your subscription.
+
+1. Build the bridge. This writes one self-contained file, `packages/omp-bridge/dist/omp-bridge.mjs`:
+
+   ```bash
+   pnpm --filter @ucch/omp-bridge build
+   ```
+
+2. Name the two models the tools use, in an OMP overlay. Most tools run on `smol`; `omp_debug` runs on `default`. Any OpenRouter ids will do:
+
+   ```bash
+   mkdir -p ~/.config/ucch
+   cat > ~/.config/ucch/omp-bridge.yml <<'YAML'
+   modelRoles:
+     default: openrouter/anthropic/claude-sonnet-4.5
+     smol: openrouter/google/gemini-2.5-flash
+   YAML
+   ```
+
+3. Add it to Claude Code, for every project (`-s user`). Run this from the repository root so `$PWD` is right. The `--` ends Claude's options; `-e` would take the words after it otherwise.
+
+   ```bash
+   claude mcp add -s user omp \
+     -e OPENROUTER_API_KEY=sk-or-... \
+     -e UCCH_OMP_OVERLAY="$HOME/.config/ucch/omp-bridge.yml" \
+     -- node "$PWD/packages/omp-bridge/dist/omp-bridge.mjs"
+   ```
+
+Start `claude` in a project and `/mcp` lists `omp`. The bridge works in the directory Claude Code was started in. Claude Code asks before each `omp_*` call unless you allow it.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | none (required) | The key every call is billed to. It is the only credential the bridge's `omp` gets: any other key in the environment is dropped, and a call that would still see one is refused. |
+| `UCCH_OMP_OVERLAY` | none | An OMP config overlay passed with `--config`. It must name `modelRoles` `default` and `smol` unless your own OMP config already does. |
+| `UCCH_OMP_BIN` | `omp` on the `PATH` | Which `omp` to run. |
+| `UCCH_OMP_AGENT_DIR` | OMP's own (`~/.omp/agent`) | `PI_CODING_AGENT_DIR` for the calls. |
+| `UCCH_WORKTREE` | Claude Code's directory | Where the calls run. |
+| `UCCH_OMP_TRUSTED` | off | `1` turns on the language server and debugger (`omp_symbols`, `omp_rename`, `omp_debug`, and `lsp` in subagents). Set it only for repositories you trust: a repository's own LSP and debug-adapter config is a command OMP runs. |
+| `UCCH_OMP_MEMORY` | off | `1` offers `omp_recall` / `omp_retain`. It needs mnemopi memory in the overlay (solution §7). |
+| `UCCH_OMP_WEB_SEARCH` | off | `1` lets a scout use OMP's `web_search`. It needs a search provider set up in OMP. |
+| `UCCH_BRIDGE_MAX_SECONDS` | `300` | `--max-time` for each call. |
+| `UCCH_BRIDGE_MAX_CALLS` | `12` | Calls per bridge process. In a personal session that is per Claude Code session. |
+
+Outside UCCH there is no scheduler to take a slot from: `UCCH_SCHEDULER_SOCK` stays unset, and only the call budget applies.
+
+Whatever your overlay and OMP config say, each call adds its own overlay last (`packages/omp-bridge/src/guard.ts`). It denies OMP's subagents every tool the call did not ask for, so a `reviewer` gets no `bash`. It also turns off web search unless the call asked for it, OMP's tool-QA reports to qa.omp.sh, and telemetry export. And it stops OMP loading the repository's own skills, commands and MCP servers, or any other agent's config, Claude Code's included. Without that last part, a call would find this same `omp` server in your Claude Code config.
+
+---
+
 ## Current status
 
 | Phase | Scope                                                     | State                    |
