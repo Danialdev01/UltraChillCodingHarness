@@ -10,7 +10,7 @@
  *
  * What the sources find beside themselves at runtime comes along: the shell
  * init files `terminals.ts` locates with `import.meta.url`, and the OMP guard
- * hook `@ucch/providers` does (`omp-assets.ts`). The migrations
+ * hook and the bridge's usage guide `@ucch/providers` does (`omp-assets.ts`). The migrations
  * and the document kit are found through MIGRATIONS_DIR and DOC_KIT_DIR.
  */
 import { build } from "esbuild";
@@ -58,6 +58,8 @@ cpSync(join(here, "../../packages/providers/assets/omp-hooks"), join(out, "omp-h
   recursive: true,
   filter: (path) => !path.endsWith(".test.ts"),
 });
+
+cpSync(join(here, "../../packages/providers/assets/omp-bridge-guide.md"), join(out, "omp-bridge-guide.md"));
 
 cpSync(join(here, "src/shell"), join(out, "shell"), {
   recursive: true,

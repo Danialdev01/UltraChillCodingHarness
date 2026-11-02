@@ -11,6 +11,7 @@ import {
   forbiddenEnvFor,
   forbiddenEnvPresent,
   HostProcessHost,
+  ompBridgeGuide,
   OmpProvider,
   type AgentProvider,
   type ProviderRunInput,
@@ -1291,7 +1292,13 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
   }
 
   /** A Claude Code that runs nothing, through the real `ProviderService` (no token in the database). */
-  function bridgeReactor(personRow: Record<string, unknown>, agentSettings: unknown, withBridge = true, id: "claude" | "codex" = "claude") {
+  function bridgeReactor(
+    personRow: Record<string, unknown>,
+    agentSettings: unknown,
+    withBridge = true,
+    id: "claude" | "codex" = "claude",
+    threadRow: Record<string, unknown> = thread,
+  ) {
     const seen: Seen[] = [];
     const claude: AgentProvider = {
       id,
@@ -1359,7 +1366,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
         providers,
         ...(withBridge ? { ompBridge: { bin: "/opt/ucch/omp-bridge.mjs", ompBin: "/usr/bin/omp", socket: "/c/omp-scheduler.sock", maxSeconds: 240, leases } } : {}),
       },
-      [thread],
+      [threadRow],
       [{ stack: null, agent: agentSettings }],
       [owner],
       [personRow],
@@ -1434,6 +1441,33 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     expect(Object.keys(input.ctx.env).filter((name) => /_API_KEY$|_OAUTH_TOKEN$/.test(name))).toEqual([]);
     expect(existsSync(file)).toBe(false);
     expect(run.tokens.size).toBe(0);
+  });
+
+  /** What the log says the CLI was handed about the bridge. */
+  const guides = (run: ReturnType<typeof bridgeReactor>) =>
+    run.appended.flat().filter((e) => e.type === "context.injected" && e.source === "omp_bridge");
+
+  it("hands the CLI the bridge's guide with its instructions, and logs it, only with the bridge (OM6.6)", async () => {
+    const guide = ompBridgeGuide();
+    expect(guide).toMatch(/^## OMP tools/);
+    for (const id of ["claude", "codex"] as const) {
+      const on = bridgeReactor(keyed, { ompBridge: { enabled: true } }, true, id);
+      await turn(on, { ...ask, provider: id });
+      expect(on.seen[0]!.input.instructions).toBe(guide);
+      expect(guides(on)).toEqual([{ type: "context.injected", threadId: THREAD, source: "omp_bridge", content: guide }]);
+    }
+    for (const off of [bridgeReactor(keyed, { ompBridge: { enabled: false } }), bridgeReactor(person, { ompBridge: { enabled: true } })]) {
+      await turn(off);
+      expect(off.seen[0]!.input.instructions).toBeUndefined();
+      expect(guides(off)).toEqual([]);
+    }
+  });
+
+  it("does not claim the guide for a resumed Codex session, which is not handed instructions", async () => {
+    const resumed = bridgeReactor(keyed, { ompBridge: { enabled: true } }, true, "codex", { ...thread, provider: "codex", providerSessionId: "th-1" });
+    await turn(resumed, { ...ask, provider: "codex" });
+    expect(resumed.seen[0]!.input.codexMcp).toBeDefined();
+    expect(guides(resumed)).toEqual([]);
   });
 
   it("offers nothing with the setting off, with no bridge on the server, or with no key to bill", async () => {

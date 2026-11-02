@@ -275,7 +275,9 @@ const ContextInjected = z.object({
    * turn: gathered on OpenRouter, then appended to the prompt the CLI was
    * given. Recorded so the log says exactly what the CLI was handed.
    * `documentation` is the document pipeline's rules, prepended to a CLI
-   * provider's prompt for the same reason.
+   * provider's prompt for the same reason. `omp_bridge` is the OMP
+   * bridge's usage guide (solution §10.4), added to a Claude Code or Codex
+   * turn's instructions when the turn is offered the bridge.
    */
   source: z.enum([
     "system_prompt",
@@ -285,6 +287,7 @@ const ContextInjected = z.object({
     "compaction",
     "research",
     "documentation",
+    "omp_bridge",
   ]),
   content: z.string(),
   tokens: z.number().int().nonnegative().optional(),

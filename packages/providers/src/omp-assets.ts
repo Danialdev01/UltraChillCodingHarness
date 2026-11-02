@@ -21,3 +21,18 @@ export function ompGuardHookSource(): string {
   }
   throw new Error("the OMP guard hook (ucch-guard.ts) is missing from this build");
 }
+
+/**
+ * The OMP bridge's usage guide (`assets/omp-bridge-guide.md`, solution
+ * §10.4): appended to a Claude Code or Codex turn's instructions when the
+ * turn is offered the bridge. Found as the guard hook is: beside this
+ * package from the sources, beside `server.mjs` in the bundle.
+ */
+export function ompBridgeGuide(): string {
+  const candidates = [new URL("../assets/omp-bridge-guide.md", import.meta.url), new URL("./omp-bridge-guide.md", import.meta.url)];
+  for (const url of candidates) {
+    const path = fileURLToPath(url);
+    if (existsSync(path)) return readFileSync(path, "utf8").trimEnd();
+  }
+  throw new Error("the OMP bridge guide (omp-bridge-guide.md) is missing from this build");
+}

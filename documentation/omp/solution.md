@@ -741,6 +741,12 @@ A section appended to `instructions` for CLI providers when the bridge is on, ab
 - Use `omp_recall` at the start of unfamiliar work, and `omp_retain` for durable conventions or decisions.
 - Each call costs tokens and takes 10–60 s, so do not call them for small things.
 
+**As built (OM6.6):**
+- **Where.** The guide is `packages/providers/assets/omp-bridge-guide.md`, read by `ompBridgeGuide()` and copied next to `server.mjs` by the server's `build.mjs`. It covers all nine tools, the cost line, and what to do when a tool is off, busy or out of calls (carry on, without retrying).
+- **When.** It is added after the project's knowledge when the turn is actually given the bridge (`#openBridge`, so a missing key means no guide). It is logged as `context.injected` with a new source, `omp_bridge`. With the bridge off, the instructions are byte for byte what they were.
+- **Resumed Codex.** Codex reads instructions only at the start of a session (`codexPrompt`), so a resumed Codex turn is not given the guide, and nothing is logged for it. The tools' own descriptions still reach its model.
+- **In step.** `packages/omp-bridge/src/guide.test.ts` checks that the guide names exactly the tools the bridge offers.
+
 ### 10.5 Limits
 - Bridge calls count as OMP processes in the scheduler (§13) through a lease. The bridge asks the server for a slot over a local Unix socket (`UCCH_SCHEDULER_SOCK`) and waits up to 30 s; if no slot comes, it returns "busy, try later".
 - A per-turn call budget (`UCCH_BRIDGE_MAX_CALLS`, default 12) is enforced in the bridge.

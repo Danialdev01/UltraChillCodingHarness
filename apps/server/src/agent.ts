@@ -38,6 +38,7 @@ import {
 } from "@ucch/protocol";
 import {
   OMP_BRIDGE_READ_TOOLS,
+  ompBridgeGuide,
   ompBridgeToolName,
   type AgentRun,
   type HostToolCall,
@@ -1158,10 +1159,22 @@ export class AgentTurnReactor {
         this.onError(error);
         return null;
       });
+      // Before the instructions: whether the turn has the bridge decides
+      // whether they carry its guide.
+      if (provider !== "omp" && input.agentSettings?.ompBridge.enabled) bridge = await this.#openBridge(provider, input);
+      // When to reach for the bridge's tools (solution §10.4). Codex reads
+      // instructions only at the start of a session (`codexPrompt`), so a
+      // resumed Codex turn is not handed it, and the log does not say so.
+      const guide = bridge && !(provider === "codex" && input.resumeToken) ? ompBridgeGuide() : null;
       // OMP is handed the knowledge inside its own section of the system
       // prompt (solution §3.8). It reads the worktree's AGENTS.md itself, so
       // that is never added here.
-      const instructions = provider === "omp" ? ompInstructions(input.workspace, knowledge, input.mode) : knowledge;
+      const instructions =
+        provider === "omp"
+          ? ompInstructions(input.workspace, knowledge, input.mode)
+          : guide
+            ? [knowledge?.trimEnd(), guide].filter((part): part is string => Boolean(part)).join("\n\n")
+            : knowledge;
       // Logged as the native loop logs its prompt parts, so the thread says
       // exactly what the CLI was handed on top of the message: for OMP the
       // whole appended prompt, byte for byte.
@@ -1169,10 +1182,15 @@ export class AgentTurnReactor {
         await input.append([
           { type: "context.injected", threadId: input.threadId, source: "system_prompt", content: instructions! },
         ]);
-      } else if (knowledge) {
-        await input.append([
-          { type: "context.injected", threadId: input.threadId, source: "project_context", content: knowledge },
-        ]);
+      } else {
+        if (knowledge) {
+          await input.append([
+            { type: "context.injected", threadId: input.threadId, source: "project_context", content: knowledge },
+          ]);
+        }
+        if (guide) {
+          await input.append([{ type: "context.injected", threadId: input.threadId, source: "omp_bridge", content: guide }]);
+        }
       }
       // The mode's tools and rules (solution §3.7); the guard hook reads it
       // too, to keep a documentation turn's writes under docs/.
@@ -1225,7 +1243,6 @@ export class AgentTurnReactor {
             }),
         };
       }
-      if (provider !== "omp" && input.agentSettings?.ompBridge.enabled) bridge = await this.#openBridge(provider, input);
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
         prompt: input.text,
