@@ -1,13 +1,16 @@
 "use client"
 
 import * as React from "react"
-import type { GitDiff } from "@ucch/protocol"
+import type { GitDiff, ReviewFinding } from "@ucch/protocol"
 import { FileIcon } from "lucide-react"
 
 import { FileTypeIcon } from "@/components/file-type-icon"
 import { parseConflict, parsePatch, sidesOf, type DiffFile, type DiffLine } from "@/lib/git-diff"
 import { highlightLines, type Token } from "@/lib/highlight-lines"
+import { anchorFindings } from "@/lib/review-anchor"
 import { cn } from "@/lib/utils"
+
+import { FindingNote } from "./review-finding"
 
 /**
  * A unified diff, one file at a time.
@@ -16,28 +19,51 @@ import { cn } from "@/lib/utils"
  * coloured by the same grammar the editor uses: each side of the file is
  * rebuilt from the hunks and highlighted as one piece, so a construct that
  * spans lines is coloured as one thing, then dealt back out by line number.
+ *
+ * A code review's `findings` on the file (OM7.8) are drawn under the lines
+ * they are about, which are marked in the gutter; one about lines the diff
+ * does not show sits above the file.
  */
-export function DiffView({ diff, path }: { diff: GitDiff; path: string }) {
+export function DiffView({ diff, path, findings = NO_FINDINGS }: { diff: GitDiff; path: string; findings?: readonly ReviewFinding[] }) {
   if (diff.conflict) return <ConflictDiffView content={diff.content} path={path} truncated={diff.truncated} />
   if (diff.binary) return <Notice>Binary file; nothing to show.</Notice>
   if (!diff.patch.trim()) return <Notice>No changes.</Notice>
-  return <PatchView patch={diff.patch} path={path} truncated={diff.truncated} />
+  return <PatchView patch={diff.patch} path={path} truncated={diff.truncated} findings={findings} />
 }
 
-function PatchView({ patch, path, truncated }: { patch: string; path: string; truncated: boolean }) {
+const NO_FINDINGS: readonly ReviewFinding[] = []
+
+function PatchView({
+  patch,
+  path,
+  truncated,
+  findings,
+}: {
+  patch: string
+  path: string
+  truncated: boolean
+  findings: readonly ReviewFinding[]
+}) {
   const files = React.useMemo(() => parsePatch(patch), [patch])
   return (
     <div className="min-w-0">
       {files.map((file, i) => (
-        <FileDiff key={`${file.oldPath ?? ""}→${file.newPath ?? ""}#${i}`} file={file} path={path} />
+        <FileDiff
+          key={`${file.oldPath ?? ""}→${file.newPath ?? ""}#${i}`}
+          file={file}
+          path={path}
+          // A patch of one path is one file; a rename's findings are on its new name.
+          findings={i === 0 ? findings : NO_FINDINGS}
+        />
       ))}
       {truncated && <Notice>The diff is longer than this; the rest is not shown.</Notice>}
     </div>
   )
 }
 
-function FileDiff({ file, path }: { file: DiffFile; path: string }) {
+function FileDiff({ file, path, findings }: { file: DiffFile; path: string; findings: readonly ReviewFinding[] }) {
   const highlightPath = file.newPath ?? file.oldPath ?? path
+  const anchors = React.useMemo(() => anchorFindings(file, findings), [file, findings])
   const tokens = React.useMemo(() => {
     const sides = sidesOf(file)
     return {
@@ -77,6 +103,13 @@ function FileDiff({ file, path }: { file: DiffFile; path: string }) {
         {file.oldPath === null && <Badge tone="add">new file</Badge>}
         {file.newPath === null && <Badge tone="del">deleted</Badge>}
       </div>
+      {anchors.outside.length > 0 && (
+        <div className="border-b py-1 font-mono text-xs">
+          {anchors.outside.map((finding, f) => (
+            <FindingNote key={f} finding={finding} />
+          ))}
+        </div>
+      )}
       {file.hunks.length === 0 && <Notice>No content changes.</Notice>}
       <table className="w-full border-collapse font-mono text-xs leading-5">
         <tbody>
@@ -88,35 +121,46 @@ function FileDiff({ file, path }: { file: DiffFile; path: string }) {
                 </td>
               </tr>
               {hunk.lines.map((line, i) => (
-                <tr
-                  key={i}
-                  className={cn(
-                    // Low-alpha tints that work on either ground; the +/−
-                    // gutter carries the meaning for anyone who can't tell
-                    // the two apart by colour.
-                    line.kind === "add" && "bg-diff-add",
-                    line.kind === "del" && "bg-diff-del",
-                  )}
-                >
-                  <Gutter no={line.oldNo} />
-                  <Gutter no={line.newNo} />
-                  <td className="w-full px-2 whitespace-pre">
-                    <span className="text-muted-foreground mr-2 inline-block w-3 select-none" aria-hidden>
-                      {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
-                    </span>
-                    {line.kind !== "context" && (
-                      <span className="sr-only">{line.kind === "add" ? "Added: " : "Removed: "}</span>
+                <React.Fragment key={i}>
+                  <tr
+                    data-flagged={anchors.flagged.has(`${h}:${i}`) || undefined}
+                    className={cn(
+                      // Low-alpha tints that work on either ground; the +/−
+                      // gutter carries the meaning for anyone who can't tell
+                      // the two apart by colour.
+                      line.kind === "add" && "bg-diff-add",
+                      line.kind === "del" && "bg-diff-del",
+                      // A reviewed line: a bar down the gutter's edge.
+                      anchors.flagged.has(`${h}:${i}`) && "shadow-[inset_3px_0_0_var(--warning)]",
                     )}
-                    {tokensFor(line).map((token, t) => (
-                      <span key={t} className={token.cls || undefined}>
-                        {token.text}
+                  >
+                    <Gutter no={line.oldNo} />
+                    <Gutter no={line.newNo} />
+                    <td className="w-full px-2 whitespace-pre">
+                      <span className="text-muted-foreground mr-2 inline-block w-3 select-none" aria-hidden>
+                        {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                       </span>
-                    ))}
-                    {line.noNewline && (
-                      <span className="text-muted-foreground ml-2 select-none italic">(no newline at end)</span>
-                    )}
-                  </td>
-                </tr>
+                      {line.kind !== "context" && (
+                        <span className="sr-only">{line.kind === "add" ? "Added: " : "Removed: "}</span>
+                      )}
+                      {tokensFor(line).map((token, t) => (
+                        <span key={t} className={token.cls || undefined}>
+                          {token.text}
+                        </span>
+                      ))}
+                      {line.noNewline && (
+                        <span className="text-muted-foreground ml-2 select-none italic">(no newline at end)</span>
+                      )}
+                    </td>
+                  </tr>
+                  {anchors.after.get(`${h}:${i}`)?.map((finding, f) => (
+                    <tr key={`finding-${f}`}>
+                      <td colSpan={3} className="p-0">
+                        <FindingNote finding={finding} />
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
               ))}
             </React.Fragment>
           ))}

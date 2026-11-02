@@ -97,6 +97,7 @@ import { devServersFromConfig, ensureProjectInfo, renderDefaultInfo } from "./de
 import { probe } from "./database-probe.js";
 import { GitService } from "./git.js";
 import { registerGitRoutes } from "./git-routes.js";
+import { registerReviewRoutes } from "./review-routes.js";
 import { FILE_READS, GitCache } from "./git-cache.js";
 import { registerPublicRoutes } from "./public-routes.js";
 import { CollabLink } from "./collab-link.js";
@@ -2498,6 +2499,13 @@ registerGitRoutes(app, {
       .append({ projectId, threadId: null }, events)
       .catch((error) => app.log.error({ err: error }, "could not announce a git change"));
   },
+});
+
+registerReviewRoutes(app, {
+  db,
+  projectFor,
+  threadsOfTree: async (projectId, session) =>
+    (await db.select({ id: threads.id }).from(threads).where(and(inTree(session), eq(threads.projectId, projectId)))).map((row) => row.id),
 });
 
 /** Turns a refused path into a 400 and a clash into a 409. */

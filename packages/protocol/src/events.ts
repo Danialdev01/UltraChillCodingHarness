@@ -984,6 +984,24 @@ export const ReviewVerdict = z.object({
 });
 export type ReviewVerdict = z.infer<typeof ReviewVerdict>;
 
+/** A review as the Git view lists it (`GET /api/projects/:hash/reviews`). */
+export interface ReviewRecord {
+  id: string;
+  threadId: string | null;
+  scope: ReviewScope;
+  ref: string | null;
+  focus: string | null;
+  status: "running" | "completed" | "failed";
+  verdict: ReviewVerdict | null;
+  findings: ReviewFinding[];
+  excluded: string[];
+  model: string | null;
+  costUsd: number;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
 const ReviewRequested = z.object({
   type: z.literal("review.requested"),
   projectId: z.string().uuid(),

@@ -57,6 +57,8 @@ export const qk = {
     read: (read: "status" | "branches" | "log", projectHash: string, session?: string | null) =>
       ["git", read, projectHash, session ?? null] as const,
   },
+  /** A tree's code reviews (OM7.8): the checkout's, or a session worktree's. */
+  reviews: (projectHash: string, session?: string | null) => ["reviews", projectHash, session ?? null] as const,
   files: {
     all: ["files"] as const,
     tree: (projectHash: string, session?: string | null) => ["files", "tree", projectHash, session ?? null] as const,

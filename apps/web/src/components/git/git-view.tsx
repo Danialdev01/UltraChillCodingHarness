@@ -1,8 +1,8 @@
 "use client"
 
 import * as React from "react"
-import type { GitCommitFile } from "@ucch/protocol"
-import { GitBranchIcon, XIcon } from "lucide-react"
+import type { GitCommitFile, ReviewFinding, ReviewRecord } from "@ucch/protocol"
+import { GitBranchIcon, Loader2Icon, ShieldCheckIcon, XIcon } from "lucide-react"
 
 import { useFilesPanel } from "@/components/files-panel"
 import { FileTypeIcon } from "@/components/file-type-icon"
@@ -31,6 +31,7 @@ import {
   gitStage,
   gitUnstage,
 } from "@/lib/git-api"
+import { findingsOn, reviewApplies } from "@/lib/review-api"
 import { relativeTime } from "@/lib/stats-format"
 import { targetOf } from "@/lib/project-target"
 import type { Project } from "@/lib/session"
@@ -44,7 +45,9 @@ import { ConnectRemoteDialog } from "./connect-remote-dialog"
 import { DiffView, EmptyPane } from "./diff-view"
 import { GitToolbar } from "./git-toolbar"
 import { HistoryList } from "./history-list"
-import { useGitState } from "./use-git-state"
+import { ReviewBanner } from "./review-banner"
+import { scopeFor, useGitState } from "./use-git-state"
+import { useReviews } from "./use-reviews"
 
 /**
  * The project's repository, laid out like GitHub Desktop.
@@ -53,10 +56,22 @@ import { useGitState } from "./use-git-state"
  * and the diff of whatever is picked. The state hook owns every fetch and
  * every mutation; this only says what goes where and asks before the two
  * things that cannot be undone.
+ *
+ * OMP's code review (OM7.8) reviews the changes, the branch or a commit;
+ * its verdict is a banner and its findings are drawn on the diff. `session`
+ * is the page's session: the thread a review's findings are sent to, and
+ * whose worktree is reviewed when it has one.
  */
-export function GitView({ project }: { project: Project }) {
+export function GitView({
+  project,
+  session,
+}: {
+  project: Project
+  session?: { id: string; baseBranch: string | null } | null
+}) {
   usePresenceLocation(project.id, "git")
   const git = useGitState(project)
+  const reviews = useReviews(project, session ? { id: session.id, worktree: !!project.sessionHash } : null)
   const { openFile, setMode } = useFilesPanel()
   const [tab, setTab] = React.useState<"changes" | "history">("changes")
   const [discarding, setDiscarding] = React.useState<string[] | "all" | null>(null)
@@ -67,6 +82,15 @@ export function GitView({ project }: { project: Project }) {
     openFile(path)
     setMode("file")
   }
+
+  // The shown review's findings on the shown file, when it is about what is shown.
+  const selection = git.selection
+  const active = reviews.active?.status === "completed" ? reviews.active : null
+  const findings = React.useMemo(() => {
+    if (!active || !selection?.path) return NO_FINDINGS
+    const view = selection.kind === "commit" ? ({ kind: "commit", sha: selection.sha } as const) : ({ kind: "change" } as const)
+    return reviewApplies(active, view) ? findingsOn(active, selection.path) : NO_FINDINGS
+  }, [active, selection])
 
   if (git.notRepo) {
     return (
@@ -100,6 +124,11 @@ export function GitView({ project }: { project: Project }) {
           git.clearError()
           setConnecting(true)
         }}
+        review={{
+          running: reviews.running,
+          base: session ? (session.baseBranch ?? project.defaultBranch ?? null) : (project.defaultBranch ?? null),
+          onReview: (scope) => void reviews.run(scope),
+        }}
       />
       {merging && (
         <ConflictBanner
@@ -116,6 +145,26 @@ export function GitView({ project }: { project: Project }) {
             <XIcon className="size-3.5" />
           </button>
         </div>
+      )}
+      {reviews.loaded && (
+        <ReviewBanner
+          state={reviews}
+          onOpen={(finding: ReviewFinding, review: ReviewRecord) => {
+            if (review.scope === "commit" && review.ref) {
+              setTab("history")
+              git.select({ kind: "commit", sha: review.ref, path: finding.file })
+              return
+            }
+            const changed = status.files.find((file) => file.path === finding.file)
+            if (changed) {
+              setTab("changes")
+              git.select({ kind: "change", path: changed.path, scope: scopeFor(changed) })
+            } else {
+              // Committed on the branch and unchanged since: the file itself.
+              open(finding.file)
+            }
+          }}
+        />
       )}
 
       <div className="flex min-h-0 flex-1">
@@ -178,6 +227,8 @@ export function GitView({ project }: { project: Project }) {
               commit={git.commit}
               selectedPath={git.selection.path}
               onSelectFile={(path) => git.select({ kind: "commit", sha: git.commit!.commit.sha, path })}
+              reviewing={reviews.running}
+              onReview={() => void reviews.run("commit", git.commit!.commit.sha)}
             />
           ) : null}
           <div className="relative min-h-0 flex-1 overflow-auto">
@@ -194,7 +245,7 @@ export function GitView({ project }: { project: Project }) {
             ) : git.selection.kind === "commit" && git.selection.path === null ? (
               git.commit && git.commit.files.length === 0 ? <EmptyPane title="This commit changed no files." /> : null
             ) : git.diff ? (
-              <DiffView diff={git.diff} path={git.selection.path!} />
+              <DiffView diff={git.diff} path={git.selection.path!} findings={findings} />
             ) : null}
           </div>
         </div>
@@ -245,21 +296,33 @@ export function GitView({ project }: { project: Project }) {
   )
 }
 
+const NO_FINDINGS: readonly ReviewFinding[] = []
+
 /** A commit's message and the files it touched, above the diff of one of them. */
 function CommitPane({
   commit,
   selectedPath,
   onSelectFile,
+  reviewing,
+  onReview,
 }: {
   commit: NonNullable<ReturnType<typeof useGitState>["commit"]>
   selectedPath: string | null
   onSelectFile(path: string): void
+  reviewing: boolean
+  onReview(): void
 }) {
   const { commit: meta, files } = commit
   return (
     <div className="border-b">
       <div className="px-4 pt-3 pb-2">
-        <h2 className="text-sm font-semibold">{meta.subject || "(no message)"}</h2>
+        <div className="flex items-start gap-2">
+          <h2 className="min-w-0 flex-1 text-sm font-semibold">{meta.subject || "(no message)"}</h2>
+          <Button variant="outline" size="xs" data-testid="review-commit" disabled={reviewing || files.length === 0} onClick={onReview}>
+            {reviewing ? <Loader2Icon className="animate-spin" /> : <ShieldCheckIcon />}
+            Review
+          </Button>
+        </div>
         {meta.body && <p className="text-muted-foreground mt-1 text-xs whitespace-pre-wrap">{meta.body}</p>}
         <p className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-x-2 text-xs">
           <span>{meta.authorName}</span>

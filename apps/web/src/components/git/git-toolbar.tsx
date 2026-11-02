@@ -12,6 +12,7 @@ import {
   Loader2Icon,
   PlusIcon,
   RefreshCwIcon,
+  ShieldCheckIcon,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -24,6 +25,12 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { relativeTime } from "@/lib/stats-format"
 import { cn } from "@/lib/utils"
@@ -48,6 +55,7 @@ export function GitToolbar({
   onPull,
   onPush,
   onAddRemote,
+  review,
 }: {
   status: GitStatus
   branches: GitBranchList | null
@@ -58,6 +66,8 @@ export function GitToolbar({
   onPull(): void
   onPush(): void
   onAddRemote(): void
+  /** OMP's code review (OM7.8): of the working tree, or of the branch since `base`. */
+  review?: { running: boolean; base: string | null; onReview(scope: "uncommitted" | "branch"): void }
 }) {
   const sync = syncAction(status)
   return (
@@ -84,6 +94,12 @@ export function GitToolbar({
           </>
         }
       />
+      {review && (
+        <>
+          <div className="bg-border w-px" />
+          <ReviewMenu status={status} review={review} />
+        </>
+      )}
       {status.isShallow && status.hasRemote && (
         <>
           <div className="bg-border w-px" />
@@ -97,6 +113,45 @@ export function GitToolbar({
         </>
       )}
     </div>
+  )
+}
+
+/** What to review: the uncommitted changes, or the branch since it left its base. */
+function ReviewMenu({ status, review }: { status: GitStatus; review: NonNullable<Parameters<typeof GitToolbar>[0]["review"]> }) {
+  const onBase = !!review.base && status.branch === review.base
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <ToolbarButton
+            data-testid="review-menu"
+            icon={review.running ? <Loader2Icon className="animate-spin" /> : <ShieldCheckIcon />}
+            title={review.running ? "Reviewing…" : "Review"}
+            subtitle="OMP's reviewer reads the diff"
+            disabled={review.running || status.unborn}
+            trailing={<ChevronDownIcon className="text-muted-foreground size-3.5" />}
+          />
+        }
+      />
+      <DropdownMenuContent align="start" className="w-64">
+        <DropdownMenuItem disabled={status.files.length === 0} onClick={() => review.onReview("uncommitted")}>
+          <div className="grid leading-tight">
+            <span>Review changes</span>
+            <span className="text-muted-foreground text-xs">
+              {status.files.length === 0 ? "Nothing uncommitted" : `${status.files.length} changed ${status.files.length === 1 ? "file" : "files"}`}
+            </span>
+          </div>
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!review.base || onBase} onClick={() => review.onReview("branch")}>
+          <div className="grid leading-tight">
+            <span>Review branch</span>
+            <span className="text-muted-foreground text-xs">
+              {!review.base ? "No base branch to compare with" : onBase ? `This is ${review.base} itself` : `Since it left ${review.base}`}
+            </span>
+          </div>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

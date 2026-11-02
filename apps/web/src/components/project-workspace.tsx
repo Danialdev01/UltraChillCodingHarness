@@ -90,7 +90,7 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
 
       {/* Mounted only while shown, like the editor: its socket and poll have
           no reason to run behind the chat. */}
-      {mode === "git" && <GitView project={project} />}
+      {mode === "git" && <GitView project={project} session={session ?? null} />}
     </>
   )
 }
