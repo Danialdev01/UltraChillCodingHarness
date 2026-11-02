@@ -631,13 +631,19 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Image.** debugpy 1.8.22 in a venv of its own (`/opt/debugpy`), and the js-debug DAP server 1.140.0 from its release tarball, SHA-256 checked, in `/opt/js-debug` with `JS_DEBUG_DAP_SERVER` set (`ARG OMP_DAP_*`, 43.6 MB). The build checks both.
     - **No `dap.json` in `providers.ts`.** OMP reads user-scope `dap.json` from `$HOME/.omp/agent/` (and `$HOME/`), never from `PI_CODING_AGENT_DIR`, so a file under `<subject>/omp/agent/` is ignored (measured). The image bakes `/home/node/.omp/agent/dap.json`, the server's `HOME`, moving OMP's built-in `debugpy` adapter to the venv's Python; the image has no `python`. Solution §8.3 is corrected.
     - **Manual turn** (`docker compose build`, then an RPC turn in the image as `node`, trusted, built by the server's `ensureCredsDir`, `writeOmpOverlay` and `ompArgv`, scripted model). Node through js-debug and Python through debugpy each launched, verified and hit a breakpoint on line 5, and `variables` gave the locals (`sum = 15`, `avg = 5`; `total = 15`, `count = 3`, `avg = 5.0`).
-- [ ] **OM7.6 — Trusted projects**
+- [x] **OM7.6 — Trusted projects** — 7626b32
 
   - **Depends:** OM0.4, OM7.4
   - **Files:** `packages/db` (`projects.omp_trusted`), project settings UI, `ompArgv` input `trusted`
   - **Steps:** a project owner can mark a project trusted (solution §0.3). Only trusted projects get the repo's own OMP config, LSP and DAP sources.
   - **Acceptance:** the OM0.4 plants are ignored on untrusted projects and honoured on trusted ones.
   - **Verify:** `pnpm test`, plus a re-run of the OM0.4 plant repo through UCCH
+  - **As built:**
+    - **Who.** "Owner" is `workspace.manage` (owner or admin), the permission that deletes a project. `GET`/`PATCH /api/projects/:hash/omp-trust`, audited as `project.omp_trust`; a "Trusted repository" card in the project's Preferences tab, disabled for members who cannot change it.
+    - **Where it reaches.** OMP turns (no `--no-lsp`, `debug.enabled: true`) and the bridge's calls from turns and terminals (`UCCH_OMP_TRUSTED`). Compaction, the handoff brief and retention stay untrusted: they use no language server or debugger. "Honoured" means the LSP and DAP plants (§0.3): hooks, MCP, skills, commands and rules stay off when trusted, as `--no-extensions`, `--no-rules` and the overlay do not depend on trust.
+    - **Tests.** `agent.test.ts` (turn: `trusted`, `debug.enabled`, the `debug` policy; bridge: `UCCH_OMP_TRUSTED` and the overlay), `terminal-bridge.test.ts` (facts and files), `workspaces.test.ts` (who may see and change it).
+    - **Plant re-run** (spike report, "Measured later"): UCCH's flags and overlay, untrusted then trusted. The four `lsp.json` / `dap.json` plants loaded only when trusted; every other result was the same under both. `.claude/CLAUDE.md` is no longer read at all, because of `disabledProviders` (OM6.8); solution §0.3 and §3.8 are corrected.
+    - **Not done here.** Counting a trusted (LSP) turn as more than one scheduler slot (§8.2, OM7.4's note). Trusted turns exist now, so it can be done; it is a scheduler change of its own.
 - [ ] **OM7.7 — Review engine (`omp-review.ts`)**
 
   - **Depends:** OM2.1, OM0.5
