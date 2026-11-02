@@ -45,4 +45,5 @@ export {
   codexMcpArgs,
   probeCodex,
 } from "./codex.js";
+export { VERIFIER_CONTEXT, VERIFIER_REPLY_FORMAT, ompVerifierPrompt, parseVerifierReply, type OmpVerdict } from "./omp-roles.js";
 export { createProviders, isCliProviderId, PROVIDER_LABELS, type CliProviders } from "./registry.js";

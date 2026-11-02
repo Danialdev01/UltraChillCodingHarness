@@ -341,6 +341,58 @@ export const scenarios = [
     },
   },
   {
+    // The task pipeline's verifier on OMP (OM7.9, solution §6.4): the main
+    // agent dispatches the bundled `task` agent with the role's instructions
+    // in `context`, the worker answers with a fenced JSON verdict, and the
+    // main agent ends its reply with that block. Where the worker's answer
+    // lands in the frames is what this records.
+    name: "verify",
+    mode: "rpc",
+    args: ["--no-session", "--approval-mode", "yolo", "--no-extensions", "--no-rules", "--no-lsp"],
+    files: { "math.ts": "export const add = (a: number, b: number) => a + b;\nexport const div = (a: number, b: number) => a * b;\n" },
+    script: [
+      {
+        toolCalls: [
+          {
+            name: "task",
+            arguments: {
+              i: "verify the task",
+              context: "Verify the assigned task against its acceptance criteria. Do not edit files.",
+              tasks: [
+                {
+                  name: "VerifyTask",
+                  agent: "task",
+                  task: "VERIFY-MARKER: check that div divides.",
+                  solutionSpace: "Read and run checks; end with the JSON verdict.",
+                },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        when: "VERIFY-MARKER",
+        text:
+          "div still multiplies.\n\n```json\n" +
+          JSON.stringify({ passed: false, reason: "div multiplies instead of dividing.", findings: [{ file: "math.ts", line: 2, note: "`a * b` should be `a / b`." }] }) +
+          "\n```",
+      },
+      {
+        text:
+          "The verifier says the task is not done.\n\n```json\n" +
+          JSON.stringify({ passed: false, reason: "div multiplies instead of dividing.", findings: [{ file: "math.ts", line: 2, note: "`a * b` should be `a / b`." }] }) +
+          "\n```",
+      },
+    ],
+    async run(ctx) {
+      await command(ctx, { type: "set_subagent_subscription", level: "progress" });
+      await command(ctx, { type: "prompt", message: "Verify the task." });
+      await ctx.waitFor(promptDone, 90000, "prompt_result");
+      await ctx.waitFor(terminalEnd, 90000, "agent_end");
+      await command(ctx, { type: "get_session_stats" });
+    },
+  },
+  {
     // An omp_codemod preview, as the bridge runs it (OM6.2): its flags, no
     // `write`, and an `abort` once `ast_edit` has staged its proposal --
     // OMP would otherwise force the model to resolve it until the turn fails.

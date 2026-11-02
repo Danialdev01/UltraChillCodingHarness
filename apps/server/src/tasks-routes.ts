@@ -7,6 +7,7 @@ import {
   TASK_REFERENCES_MAX,
   TASK_STAGES,
   TASK_TITLE_MAX,
+  verificationText,
   type ChangeOrigin,
   type DomainEvent,
   type ProjectTask,
@@ -239,7 +240,8 @@ export function registerTaskRoutes(app: FastifyInstance, deps: TaskRouteDeps): v
         return reply.code(409).send({ error: "this task is not waiting for an answer", task: current });
       }
       const round = {
-        reason: current.verification?.reason ?? "",
+        // With what the verifier cited, so the next round sees where.
+        reason: current.verification ? verificationText(current.verification) : "",
         answer: parsed.data.answer,
         at: new Date().toISOString(),
       };

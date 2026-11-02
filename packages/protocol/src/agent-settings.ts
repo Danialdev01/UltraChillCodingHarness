@@ -49,6 +49,15 @@ export const WorkspaceAgentSettings = z.object({
    * never tool output -- read by the fast model, which retains any durable
    * fact in it (solution §7.3). Billed to the OpenRouter key.
    */
+  /**
+   * Verify with OMP (solution §9.4, OM7.9): the task pipeline's verification
+   * step runs on OMP, whichever agent did the work. The bundled `task` agent
+   * checks the card against its acceptance criteria and answers with a
+   * structured verdict that cites file and line. Billed to the OpenRouter
+   * key the workspace's Custom turns use. Off: the task's own agent
+   * verifies, as before.
+   */
+  ompVerify: z.object({ enabled: z.boolean().default(false) }).default({}),
   memory: z
     .object({
       enabled: z.boolean().default(false),

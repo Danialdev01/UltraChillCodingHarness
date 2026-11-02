@@ -2,9 +2,11 @@ import {
   ProviderId,
   type Command,
   type ProjectTask,
+  type TaskFinding,
   type TaskReference,
   type TaskStage,
 } from "@ucch/protocol";
+import { ompVerifierPrompt, parseVerifierReply } from "@ucch/providers";
 import type { Principal } from "./auth.js";
 import type { EventBus } from "./bus.js";
 import type { EngineResult } from "./engine.js";
@@ -17,6 +19,12 @@ export interface TaskPipelineDeps {
   agent: { allowAllFor(threadId: string): void };
   /** The account that owns the project: whose agent runs, and on whose bill. */
   ownerOf(projectId: string): Promise<{ userId: string; defaultProvider: string | null } | null>;
+  /**
+   * Whether the project's workspace verifies with OMP ("Verify with OMP",
+   * solution §9.4): the verification turn then runs on OMP, whatever the
+   * task's agent is.
+   */
+  verifiesWithOmp(projectId: string): Promise<boolean>;
   /** Tells the project's open tabs a card changed. Never throws. */
   announce(projectId: string, task: ProjectTask): Promise<void>;
   onError(error: unknown, context: string): void;
@@ -157,8 +165,14 @@ export class TaskPipeline {
           case "verification": {
             await write({ status: "running", lastError: null });
             const threadId = await this.#thread(run, projectId, `Verify: ${task.title}`);
-            const reply = await this.#turn(run, threadId, verifyPrompt(task, output), agent);
-            const verdict = parseVerdict(reply);
+            // On OMP, the account's OpenRouter model: the task's model names
+            // one of the coding agent's own.
+            const omp = await this.deps.verifiesWithOmp(projectId);
+            const workers: string[] = [];
+            const reply = omp
+              ? await this.#turn(run, threadId, ompVerifierPrompt(verifyBrief(task, output)), { provider: "omp" }, workers)
+              : await this.#turn(run, threadId, verifyPrompt(task, output), agent);
+            const verdict = omp ? ompVerdict(reply, workers) : parseVerdict(reply);
             const verification = { ...verdict, at: new Date().toISOString(), threadId };
             if (verdict.passed) {
               await write({ stage: "done", status: "idle", verification });
@@ -202,13 +216,15 @@ export class TaskPipeline {
   /**
    * Sends one message and waits for the turn to end. Resolves with the
    * agent's last reply: the text after its final tool call, which is the
-   * answer rather than the narration of getting there.
+   * answer rather than the narration of getting there. `workers`, when
+   * given, collects each subagent's final answer as it finishes.
    */
   async #turn(
     run: Running,
     threadId: string,
     text: string,
     options: { provider: ProviderId; model?: string; mode?: "research" },
+    workers?: string[],
   ): Promise<string> {
     const { signal } = run.controller;
     if (signal.aborted) throw new Cancelled();
@@ -221,6 +237,9 @@ export class TaskPipeline {
     const unsubscribe = this.deps.bus.subscribe({ name: "thread", threadId }, ({ event }) => {
       if (event.type === "agent.text_delta") reply += event.text;
       else if (event.type === "agent.tool_use") reply = "";
+      else if (event.type === "agent.subagent_finished") {
+        if (workers && event.result) workers.push(event.result);
+      }
       else if (event.type === "agent.turn_completed") {
         if (event.stopReason === "cancelled") settle.reject(new Cancelled());
         else settle.resolve(reply);
@@ -304,11 +323,20 @@ export function codingPrompt(task: ProjectTask, docs: string): string {
     .join("\n\n");
 }
 
-export function verifyPrompt(task: ProjectTask, output: string): string {
+/** What the verifier is checking: the card, its research, and the coding agent's report. */
+export function verifyBrief(task: ProjectTask, output: string): string {
   return [
     describeTask(task),
     task.research ? `## Research brief\n${task.research}` : "",
     output.trim() ? `## What the coding agent reported\n${output.trim()}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function verifyPrompt(task: ProjectTask, output: string): string {
+  return [
+    verifyBrief(task, output),
     "---",
     "You are the verification step of an automated task pipeline. Check, independently, whether the task above has really been completed in this project: inspect the changes (for example with `git status` and `git diff`), read the code, and run tests or builds where the project has them. Do not fix anything yourself.",
     'End your reply with a single line of JSON and nothing after it: {"passed": true|false, "reason": "<one or two sentences>"}',
@@ -341,4 +369,21 @@ export function parseVerdict(reply: string): { passed: boolean; reason: string }
     passed: false,
     reason: tail ? `The verifier gave no verdict. It said: ${tail}` : "The verifier gave no verdict.",
   };
+}
+
+/**
+ * OMP's verdict (solution §6.4): the structured block in the main agent's
+ * reply, else in the `task` worker's own answer, last worker first. Neither
+ * parsing, `parseVerdict`'s regex is the fallback, and its absence of a
+ * verdict a failure.
+ */
+export function ompVerdict(
+  reply: string,
+  workers: readonly string[],
+): { passed: boolean; reason: string; findings?: TaskFinding[] } {
+  for (const text of [reply, ...[...workers].reverse()]) {
+    const verdict = parseVerifierReply(text);
+    if (verdict) return verdict.findings.length > 0 ? verdict : { passed: verdict.passed, reason: verdict.reason };
+  }
+  return parseVerdict(reply);
 }

@@ -141,6 +141,19 @@ export function TaskDetailDialog({
                   {verification.passed ? "Verified as done" : "Verification did not pass"}
                 </h3>
                 <p className="text-sm whitespace-pre-wrap">{verification.reason}</p>
+                {verification.findings && verification.findings.length > 0 && (
+                  <ul className="mt-2 grid gap-1.5 text-sm" data-testid="task-findings">
+                    {verification.findings.map((finding, i) => (
+                      <li key={i} className="grid gap-0.5">
+                        <span className="text-muted-foreground font-mono text-xs">
+                          {finding.file}
+                          {finding.line ? `:${finding.line}` : ""}
+                        </span>
+                        <span className="whitespace-pre-wrap">{finding.note}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {verification.threadId && (
                   <TransitionLink
                     href={taskThreadHref(ws, projectHash, verification.threadId)}

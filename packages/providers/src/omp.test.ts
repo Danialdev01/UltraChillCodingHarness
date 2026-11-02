@@ -20,6 +20,7 @@ import {
   type OmpMaintenanceInput,
   type OmpSessionStats,
 } from "./omp.js";
+import { parseVerifierReply } from "./omp-roles.js";
 import type { OmpFrame } from "./omp-rpc-types.js";
 import { FakeProcessHost, ManualProcessHost, stdout } from "./testing.js";
 import type { AgentRun, ProviderRunInput } from "./types.js";
@@ -303,6 +304,31 @@ describe("OmpNormaliser", () => {
     const order = events.map((e) => e.type);
     expect(order.indexOf("agent.subagent_started")).toBeGreaterThan(order.indexOf("agent.tool_use"));
     expect(order.indexOf("agent.subagent_finished")).toBeLessThan(order.indexOf("agent.turn_completed"));
+  });
+
+  it("carries the recorded verifier's verdict in its worker's result and the turn's last reply (OM7.9)", () => {
+    const { events } = replay("omp-verify");
+    expect(parsed(events)).toEqual(events);
+    const verdict = {
+      passed: false,
+      reason: "div multiplies instead of dividing.",
+      findings: [{ file: "math.ts", line: 2, note: "`a * b` should be `a / b`." }],
+    };
+    const worker = events.find((e) => e.type === "agent.subagent_finished");
+    expect(worker).toMatchObject({ subagentId: "VerifyTask", status: "completed" });
+    expect(parseVerifierReply((worker as { result: string }).result)).toEqual(verdict);
+    expect(events.find((e) => e.type === "agent.subagent_started")).toMatchObject({ agent: "task" });
+    // The reply as the task pipeline reads it: the text after the last tool call.
+    const lastTool = events.map((e) => e.type).lastIndexOf("agent.tool_use");
+    const reply = events
+      .slice(lastTool + 1)
+      .filter((e) => e.type === "agent.text_delta")
+      .map((e) => (e as { text: string }).text)
+      .join("");
+    expect(parseVerifierReply(reply)).toEqual(verdict);
+    const order = events.map((e) => e.type);
+    expect(order.indexOf("agent.subagent_finished")).toBeLessThan(order.indexOf("agent.turn_completed"));
+    expect(events.filter((e) => e.type === "agent.turn_completed")).toHaveLength(1);
   });
 
   it("finishes a subagent the turn outlived, keeping the status it ended with", () => {

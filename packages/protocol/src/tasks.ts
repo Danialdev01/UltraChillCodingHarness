@@ -22,12 +22,32 @@ export type TaskReference =
   | { kind: "file"; path: string }
   | { kind: "upload"; uploadId: string; name: string };
 
+/** Something the verifier found unmet, at a place in the code (OM7.9). */
+export interface TaskFinding {
+  file: string;
+  line: number | null;
+  note: string;
+}
+
 export interface TaskVerification {
   passed: boolean;
   reason: string;
   at: string;
   /** The thread the verifier worked in. */
   threadId?: string | null;
+  /** What OMP's verifier cited, file and line; absent from any other verifier. */
+  findings?: TaskFinding[];
+}
+
+/**
+ * A verification as one text: its reason, then each finding on a line of
+ * its own. What a failed round tells the next one (the card's feedback).
+ */
+export function verificationText(verification: Pick<TaskVerification, "reason" | "findings">): string {
+  const findings = verification.findings ?? [];
+  if (findings.length === 0) return verification.reason;
+  const lines = findings.map((f) => `- ${f.file}${f.line ? `:${f.line}` : ""}: ${f.note}`);
+  return [verification.reason, ...lines].filter(Boolean).join("\n");
 }
 
 /** One failed round: what the verifier said, and what the person answered. */

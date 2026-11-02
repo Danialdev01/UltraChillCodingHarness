@@ -690,6 +690,14 @@ The role prompts live in `packages/providers/src/omp-roles.ts`, next to the code
 
 ### 9.4 Task pipeline
 `apps/server/src/task-pipeline.ts`'s verify step (`verifyPrompt` / `parseVerdict`, lines 160–161 and 307–324) can use the OMP verifier role (§6.4) for any coding provider. It is a workspace setting, "Verify with OMP". The structured `{ passed, reason, findings }` replaces the regex in `parseVerdict`, which stays for the fallback.
+- **As built (OM7.9).**
+  - **Setting.** `ompVerify { enabled }` in `workspaces.agent_settings`, off by default. It is the "Verify tasks with Custom" card in the harness settings, for owners and admins. The pipeline reads it per run through `verifiesWithOmp(projectId)`.
+  - **The turn.** With the setting on, the verification is still a turn in the card's own `Verify:` thread, so it can be watched, but it is sent with `provider: "omp"` and no model: OMP takes the account's OpenRouter model, because the task's model names one of the coding agent's. Billing, the scheduler slot and cancelling are a turn's. The research and coding steps stay on the task's agent, Claude Code or Codex.
+  - **The role** (`packages/providers/src/omp-roles.ts`). `ompVerifierPrompt(brief)` asks for exactly one `task` worker with `agent: "task"` and `VERIFIER_CONTEXT` as the call's `context`. The worker's assignment is the brief, `verifyBrief`: the card, its research and the coding agent's report. It also carries `VERIFIER_REPLY_FORMAT`, a final fenced block `{ passed, reason, findings: [{ file, line, note }] }`, which the main agent is asked to repeat.
+  - **Parsing.** `parseVerifierReply` takes the last fenced JSON block that parses, else the reply's last bare `{…}`, through zod (`VerifierVerdict` and `VerifierFinding` in `@ucch/protocol`). A malformed finding is dropped and the verdict kept. `ompVerdict` tries the main agent's reply first, then each worker's `agent.subagent_finished.result`, last first, and then `parseVerdict`'s regex. With none, the verdict is a failure.
+  - **Recorded.** Where the worker's answer lands (spike report, "The verifier role"): in `subagent_finished.result`, before the turn completes. A worker answer over 8,000 characters is cut at its head (`SUBAGENT_RESULT_CHARS`), so a verdict at its end survives only in the main agent's repeat.
+  - **Result.** Findings are stored on `TaskVerification.findings` and listed under the reason in the task's dialog. A failed verification stops the card at Verification with `needs_input`, as before: that status is how the board marks a failed verification, while `failed` is for a run that errored. When the person answers, the round's reason carries the findings (`verificationText`), so the next research brief sees where.
+  - **Not done here.** The verifier is told not to edit files, but runs under the `standard` preset, so nothing enforces it. A `verify` preset (read tools and `bash`, edits denied) would be a new message mode.
 
 ---
 

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowRightLeftIcon, BotIcon, BrainIcon, GitForkIcon, KeyRoundIcon, Loader2Icon, PlugIcon, TrashIcon } from "lucide-react"
+import { ArrowRightLeftIcon, BotIcon, BrainIcon, GitForkIcon, KeyRoundIcon, ListChecksIcon, Loader2Icon, PlugIcon, TrashIcon } from "lucide-react"
 import type { CredentialPolicy, CredentialSource, ProviderId } from "@ucch/protocol"
 
 import { ProviderSettings } from "@/components/provider-settings"
@@ -77,6 +77,9 @@ export function WorkspaceHarnessSettings({
       )}
       {settings && (
         <IsolatedFanOutSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+      )}
+      {settings && (
+        <OmpVerifySection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
       )}
       {settings && (
         <MemorySection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
@@ -357,6 +360,57 @@ function IsolatedFanOutSection({
           disabled={!manages || busy}
           onChange={(e) => save(e.target.checked)}
           aria-label="Isolated parallel edits"
+        />
+        On
+      </label>
+      {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
+      <Outcome error={error} done={done} />
+    </section>
+  )
+}
+
+/**
+ * Verify with OMP (OMP OM7.9, solution §9.4): the task pipeline's
+ * verification step runs on Custom (OMP), whichever agent did the work, and
+ * its verdict cites file and line for what is unmet.
+ */
+function OmpVerifySection({
+  workspaceId,
+  settings,
+  manages,
+  onChange,
+}: {
+  workspaceId: string
+  settings: HarnessSettings
+  manages: boolean
+  onChange: (settings: HarnessSettings) => void
+}) {
+  const { busy, error, done, run } = useOutcome()
+  const { enabled } = settings.agent.ompVerify
+  const save = (next: boolean) =>
+    void run(async () => {
+      onChange(await setAgentSettings(workspaceId, { ompVerify: { enabled: next } }))
+      return "Saved."
+    })
+
+  return (
+    <section className="rounded-lg border p-6">
+      <h2 className="flex items-center gap-2 text-sm font-medium">
+        <ListChecksIcon className="text-muted-foreground size-4" />
+        Verify tasks with Custom
+      </h2>
+      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
+        A task&apos;s check runs on Custom, whichever agent did the work. Custom compares the result with the task&apos;s
+        acceptance criteria, and names the file and line of anything that is not met. The check is billed to this
+        workspace&apos;s OpenRouter key. When this is off, the agent that did the work checks it.
+      </p>
+      <label className="mt-4 flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={!manages || busy}
+          onChange={(e) => save(e.target.checked)}
+          aria-label="Verify tasks with Custom"
         />
         On
       </label>

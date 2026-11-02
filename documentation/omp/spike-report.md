@@ -378,6 +378,11 @@ Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`)
   - **The overlay's `deny` holds for the reviewer under `--approval-mode yolo`.** The reviewer still had `bash` in its schema, but `echo pwned > PWNED.txt` answered `Tool "bash" is blocked by user policy.` and wrote nothing. `yield`, which the overlay does not name, ran.
   - The diff the reviewer gets is UCCH's, because `/review` does not expand under `--no-extensions` (OM6.2). OMP's exclusions therefore do not apply to it on their own, and UCCH applies the same list itself: `pnpm-lock.yaml` (and an untracked `dist/math.js`) left the diff and were reported as excluded. The run gave one P0 on `math.ts:2-2` and `incorrect`.
 
+- **The verifier role** (OM7.9), recorded as `fixtures/omp-verify.jsonl` (`record-rpc.mjs --only verify`) under a UCCH turn's flags (`--mode rpc --no-session --approval-mode yolo --no-extensions --no-rules --no-lsp`). The main agent's `task` call named `agent: "task"`, with the role's instructions in `context`; the bundled `task` agent ran it (`subagent_lifecycle` `agent: "task"`).
+  - With `task.structured` at its default (`false`), the worker answers in prose. Its answer, the fenced JSON verdict included, is the `<output>` of the `async-result` message. `OmpNormaliser` puts that text in `agent.subagent_finished.result` (`subagentId: "VerifyTask"`, `completed`), and it parses as the verdict.
+  - Order is the review's: `prompt_result` before the worker runs, then the `async-result`, then the main agent's last reply, then the terminal `agent_end`. A turn, which ends only when it has both the terminal `agent_end` and the `prompt_result`, therefore carries the worker's result and the main agent's repeat of the block before `agent.turn_completed`.
+  - The main agent answered with text once while the job ran (the scripted model's `(waiting)`). The task pipeline's reply is everything after the last tool call, so it holds that text and the repeat; the parser takes the last JSON block in it.
+
 ## Corrections made to `solution.md`
 
 | Section | Was | Now |

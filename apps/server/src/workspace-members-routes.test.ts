@@ -243,6 +243,7 @@ describe("workspace member routes", () => {
       autoHandoff: { enabled: true, fallbackProvider: "codex" },
       isolatedFanOut: { enabled: false },
       ompBridge: { enabled: false },
+      ompVerify: { enabled: false },
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
     });
     const bad = await app.inject({

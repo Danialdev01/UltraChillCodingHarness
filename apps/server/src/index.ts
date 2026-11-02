@@ -19,6 +19,7 @@ import {
   mediaTypeFor,
   projectUrl,
   ProviderId,
+  readAgentSettings,
   ThreadHash,
   WorkspaceHash,
   type ChangeOrigin,
@@ -2330,6 +2331,15 @@ const taskPipeline = new TaskPipeline({
       .where(eq(projects.id, projectId))
       .limit(1);
     return row ?? null;
+  },
+  verifiesWithOmp: async (projectId) => {
+    const [row] = await db
+      .select({ agent: workspaces.agentSettings })
+      .from(projects)
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    return row ? readAgentSettings(row.agent).ompVerify.enabled : false;
   },
   announce: announceTask,
   onError: (error, context) => app.log.error({ err: error }, context),

@@ -8,6 +8,7 @@ describe("readAgentSettings", () => {
         autoHandoff: { enabled: false, fallbackProvider: null },
         isolatedFanOut: { enabled: false },
         ompBridge: { enabled: false },
+        ompVerify: { enabled: false },
         memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
       });
     }
@@ -18,10 +19,12 @@ describe("readAgentSettings", () => {
       autoHandoff: { enabled: true, fallbackProvider: "codex" },
       isolatedFanOut: { enabled: false },
       ompBridge: { enabled: false },
+      ompVerify: { enabled: false },
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
     });
     expect(readAgentSettings({ isolatedFanOut: { enabled: true } }).isolatedFanOut).toEqual({ enabled: true });
     expect(readAgentSettings({ ompBridge: { enabled: true } }).ompBridge).toEqual({ enabled: true });
+    expect(readAgentSettings({ ompVerify: { enabled: true } }).ompVerify).toEqual({ enabled: true });
     expect(readAgentSettings({ memory: { enabled: true } }).memory).toEqual({ enabled: true, llmMode: "smol", retainCliTurns: false });
     expect(readAgentSettings({ memory: { enabled: true, llmMode: "remote" } }).memory).toEqual({ enabled: false, llmMode: "smol", retainCliTurns: false });
     expect(readAgentSettings({ autoHandoff: { enabled: "yes", fallbackProvider: "gemini" } })).toEqual(
