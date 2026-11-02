@@ -606,7 +606,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Server.** `-p` slash commands don't run (OM0), so `omp-memory-routes.ts` reads the bank file. `GET /api/omp-memory/:projectId[?workspace=]` returns counts only: facts, turn summaries, the total, the size and the newest time. `DELETE` removes the file and its `-wal`, `-shm` and `-journal` companions. The caller must see the project, a workspace's bank serves only its own projects, and clearing a workspace's bank takes `credentials.manage`. Clearing is audited. `node:sqlite` is loaded through `createRequire`, because Vite cannot resolve it under vitest.
     - **Web.** An "OMP memory" card in `provider-settings.tsx` (personal settings, and the workspace's Harness page), with a project picker. It draws a skeleton while loading, shows OMP's warning about secrets, and confirms Clear inside the card.
     - **Manual run.** Real OMP, scripted model: the stats read one retained fact. After a clear, the stats read empty and an OMP turn recalled nothing.
-- [ ] **OM7.4 — Language servers in the image**
+- [x] **OM7.4 — Language servers in the image** — f81c1a1
 
   - **Depends:** OM1.5, OM0.4
   - **Files:** `Dockerfile` (`ARG OMP_LSP`), `omp-overlay.ts` (`lsp.*`), `ompArgv` (`--no-lsp` for untrusted projects, per OM0.4)
@@ -616,6 +616,10 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - Diagnostics appear after a write.
     - The LSP daemon's RSS is measured and recorded.
   - **Verify:** `docker compose build`, plus a manual turn
+  - **As built:**
+    - **Image.** `typescript-language-server` 6.0.2, `typescript` 5.9.3 (7.x has no `tsserver`) and `pyright` 1.1.414, installed with `npm -g` after OMP, behind `ARG OMP_LSP_*`. The build checks the server's version and that `pyright-langserver` is on `PATH`. The overlay's `lsp.*` keys and `--no-lsp` for untrusted projects were already in place (OM2.5, OM2.2).
+    - **Manual turn** (`docker compose build`, then `omp -p` in the image as `node`, trusted, scripted model). The rename was semantic: `a.ts` and three uses in `b.ts`. Diagnostics after a write came as OMP's late notice, not in the `write` result, for TypeScript and for Python. RSS peaked at 408 MB for TS (the server plus two `tsserver`), 128 MB for pyright and ~400 MB for `omp`. Nothing was left 4 s after exit.
+    - **Not done here.** Weighting an LSP turn as more than one scheduler slot (§8.2) waits for OM7.6, since every turn is untrusted until then.
 - [ ] **OM7.5 — Debug adapters in the image**
 
   - **Depends:** OM1.5
