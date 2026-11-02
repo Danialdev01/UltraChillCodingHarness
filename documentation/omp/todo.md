@@ -502,7 +502,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Pieces.** The socket endpoint is `apps/server/src/bridge-leases.ts`, at `<CREDS_ROOT>/omp-scheduler.sock`. The connection is the lease. Its tokens are registered per turn, which OM6.4 does when it writes the MCP config. Solution §10.5 has the protocol.
     - **Tests.** `turn-scheduler.test.ts` and `bridge-leases.test.ts` run with one OMP slot: the second call waits, is told busy, and gives up its place. `lease.test.ts` covers the budget, busy and fail-closed paths, and a call that never starts `omp` while busy.
     - **Manual run.** Two built bridges over stdio on one `BridgeLeases` with `ompTotal: 1` and a 3 s fake-omp call each: B was told busy after the wait, A finished, and B's next call ran.
-- [ ] **OM6.4 — Wire into Claude Code turns**
+- [x] **OM6.4 — Wire into Claude Code turns** — 1293628
 
   - **Depends:** OM6.2, OM0.5
   - **Files:** `packages/providers/src/claude.ts` (`claudeArgv` `mcpConfigPath`, `probeClaude` cap), `apps/server/src/agent.ts` (write and delete the per-run MCP JSON), `providers.ts`
@@ -512,6 +512,13 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - The CLI's own environment still passes `forbiddenEnvPresent`.
     - With the bridge off, the argv is unchanged (snapshot).
   - **Verify:** `pnpm test -- claude agent`, plus a manual turn
+  - **As built:**
+    - **Setting.** `agent_settings.ompBridge.enabled` (Workspace settings → Harness, "OMP tools for Claude Code"). A turn gets the bridge only with the setting on, `ompBridge` in the server's options and an OpenRouter key; without a key it runs as before.
+    - **Files.** `#openBridge` writes the bridge overlay (`omp/run/bridge-<turnId>.yml`: Allow All approvals, since the call is headless and the person was asked about the tool; two workers; the account's OpenRouter model; untrusted), registers a `BridgeLeases` token, and writes `claude/run/<turnId>.mcp.json` (0600) with `omp-bridge-config.ts`. All of it is undone when the turn ends.
+    - **Argv.** `claudeArgv` adds `--mcp-config <path> --strict-mcp-config`, and under Normal `--allowedTools` with the four read-only tools as separate arguments. `probeClaude` sets `caps.mcpConfig` from `--strict-mcp-config`.
+    - **Prompts.** `claudePromptNeedsPerson` sends a bridge tool to a person except under Allow All, or under Normal for a read-only one.
+    - **Tests.** `claude.test.ts`: the bridge-off argv is pinned and has no MCP flag in any mode, plus the flags per mode. `agent.test.ts`: the MCP config's exact env, mode 0600, the overlay, no key of any kind in the CLI's environment, files and token gone after the turn, and no bridge when the setting is off, the server has none, or there is no key. The prompt rule has its own table.
+    - **Manual turn.** Claude Code 2.1.316 against a scripted API, using the config the server code writes, with the built bridge, a real `BridgeLeases`, and real OMP on a scripted model served as `openrouter`. `omp_symbols` ran unasked under Normal and returned the `lsp` result. Strict and `omp_rename` prompted as `can_use_tool`. Untrusted, it answered "off for this project". MCP tools are deferred in 2.1.316, and the model loads them with `ToolSearch` (solution §10.3).
 - [ ] **OM6.5 — Wire into Codex turns**
 
   - **Depends:** OM6.2, OM0.5
