@@ -685,13 +685,26 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
       - `project-workspace.tsx` passes the session to the Git view. Send to agent is disabled outside a session, which is where the Git tab is on a project page without one.
     - **Tests.** `review-routes.test.ts`, `review-api.test.ts`, `review-anchor.test.ts`, and the e2e `review.spec.ts`. The e2e runs against `scripts/load/fake-omp-review.sh`, which replays the OM7.7 fixture, and passed: verdict, excluded lock file, one P0 note under the flagged line, the same after a reload, and the finding in the chat after Send to agent. The build passed.
     - **Run it as `pnpm --filter @ucch/web e2e review`.** With `--`, the filter is not passed and every spec runs. The other specs need replays of their own: the handoff and stream specs start turns on the dev user's default provider.
-- [ ] **OM7.9 — Verify with OMP in the task pipeline**
+- [x] **OM7.9 — Verify with OMP in the task pipeline** — 4676d28
 
   - **Depends:** OM7.7, OM1.4
   - **Files:** `apps/server/src/task-pipeline.ts` (lines 153–161, 307–324), workspace settings
   - **Steps:** when the setting is on, run `ucch-verifier` (solution §6.4) and use its structured output. `parseVerdict` stays as the fallback.
   - **Acceptance:** a task with an unmet acceptance criterion is marked failed with findings, for a Claude Code coding step and a Codex one.
   - **Verify:** `pnpm test -- task-pipeline`
+  - **As built:**
+    - **No `ucch-verifier` file.** As solution §6.4 says, the role is the bundled `task` agent with the instructions in `context`. Prompt and parser are in `packages/providers/src/omp-roles.ts`; zod schemas are `VerifierVerdict` and `VerifierFinding` in `@ucch/protocol`.
+    - **Setting.** `agent_settings.ompVerify`, the "Verify tasks with Custom" card in `workspace-harness-settings.tsx`; `verifiesWithOmp` in `index.ts`.
+    - **Pipeline.** The verify turn goes to the card's `Verify:` thread with `provider: "omp"` and no model. `ompVerdict` reads the main reply, then the workers' `subagent_finished` results, then `parseVerdict`. Findings go on `TaskVerification.findings`, show in the task dialog, and reach the next round's feedback (`verificationText`).
+    - **"Marked failed".** A failed verification is `needs_input` at Verification, which is how the board already marks one; `failed` means a run errored.
+    - **Tests.**
+      - `task-pipeline.test.ts`: an unmet criterion after a Claude Code coding step and after a Codex one gives `needs_input` with the findings, and the verify turn on `omp`. Also the worker's verdict when the reply lacks it, the regex fallback, and the setting off.
+      - `omp-roles.test.ts`.
+      - `omp.test.ts` replays the recorded `omp-verify.jsonl`: both the worker's result and the last reply parse to the planted verdict.
+      - The settings tests.
+    - **Verify:** `pnpm test -- task-pipeline` passes. Its `--` passes no filter, so this is the whole suite: 187 files and 2509 tests. `pnpm --filter @ucch/web build` passes.
+    - **Recorded** against OMP 18.14.1 with a scripted model (spike report, "The verifier role").
+    - **Not done here.** A `verify` preset that enforces "do not edit files" (solution §9.4).
 
 ---
 
