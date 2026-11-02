@@ -193,6 +193,34 @@ RUN npm install -g \
   && test "$(typescript-language-server --version)" = "${OMP_LSP_TS_SERVER_VERSION}" \
   && command -v pyright-langserver \
   && pyright --version
+# Debug adapters for OMP's `debug` tool (solution §8.3, OM7.5), trusted
+# projects only (§0.3). debugpy in a venv of its own. OMP's built-in adapter
+# runs `python -m debugpy.adapter` and the image has no `python`, so a
+# user-scope dap.json moves its command to the venv's (an override merges
+# into the built-in, so arguments and launch defaults stay OMP's). OMP reads
+# that file from $HOME/.omp/agent/ only, never from PI_CODING_AGENT_DIR
+# (measured, 18.14.1), and the server runs with HOME=/home/node. js-debug is
+# the vscode-js-debug DAP server, a release tarball rather than an npm
+# package, found through JS_DEBUG_DAP_SERVER.
+ARG OMP_DAP_DEBUGPY_VERSION=1.8.22
+ARG OMP_DAP_JS_DEBUG_VERSION=1.140.0
+ARG OMP_DAP_JS_DEBUG_SHA256=27dab92937ec1ab35821ae955aac867544fe06a1b6307229049f2d789af10968
+RUN set -eux; \
+  python3 -m venv /opt/debugpy; \
+  /opt/debugpy/bin/pip install --no-cache-dir "debugpy==${OMP_DAP_DEBUGPY_VERSION}"; \
+  test "$(/opt/debugpy/bin/python -c 'import debugpy; print(debugpy.__version__)')" = "${OMP_DAP_DEBUGPY_VERSION}"; \
+  mkdir -p /opt/js-debug; \
+  curl -fsSL -o /tmp/js-debug.tar.gz \
+    "https://github.com/microsoft/vscode-js-debug/releases/download/v${OMP_DAP_JS_DEBUG_VERSION}/js-debug-dap-v${OMP_DAP_JS_DEBUG_VERSION}.tar.gz"; \
+  echo "${OMP_DAP_JS_DEBUG_SHA256}  /tmp/js-debug.tar.gz" | sha256sum -c -; \
+  tar -xzf /tmp/js-debug.tar.gz -C /opt/js-debug; \
+  rm /tmp/js-debug.tar.gz; \
+  test -f /opt/js-debug/js-debug/src/dapDebugServer.js; \
+  mkdir -p /home/node/.omp/agent; \
+  printf '%s\n' '{ "adapters": { "debugpy": { "command": "/opt/debugpy/bin/python" } } }' \
+    > /home/node/.omp/agent/dap.json; \
+  chown -R node:node /home/node/.omp
+ENV JS_DEBUG_DAP_SERVER=/opt/js-debug/js-debug/src/dapDebugServer.js
 ENV SHELL=/bin/bash
 
 # --- app: the single container ----------------------------------------------
