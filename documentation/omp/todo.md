@@ -478,13 +478,18 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Bundle.** Unlike the server's, the bundle takes the MCP SDK (pinned 1.32.1) in with it, so `dist/omp-bridge.mjs` runs as `node <file>` with nothing beside it.
     - **Billing.** The `omp` it starts gets its environment as `providerEnv` builds an OMP turn's: credential-shaped variables dropped, the workspace's OpenRouter key put back, and `forbiddenEnvFor("omp")` refusing anything else (`config.test.ts`).
     - **Manual run.** Claude Code 2.1.316 with `--mcp-config … --strict-mcp-config --allowedTools mcp__omp__omp_ping`, against a scripted API: `mcp_servers: [{name: "omp", status: "connected"}]`, and the call answered `omp/18.14.1`.
-- [ ] **OM6.2 — `omp_task`, `omp_review`, `omp_symbols`, `omp_rename`, `omp_codemod`, `omp_debug`, `omp_recall`, `omp_retain`, `omp_handoff_brief`**
+- [x] **OM6.2 — `omp_task`, `omp_review`, `omp_symbols`, `omp_rename`, `omp_codemod`, `omp_debug`, `omp_recall`, `omp_retain`, `omp_handoff_brief`** — 1c2ea4e
 
   - **Depends:** OM6.1
   - **Files:** `packages/omp-bridge/src/tools/*.ts` and tests
   - **Steps:** implement the solution §10.2 table: schemas, `--tools` allowlists, models, `--max-time`, output caps, a cost line, and `isError` on failure.
   - **Acceptance:** against `fake-omp`, each tool's argv matches its row and its result follows the format. `apply: false` never passes a write tool.
   - **Verify:** `pnpm test -- omp-bridge`
+  - **As built:**
+    - **Rows.** Solution §10.2 is corrected where 18.14.1 differs: `omp_codemod` runs `ast_edit` without `ast_grep` (off by default, and a missing `--tools` name stops OMP); recall and retain use `@smol` (there is no `tiny` role); `omp_review` sends the headless review request with the diff, because `/review` is plain text under `--no-extensions`.
+    - **Previews.** Neither preview gets `write` or `edit`. A codemod preview would be forced to resolve its staged proposal until it failed, so the bridge aborts once `ast_edit` has answered (`stopAfter`, fixture `omp-bridge-codemod.jsonl`). `ast_edit` is in the preview's list, but it only stages.
+    - **Tests.** `tools.test.ts` checks each row's `--tools`, `--model` and prompt, the result format, and the previews; `call.test.ts` checks argv, cost line, cap, timeout and stop; `server.test.ts` checks the MCP face. All run on fake-omp.
+    - **Manual run.** Every tool ran on real OMP with the scripted model. The LSP rename ran with typescript-language-server 4.3.4, previewed and applied; recall found a fact a separate process had retained. `omp_debug` needs the debug adapters (OM7.5). The built bundle answered over stdio.
 - [ ] **OM6.3 — Scheduler lease and budget**
 
   - **Depends:** OM6.2, OM2.6
