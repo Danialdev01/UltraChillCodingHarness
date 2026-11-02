@@ -554,13 +554,17 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Wrappers.** `claude` gets `--mcp-config=<path>`; the spaced form would swallow the prompt, because the flag is variadic. `codex` gets the `.codex` file's lines. Both add nothing without the file. A CLI started by hand asks its person, so nothing is pre-approved.
     - **Tests.** `ucch-knowledge.test.ts` sources both init files with stand-in CLIs: no flags without the files, the exact flags with them, passthrough subcommands untouched, and knowledge after the bridge. `terminals.test.ts` covers the env var, open per terminal, disposal on close, exit and `closeAll` (also when closed mid-write), and none for sign-in terminals. `terminal-bridge.test.ts` covers the files, 0600, the key in one file only, cleanup, the off cases, and whose key.
     - **Manual run.** With the files from a real `TerminalBridge` and the real init files, `codex mcp list` lists `omp` from bash and from fish, and `claude -p "say ok"` reports `omp` connected. The key never appears in argv. `claude mcp list` does not show `--mcp-config` servers (2.1.316), so a session's `mcp_servers` is the check for Claude.
-- [ ] **OM6.8 — Dev-machine recipe**
+- [x] **OM6.8 — Dev-machine recipe** — 2e97630 (guard: e79383e)
 
   - **Depends:** OM6.2
   - **Files:** `README.md` (a "Use the OMP bridge in your own Claude Code" section)
   - **Steps:** document the `claude mcp add omp -- node …/omp-bridge.mjs` recipe and the required `UCCH_OMP_*` variables (solution §10.3).
   - **Acceptance:** following the README on a clean machine gives working `omp_*` tools in a personal Claude Code session.
   - **Verify:** manual
+  - **As built:**
+    - **Recipe.** The README section "Use the OMP bridge in your own Claude Code" covers building the bundle, an overlay naming `modelRoles` `default` and `smol`, and `claude mcp add -s user omp -e OPENROUTER_API_KEY=… -e UCCH_OMP_OVERLAY=… -- node …/omp-bridge.mjs`. A table lists every variable the bridge reads.
+    - **Manual run.** Followed the recipe in a throwaway `CLAUDE_CONFIG_DIR` with real Claude Code 2.1.316 and OMP 18.14.1, both on scripted models. `omp` was connected from user scope (`source: user`), and a Claude turn's `omp_task` scout returned the scout's answer with the cost line.
+    - **Found on the way (e79383e).** `--tools` does not bound subagents: a reviewer got `bash` and ran it. With no UCCH overlay, OMP also mounted `xd://report_issue` and gave the scout `web_search`. And because `CLAUDE_CONFIG_DIR` was set, it loaded that Claude Code's own MCP servers, so the bridge reached itself. Each call now passes a guard overlay last (`guard.ts`). It denies every unnamed tool except a read-only set, turns off `dev.autoqa`, web search, telemetry and project sources, and sets `disabledProviders` to other agents' config sources. The OMP turn overlay gets the same `disabledProviders`. Re-run on real OMP: the reviewer's `bash` was refused, the recipe's calls carried exactly the named tools and no `xd://` devices, and the scout still answered. Solution §10.2 and §4 are corrected, and the spike report has a "Measured later" entry.
 
 ---
 
