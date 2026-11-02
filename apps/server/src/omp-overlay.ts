@@ -31,6 +31,9 @@ type Policy = "allow" | "prompt" | "deny";
 /** The tool presets an OMP turn can run with (solution §3.7). */
 export type OmpPreset = "standard" | "research" | "documentation";
 
+/** A turn's preset, or the review engine's (§9, OM7.7), which no turn has. */
+export type OmpOverlayPreset = OmpPreset | "review";
+
 /**
  * Denied whatever the mode. `ask`: questions go to the chat. `github`:
  * UCCH's Git view owns remotes. `computer`, `generate_image`, `tts`: not
@@ -39,13 +42,21 @@ export type OmpPreset = "standard" | "research" | "documentation";
  */
 const ALWAYS_DENIED = new Set(["ask", "github", "computer", "generate_image", "tts", "hub", "report_issue"]);
 
+/**
+ * What a review may use: reading the code, and `task` to hand the diff to
+ * OMP's bundled `reviewer`. No `web_search` (it reaches out), no memory
+ * writes, nothing that changes the worktree or runs a command.
+ */
+const REVIEW_TOOLS = new Set(["read", "glob", "grep", "find", "ast_grep", "inspect_image", "todo", "wait", "recall", "reflect", "task"]);
+
 /** What each preset takes away, on top of the mode. */
-const PRESET_DENIED: Record<OmpPreset, ReadonlySet<string>> = {
+const PRESET_DENIED: Record<OmpOverlayPreset, ReadonlySet<string>> = {
   standard: new Set(),
   // Research reads and reports; it changes nothing in the worktree.
   research: new Set(["write", "edit", "ast_edit", "learn", "manage_skill"]),
   // Writes stay; the guard hook keeps them under docs/ (§3.9).
   documentation: new Set(),
+  review: new Set(Object.keys(OMP_TOOL_TIERS).filter((name) => !REVIEW_TOOLS.has(name))),
 };
 
 /**
@@ -82,7 +93,7 @@ export const DEFAULT_OMP_SETTINGS: OmpWorkspaceSettings = {
 
 export interface OmpOverlayInput {
   settings: OmpWorkspaceSettings;
-  preset: OmpPreset;
+  preset: OmpOverlayPreset;
   permissionMode?: AgentPermissionMode;
   /** Trusted projects keep debugging (§0.3: project `dap.json` loads under every flag). */
   trusted: boolean;
@@ -126,7 +137,9 @@ export function ompApprovals(input: OmpOverlayInput): Record<string, Policy> {
       (name === "browser" && !input.settings.browser) ||
       (name === "web_search" && !input.webSearch) ||
       (name === "debug" && !input.trusted);
-    approvals[name] = denied ? "deny" : tierPolicy(tier, input.permissionMode);
+    // A review runs unattended: what it may use is allowed outright, as
+    // nobody is there to answer a prompt.
+    approvals[name] = denied ? "deny" : input.preset === "review" ? "allow" : tierPolicy(tier, input.permissionMode);
   }
   for (const name of input.hostTools ?? []) approvals[name] = "allow";
   return approvals;
@@ -196,6 +209,10 @@ export function ompOverlay(input: OmpOverlayInput): Record<string, unknown> {
       softRequestBudget: 120,
       maxRuntimeMs: 900000,
       agentIdleTtlMs: 60000,
+      // Gives a subagent with an output schema its `yield` tool: off (OMP's
+      // default) the bundled `reviewer` answers in prose. On for a review
+      // only (OM7.7, measured with 18.14.1).
+      structured: input.preset === "review",
       isolation: { enabled: settings.isolatedFanOut, apply: true, merge: "patch" },
     },
     async: { enabled: true },

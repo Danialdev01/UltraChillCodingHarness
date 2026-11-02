@@ -253,6 +253,8 @@ export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   "git.push": "admin",
   "preview.publish": "write",
   "preview.delete": "write",
+  // Runs the model, billed as an OMP run is.
+  "review.run": "exec",
 };
 
 const IMPLIED: Record<Scope, readonly Scope[]> = {

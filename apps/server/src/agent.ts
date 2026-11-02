@@ -44,6 +44,7 @@ import {
   type HostToolCall,
   type HostToolResult,
   type OmpMaintenanceInput,
+  type OmpProvider,
   type OmpRunFiles,
   type ProviderRunInput,
 } from "@ucch/providers";
@@ -58,6 +59,8 @@ import type { Principal } from "./auth.js";
 import type { EngineResult } from "./engine.js";
 import { buildHandoffBrief, handoffMessage, handoffTitle, type BriefAsker } from "./omp-handoff.js";
 import { messageText, RETAIN_PROMPT, retainStdin } from "./omp-memory.js";
+import { runReview } from "./omp-review.js";
+import { runGit } from "./git-exec.js";
 import type { EventStore } from "./eventstore.js";
 import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter.js";
 import { documentationPrompt } from "./documents.js";
@@ -322,6 +325,10 @@ export class AgentTurnReactor {
       }
       if (event.type === "thread.handoff_requested") {
         void this.#handoffTo(event, principal).catch(this.onError);
+        continue;
+      }
+      if (event.type === "review.requested") {
+        void this.#review(event).catch(this.onError);
         continue;
       }
       if (event.type !== "user.message") continue;
@@ -1047,6 +1054,93 @@ export class AgentTurnReactor {
       ];
       await this.store
         .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
+        .catch(this.onError);
+    }
+  }
+
+  /**
+   * A code review by OMP's `reviewer` (solution §9, OM7.7): the changes
+   * read from git in the reviewed tree -- the session's worktree, or the
+   * project's checkout -- one unattended `omp --mode rpc` on the `review`
+   * overlay, and its verdict as `review.completed`, or why not as
+   * `review.failed`.
+   *
+   * Billed as an OMP run: a session's review to whoever its turns bill, a
+   * checkout's to the person who asked. It takes an OMP slot, and nothing of
+   * the repository's tooling config runs whatever the project's trust: a
+   * review reads code and needs no language server or debugger.
+   */
+  async #review(event: Extract<DomainEvent, { type: "review.requested" }>): Promise<void> {
+    const ids = { projectId: event.projectId, reviewId: event.reviewId, threadId: event.threadId, scope: event.scope, ref: event.ref };
+    let done: Extract<DomainEvent, { type: "review.completed" }> | undefined;
+    let error: string | undefined;
+    let release: (() => void) | undefined;
+    let overlay: { dispose(): Promise<void> } | undefined;
+    try {
+      const [project] = await this.db
+        .select({ defaultBranch: projects.defaultBranch })
+        .from(projects)
+        .where(eq(projects.id, event.projectId))
+        .limit(1);
+      if (!project) throw new Error("the project is gone");
+      const [thread] = event.threadId ? await this.db.select().from(threads).where(eq(threads.id, event.threadId)).limit(1) : [];
+      if (event.threadId && !thread) throw new Error("the session is gone");
+      const owner = await this.#owner(event.projectId, thread ?? { createdByUserId: event.requestedBy, credentialSource: null });
+      if (!owner) throw new Error("there is nobody to bill this review to");
+      const providers = this.options.providers;
+      if (!providers || !this.options.cliEnabled) throw new Error("reviews run on OMP, which is disabled on this server");
+      // The key first: a missing one says where to add it.
+      const openrouterKey = this.#decryptKey(owner.openrouterKeyEncrypted);
+      release = await this.#scheduler.acquire({ ownerId: owner.id, kind: "omp", threadId: event.reviewId });
+      const model = resolveModel(undefined, owner.defaultModel, this.options.defaultModel);
+      const resolved = await providers.resolve(owner.id, "omp", { openrouterKey, ompPreset: "standard" });
+      const omp = resolved.provider as Partial<Pick<OmpProvider, "call">>;
+      if (!omp.call) throw new Error("this server's OMP provider cannot run a review");
+      const written = await writeOmpOverlay(providers.ompRunDir(owner.id), randomUUID(), {
+        settings: { ...DEFAULT_OMP_SETTINGS, models: { default: model } },
+        preset: "review",
+        trusted: false,
+        workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
+        webSearch: false,
+        hostTools: [],
+      });
+      overlay = written;
+      const tree = treeFor(this.options.workspaceRoot, event.projectId, thread ?? null);
+      const ctx = resolved.ctx(tree);
+      const outcome = await runReview({
+        tree,
+        git: async (argv, okExitCodes) => {
+          try {
+            return await runGit(argv, tree, 60_000, { read: true, ...(okExitCodes ? { okExitCodes } : {}) });
+          } catch {
+            return null;
+          }
+        },
+        scope: event.scope,
+        ref: event.ref,
+        // A session's branch left its own base; the checkout's, the default branch.
+        base: thread?.baseBranch ?? project.defaultBranch ?? null,
+        ...(event.focus ? { focus: event.focus } : {}),
+        call: (input) =>
+          omp.call!({
+            ctx,
+            omp: { overlayPath: written.path, guardHookPath: providers.ompGuardHook(owner.id) },
+            projectId: event.projectId,
+            ...(event.threadId ? { threadId: event.threadId } : {}),
+            callId: event.reviewId,
+            model,
+            ...input,
+          }),
+      });
+      done = { type: "review.completed", ...ids, ...outcome, model };
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      release?.();
+      await overlay?.dispose().catch(this.onError);
+      const events: DomainEvent[] = [done && !error ? done : { type: "review.failed", ...ids, error: (error ?? "the review failed").slice(0, 2_000) }];
+      await this.store
+        .append({ projectId: event.projectId, threadId: event.threadId }, events, (tx) => applyProjection(tx, events, null))
         .catch(this.onError);
     }
   }

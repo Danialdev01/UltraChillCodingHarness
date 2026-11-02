@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { projectStats, threads, turns, type Database, type Transaction } from "@ucch/db";
+import { projectStats, reviews, threads, turns, type Database, type Transaction } from "@ucch/db";
 import { LIMIT_STOP_REASONS, type DomainEvent } from "@ucch/protocol";
 import { applyProjection, OrchestrationEngine, ProjectionConflict } from "./engine.js";
 import type { EventStore } from "./eventstore.js";
@@ -30,7 +30,9 @@ function recorder({ claimed = true }: { claimed?: boolean } = {}) {
         ? "threads"
         : table === projectStats
           ? "project_stats"
-          : "other";
+          : table === reviews
+            ? "reviews"
+            : "other";
 
   // `.values()` and `.where()` are awaited at the call site, and inserts
   // chain `.onConflictDoNothing()` or `.onConflictDoUpdate()` onto the
@@ -530,5 +532,39 @@ describe("OrchestrationEngine", () => {
       },
     });
     expect(await engine.keyOf({ type: "thread.cancel", threadId: THREAD })).toBe(`t:${THREAD}`);
+  });
+});
+
+describe("reviews", () => {
+  const REVIEW = "88888888-8888-4888-8888-888888888888";
+  const ids = { projectId: PROJECT, reviewId: REVIEW, threadId: THREAD, scope: "commit", ref: "abc123" } as const;
+
+  it("opens a row on the request and fills it in from the result", async () => {
+    const [opened] = await apply([{ type: "review.requested", ...ids, focus: "the parser", requestedBy: USER }]);
+    expect(opened).toEqual({
+      op: "insert",
+      table: "reviews",
+      values: { id: REVIEW, projectId: PROJECT, threadId: THREAD, scope: "commit", ref: "abc123", focus: "the parser", requestedBy: USER },
+    });
+    const finding = { priority: "P0", confidence: 0.9, title: "t", body: "b", file: "a.ts", startLine: 2, endLine: 2 } as const;
+    const [done] = await apply([
+      {
+        type: "review.completed",
+        ...ids,
+        verdict: { verdict: "incorrect", explanation: "e", confidence: 0.8 },
+        findings: [finding],
+        excluded: ["pnpm-lock.yaml"],
+        model: "openai/gpt-5",
+        costUsd: 0.12,
+      },
+    ]);
+    expect(done).toMatchObject({
+      op: "update",
+      table: "reviews",
+      values: { status: "completed", findings: [finding], excluded: ["pnpm-lock.yaml"], model: "openai/gpt-5", costUsd: 0.12 },
+    });
+    expect(rendered(wheres.get(done!)).params).toEqual([REVIEW]);
+    const [failed] = await apply([{ type: "review.failed", ...ids, error: "no key" }]);
+    expect(failed).toMatchObject({ op: "update", table: "reviews", values: { status: "failed", error: "no key" } });
   });
 });

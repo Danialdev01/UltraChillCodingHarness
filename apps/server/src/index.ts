@@ -650,6 +650,17 @@ async function auditCommand(
     case "preview.delete":
       entry = { ...base, action: "preview.delete", targetType: "preview", summary: "Deleted a preview" };
       break;
+    case "review.run": {
+      const what = command.scope === "uncommitted" ? "the uncommitted changes" : command.scope === "branch" ? "the branch" : `commit ${command.ref ?? "HEAD"}`;
+      entry = {
+        ...base,
+        action: "review.run",
+        targetType: "git",
+        summary: `Asked OMP to review ${what}`,
+        details: { scope: command.scope, ...(command.ref ? { ref: command.ref } : {}), ...(command.threadId ? { threadId: command.threadId } : {}) },
+      };
+      break;
+    }
     // Deleting the project deletes its log; input and resizes are not changes.
     case "project.delete":
     case "terminal.input":

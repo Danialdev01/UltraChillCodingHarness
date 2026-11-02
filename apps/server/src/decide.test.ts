@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Command, Membership } from "@ucch/protocol";
+import { Command, REQUIRED_SCOPE, type Membership } from "@ucch/protocol";
 import {
   decide,
   type DecisionContext,
@@ -727,5 +727,44 @@ describe("workspace roles", () => {
       { type: "thread.create", projectId: PROJECT, ...(requested ? { credentialSource: requested } : {}) },
     );
     expect(d).toMatchObject({ ok: true, events: [{ type: "thread.created", credentialSource: expected }] });
+  });
+});
+
+describe("review.run", () => {
+  it("records the request for the reactor, on the checkout or a session's worktree", () => {
+    expect(run({ project: project() }, { type: "review.run", projectId: PROJECT, scope: "uncommitted", focus: "  the parser " })).toEqual({
+      ok: true,
+      events: [
+        {
+          type: "review.requested",
+          projectId: PROJECT,
+          reviewId: NEW_ID,
+          threadId: null,
+          scope: "uncommitted",
+          ref: null,
+          focus: "the parser",
+          requestedBy: USER,
+        },
+      ],
+    });
+    const d = run({ project: project(), thread: thread({ worktreeState: "ready" }) }, { type: "review.run", projectId: PROJECT, threadId: THREAD, scope: "commit", ref: "abc123" });
+    expect(d).toMatchObject({ ok: true, events: [{ type: "review.requested", threadId: THREAD, scope: "commit", ref: "abc123" }] });
+    // A review reads the tree from the server: the container may be stopped.
+    expect(run({ project: project({ containerState: "stopped" }) }, { type: "review.run", projectId: PROJECT, scope: "branch" })).toMatchObject({ ok: true });
+  });
+
+  it("refuses a viewer, a stranger, another project's session, and a worktree not ready", () => {
+    const command: Command = { type: "review.run", projectId: PROJECT, scope: "uncommitted" };
+    expect(run({ project: project(), workspace: workspace({ membership: member({ role: "viewer" }) }) }, command)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+    expect(run({ project: project(), workspace: workspace({ membership: null }) }, command)).toMatchObject({ ok: false, error: { code: "not_found" } });
+    const inThread: Command = { ...command, threadId: THREAD };
+    expect(run({ project: project(), thread: thread({ projectId: NEW_ID }) }, inThread)).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(run({ project: project() }, inThread)).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(run({ project: project(), thread: thread({ worktreeState: "creating" }) }, inThread)).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+
+  it("is billed, so it needs the exec scope; a ref may not be an option", () => {
+    expect(REQUIRED_SCOPE["review.run"]).toBe("exec");
+    expect(Command.safeParse({ type: "review.run", projectId: PROJECT, scope: "commit", ref: "--output=/x" }).success).toBe(false);
   });
 });

@@ -9,11 +9,14 @@ import {
   OmpNormaliser,
   OmpProvider,
   ompArgv,
+  ompCallArgv,
   ompPrintArgv,
+  ompStructuredResults,
   ompModel,
   probeOmp,
   thinkingFor,
   type OmpProviderOptions,
+  type OmpCallInput,
   type OmpMaintenanceInput,
   type OmpSessionStats,
 } from "./omp.js";
@@ -799,6 +802,96 @@ describe("OmpProvider", () => {
         maintain(host, { ctx: { cwd: WORKSPACE, env: { OPENROUTER_API_KEY: "k", ANTHROPIC_API_KEY: "x" }, host } }),
       ).rejects.toThrow(/ANTHROPIC_API_KEY/);
       expect(host.children).toHaveLength(0);
+    });
+  });
+
+  describe("call: one unattended prompt, its subagents' structured results", () => {
+    /** omp-review.jsonl after its prompt, to the terminal agent_end: the reviewer runs after the prompt_result. */
+    const reviewFrames = () => {
+      const out = recording("omp-review").filter((r) => r.dir === "out").map((r) => r.frame);
+      const start = out.findIndex((f) => f.type === "response" && f.command === "prompt");
+      const end = out.findIndex((f) => f.type === "agent_end" && f.isTerminal === true);
+      return out.slice(start + 1, end + 1).filter((f) => f.type !== "response");
+    };
+    const files = { overlayPath: "/c/omp/run/r.yml", guardHookPath: "/c/omp/agent/ucch-guard.ts" };
+    const call = (host: ManualProcessHost, over: Partial<OmpCallInput> = {}) =>
+      new OmpProvider("omp", { killGraceMs: 20, interruptGraceMs: 50, closeGraceMs: 200 }).call({
+        ctx: { cwd: WORKSPACE, env: { PATH: "/usr/bin", OPENROUTER_API_KEY: "sk-or-test" }, host },
+        omp: files,
+        projectId: ids.projectId,
+        callId: ids.turnId,
+        prompt: "Review this.",
+        model: "@slow",
+        tools: ["read", "grep", "glob", "task"],
+        ...over,
+      });
+
+    it("runs unattended with no session, past the prompt_result to the reviewer's verdict", async () => {
+      const host = fakeOmp({ turn: reviewFrames() });
+      const result = await call(host);
+      const argv = host.children[0]!.spec.argv;
+      expect(argv).toEqual(ompCallArgv({ bin: "omp", ...files, model: "@slow", tools: ["read", "grep", "glob", "task"] }));
+      expect(argv).toEqual(
+        expect.arrayContaining(["--mode", "rpc", "--no-session", "--approval-mode", "yolo", "--no-extensions", "--no-rules", "--no-lsp", "--hook"]),
+      );
+      expect(argv.slice(argv.indexOf("--tools"), argv.indexOf("--tools") + 2)).toEqual(["--tools", "read,grep,glob,task"]);
+      expect(result.structured).toEqual([
+        {
+          id: "ReviewDiff",
+          agent: "ReviewDiff",
+          status: "completed",
+          schemaStatus: "valid",
+          data: {
+            overall_correctness: "incorrect",
+            explanation: "div multiplies instead of dividing.",
+            confidence: 0.9,
+            findings: [
+              { title: "div multiplies", body: "`a * b` should be `a / b`.", priority: 0, confidence: 0.95, file_path: "math.ts", line_start: 2, line_end: 2 },
+            ],
+          },
+        },
+      ]);
+      expect(closing(result.events)).toMatchObject([{ type: "agent.turn_completed", stopReason: "end_turn" }]);
+      expect(result.events.find((e) => e.type === "agent.subagent_finished")).toMatchObject({ subagentId: "ReviewDiff", status: "completed" });
+      expect(parsed(result.events)).toHaveLength(result.events.length);
+      expect(host.children[0]!.stdinOpen).toBe(false);
+    });
+
+    it("names an OpenRouter model as a turn does", async () => {
+      const host = fakeOmp({ turn: reviewFrames() });
+      await call(host, { model: "openai/gpt-5", maxTime: "10m" });
+      expect(host.children[0]!.spec.argv).toEqual(expect.arrayContaining(["--model", "openrouter/openai/gpt-5", "--max-time", "10m"]));
+    });
+
+    it("rejects a refused prompt and a failed run", async () => {
+      await expect(call(fakeOmp({ refusePrompt: "busy" }))).rejects.toThrow("omp refused the prompt: busy");
+      const failed: OmpFrame[] = [
+        { type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "401 bad key" } },
+        { type: "agent_end", isTerminal: true },
+        { type: "prompt_result", status: "error", error: "401 bad key" },
+      ];
+      await expect(call(fakeOmp({ turn: failed }))).rejects.toThrow("401 bad key");
+    });
+
+    it("stops when asked", async () => {
+      const host = fakeOmp({ turn: reviewFrames(), stallAfter: 3 });
+      const controller = new AbortController();
+      const pending = call(host, { signal: controller.signal });
+      await eventuallyFrame(host, "prompt");
+      controller.abort();
+      await expect(pending).rejects.toThrow("Stopped.");
+      expect(host.children[0]!.frames.map((f) => f.type)).toContain("abort");
+    });
+
+    it("refuses a forbidden credential before spawning", async () => {
+      const host = fakeOmp();
+      await expect(call(host, { ctx: { cwd: WORKSPACE, env: { OPENROUTER_API_KEY: "k", OPENAI_API_KEY: "x" }, host } })).rejects.toThrow(/OPENAI_API_KEY/);
+      expect(host.children).toHaveLength(0);
+    });
+
+    it("reads structured results only from a valid async-result", () => {
+      expect(ompStructuredResults({ type: "message_end", message: { role: "assistant", content: [] } })).toEqual([]);
+      expect(ompStructuredResults({ type: "message_end", message: { role: "custom", customType: "async-result", details: { jobs: [{ jobId: "A", status: "completed" }] } } })).toEqual([]);
     });
   });
 

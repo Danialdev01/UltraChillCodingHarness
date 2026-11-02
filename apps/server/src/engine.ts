@@ -13,6 +13,7 @@ import {
 import {
   previews,
   projects,
+  reviews,
   projectStats,
   threads,
   turns,
@@ -603,6 +604,43 @@ export async function applyProjection(
             expiresAt: new Date(event.expiresAt),
           })
           .onConflictDoNothing();
+        break;
+
+      case "review.requested":
+        await tx
+          .insert(reviews)
+          .values({
+            id: event.reviewId,
+            projectId: event.projectId,
+            threadId: event.threadId,
+            scope: event.scope,
+            ref: event.ref,
+            focus: event.focus ?? null,
+            requestedBy: event.requestedBy,
+          })
+          .onConflictDoNothing();
+        break;
+
+      case "review.completed":
+        await tx
+          .update(reviews)
+          .set({
+            status: "completed",
+            verdict: event.verdict,
+            findings: event.findings,
+            excluded: event.excluded,
+            model: event.model,
+            costUsd: event.costUsd,
+            completedAt: new Date(),
+          })
+          .where(eq(reviews.id, event.reviewId));
+        break;
+
+      case "review.failed":
+        await tx
+          .update(reviews)
+          .set({ status: "failed", error: event.error, completedAt: new Date() })
+          .where(eq(reviews.id, event.reviewId));
         break;
 
       default:

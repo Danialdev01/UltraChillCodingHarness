@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ProjectDatabase } from "./database.js";
-import { MessageImage, MessageMode, ProjectMode, ProviderId } from "./events.js";
+import { MessageImage, MessageMode, ProjectMode, ProviderId, ReviewScope } from "./events.js";
 import { BranchName, PreviewHash, ThreadHash } from "./ids.js";
 
 /**
@@ -294,6 +294,26 @@ const PreviewDelete = z.object({
   hash: PreviewHash,
 });
 
+/**
+ * Reviews code with OMP's `reviewer` (solution §9): the uncommitted changes,
+ * the branch since `ref` (the project's default branch when absent), or the
+ * commit `ref` (HEAD when absent), in the session's worktree for `threadId`
+ * and the project's checkout without one. Billed as an OMP run.
+ */
+const ReviewRun = z.object({
+  type: z.literal("review.run"),
+  projectId: z.string().uuid(),
+  threadId: z.string().uuid().optional(),
+  scope: ReviewScope,
+  ref: z
+    .string()
+    .min(1)
+    .max(256)
+    .refine((ref) => !ref.startsWith("-"), "not a ref")
+    .optional(),
+  focus: z.string().max(2_000).optional(),
+});
+
 export const Command = z.discriminatedUnion("type", [
   ProjectCreate,
   ProjectStart,
@@ -317,6 +337,7 @@ export const Command = z.discriminatedUnion("type", [
   GitPush,
   PreviewPublish,
   PreviewDelete,
+  ReviewRun,
 ]);
 
 export type Command = z.infer<typeof Command>;

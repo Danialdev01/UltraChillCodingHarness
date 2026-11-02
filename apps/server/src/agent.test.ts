@@ -1,10 +1,11 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
-import type { Command, DomainEvent } from "@ucch/protocol";
+import { DomainEvent, type Command } from "@ucch/protocol";
 import {
   ClaudeNormaliser,
   createProviders,
@@ -1005,6 +1006,117 @@ describe("an OMP turn", () => {
       agent.react({ type: "thread.cancel", threadId: THREAD }, []);
       await until(appended, finished);
       expect(appended.flat().at(-1)).toEqual({ type: "thread.compaction_finished", threadId: THREAD, method: "compact", error: "Stopped." });
+    });
+  });
+
+  describe("a code review (OM7.7)", () => {
+    const REVIEW = "77777777-7777-4777-8777-777777777777";
+    const requested = {
+      type: "review.requested",
+      projectId: PROJECT,
+      reviewId: REVIEW,
+      threadId: null,
+      scope: "uncommitted",
+      ref: null,
+      focus: "arithmetic",
+      requestedBy: USER,
+    } as const;
+    const ended = (event: DomainEvent) => event.type === "review.completed" || event.type === "review.failed";
+
+    /**
+     * The reactor as `#review` reads -- the project, whom to bill -- on the
+     * project's checkout, a repository with a bug planted in math.ts line 2
+     * and a lock file changed. OMP is fake-omp replaying the reviewer
+     * (omp-review.jsonl), behind a wrapper that keeps a copy of the overlay
+     * and the argv it was given.
+     */
+    async function reviewReactor(personRow: Row) {
+      const tree = join(root, "workspaces", PROJECT);
+      await mkdir(tree, { recursive: true });
+      const git = (...argv: string[]) =>
+        execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.com", ...argv], { cwd: tree });
+      git("init", "-q");
+      await writeFile(join(tree, "math.ts"), "export const div = (a: number, b: number) => a / b;\nexport const one = 1;\n");
+      await writeFile(join(tree, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+      git("add", "-A");
+      git("commit", "-qm", "first");
+      await writeFile(join(tree, "math.ts"), "export const div = (a: number, b: number) => a * b;\nexport const one = 1;\n");
+      await writeFile(join(tree, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\npackages: {}\n");
+      const bin = join(root, "omp-review.sh");
+      await writeFile(
+        bin,
+        [
+          "#!/bin/sh",
+          `printf '%s\\n' "$@" > "${join(root, "argv.txt")}"`,
+          'prev=""; for a in "$@"; do [ "$prev" = "--config" ] && cp "$a" "' + join(root, "overlay.yml") + '"; prev="$a"; done',
+          `exec node "${resolve(join(import.meta.dirname, "../../../scripts/load/fake-omp.mjs"))}" --fixture "${join(FIXTURES, "omp-review.jsonl")}" "$@"`,
+          "",
+        ].join("\n"),
+      );
+      await chmod(bin, 0o755);
+      const creds = join(root, "creds");
+      const providers = new ProviderService(
+        {} as Database,
+        { CREDS_ROOT: creds } as Config,
+        new HostProcessHost(),
+        createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: bin }),
+      );
+      const scheduler = new TurnScheduler({ cliPerUser: 2, cliTotal: 2, nativeTotal: 2, ompTotal: 1 });
+      const built = reactorWith(
+        { workspaceRoot: join(root, "workspaces"), secretKey: SECRET, defaultModel: "anthropic/claude-sonnet-4.5", cliEnabled: true, providers, scheduler },
+        [{ defaultBranch: "main" }],
+        [owner],
+        [personRow],
+      );
+      return { ...built, scheduler, creds };
+    }
+
+    it("reviews the checkout: a P0 on the planted bug's line, the lock file left out, on the review overlay", async () => {
+      const { agent, appended, scheduler, creds, errors } = await reviewReactor(keyed);
+      agent.react({ type: "review.run", projectId: PROJECT, scope: "uncommitted", focus: "arithmetic" }, [requested]);
+      await until(appended, ended);
+      expect(errors).toEqual([]);
+      const [done] = appended.flat();
+      expect(done).toMatchObject({
+        type: "review.completed",
+        projectId: PROJECT,
+        reviewId: REVIEW,
+        threadId: null,
+        scope: "uncommitted",
+        ref: null,
+        verdict: { verdict: "incorrect" },
+        excluded: ["pnpm-lock.yaml"],
+        model: "anthropic/claude-sonnet-4.5",
+      });
+      DomainEvent.parse(done);
+      const findings = (done as Extract<DomainEvent, { type: "review.completed" }>).findings;
+      expect(findings.filter((f) => f.priority === "P0" || f.priority === "P1")).toEqual([
+        expect.objectContaining({ file: "math.ts", startLine: 2, endLine: 2 }),
+      ]);
+      // Unattended, read-only, no session, nothing of the repository's tooling.
+      const argv = (await readFile(join(root, "argv.txt"), "utf8")).trim().split("\n");
+      expect(argv).toEqual(expect.arrayContaining(["--mode", "rpc", "--no-session", "--approval-mode", "yolo", "--no-lsp", "--no-extensions", "--no-rules"]));
+      expect(argv[argv.indexOf("--tools") + 1]).toBe("read,grep,glob,task");
+      expect(argv[argv.indexOf("--model") + 1]).toBe("openrouter/anthropic/claude-sonnet-4.5");
+      const overlay = await readFile(join(root, "overlay.yml"), "utf8");
+      expect(overlay).toMatch(/^ {2}structured: true$/m);
+      expect(overlay).toMatch(/^ {4}bash: "deny"$/m);
+      expect(overlay).toMatch(/^ {4}write: "deny"$/m);
+      expect(overlay).toMatch(/^ {4}task: "allow"$/m);
+      expect(overlay).toMatch(/^ {2}enabled: false$/m);
+      // The slot is given back, and the overlay is gone.
+      await eventually(() => scheduler.stats().running.omp, 0);
+      await eventually(() => readdir(join(creds, USER, "omp", "run")), []);
+    });
+
+    it("fails the review with where to add a key, and never starts OMP", async () => {
+      const { agent, appended } = await reviewReactor(person);
+      agent.react({ type: "review.run", projectId: PROJECT, scope: "uncommitted" }, [requested]);
+      await until(appended, ended);
+      expect(appended.flat()).toEqual([
+        expect.objectContaining({ type: "review.failed", reviewId: REVIEW, scope: "uncommitted", error: expect.stringMatching(/^No OpenRouter API key is set/) }),
+      ]);
+      expect(existsSync(join(root, "argv.txt"))).toBe(false);
     });
   });
 

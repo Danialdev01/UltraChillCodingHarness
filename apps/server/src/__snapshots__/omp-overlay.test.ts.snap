@@ -24,6 +24,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -154,6 +155,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -284,6 +286,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -414,6 +417,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -544,6 +548,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -674,6 +679,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -804,6 +810,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -934,6 +941,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -1064,6 +1072,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -1194,6 +1203,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -1324,6 +1334,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true
@@ -1454,6 +1465,7 @@ task:
   softRequestBudget: 120
   maxRuntimeMs: 900000
   agentIdleTtlMs: 60000
+  structured: false
   isolation:
     enabled: false
     apply: true

@@ -19,6 +19,9 @@ import {
 import type {
   DomainEvent,
   NoteDoc,
+  ReviewFinding,
+  ReviewScope,
+  ReviewVerdict,
   TaskAutoRun,
   TaskFeedback,
   TaskReference,
@@ -523,6 +526,38 @@ export const previews = pgTable(
     index("previews_project_idx").on(t.projectId),
     index("previews_expires_idx").on(t.expiresAt),
   ],
+);
+
+/**
+ * Code reviews by OMP's `reviewer` (solution §9, OM7.7): one row per
+ * `review.requested`, filled in by its `review.completed` or `review.failed`.
+ * The log holds the same; this is what the Git view lists.
+ */
+export const reviews = pgTable(
+  "reviews",
+  {
+    id: uuid("id").primaryKey(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** The session whose worktree was reviewed; null for the checkout. */
+    threadId: uuid("thread_id").references(() => threads.id, { onDelete: "cascade" }),
+    scope: text("scope").$type<ReviewScope>().notNull(),
+    ref: text("ref"),
+    focus: text("focus"),
+    requestedBy: uuid("requested_by").references(() => users.id, { onDelete: "set null" }),
+    /** `running`, `completed` or `failed`. */
+    status: text("status").notNull().default("running"),
+    verdict: jsonb("verdict").$type<ReviewVerdict>(),
+    findings: jsonb("findings").$type<ReviewFinding[]>().notNull().default([]),
+    excluded: jsonb("excluded").$type<string[]>().notNull().default([]),
+    model: text("model"),
+    costUsd: doublePrecision("cost_usd").notNull().default(0),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [index("reviews_project_idx").on(t.projectId, t.createdAt)],
 );
 
 export const secrets = pgTable(

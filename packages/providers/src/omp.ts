@@ -177,6 +177,85 @@ export function ompPrintArgv(input: {
   ];
 }
 
+/**
+ * `omp --mode rpc` for one unattended prompt with no session: the review
+ * engine (solution §9, OM7.7) and OMP's verify step (§9.4). Plain `rpc`, as
+ * the bridge's calls run: nobody is there to answer an approval, so none is
+ * asked (`--approval-mode yolo`), and the overlay's approval table and the
+ * guard hook are what limit it. `--tools` limits the main agent; the
+ * subagents it starts are held by the overlay. The same guard flags as a
+ * turn.
+ */
+export function ompCallArgv(input: {
+  bin: string;
+  overlayPath: string;
+  guardHookPath: string;
+  /** `openrouter/<id>` or a role (`@slow`). */
+  model: string;
+  /** The main agent's tools (`--tools`). */
+  tools: readonly string[];
+  /** A wall-clock limit, `--max-time` syntax (`10m`). */
+  maxTime?: string;
+}): string[] {
+  return [
+    input.bin,
+    "--mode",
+    "rpc",
+    "--no-session",
+    "--no-title",
+    "--config",
+    input.overlayPath,
+    "--approval-mode",
+    "yolo",
+    "--tools",
+    input.tools.join(","),
+    "--no-extensions",
+    "--no-rules",
+    // Reading code needs no language server, so none of the project's runs.
+    "--no-lsp",
+    "--hook",
+    input.guardHookPath,
+    "--model",
+    input.model,
+    ...(input.maxTime ? ["--max-time", input.maxTime] : []),
+  ];
+}
+
+/**
+ * A subagent's structured result: the data it `yield`ed, which OMP checked
+ * against the agent's output schema. Where 18.14.1 puts it (fixtures/
+ * omp-review.jsonl): the `async-result` message that reports a background
+ * job, under `details.jobs[].schema`, `{ source, mode, status, data }`.
+ */
+export interface OmpStructuredResult {
+  /** The job's id: the `tasks[].name` it was given. */
+  id: string;
+  agent: string | null;
+  status: string;
+  /** `valid` when OMP checked it against the schema and it passed. */
+  schemaStatus: string;
+  data: unknown;
+}
+
+/** The structured results a frame carries, if it is an `async-result`. */
+export function ompStructuredResults(frame: OmpFrame): OmpStructuredResult[] {
+  if (frame.type !== "message_end") return [];
+  const message = (frame as { message?: { role?: unknown; customType?: unknown; details?: { jobs?: unknown } } }).message;
+  if (message?.role !== "custom" || message.customType !== "async-result" || !Array.isArray(message.details?.jobs)) return [];
+  const results: OmpStructuredResult[] = [];
+  for (const job of message.details.jobs as { jobId?: unknown; agentId?: unknown; status?: unknown; schema?: { status?: unknown; data?: unknown } }[]) {
+    if (!job || typeof job !== "object" || !job.schema || typeof job.schema !== "object" || !("data" in job.schema)) continue;
+    results.push({
+      id: typeof job.jobId === "string" ? job.jobId : "",
+      agent: typeof job.agentId === "string" ? job.agentId : null,
+      status: typeof job.status === "string" ? job.status : "",
+      schemaStatus: typeof job.schema.status === "string" ? job.schema.status : "",
+      data: job.schema.data,
+    });
+  }
+  return results;
+}
+
 // -- Normalising the RPC stream ------------------------------------------------
 
 /** What `get_session_stats` reports (fixtures/omp-plain.jsonl). Cumulative per session. */
@@ -1187,6 +1266,121 @@ export class OmpProvider implements AgentProvider {
       if (outcome === "late") await client.kill();
     }
   }
+
+  /**
+   * One unattended prompt, run until OMP settles, its background subagents
+   * included (`ompCallArgv`): the review engine's and the verify step's
+   * runs. Resolves with the run's events, the subagents' structured
+   * results, and what it cost; rejects when OMP does not start, refuses the
+   * prompt, fails, or is stopped.
+   */
+  async call(input: OmpCallInput): Promise<OmpCallResult> {
+    const forbidden = forbiddenEnvFor("omp", input.ctx.env);
+    if (forbidden) {
+      throw new Error(`${forbidden} is set in the provider environment; refusing to run on a credential other than the OpenRouter key`);
+    }
+    const argv = ompCallArgv({
+      bin: this.bin,
+      overlayPath: input.omp.overlayPath,
+      guardHookPath: input.omp.guardHookPath,
+      model: input.model.startsWith("@") ? input.model : ompModel(input.model),
+      tools: input.tools,
+      ...(input.maxTime ? { maxTime: input.maxTime } : {}),
+    });
+    const normaliser = new OmpNormaliser({ projectId: input.projectId, threadId: input.threadId ?? input.projectId, turnId: input.callId, workspace: input.ctx.cwd });
+    const events: DomainEvent[] = [];
+    const structured: OmpStructuredResult[] = [];
+    let settle: () => void = () => {};
+    const settled = new Promise<void>((resolve) => (settle = resolve));
+    let stopped = false;
+    const rpc = await OmpRpc.start({
+      host: input.ctx.host,
+      argv,
+      cwd: input.ctx.cwd,
+      env: input.ctx.env,
+      onFrame: (frame) => {
+        structured.push(...ompStructuredResults(frame));
+        for (const event of normaliser.push(frame)) {
+          events.push(event);
+          // `yolo` asks nothing; one that comes anyway is refused, not waited on.
+          if (event.type === "agent.permission_requested") {
+            events.push(...normaliser.answerPermission(event.requestId, { behavior: "deny", message: "Nobody can approve this: the run is unattended." }));
+          }
+        }
+        if (normaliser.settled) settle();
+      },
+      ...(this.options.onStderr ? { onStderr: this.options.onStderr } : {}),
+      ...(this.options.readyTimeoutMs !== undefined ? { readyTimeoutMs: this.options.readyTimeoutMs } : {}),
+      ...(this.options.killGraceMs !== undefined ? { killGraceMs: this.options.killGraceMs } : {}),
+    });
+    normaliser.bind({ send: (frame) => rpc.send(frame) });
+    const onAbort = () => {
+      stopped = true;
+      normaliser.noteInterrupt();
+      rpc.request({ type: "abort" }).catch(() => {});
+      setTimeout(() => void rpc.kill(), this.options.interruptGraceMs ?? INTERRUPT_GRACE_MS).unref();
+    };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    if (input.signal?.aborted) onAbort();
+    try {
+      const stats = async () => {
+        const answer = await rpc.request<OmpSessionStats>({ type: "get_session_stats" });
+        return answer.success ? (answer.data ?? null) : null;
+      };
+      const before = await stats();
+      const prompt = await rpc.request({ type: "prompt", message: input.prompt });
+      if (!prompt.success) throw new Error(`omp refused the prompt: ${prompt.error ?? "no reason given"}`);
+      const outcome = await Promise.race([settled.then(() => "settled" as const), rpc.exited.then(() => "exited" as const)]);
+      if (outcome === "settled") {
+        events.push(...normaliser.complete({ before, after: await stats() }));
+      } else {
+        const exit = await rpc.exited;
+        events.push(...normaliser.finish({ ...exit, interrupted: stopped, stderrTail: rpc.stderrTail }));
+      }
+      if (stopped) throw new Error("Stopped.");
+      const end = events.find((event) => event.type === "agent.turn_completed" || event.type === "agent.turn_failed");
+      if (!end) throw new Error("omp ended without finishing the run");
+      if (end.type === "agent.turn_failed") throw new Error(end.error);
+      return { events, structured, usage: end.usage, costUsd: end.costUsd };
+    } catch (error) {
+      if (stopped) throw new Error("Stopped.");
+      throw error;
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort);
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), this.options.closeGraceMs ?? CLOSE_GRACE_MS)));
+      const outcome = await Promise.race([rpc.close(), late]);
+      clearTimeout(timer);
+      if (outcome === "late") await rpc.kill();
+    }
+  }
+}
+
+/** What `OmpProvider.call` runs (solution §9). */
+export interface OmpCallInput {
+  ctx: RunContext;
+  omp: Pick<OmpRunFiles, "overlayPath" | "guardHookPath">;
+  /** For the events' ids: the project, and the thread if there is one. */
+  projectId: string;
+  threadId?: string;
+  /** The events' turn id. */
+  callId: string;
+  prompt: string;
+  /** `openrouter/<id>` or a role (`@slow`). */
+  model: string;
+  /** The main agent's tools. */
+  tools: readonly string[];
+  maxTime?: string;
+  /** Stops it: OMP is asked to abort, then killed. */
+  signal?: AbortSignal;
+}
+
+export interface OmpCallResult {
+  /** Normalised, as a turn's would be, closed by `agent.turn_completed`. */
+  events: DomainEvent[];
+  structured: OmpStructuredResult[];
+  usage: TokenUsage;
+  costUsd: number;
 }
 
 /** What `OmpProvider.ask` runs (solution §5.4). */

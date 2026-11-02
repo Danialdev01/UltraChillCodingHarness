@@ -279,6 +279,68 @@ export const scenarios = [
     },
   },
   {
+    // A code review as the review engine runs it (OM7.7): the main agent
+    // dispatches the bundled `reviewer`, which `yield`s its verdict. The
+    // reviewer has `yield` only with `task.structured: true`; without it,
+    // OMP 18.14.1 answers "Tool yield not found" and the reviewer replies in
+    // prose.
+    name: "review",
+    mode: "rpc",
+    args: ["--no-session", "--approval-mode", "yolo", "--no-extensions", "--no-rules", "--no-lsp"],
+    config: "task:\n  structured: true\n",
+    files: { "math.ts": "export const add = (a: number, b: number) => a + b;\nexport const div = (a: number, b: number) => a * b;\n" },
+    script: [
+      {
+        toolCalls: [
+          {
+            name: "task",
+            arguments: {
+              i: "review the diff",
+              context: "Review the diff below.",
+              tasks: [{ name: "ReviewDiff", agent: "reviewer", task: "REVIEW-MARKER: review math.ts.", solutionSpace: "Read-only." }],
+            },
+          },
+        ],
+      },
+      {
+        when: "REVIEW-MARKER",
+        toolCalls: [
+          {
+            name: "yield",
+            arguments: {
+              data: {
+                overall_correctness: "incorrect",
+                explanation: "div multiplies instead of dividing.",
+                confidence: 0.9,
+                findings: [
+                  {
+                    title: "div multiplies",
+                    body: "`a * b` should be `a / b`.",
+                    priority: 0,
+                    confidence: 0.95,
+                    file_path: "math.ts",
+                    line_start: 2,
+                    line_end: 2,
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      { text: "The reviewer found one P0: div multiplies." },
+    ],
+    async run(ctx) {
+      await command(ctx, { type: "set_subagent_subscription", level: "progress" });
+      await command(ctx, { type: "prompt", message: "Review the uncommitted change." });
+      // In 18.14.1 the prompt_result comes between the non-terminal and the
+      // terminal agent_end, so it is awaited first.
+      await ctx.waitFor(promptDone, 90000, "prompt_result");
+      await ctx.waitFor(terminalEnd, 90000, "agent_end");
+      await command(ctx, { type: "get_session_stats" });
+    },
+  },
+  {
     // An omp_codemod preview, as the bridge runs it (OM6.2): its flags, no
     // `write`, and an `abort` once `ast_edit` has staged its proposal --
     // OMP would otherwise force the model to resolve it until the turn fails.

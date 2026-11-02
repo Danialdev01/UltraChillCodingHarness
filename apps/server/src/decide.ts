@@ -509,6 +509,33 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       // Names no project, so there is no owner to check it against, and no
       // reactor deletes anything. Refused until both exist.
       return fail("invalid", "deleting a preview is not supported");
+
+    // -- Code review ---------------------------------------------------------
+
+    case "review.run": {
+      // Billed to the project as a turn is, so it takes what a turn takes.
+      const project = requireProject(state, ctx, "project.write");
+      if ("error" in project) return project.decision;
+      if (command.threadId) {
+        const thread = requireThread(state, ctx, "project.write");
+        if ("error" in thread) return thread.decision;
+        const unready = worktreeRefusal(thread.value);
+        if (unready) return unready;
+      }
+      // The verdict is written by the reactor once OMP has given it.
+      return ok([
+        {
+          type: "review.requested",
+          projectId: project.value.id,
+          reviewId: ctx.newId(),
+          threadId: command.threadId ?? null,
+          scope: command.scope,
+          ref: command.ref ?? null,
+          ...(command.focus?.trim() ? { focus: command.focus.trim() } : {}),
+          requestedBy: ctx.userId,
+        },
+      ]);
+    }
   }
 }
 

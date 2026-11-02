@@ -123,6 +123,23 @@ describe("ompOverlay", () => {
     expect(ompApprovals({ ...base, preset: "documentation" })).toMatchObject({ write: "allow", edit: "allow" });
   });
 
+  it("lets a review read and hand off to the reviewer, unasked, and nothing else", () => {
+    for (const mode of MODES) {
+      const approvals = ompApprovals({ ...everything, preset: "review", hostTools: [], permissionMode: mode });
+      expect(approvals).toMatchObject({ read: "allow", grep: "allow", glob: "allow", task: "allow" });
+      for (const tool of ["write", "edit", "ast_edit", "bash", "eval", "lsp", "debug", "web_search", "browser", "retain", "memory_edit", "learn"]) {
+        expect([tool, approvals[tool]]).toEqual([tool, "deny"]);
+      }
+    }
+  });
+
+  it("gives subagents their yield tool only for a review", () => {
+    expect(ompOverlay({ ...base, preset: "review" })).toMatchObject({ task: { structured: true } });
+    for (const preset of ["standard", "research", "documentation"] as const) {
+      expect(ompOverlay({ ...base, preset })).toMatchObject({ task: { structured: false } });
+    }
+  });
+
   it("turns debugging off for an untrusted project, where its dap.json would load", () => {
     expect(ompOverlay(base)).toMatchObject({ debug: { enabled: false } });
     expect(ompApprovals(base).debug).toBe("deny");

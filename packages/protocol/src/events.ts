@@ -953,6 +953,76 @@ const PreviewPublished = z.object({
   expiresAt: z.string().datetime(),
 });
 
+// -- Code review (OMP, solution §9) ---------------------------------------------
+
+/** What a review looks at: the working tree, the branch since its base, or one commit. */
+export const ReviewScope = z.enum(["uncommitted", "branch", "commit"]);
+export type ReviewScope = z.infer<typeof ReviewScope>;
+
+/**
+ * One finding of OMP's `reviewer`. Priority is how much it matters (P0
+ * blocks a merge); confidence is how sure the reviewer is, 0-1. OMP's docs:
+ * "Confidence is not severity", so the two are kept apart.
+ */
+export const ReviewFinding = z.object({
+  priority: z.enum(["P0", "P1", "P2", "P3"]),
+  confidence: z.number().min(0).max(1),
+  title: z.string(),
+  body: z.string(),
+  /** Relative to the reviewed tree. */
+  file: z.string(),
+  startLine: z.number().int().nonnegative(),
+  endLine: z.number().int().nonnegative(),
+});
+export type ReviewFinding = z.infer<typeof ReviewFinding>;
+
+/** The reviewer's overall answer: is the change correct? */
+export const ReviewVerdict = z.object({
+  verdict: z.enum(["correct", "incorrect"]),
+  explanation: z.string(),
+  confidence: z.number().min(0).max(1),
+});
+export type ReviewVerdict = z.infer<typeof ReviewVerdict>;
+
+const ReviewRequested = z.object({
+  type: z.literal("review.requested"),
+  projectId: z.string().uuid(),
+  reviewId: z.string().uuid(),
+  /** The session whose worktree is reviewed; null for the project's checkout. */
+  threadId: z.string().uuid().nullable(),
+  scope: ReviewScope,
+  /** The base branch for `branch`, the commit for `commit`. */
+  ref: z.string().nullable(),
+  focus: z.string().optional(),
+  requestedBy: z.string().uuid(),
+});
+
+const ReviewCompleted = z.object({
+  type: z.literal("review.completed"),
+  projectId: z.string().uuid(),
+  reviewId: z.string().uuid(),
+  threadId: z.string().uuid().nullable(),
+  scope: ReviewScope,
+  ref: z.string().nullable(),
+  verdict: ReviewVerdict,
+  findings: z.array(ReviewFinding),
+  /** Files left out of the diff the reviewer was given: lock files, generated and vendored code. */
+  excluded: z.array(z.string()),
+  /** The model the review ran on, as OpenRouter names it. */
+  model: z.string(),
+  costUsd: z.number().nonnegative(),
+});
+
+const ReviewFailed = z.object({
+  type: z.literal("review.failed"),
+  projectId: z.string().uuid(),
+  reviewId: z.string().uuid(),
+  threadId: z.string().uuid().nullable(),
+  scope: ReviewScope,
+  ref: z.string().nullable(),
+  error: z.string(),
+});
+
 // -- Union -------------------------------------------------------------------
 
 export const DomainEvent = z.discriminatedUnion("type", [
@@ -1008,6 +1078,9 @@ export const DomainEvent = z.discriminatedUnion("type", [
   GitCommitted,
   GitPushed,
   PreviewPublished,
+  ReviewRequested,
+  ReviewCompleted,
+  ReviewFailed,
 ]);
 
 export type DomainEvent = z.infer<typeof DomainEvent>;
