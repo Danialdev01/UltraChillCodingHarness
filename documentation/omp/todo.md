@@ -531,13 +531,17 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Flags.** `codexMcpArgs` renders `command`, `args`, `env`, `tool_timeout_sec` (`OMP_BRIDGE_MAX_SECONDS` + 70) and `default_tools_approval_mode="approve"`, TOML-quoted. Without it, `codex exec` refuses every tool not marked read-only.
     - **Tests.** `codex.test.ts`: the bridge-off argv is pinned, plus the flags new and resumed, and quoting. `agent.test.ts`: the argv-side server holds no key, the file is 0600 and holds the env, and it is gone after the turn. `config.test.ts`: `withEnvFile`.
     - **Manual turn.** Codex 0.166.0 `exec` on a scripted Responses API through a custom provider, so no login was needed. It used the flags `codexArgv` renders from `writeCodexBridge`, with a real `BridgeLeases` and real OMP on a scripted `openrouter`. `omp_task` scout ran and returned the scout's result. The key did not appear in argv, and the files were removed. The findings are in the spike report's "Measured later", and `BLOCKED` OM0.5 Q2 is settled.
-- [ ] **OM6.6 — The usage guide in instructions**
+- [x] **OM6.6 — The usage guide in instructions** — ae4aa7d
 
   - **Depends:** OM6.4
   - **Files:** new `packages/providers/assets/omp-bridge-guide.md`, `apps/server/src/agent.ts`
   - **Steps:** append the solution §10.4 guide to `instructions` for claude and codex when the bridge is on, and record it as `context.injected`.
   - **Acceptance:** the guide appears in the thread log only when the bridge is on.
   - **Verify:** `pnpm test -- agent`
+  - **As built:**
+    - **Log.** The guide is logged as `context.injected` with a new source, `omp_bridge`, which the chat does not draw, as with the other non-compaction sources. It is added only once `#openBridge` has given the turn the bridge, so a turn without an OpenRouter key gets no guide. The bundle ships it next to `server.mjs`.
+    - **Resumed Codex.** A resumed Codex session is not handed instructions (`codexPrompt`), so it gets no guide and the log records none.
+    - **Tests.** `agent.test.ts`: the guide on for Claude and Codex, off with the setting off or no key, absent on a resumed Codex turn, and the instructions unchanged without it. `omp-bridge/src/guide.test.ts`: the guide names exactly `BRIDGE_TOOLS` and stays within 25 lines.
 - [ ] **OM6.7 — CLIs started by hand**
 
   - **Depends:** OM6.4, OM6.5
