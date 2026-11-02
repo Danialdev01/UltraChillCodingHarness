@@ -519,13 +519,18 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Prompts.** `claudePromptNeedsPerson` sends a bridge tool to a person except under Allow All, or under Normal for a read-only one.
     - **Tests.** `claude.test.ts`: the bridge-off argv is pinned and has no MCP flag in any mode, plus the flags per mode. `agent.test.ts`: the MCP config's exact env, mode 0600, the overlay, no key of any kind in the CLI's environment, files and token gone after the turn, and no bridge when the setting is off, the server has none, or there is no key. The prompt rule has its own table.
     - **Manual turn.** Claude Code 2.1.316 against a scripted API, using the config the server code writes, with the built bridge, a real `BridgeLeases`, and real OMP on a scripted model served as `openrouter`. `omp_symbols` ran unasked under Normal and returned the `lsp` result. Strict and `omp_rename` prompted as `can_use_tool`. Untrusted, it answered "off for this project". MCP tools are deferred in 2.1.316, and the model loads them with `ToolSearch` (solution §10.3).
-- [ ] **OM6.5 — Wire into Codex turns**
+- [x] **OM6.5 — Wire into Codex turns** — 59f079e
 
   - **Depends:** OM6.2, OM0.5
   - **Files:** `packages/providers/src/codex.ts` (`codexArgv`), `apps/server/src/providers.ts` (the `config.toml` managed block, as the fallback)
   - **Steps:** implement solution §10.3 for Codex, using the syntax OM0.5 confirmed.
   - **Acceptance:** a Codex turn can call `omp_task scout`, and with the bridge off the argv is unchanged.
   - **Verify:** `pnpm test -- codex`, plus a manual turn
+  - **As built:**
+    - **No `config.toml` fallback.** `-c` works, but it is argv, readable in `ps`, so the bridge's environment and key go in `codex/run/<turnId>.bridge.json` (0600). The flags name only that file (`UCCH_BRIDGE_ENV_FILE`), and the bridge reads it with `withEnvFile`.
+    - **Flags.** `codexMcpArgs` renders `command`, `args`, `env`, `tool_timeout_sec` (`OMP_BRIDGE_MAX_SECONDS` + 70) and `default_tools_approval_mode="approve"`, TOML-quoted. Without it, `codex exec` refuses every tool not marked read-only.
+    - **Tests.** `codex.test.ts`: the bridge-off argv is pinned, plus the flags new and resumed, and quoting. `agent.test.ts`: the argv-side server holds no key, the file is 0600 and holds the env, and it is gone after the turn. `config.test.ts`: `withEnvFile`.
+    - **Manual turn.** Codex 0.166.0 `exec` on a scripted Responses API through a custom provider, so no login was needed. It used the flags `codexArgv` renders from `writeCodexBridge`, with a real `BridgeLeases` and real OMP on a scripted `openrouter`. `omp_task` scout ran and returned the scout's result. The key did not appear in argv, and the files were removed. The findings are in the spike report's "Measured later", and `BLOCKED` OM0.5 Q2 is settled.
 - [ ] **OM6.6 — The usage guide in instructions**
 
   - **Depends:** OM6.4
