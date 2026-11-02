@@ -729,6 +729,14 @@ A section appended to `instructions` for CLI providers when the bridge is on, ab
 - Bridge calls count as OMP processes in the scheduler (§13) through a lease. The bridge asks the server for a slot over a local Unix socket (`UCCH_SCHEDULER_SOCK`) and waits up to 30 s; if no slot comes, it returns "busy, try later".
 - A per-turn call budget (`UCCH_BRIDGE_MAX_CALLS`, default 12) is enforced in the bridge.
 
+**As built (OM6.3):**
+- **Scheduler.** `TurnScheduler.lease({ ownerId, threadId, waitMs })` is an `omp` acquire that gives up after `waitMs` and resolves null, freeing its place in the queue.
+- **Socket.** `apps/server/src/bridge-leases.ts` listens on `<CREDS_ROOT>/omp-scheduler.sock` (mode 0600) once the HTTP server is up. The protocol is one line each way, `{type:"lease",token}`, answered `granted`, `busy` after 30 s, or `refused`.
+- **The connection is the lease.** The slot is held until the bridge closes it, so a bridge that crashes, or dies with its CLI, gives the slot back.
+- **Tokens.** A per-turn token (`UCCH_BRIDGE_TOKEN`, registered when OM6.4 writes the MCP config) names the turn. Nothing else can take a slot.
+- **Bridge.** `lease.ts` checks the budget first, then the slot. A call refused as busy or over budget does not count against the budget, and never starts `omp`.
+- **Fail closed.** With `UCCH_SCHEDULER_SOCK` set but no answer, or no server, the call is refused rather than run unmetered. Without it (the dev-machine recipe) only the budget applies.
+
 ---
 
 ## §11 Native loop: fallback and retirement
@@ -839,7 +847,7 @@ A section appended to `instructions` for CLI providers when the bridge is on, ab
 | `OMP_BIN`, `OMP_ENABLED`, `NATIVE_LOOP_FALLBACK`, `OMP_BRIDGE_BIN`, `OMP_TURN_TOTAL`, `OMP_WORKERS_PER_TURN`, `OMP_BRIDGE_MAX_SECONDS` | operator (`.env`) | server config §1.3 |
 | `PI_CODING_AGENT_DIR`, `OMP_WORKTREE_DIR`, `OMP_SKIP_SETUP`, `PI_TASK_MAX_OUTPUT_BYTES`, `PI_NATIVES_DIR`, `OPENROUTER_API_KEY` | server, per run | OMP process §3.3 ([env](https://omp.sh/docs/env)) |
 | `JS_DEBUG_DAP_SERVER` | image | DAP §8.3 |
-| `UCCH_OMP_BIN`, `UCCH_OMP_AGENT_DIR`, `UCCH_OMP_OVERLAY`, `UCCH_WORKTREE`, `UCCH_BRIDGE_MAX_SECONDS`, `UCCH_BRIDGE_MAX_CALLS`, `UCCH_SCHEDULER_SOCK` | server, in MCP config | bridge §10 |
+| `UCCH_OMP_BIN`, `UCCH_OMP_AGENT_DIR`, `UCCH_OMP_OVERLAY`, `UCCH_WORKTREE`, `UCCH_BRIDGE_MAX_SECONDS`, `UCCH_BRIDGE_MAX_CALLS`, `UCCH_SCHEDULER_SOCK`, `UCCH_BRIDGE_TOKEN`, `UCCH_OMP_MEMORY`, `UCCH_OMP_WEB_SEARCH` | server, in MCP config | bridge §10 |
 | `UCCH_OMP_MCP` | terminal reactor | hand-started CLIs §10.3 |
 
 ## Appendix B: Protocol additions

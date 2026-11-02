@@ -14,6 +14,9 @@ describe("readBridgeConfig", () => {
           UCCH_BRIDGE_MAX_SECONDS: "120",
           UCCH_OMP_MEMORY: "1",
           UCCH_OMP_WEB_SEARCH: "1",
+          UCCH_SCHEDULER_SOCK: "/creds/omp-scheduler.sock",
+          UCCH_BRIDGE_TOKEN: "tok",
+          UCCH_BRIDGE_MAX_CALLS: "3",
         },
         "/elsewhere",
       ),
@@ -26,11 +29,14 @@ describe("readBridgeConfig", () => {
       maxSeconds: 120,
       memory: true,
       webSearch: true,
+      schedulerSock: "/creds/omp-scheduler.sock",
+      leaseToken: "tok",
+      maxCalls: 3,
     });
   });
 
-  it("falls back to omp on the PATH, the cwd and five minutes", () => {
-    expect(readBridgeConfig({ UCCH_BRIDGE_MAX_SECONDS: "soon" }, "/here")).toEqual({
+  it("falls back to omp on the PATH, the cwd, five minutes, no scheduler and twelve calls", () => {
+    expect(readBridgeConfig({ UCCH_BRIDGE_MAX_SECONDS: "soon", UCCH_BRIDGE_MAX_CALLS: "many" }, "/here")).toEqual({
       ompBin: "omp",
       agentDir: null,
       overlay: null,
@@ -39,6 +45,9 @@ describe("readBridgeConfig", () => {
       maxSeconds: 300,
       memory: false,
       webSearch: false,
+      schedulerSock: null,
+      leaseToken: null,
+      maxCalls: 12,
     });
   });
 });

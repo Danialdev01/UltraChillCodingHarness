@@ -29,6 +29,7 @@ import {
 import { HostProcessHost, createProviders } from "@ucch/providers";
 import { AgentTurnReactor } from "./agent.js";
 import { TurnScheduler } from "./turn-scheduler.js";
+import { BridgeLeases } from "./bridge-leases.js";
 import { documentsBackends } from "./documents.js";
 import { researchBackends } from "./research.js";
 import { DIAGRAM_FILES, diagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
@@ -242,6 +243,14 @@ const turnScheduler = new TurnScheduler({
   nativeTotal: config.AGENT_MAX_NATIVE_TOTAL,
   ompTotal: config.OMP_TURN_TOTAL,
 });
+
+/**
+ * Where a Claude Code or Codex turn's `omp-bridge` takes an OMP slot for
+ * each tool call (solution §10.5), so bridge calls count against
+ * OMP_TURN_TOTAL with OMP turns. Listening starts with the HTTP server.
+ */
+const bridgeLeases = new BridgeLeases(turnScheduler);
+const BRIDGE_SOCKET = join(config.CREDS_ROOT, "omp-scheduler.sock");
 
 /**
  * The container, checkpoint and preview reactors still arrive in later
@@ -3912,6 +3921,7 @@ const shutdown = async (signal: string) => {
   terminals.closeAll();
   await fileWatcher.closeAll();
   await agentTurns.killAll();
+  await bridgeLeases.close();
   await app.close();
   web?.close();
   process.exit(0);
@@ -3925,6 +3935,12 @@ app.server.keepAliveTimeout = 65_000;
 app.server.headersTimeout = 66_000;
 
 await app.listen({ port: config.PORT, host: config.HOST });
+
+// Beside the credential directories, owner only. If it cannot listen the
+// server still runs, and bridge calls are refused rather than run unmetered.
+await bridgeLeases
+  .listen(BRIDGE_SOCKET)
+  .catch((error: unknown) => app.log.warn({ err: error, path: BRIDGE_SOCKET }, "could not open the OMP bridge's scheduler socket"));
 
 // Every project keeps its knowledge in `.ucch/`, and projects made before
 // that did not get the folder at creation. Each turn fills it in too; this is

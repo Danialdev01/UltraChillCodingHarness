@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { DomainEvent } from "@ucch/protocol";
 import { OmpNormaliser, OmpRpc, type OmpSessionStats, type ProcessHost } from "@ucch/providers";
 import { ompEnv, refuseForeignCredentials, type BridgeConfig } from "./config.js";
+import type { CallGate } from "./lease.js";
 
 /**
  * One bridge call: one `omp --mode rpc --no-session` process, one prompt,
@@ -43,6 +44,8 @@ export interface CallContext {
   now?: () => number;
   /** How long past `--max-time` a call is let run before it is killed; tests shorten it. */
   graceMs?: number;
+  /** The turn's call budget and the server's OMP slots (`lease.ts`). None: unmetered. */
+  gate?: CallGate;
 }
 
 /** The size a result is held to, before the cost line (§10.2). */
@@ -78,11 +81,22 @@ export function callArgv(config: BridgeConfig, call: Pick<OmpCall, "tools" | "mo
 }
 
 export async function runOmpCall(ctx: CallContext, call: OmpCall): Promise<CallToolResult> {
-  const now = ctx.now ?? Date.now;
-  const started = now();
   const env = ompEnv(ctx.config, ctx.parentEnv);
   const refused = refuseForeignCredentials(env);
   if (refused) return failure(refused);
+  // The turn's budget and a server slot, before any process starts (§10.5).
+  const admitted = ctx.gate ? await ctx.gate.enter() : null;
+  if (admitted && "refused" in admitted) return failure(admitted.refused);
+  try {
+    return await callOmp(ctx, call, env);
+  } finally {
+    admitted?.release();
+  }
+}
+
+async function callOmp(ctx: CallContext, call: OmpCall, env: Record<string, string>): Promise<CallToolResult> {
+  const now = ctx.now ?? Date.now;
+  const started = now();
 
   const events: DomainEvent[] = [];
   const normaliser = new OmpNormaliser({

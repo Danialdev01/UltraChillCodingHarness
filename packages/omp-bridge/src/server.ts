@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ProcessHost } from "@ucch/providers";
 import { failure } from "./call.js";
 import { ompEnv, refuseForeignCredentials, type BridgeConfig } from "./config.js";
+import { callGate } from "./lease.js";
 import { BRIDGE_TOOLS } from "./tools/index.js";
 
 /**
@@ -40,7 +41,8 @@ export function createBridgeServer(config: BridgeConfig, host: ProcessHost, pare
     },
   );
 
-  const ctx = { config, host, parentEnv };
+  // One gate per bridge, which is one per CLI turn: the turn's budget.
+  const ctx = { config, host, parentEnv, gate: callGate(config) };
   for (const definition of BRIDGE_TOOLS) {
     server.registerTool(
       definition.name,

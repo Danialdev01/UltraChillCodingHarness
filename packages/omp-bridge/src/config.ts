@@ -27,13 +27,29 @@ export interface BridgeConfig {
   memory: boolean;
   /** OMP's own `web_search` has a search key (`UCCH_OMP_WEB_SEARCH=1`); likewise. */
   webSearch: boolean;
+  /**
+   * The server's scheduler socket (`UCCH_SCHEDULER_SOCK`), where every call
+   * takes an OMP slot first (solution §10.5). Unset -- a bridge someone
+   * added to their own Claude Code -- there is no server to ask.
+   */
+  schedulerSock: string | null;
+  /** The turn's lease token (`UCCH_BRIDGE_TOKEN`), which the socket asks for. */
+  leaseToken: string | null;
+  /**
+   * OMP calls this bridge makes before it refuses more
+   * (`UCCH_BRIDGE_MAX_CALLS`). The CLI starts one bridge per turn, so this
+   * is the turn's budget.
+   */
+  maxCalls: number;
 }
 
 const DEFAULT_MAX_SECONDS = 300;
+const DEFAULT_MAX_CALLS = 12;
 
 export function readBridgeConfig(env: NodeJS.ProcessEnv, cwd: string = process.cwd()): BridgeConfig {
   const set = (name: string) => (env[name] ? env[name]! : null);
   const seconds = Number(env.UCCH_BRIDGE_MAX_SECONDS);
+  const calls = Number(env.UCCH_BRIDGE_MAX_CALLS);
   return {
     ompBin: set("UCCH_OMP_BIN") ?? "omp",
     agentDir: set("UCCH_OMP_AGENT_DIR"),
@@ -43,6 +59,9 @@ export function readBridgeConfig(env: NodeJS.ProcessEnv, cwd: string = process.c
     maxSeconds: Number.isInteger(seconds) && seconds > 0 ? seconds : DEFAULT_MAX_SECONDS,
     memory: env.UCCH_OMP_MEMORY === "1",
     webSearch: env.UCCH_OMP_WEB_SEARCH === "1",
+    schedulerSock: set("UCCH_SCHEDULER_SOCK"),
+    leaseToken: set("UCCH_BRIDGE_TOKEN"),
+    maxCalls: env.UCCH_BRIDGE_MAX_CALLS !== undefined && Number.isInteger(calls) && calls >= 0 ? calls : DEFAULT_MAX_CALLS,
   };
 }
 

@@ -161,6 +161,41 @@ describe("TurnScheduler", () => {
     expect(third.started).toBe(true);
   });
 
+  it("leases an OMP slot to a bridge call, which waits only so long for one", async () => {
+    const scheduler = new TurnScheduler({ ...limits, ompTotal: 1 });
+    const first = await scheduler.lease({ ownerId: "a", threadId: "a-1", waitMs: 1000 });
+    expect(first).toBeTypeOf("function");
+    expect(scheduler.stats().running.omp).toBe(1);
+
+    const started = Date.now();
+    const second = await scheduler.lease({ ownerId: "b", threadId: "b-1", waitMs: 50 });
+    expect(second).toBeNull();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(45);
+    // Its place is given up, not left in the queue.
+    expect(scheduler.stats().waiting.omp).toBe(0);
+
+    const third = scheduler.lease({ ownerId: "b", threadId: "b-2", waitMs: 1000 });
+    first!();
+    expect(await third).toBeTypeOf("function");
+  });
+
+  it("counts a bridge call's lease against OMP turns, and gives one up when its bridge goes", async () => {
+    const scheduler = new TurnScheduler({ ...limits, ompTotal: 1 });
+    const lease = await scheduler.lease({ ownerId: "a", threadId: "a-1", waitMs: 1000 });
+    const turn = ask(scheduler, "b", "omp", "b-turn");
+    await settle();
+    expect(turn.started).toBe(false);
+    lease!();
+    await settle();
+    expect(turn.started).toBe(true);
+
+    const gone = new AbortController();
+    const waiting = scheduler.lease({ ownerId: "a", threadId: "a-2", waitMs: 10_000, signal: gone.signal });
+    gone.abort();
+    expect(await waiting).toBeNull();
+    expect(scheduler.stats().waiting.omp).toBe(0);
+  });
+
   it("leaves OMP turns unlimited without a cap", async () => {
     const scheduler = new TurnScheduler(limits);
     const turns = Array.from({ length: 5 }, (_, i) => ask(scheduler, "a", "omp", `a-${i}`));

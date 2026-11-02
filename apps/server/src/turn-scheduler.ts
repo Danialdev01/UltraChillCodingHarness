@@ -94,6 +94,26 @@ export class TurnScheduler {
     });
   }
 
+  /**
+   * An OMP slot for one bridge call (solution §10.5): a Claude Code or
+   * Codex turn asking `omp-bridge` for a tool starts an `omp` process, which
+   * counts against `OMP_TURN_TOTAL` exactly as an OMP turn does. Unlike a
+   * turn, a tool call does not queue for long: it waits at most `waitMs`,
+   * then resolves null -- the CLI is told "busy" and carries on without the
+   * tool, rather than its whole turn stalling behind other people's work.
+   * Null too if `signal` aborts first (the bridge went away).
+   */
+  async lease(request: { ownerId: string; threadId: string; waitMs: number; signal?: AbortSignal }): Promise<(() => void) | null> {
+    const timeout = AbortSignal.timeout(Math.max(0, request.waitMs));
+    const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+    try {
+      return await this.acquire({ ownerId: request.ownerId, kind: "omp", threadId: request.threadId, signal });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return null;
+      throw error;
+    }
+  }
+
   /** How many turns are ahead of the thread's waiting turn; null when it has none waiting. */
   aheadOf(threadId: string): number | null {
     for (const queue of this.#waiting.values()) {
