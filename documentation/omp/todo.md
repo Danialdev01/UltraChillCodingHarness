@@ -644,13 +644,28 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Tests.** `agent.test.ts` (turn: `trusted`, `debug.enabled`, the `debug` policy; bridge: `UCCH_OMP_TRUSTED` and the overlay), `terminal-bridge.test.ts` (facts and files), `workspaces.test.ts` (who may see and change it).
     - **Plant re-run** (spike report, "Measured later"): UCCH's flags and overlay, untrusted then trusted. The four `lsp.json` / `dap.json` plants loaded only when trusted; every other result was the same under both. `.claude/CLAUDE.md` is no longer read at all, because of `disabledProviders` (OM6.8); solution §0.3 and §3.8 are corrected.
     - **Not done here.** Counting a trusted (LSP) turn as more than one scheduler slot (§8.2, OM7.4's note). Trusted turns exist now, so it can be done; it is a scheduler change of its own.
-- [ ] **OM7.7 — Review engine (`omp-review.ts`)**
+- [x] **OM7.7 — Review engine (`omp-review.ts`)** — abd931a
 
   - **Depends:** OM2.1, OM0.5
   - **Files:** new `apps/server/src/omp-review.ts` and its test, `packages/protocol` (`review.run`, `review.completed`), `packages/db` (`reviews` table), new `packages/providers/assets/omp-agents/ucch-reviewer.md` (if needed)
   - **Steps:** implement solution §9.1–9.2, with the parser chosen by OM0.5 Q3.
   - **Acceptance:** reviewing a fixture diff with a planted bug yields at least one P0/P1 finding on the right file and line. Lock files are excluded.
   - **Verify:** `pnpm test -- omp-review`, plus a manual run
+  - **As built:**
+    - **No `ucch-reviewer.md`.** Custom agents do not run under `--no-extensions` (OM0.5). The bundled `reviewer` is used, and the "parser chosen by OM0.5 Q3" is its structured output. It gets `yield` only with `task.structured: true`, which a new `review` overlay preset sets. That preset also allows read tools and `task` and denies everything else.
+    - **Where.** `omp-review.ts`:
+      - `reviewChanges`: git, scopes, exclusions.
+      - `reviewPrompt`: OMP's headless request with the diff.
+      - `parseReview`: zod; the structured result first, then `<output>` JSON.
+      - `runReview`.
+    - **OMP side.** `OmpProvider.call` and `ompStructuredResults` in `@ucch/providers`.
+    - **Protocol and reactor.** `review.run` → `review.requested` → the agent reactor's `#review` → `review.completed` / `review.failed`. `reviews` table, migration 0031. Audited as `review.run`.
+    - **Tests.**
+      - `omp-review.test.ts`, on real git repositories: against fake-omp replaying `fixtures/omp-review.jsonl`, a planted `a * b` gives one P0 on `math.ts:2`, and `pnpm-lock.yaml` and `dist/` are excluded.
+      - `agent.test.ts`: the reactor end to end on a checkout; the argv, and the overlay's `structured: true` and denials.
+      - `omp.test.ts` (`call`), `decide.test.ts`, `engine.test.ts`, `omp-overlay.test.ts`.
+    - **Manual run.** The server's own code against real OMP 18.14.1, with a scripted model (spike report, "Measured later"). It gave a P0 on `math.ts:2` and excluded the lock file. The reviewer's `bash` was refused by the overlay under `yolo`. The scripted model made the `yield` calls, so solution §9.2's note that only a real model could was corrected.
+    - **Not done here.** PR mode (§9.1, needs `gh`), and listing past reviews over HTTP, which the Git view needs (OM7.8).
 - [ ] **OM7.8 — Review in the Git view**
 
   - **Depends:** OM7.7
