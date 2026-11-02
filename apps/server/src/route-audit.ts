@@ -123,6 +123,12 @@ const TABLE: Record<string, Describe> = {
     summary: b?.enabled === false ? "Unpublished the public site" : "Changed the public site",
     resource: "project_settings",
   }),
+  "PATCH /api/projects/:hash/omp-trust": (_p, b) => ({
+    action: "project.omp_trust",
+    targetType: "project",
+    summary: b?.trusted === true ? "Marked the project trusted for OMP" : "Marked the project untrusted for OMP",
+    resource: "project_settings",
+  }),
   "PUT /api/projects/:hash/task-settings": (_p, b) => {
     const autoRun = b?.autoRun as { enabled?: unknown; time?: unknown; timezone?: unknown } | undefined;
     return {

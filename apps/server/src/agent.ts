@@ -529,12 +529,13 @@ export class AgentTurnReactor {
         .then(() => {}, this.onError);
     };
 
-    let project: { stack: string | null; agent?: unknown } | undefined;
+    let project: { stack: string | null; agent?: unknown; ompTrusted?: boolean } | undefined;
     let owner: TurnOwner | null;
     try {
-      // With the workspace's agent settings, which an OMP turn's overlay reads.
+      // With the workspace's agent settings, which an OMP turn's overlay
+      // reads, and the project's trust, which decides its LSP and debugger.
       [project] = await this.db
-        .select({ stack: projects.stack, agent: workspaces.agentSettings })
+        .select({ stack: projects.stack, agent: workspaces.agentSettings, ompTrusted: projects.ompTrusted })
         .from(projects)
         .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
         .where(eq(projects.id, thread.projectId))
@@ -733,6 +734,7 @@ export class AgentTurnReactor {
           signal: controller.signal,
           append,
           agentSettings: readAgentSettings(project.agent),
+          trusted: project.ompTrusted === true,
           ...(mode ? { mode } : {}),
           ...(researched ? { researched } : {}),
         });
@@ -876,6 +878,8 @@ export class AgentTurnReactor {
         settings: { ...DEFAULT_OMP_SETTINGS, models: { default: model } },
         preset: "standard",
         permissionMode,
+        // Untrusted whatever the project: compacting needs no language
+        // server or debugger, so none of the repository's config runs.
         trusted: false,
         workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
         webSearch: false,
@@ -973,6 +977,7 @@ export class AgentTurnReactor {
         settings: { ...DEFAULT_OMP_SETTINGS, models: { default: this.options.searchModel } },
         preset: "standard",
         permissionMode: this.#modeFor(threadId, owner),
+        // A brief runs `--no-tools`: nothing for a trusted project's config to add.
         trusted: false,
         workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
         webSearch: false,
@@ -1130,6 +1135,12 @@ export class AgentTurnReactor {
       append: (events: readonly DomainEvent[]) => Promise<unknown>;
       /** The workspace's choices; OMP's overlay reads them. Defaults when absent. */
       agentSettings?: WorkspaceAgentSettings;
+      /**
+       * The project is trusted (`projects.omp_trusted`, solution §0.3): an
+       * OMP turn, and the bridge's calls, get its language servers and the
+       * debugger. Untrusted when absent.
+       */
+      trusted?: boolean;
       /** The composer mode. Only OMP reads it: the CLIs' prompt already carries it. */
       mode?: MessageMode;
       /**
@@ -1221,8 +1232,8 @@ export class AgentTurnReactor {
           ...(memory.enabled ? { memoryDbPath: providers.ompMemoryDb(input.ownerId, input.projectId) } : {}),
           preset,
           permissionMode,
-          // No project is trusted until a person can say so (OM7.6).
-          trusted: false,
+          // A trusted project keeps its debugger (§0.3); its LSP is the argv's.
+          trusted: input.trusted === true,
           workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
           // OMP's own search needs a search provider's key, and its
           // environment carries the OpenRouter key alone (solution §3.3).
@@ -1234,7 +1245,7 @@ export class AgentTurnReactor {
           overlayPath: written.path,
           sessionDir: providers.ompSessionDir(input.ownerId, input.projectId),
           guardHookPath: providers.ompGuardHook(input.ownerId),
-          trusted: false,
+          trusted: input.trusted === true,
           contextThreshold: written.contextThreshold,
         };
         host = {
@@ -1375,7 +1386,7 @@ export class AgentTurnReactor {
         memoryDbPath: providers.ompMemoryDb(input.ownerId, input.projectId),
         memoryToolsOnly: true,
         preset: "standard",
-        // Nobody to ask, and `retain` is its only tool.
+        // Nobody to ask, and `retain` is its only tool, so untrusted always.
         permissionMode: "allow_all",
         trusted: false,
         workersPerTurn: 1,
@@ -1419,6 +1430,7 @@ export class AgentTurnReactor {
       turnId: string;
       workspace: string;
       agentSettings?: WorkspaceAgentSettings;
+      trusted?: boolean;
     },
   ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { dispose(): Promise<void> }) | null> {
     const options = this.options.ompBridge;
@@ -1452,8 +1464,8 @@ export class AgentTurnReactor {
         // the bridge tool itself (`claudePromptNeedsPerson`), before the
         // call starts.
         permissionMode: "allow_all",
-        // No project is trusted until a person can say so (OM7.6).
-        trusted: false,
+        // As the project is: a trusted one's calls get `lsp` and `debug`.
+        trusted: input.trusted === true,
         // A call is one tool call of a turn, not a turn: two subagents.
         workersPerTurn: 2,
         webSearch: false,
@@ -1472,7 +1484,7 @@ export class AgentTurnReactor {
         schedulerSock: options.socket,
         token: lease.token,
         maxSeconds: options.maxSeconds,
-        trusted: false,
+        trusted: input.trusted === true,
         memory: memory.enabled,
       });
       const runDir = providers.cliRunDir(input.ownerId, provider);

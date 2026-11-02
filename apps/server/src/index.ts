@@ -2440,6 +2440,32 @@ app.patch<{ Params: { hash: string } }>("/api/projects/:hash/public", async (req
   return withPublicUrl(state);
 });
 
+/**
+ * Whether OMP may run the repository's own language-server and debugger
+ * config (solution §0.3, OM7.6). Any member reads it; a workspace admin
+ * changes it.
+ */
+const OmpTrustBody = z.object({ trusted: z.boolean() });
+
+app.get<{ Params: { hash: string } }>("/api/projects/:hash/omp-trust", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const state = await workspaceService.ompTrust(request.params.hash, principal.userId);
+  if (!state) return reply.code(404).send({ error: "project not found" });
+  return state;
+});
+
+app.patch<{ Params: { hash: string } }>("/api/projects/:hash/omp-trust", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const parsed = OmpTrustBody.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "trusted must be true or false" });
+  const state = await workspaceService.setOmpTrust(request.params.hash, principal.userId, parsed.data.trusted);
+  if (!state) return reply.code(404).send({ error: "project not found" });
+  if ("error" in state) return reply.code(403).send({ error: "only a workspace admin can change whether a project is trusted" });
+  return state;
+});
+
 registerPublicRoutes(app, {
   findPublic: (slug) => workspaceService.findPublic(slug),
   notes: notesService,

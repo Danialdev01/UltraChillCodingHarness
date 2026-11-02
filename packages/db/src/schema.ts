@@ -294,6 +294,13 @@ export const projects = pgTable(
     taskAgentModel: text("task_agent_model"),
     /** When the board moves Idea cards to Research by itself. Null is off. */
     taskAutoRun: jsonb("task_auto_run").$type<TaskAutoRun>(),
+    /**
+     * A workspace admin has said this repository's own OMP config may run
+     * (solution §0.3, OM7.6): its `lsp.json` and `dap.json` name commands,
+     * so only then do OMP turns and bridge calls get language servers and
+     * the debugger. Off for every clone until someone says otherwise.
+     */
+    ompTrusted: boolean("omp_trusted").notNull().default(false),
     lastActiveAt: timestamp("last_active_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

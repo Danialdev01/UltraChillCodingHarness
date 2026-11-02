@@ -46,7 +46,13 @@ describe("TerminalBridge", () => {
   const open = (terminal: TerminalBridge) =>
     terminal.open({ projectId: "p", subject: "u", userId: "u", terminalId: TERMINAL, cwd: "/ws/p" });
   const memoryOff = { enabled: false, llmMode: "smol" as const, retainCliTurns: false };
-  const on = { enabled: true, openrouterKeyEncrypted: encryptSecret("sk-or-term", SECRET), defaultModel: null, memory: memoryOff };
+  const on = {
+    enabled: true,
+    openrouterKeyEncrypted: encryptSecret("sk-or-term", SECRET),
+    defaultModel: null,
+    memory: memoryOff,
+    trusted: false,
+  };
 
   it("writes the Claude config, the Codex arguments and one 0600 file with the key; and takes all of it down", async () => {
     const { terminal, tokens } = bridge(on);
@@ -67,6 +73,7 @@ describe("TerminalBridge", () => {
     expect(env.UCCH_OMP_TRUSTED).toBeUndefined();
     expect(env.UCCH_OMP_MEMORY).toBeUndefined();
     expect(readFileSync(join(root, "run", `bridge-term-${TERMINAL}.yml`), "utf8")).toContain('memory:\n  backend: "off"\n');
+    expect(readFileSync(join(root, "run", `bridge-term-${TERMINAL}.yml`), "utf8")).toContain("debug:\n  enabled: false\n");
     const files = readdirSync(join(root, "run")).sort();
     expect(files).toEqual([`bridge-term-${TERMINAL}.yml`, `term-${TERMINAL}.bridge.json`, `term-${TERMINAL}.codex`, `term-${TERMINAL}.mcp.json`]);
     for (const file of files) expect(statSync(join(root, "run", file)).mode & 0o777, file).toBe(0o600);
@@ -105,6 +112,15 @@ describe("TerminalBridge", () => {
     await handle!.dispose();
   });
 
+  it("gives a trusted project's calls the language servers and the debugger (OM7.6)", async () => {
+    const { terminal } = bridge({ ...on, trusted: true });
+    const handle = await open(terminal);
+    const env = JSON.parse(readFileSync(join(root, "run", `term-${TERMINAL}.bridge.json`), "utf8")) as Record<string, string>;
+    expect(env.UCCH_OMP_TRUSTED).toBe("1");
+    expect(readFileSync(join(root, "run", `bridge-term-${TERMINAL}.yml`), "utf8")).toContain("debug:\n  enabled: true\n");
+    await handle!.dispose();
+  });
+
   it("refuses a terminal id that is not one", () => {
     expect(() => bridge(on).terminal.path("u", "../x")).toThrow();
   });
@@ -128,8 +144,14 @@ describe("terminalBridgeFacts", () => {
       openrouterKeyEncrypted: "person-key",
       defaultModel: "openai/gpt-5",
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
+      trusted: false,
     });
     expect(await terminalBridgeFacts(db([project], [person]))("p", "ws-w1", "u")).toMatchObject({ openrouterKeyEncrypted: "ws-key" });
+  });
+
+  it("carries the project's trust (OM7.6)", async () => {
+    expect(await terminalBridgeFacts(db([{ ...project, trusted: true }], [person]))("p", "u", "u")).toMatchObject({ trusted: true });
+    expect(await terminalBridgeFacts(db([{ ...project, trusted: false }], [person]))("p", "u", "u")).toMatchObject({ trusted: false });
   });
 
   it("is off by default, and nothing for another workspace's subject or a missing row", async () => {

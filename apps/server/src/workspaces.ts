@@ -623,6 +623,40 @@ export class WorkspaceService {
   }
 
   /**
+   * Whether OMP may run the project's own LSP and debugger config (solution
+   * §0.3), and whether the caller may change that. Any member can see it.
+   */
+  async ompTrust(hash: string, userId: string): Promise<OmpTrustState | null> {
+    const project = await this.findByHash(hash, userId);
+    if (!project) return null;
+    const [row] = await this.db
+      .select({ trusted: projects.ompTrusted })
+      .from(projects)
+      .where(eq(projects.id, project.id))
+      .limit(1);
+    return { trusted: row?.trusted ?? false, canChange: can(project.membership, "workspace.manage") };
+  }
+
+  /**
+   * Marks the project trusted or not. Workspace admins only, as deleting it
+   * is: a trusted repository's `lsp.json` and `dap.json` name commands that
+   * OMP runs as the server user, so this is the person saying they have
+   * read them. The next turn reads it; a running one keeps what it started
+   * with.
+   */
+  async setOmpTrust(
+    hash: string,
+    userId: string,
+    trusted: boolean,
+  ): Promise<OmpTrustState | { error: "forbidden" } | null> {
+    const project = await this.findByHash(hash, userId);
+    if (!project) return null;
+    if (!can(project.membership, "workspace.manage")) return { error: "forbidden" };
+    await this.db.update(projects).set({ ompTrusted: trusted }).where(eq(projects.id, project.id));
+    return { trusted, canChange: true };
+  }
+
+  /**
    * The project behind a public address, or null when there is none or it
    * is switched off -- the two are the same to a visitor.
    */
@@ -847,6 +881,13 @@ export interface PublicSiteState {
   enabled: boolean;
   /** Null until the site has been enabled once. */
   slug: string | null;
+}
+
+/** A project's OMP trust (solution §0.3), as its settings page shows it. */
+export interface OmpTrustState {
+  trusted: boolean;
+  /** The caller is a workspace admin, who alone may change it. */
+  canChange: boolean;
 }
 
 /** What the public routes know about a project: enough to serve it, no more. */

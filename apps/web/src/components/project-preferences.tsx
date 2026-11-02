@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { GlobeIcon, Loader2Icon, MonitorPlayIcon, RulerIcon, SaveIcon } from "lucide-react"
+import { GlobeIcon, Loader2Icon, MonitorPlayIcon, RulerIcon, SaveIcon, ShieldCheckIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
@@ -10,14 +10,16 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { TaskAutomationSettings } from "@/components/tasks/task-automation-settings"
 import { DEFAULT_DOC_WIDTH, DOC_WIDTHS, readDocWidth, watchDocWidth, writeDocWidth } from "@/lib/doc-width"
 import { setPreviewPort } from "@/lib/preview-api"
+import { fetchOmpTrust, setOmpTrust, type OmpTrustState } from "@/lib/omp-trust-api"
 import { fetchPublicSite, setPublicSite, type PublicSiteState } from "@/lib/public-api"
 import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
 
 /**
  * The project's own settings, on the manage page's Preferences tab: which
- * port the live preview serves, whether the read-only public site is on, how
- * the Tasks board runs, and how wide the documentation's pages read.
+ * port the live preview serves, whether the read-only public site is on,
+ * whether OMP may run the repository's own tooling config, how the Tasks
+ * board runs, and how wide the documentation's pages read.
  * Both are the same settings the preview dialog and the notes settings edit;
  * this is one place to find them together.
  */
@@ -26,6 +28,7 @@ export function ProjectPreferences({ project }: { project: Project }) {
     <div className="flex flex-col gap-4">
       <PreviewPortSetting project={project} />
       <PublicSiteSetting hash={project.hash} />
+      <OmpTrustSetting hash={project.hash} />
       <TaskAutomationSettings hash={project.hash} />
       <DocWidthSetting />
     </div>
@@ -188,6 +191,78 @@ function PublicSiteSetting({ hash }: { hash: string }) {
                 </a>
               </FieldDescription>
             )}
+          </Field>
+        )}
+        {error && (
+          <p role="alert" className="text-destructive mt-2 text-xs">
+            {error}
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/**
+ * Whether the project is trusted for OMP (solution §0.3). A cloned
+ * repository's `lsp.json` and `dap.json` name commands OMP would run as the
+ * server, so they are ignored until a workspace admin says they have read
+ * them. Everyone else sees the setting, and why it is not theirs to change.
+ */
+function OmpTrustSetting({ hash }: { hash: string }) {
+  const [state, setState] = React.useState<OmpTrustState | null>(null)
+  const [pending, setPending] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    fetchOmpTrust(hash).then(setState, (e) => setError(e instanceof Error ? e.message : "Could not load."))
+  }, [hash])
+
+  const change = async (trusted: boolean) => {
+    if (!state || trusted === state.trusted) return
+    setPending(true)
+    setError(null)
+    try {
+      setState(await setOmpTrust(hash, trusted))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change whether the project is trusted.")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <section className="rounded-lg border p-6">
+      <h2 className="flex items-center gap-2 text-sm font-medium">
+        <ShieldCheckIcon className="text-muted-foreground size-4" />
+        Trusted repository
+      </h2>
+      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
+        A trusted project gives the Custom agent and the OMP tools language servers and a debugger, and
+        lets the repository&apos;s own <span className="font-mono">lsp.json</span> and{" "}
+        <span className="font-mono">dap.json</span> choose them. Those files name programs that run on
+        this server, so only trust a repository whose files you have read.
+      </p>
+      <div className="mt-4 max-w-xl">
+        {!state && !error && <Skeleton className="h-8 w-72" />}
+        {state && (
+          <Field>
+            <FieldLabel htmlFor="project-omp-trust">Trust</FieldLabel>
+            <select
+              id="project-omp-trust"
+              value={state.trusted ? "trusted" : "untrusted"}
+              disabled={pending || !state.canChange}
+              onChange={(e) => void change(e.target.value === "trusted")}
+              className={cn(
+                "border-input bg-background h-8 w-full max-w-72 rounded-lg border px-2.5 text-sm outline-none",
+                "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring disabled:opacity-50",
+                "dark:bg-input/30",
+              )}
+            >
+              <option value="untrusted">Untrusted — no language servers or debugger</option>
+              <option value="trusted">Trusted — its own tooling config runs</option>
+            </select>
+            {!state.canChange && <FieldDescription>Only a workspace admin can change this.</FieldDescription>}
           </Field>
         )}
         {error && (

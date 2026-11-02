@@ -40,6 +40,8 @@ export interface TerminalBridgeFacts {
   defaultModel: string | null;
   /** The workspace's memory setting: the bridge recalls from and retains to the project's bank (OM7.2). */
   memory: WorkspaceAgentSettings["memory"];
+  /** The project is trusted (`projects.omp_trusted`): its calls get `lsp` and `debug` (§0.3). */
+  trusted: boolean;
 }
 
 export interface TerminalBridgeOptions extends OmpBridgeOptions {
@@ -102,7 +104,7 @@ export class TerminalBridge {
         preset: "standard",
         // The bridge's own `omp` is headless; the CLI asked its person first.
         permissionMode: "allow_all",
-        trusted: false,
+        trusted: facts.trusted,
         workersPerTurn: 2,
         webSearch: false,
       });
@@ -120,7 +122,7 @@ export class TerminalBridge {
         schedulerSock: options.socket,
         token: lease.token,
         maxSeconds: options.maxSeconds,
-        trusted: false,
+        trusted: facts.trusted,
         memory: facts.memory.enabled,
       });
       const envFile = `${base}.bridge.json`;
@@ -159,7 +161,12 @@ export class TerminalBridge {
 export function terminalBridgeFacts(db: Database): TerminalBridgeOptions["facts"] {
   return async (projectId, subject, userId) => {
     const [project] = await db
-      .select({ agent: workspaces.agentSettings, workspaceId: workspaces.id, workspaceKey: workspaces.openrouterKeyEncrypted })
+      .select({
+        agent: workspaces.agentSettings,
+        workspaceId: workspaces.id,
+        workspaceKey: workspaces.openrouterKeyEncrypted,
+        trusted: projects.ompTrusted,
+      })
       .from(projects)
       .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
       .where(eq(projects.id, projectId))
@@ -178,6 +185,7 @@ export function terminalBridgeFacts(db: Database): TerminalBridgeOptions["facts"
     return {
       enabled: settings.ompBridge.enabled,
       memory: settings.memory,
+      trusted: project.trusted === true,
       openrouterKeyEncrypted: workspace ? project.workspaceKey : person.key,
       defaultModel: person.defaultModel,
     };

@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "omp_trusted" boolean DEFAULT false NOT NULL;

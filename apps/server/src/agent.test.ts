@@ -685,6 +685,43 @@ describe("an OMP turn", () => {
     expect(overlays.map(isolation)).toEqual(["false", "true"]);
   });
 
+  it("runs a trusted project with its language servers and debugger, and every other project without (OM7.6)", async () => {
+    // An OMP that runs nothing, keeping what the turn handed it.
+    const seen: { trusted: boolean; overlay: string }[] = [];
+    const provider: AgentProvider = {
+      id: "omp",
+      label: "Custom",
+      models: [],
+      probe: async () => ({ installed: true, authenticated: true, authMode: "api-key" }),
+      run: (input) => {
+        seen.push({ trusted: input.omp!.trusted, overlay: readFileSync(input.omp!.overlayPath, "utf8") });
+        return {
+          events: (async function* () {
+            yield {
+              type: "agent.turn_completed",
+              threadId: input.threadId,
+              turnId: input.turnId,
+              stopReason: "end_turn",
+              usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+              costUsd: 0,
+            } satisfies DomainEvent;
+          })(),
+          interrupt: async () => {},
+          kill: async () => {},
+        };
+      },
+    };
+    for (const projectRow of [{ stack: null }, { stack: null, ompTrusted: false }, { stack: null, ompTrusted: true }]) {
+      const { agent, appended } = ompReactor(thread, keyed, {}, provider, projectRow);
+      agent.react(omp, [message]);
+      await until(appended, closed);
+    }
+    // `trusted` is what `ompArgv` turns into the absence of `--no-lsp`.
+    expect(seen.map((s) => s.trusted)).toEqual([false, false, true]);
+    expect(seen.map((s) => /\ndebug:\n  enabled: (\w+)\n/.exec(s.overlay)?.[1])).toEqual(["false", "false", "true"]);
+    expect(seen.map((s) => /\n    debug: "(\w+)"\n/.exec(s.overlay)?.[1])).toEqual(["deny", "deny", "prompt"]);
+  });
+
   it("keeps mnemopi memory only when the workspace turned it on, in one bank per project (OM7.1)", async () => {
     const overlays: string[] = [];
     const provider: AgentProvider = {
@@ -1343,7 +1380,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     withBridge = true,
     id: "claude" | "codex" = "claude",
     threadRow: Record<string, unknown> = thread,
-    extra: { omp?: AgentProvider; messages?: unknown[][] } = {},
+    extra: { omp?: AgentProvider; messages?: unknown[][]; trusted?: boolean } = {},
   ) {
     const seen: Seen[] = [];
     const claude: AgentProvider = {
@@ -1417,7 +1454,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
         ...(withBridge ? { ompBridge: { bin: "/opt/ucch/omp-bridge.mjs", ompBin: "/usr/bin/omp", socket: "/c/omp-scheduler.sock", maxSeconds: 240, leases } } : {}),
       },
       [threadRow],
-      [{ stack: null, agent: agentSettings }],
+      [{ stack: null, agent: agentSettings, ...(extra.trusted ? { ompTrusted: true } : {}) }],
       [owner],
       [personRow],
     );
@@ -1468,6 +1505,18 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     expect(existsSync(server.env.UCCH_OMP_OVERLAY!)).toBe(false);
     expect(run.registered).toEqual(["tok-0"]);
     expect(run.tokens.size).toBe(0);
+  });
+
+  it("gives a trusted project's bridge calls the language servers and the debugger, and nobody else's (OM7.6)", async () => {
+    const trusted = bridgeReactor(keyed, { ompBridge: { enabled: true } }, true, "claude", thread, { trusted: true });
+    await turn(trusted);
+    expect(trusted.seen[0]!.config!.mcpServers.omp.env.UCCH_OMP_TRUSTED).toBe("1");
+    expect(trusted.seen[0]!.overlay).toContain("debug:\n  enabled: true\n");
+    expect(trusted.seen[0]!.overlay).toContain('    debug: "allow"\n');
+    const untrusted = bridgeReactor(keyed, { ompBridge: { enabled: true } });
+    await turn(untrusted);
+    expect(untrusted.seen[0]!.config!.mcpServers.omp.env.UCCH_OMP_TRUSTED).toBeUndefined();
+    expect(untrusted.seen[0]!.overlay).toContain("debug:\n  enabled: false\n");
   });
 
   it("gives the bridge the project's memory when the workspace keeps it (OM7.2)", async () => {
