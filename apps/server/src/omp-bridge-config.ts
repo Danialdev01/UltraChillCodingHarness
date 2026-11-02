@@ -40,6 +40,8 @@ export interface BridgeServerInput {
   maxSeconds: number;
   /** Only a trusted project gets a language server or debugger (§0.3). */
   trusted: boolean;
+  /** The overlay keeps the project's memory: `omp_recall` and `omp_retain` exist (§7.3). */
+  memory: boolean;
 }
 
 export function bridgeServer(input: BridgeServerInput): BridgeServer {
@@ -56,6 +58,7 @@ export function bridgeServer(input: BridgeServerInput): BridgeServer {
       UCCH_BRIDGE_TOKEN: input.token,
       UCCH_BRIDGE_MAX_SECONDS: String(input.maxSeconds),
       ...(input.trusted ? { UCCH_OMP_TRUSTED: "1" } : {}),
+      ...(input.memory ? { UCCH_OMP_MEMORY: "1" } : {}),
     },
   };
 }

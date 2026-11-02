@@ -93,6 +93,14 @@ export interface OmpOverlayInput {
   /** The project's mnemopi database; required when memory is on (§7.1). */
   memoryDbPath?: string;
   /**
+   * The bank only through the `recall` and `retain` tools: no automatic
+   * recall into the prompt, no automatic retention of the session. For the
+   * bridge's calls and end-of-turn retention (OM7.2), whose sessions are a
+   * tool call or a retention prompt, not a turn: mnemopi's `autoRetain`
+   * kept a retention run's whole prompt and stdin as a memory, verbatim.
+   */
+  memoryToolsOnly?: boolean;
+  /**
    * UCCH's host tools (OM3.2), named so a project cannot set them. Allowed:
    * a host call runs through `runTool`, whose own approval gate asks a
    * person exactly as for a native turn, so OMP asking first would ask twice.
@@ -167,8 +175,8 @@ export function ompOverlay(input: OmpOverlayInput): Record<string, unknown> {
           mnemopi: {
             scoping: "global",
             dbPath: input.memoryDbPath,
-            autoRecall: true,
-            autoRetain: true,
+            autoRecall: !input.memoryToolsOnly,
+            autoRetain: !input.memoryToolsOnly,
             retainEveryNTurns: 4,
             recallLimit: 8,
             llmMode: settings.memory.llmMode,

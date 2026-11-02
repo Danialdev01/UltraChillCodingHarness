@@ -14,6 +14,7 @@ import {
   ompBridgeGuide,
   OmpProvider,
   type AgentProvider,
+  type OmpAskInput,
   type ProviderRunInput,
 } from "@ucch/providers";
 import {
@@ -28,6 +29,7 @@ import {
 } from "./agent.js";
 import type { Config } from "./config.js";
 import { encryptSecret } from "./crypto.js";
+import { RETAIN_PROMPT } from "./omp-memory.js";
 import { readProjectKnowledge } from "./dev-database.js";
 import type { EventStore } from "./eventstore.js";
 import { ProviderService } from "./providers.js";
@@ -720,6 +722,7 @@ describe("an OMP turn", () => {
     expect(overlays[1]).toContain('memory:\n  backend: "mnemopi"\n');
     expect(overlays[1]).toContain('  scoping: "global"\n');
     expect(overlays[1]).toContain('  llmMode: "none"\n');
+    expect(overlays[1]).toContain("  autoRecall: true\n  autoRetain: true\n");
     const dbPath = /\n  dbPath: "?([^"\n]+)"?\n/.exec(overlays[1]!)?.[1];
     expect(dbPath).toMatch(new RegExp(`^${creds}/.+/omp/memories/${PROJECT}/mnemopi\\.db$`));
     expect(statSync(dirname(dbPath!)).mode & 0o777).toBe(0o700);
@@ -1340,6 +1343,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     withBridge = true,
     id: "claude" | "codex" = "claude",
     threadRow: Record<string, unknown> = thread,
+    extra: { omp?: AgentProvider; messages?: unknown[][] } = {},
   ) {
     const seen: Seen[] = [];
     const claude: AgentProvider = {
@@ -1365,6 +1369,9 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
         });
         return {
           events: (async function* () {
+            for (const content of extra.messages ?? []) {
+              yield { type: "agent.message", threadId: input.threadId, turnId: input.turnId, content } satisfies DomainEvent;
+            }
             yield {
               type: "agent.turn_completed",
               threadId: input.threadId,
@@ -1387,6 +1394,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     const real = createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: "omp" });
     const providers = new NoToken({} as Database, { CREDS_ROOT: join(root, "creds") } as Config, new HostProcessHost(), {
       ...real,
+      ...(extra.omp ? { omp: extra.omp } : {}),
       [id]: claude,
     });
     const tokens = new Map<string, { ownerId: string; threadId: string }>();
@@ -1460,6 +1468,90 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     expect(existsSync(server.env.UCCH_OMP_OVERLAY!)).toBe(false);
     expect(run.registered).toEqual(["tok-0"]);
     expect(run.tokens.size).toBe(0);
+  });
+
+  it("gives the bridge the project's memory when the workspace keeps it (OM7.2)", async () => {
+    const run = bridgeReactor(keyed, { ompBridge: { enabled: true }, memory: { enabled: true } });
+    await turn(run);
+    const [{ config, overlay }] = run.seen as [Seen];
+    expect(config!.mcpServers.omp.env.UCCH_OMP_MEMORY).toBe("1");
+    expect(overlay).toContain('memory:\n  backend: "mnemopi"\n');
+    expect(overlay).toContain(`  dbPath: "${join(root, "creds", USER, "omp", "memories", PROJECT, "mnemopi.db")}"\n`);
+    // A call is not a turn: the bank only through omp_recall and omp_retain.
+    expect(overlay).toContain("  autoRecall: false\n  autoRetain: false\n");
+    const off = bridgeReactor(keyed, { ompBridge: { enabled: true } });
+    await turn(off);
+    expect(off.seen[0]!.config!.mcpServers.omp.env.UCCH_OMP_MEMORY).toBeUndefined();
+    expect(off.seen[0]!.overlay).toContain('memory:\n  backend: "off"\n');
+  });
+
+  describe("end-of-turn retention (OM7.2)", () => {
+    /** An OMP that only answers `ask`, keeping what it was asked with and the overlay as written. */
+    function asker() {
+      const asked: { input: OmpAskInput; overlay: string }[] = [];
+      const omp = {
+        id: "omp",
+        label: "Custom",
+        models: [],
+        probe: async () => ({ installed: true, authenticated: true, authMode: "api-key" }),
+        run: () => {
+          throw new Error("not a turn");
+        },
+        ask: async (input: OmpAskInput) => {
+          asked.push({ input, overlay: readFileSync(input.omp.overlayPath, "utf8") });
+          return "Kept 1 fact.";
+        },
+      } as AgentProvider & { ask(input: OmpAskInput): Promise<string> };
+      return { omp, asked };
+    }
+    const messages = [
+      [{ type: "text", text: "Looking at the deploy config." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "cat fly.toml" } }],
+      [{ type: "tool_result", tool_use_id: "t1", content: "SECRET_TOKEN=abc" }],
+      [{ type: "text", text: "Decision: deploys go to region ams, because fra has no GPUs." }],
+    ];
+    const memoryOn = { enabled: true, llmMode: "smol", retainCliTurns: true };
+
+    async function retained(asked: unknown[]) {
+      const deadline = Date.now() + 3_000;
+      while (asked.length === 0 && Date.now() < deadline) await settle();
+    }
+
+    it("reads the final answer alone into the project's bank, on smol with only retain", async () => {
+      for (const id of ["claude", "codex"] as const) {
+        const { omp, asked } = asker();
+        const run = bridgeReactor(keyed, { memory: memoryOn }, false, id, thread, { omp, messages });
+        await turn(run, { ...ask, provider: id });
+        await retained(asked);
+        expect(asked, id).toHaveLength(1);
+        const [{ input, overlay }] = asked as [(typeof asked)[number]];
+        expect(input.tools).toEqual(["retain"]);
+        expect(input.model).toBe("@smol");
+        expect(input.prompt).toBe(RETAIN_PROMPT);
+        expect(input.stdin).toBe("<answer>\nDecision: deploys go to region ams, because fra has no GPUs.\n</answer>\n");
+        expect(input.stdin).not.toContain("SECRET_TOKEN");
+        expect(overlay).toContain(`  dbPath: "${join(root, "creds", USER, "omp", "memories", PROJECT, "mnemopi.db")}"\n`);
+        expect(overlay).toContain('  smol: "openrouter/openai/gpt-5"\n');
+        // Only what the model keeps: the run itself is never retained whole.
+        expect(overlay).toContain("  autoRecall: false\n  autoRetain: false\n");
+        // The key reaches OMP through its environment only.
+        expect(input.ctx.env.OPENROUTER_API_KEY).toBe("sk-or-bridge");
+      }
+    });
+
+    it("retains nothing with the toggle off, with memory off, without a key, or with no answer", async () => {
+      for (const [personRow, agentSettings, msgs] of [
+        [keyed, { memory: { ...memoryOn, retainCliTurns: false } }, messages],
+        [keyed, { memory: { ...memoryOn, enabled: false } }, messages],
+        [person, { memory: memoryOn }, messages],
+        [keyed, { memory: memoryOn }, [messages[0]!.slice(1)]],
+      ] as const) {
+        const { omp, asked } = asker();
+        const run = bridgeReactor(personRow, agentSettings, false, "claude", thread, { omp, messages: msgs as unknown[][] });
+        await turn(run);
+        await new Promise((r) => setTimeout(r, 50));
+        expect(asked).toEqual([]);
+      }
+    });
   });
 
   it("hands Codex the server by -c flags that name a 0600 file, with the key in the file and not in argv", async () => {

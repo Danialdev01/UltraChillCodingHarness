@@ -370,6 +370,7 @@ function IsolatedFanOutSection({
  * mnemopi memory on Custom turns (OMP OM7.1, solution §7): one bank per
  * project, shared by its threads. `llmMode` says whether the bank may use
  * the fast model to extract and match facts, or full-text search only.
+ * `retainCliTurns` (OM7.2) feeds Claude Code and Codex turns' answers in.
  */
 function MemorySection({
   workspaceId,
@@ -427,6 +428,21 @@ function MemorySection({
           </NativeSelect>
         </div>
       </div>
+      <label className="mt-3 flex max-w-prose items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={memory.retainCliTurns}
+          disabled={!manages || busy || !memory.enabled}
+          onChange={(e) => save({ ...memory, retainCliTurns: e.target.checked })}
+          aria-label="Remember from Claude Code and Codex turns"
+        />
+        <span>
+          Remember from Claude Code and Codex turns too. After each of their turns, the fast model reads the
+          turn&apos;s final answer, never its tool output, and keeps any lasting fact. Billed to the OpenRouter key.
+          With the OMP tools on, those turns can also search and add to the memory themselves.
+        </span>
+      </label>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
     </section>

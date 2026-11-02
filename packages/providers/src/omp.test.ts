@@ -715,6 +715,11 @@ describe("OmpProvider", () => {
       // An OpenRouter model, as a turn names one.
       await new OmpProvider("omp").ask({ ctx: { cwd: WORKSPACE, env, host }, omp: files, prompt: "p", stdin: "", model: "openai/gpt-5-mini" });
       expect(host.spawned[1]!.argv).toEqual(expect.arrayContaining(["--model", "openrouter/openai/gpt-5-mini"]));
+      // End-of-turn retention (OM7.2): the one tool it names, and no other.
+      await new OmpProvider("omp").ask({ ctx: { cwd: WORKSPACE, env, host }, omp: files, prompt: "p", stdin: "", tools: ["retain"] });
+      const retaining = host.spawned[2]!.argv;
+      expect(retaining.slice(retaining.indexOf("--tools"), retaining.indexOf("--tools") + 2)).toEqual(["--tools", "retain"]);
+      expect(retaining).not.toContain("--no-tools");
     });
 
     it("rejects with OMP's own error, not its progress line, and on an empty answer", async () => {

@@ -42,11 +42,18 @@ export const WorkspaceAgentSettings = z.object({
    * `llmMode: smol` lets the bank use the workspace's fast model (billed
    * to its OpenRouter key) to extract and match facts; `none` keeps it to
    * full-text search. Off: OMP keeps no memory.
+   *
+   * With memory on, Claude Code and Codex turns that have the OMP bridge
+   * get `omp_recall` / `omp_retain` on the same bank (OM7.2), and
+   * `retainCliTurns` has each of their completed turns' final answer --
+   * never tool output -- read by the fast model, which retains any durable
+   * fact in it (solution §7.3). Billed to the OpenRouter key.
    */
   memory: z
     .object({
       enabled: z.boolean().default(false),
       llmMode: z.enum(["smol", "none"]).default("smol"),
+      retainCliTurns: z.boolean().default(false),
     })
     .default({}),
 });

@@ -154,12 +154,14 @@ export function ompPrintArgv(input: {
   prompt: string;
   /** `openrouter/<id>` or a role (`@smol`). */
   model: string;
+  /** The only tools the run has (`--tools`); none (`--no-tools`) when absent or empty. */
+  tools?: readonly string[];
 }): string[] {
   return [
     input.bin,
     "-p",
     "--no-session",
-    "--no-tools",
+    ...(input.tools?.length ? ["--tools", input.tools.join(",")] : ["--no-tools"]),
     "--config",
     input.overlayPath,
     "--no-extensions",
@@ -1066,6 +1068,7 @@ export class OmpProvider implements AgentProvider {
       guardHookPath: input.omp.guardHookPath,
       prompt: input.prompt,
       model: input.model ? (input.model.startsWith("@") ? input.model : ompModel(input.model)) : "@smol",
+      ...(input.tools ? { tools: input.tools } : {}),
     });
     const result = await input.ctx.host.run(
       { argv, cwd: input.ctx.cwd, env: input.ctx.env, stdin: input.stdin },
@@ -1196,6 +1199,8 @@ export interface OmpAskInput {
   stdin: string;
   /** `openrouter/<id>` or a role; `@smol` when absent. */
   model?: string;
+  /** The tools it may use (end-of-turn `retain`, OM7.2); none when absent. */
+  tools?: readonly string[];
   timeoutMs?: number;
   /** Stops it: the process is sent SIGTERM, and the ask rejects. */
   signal?: AbortSignal;

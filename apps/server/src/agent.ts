@@ -57,6 +57,7 @@ import { treeFor, worktreeIdOf } from "./trees.js";
 import type { Principal } from "./auth.js";
 import type { EngineResult } from "./engine.js";
 import { buildHandoffBrief, handoffMessage, handoffTitle, type BriefAsker } from "./omp-handoff.js";
+import { messageText, RETAIN_PROMPT, retainStdin } from "./omp-memory.js";
 import type { EventStore } from "./eventstore.js";
 import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter.js";
 import { documentationPrompt } from "./documents.js";
@@ -1279,8 +1280,13 @@ export class AgentTurnReactor {
       const autoAnswered = new Set<string>();
       const open = new Set<string>();
       this.#cliPrompts.set(input.threadId, open);
+      // The turn's final answer, for end-of-turn retention (OM7.2).
+      let answer: string | null = null;
+      let completed = false;
       try {
         for await (const event of run.events) {
+          if (event.type === "agent.message") answer = messageText(event.content) ?? answer;
+          else if (event.type === "agent.turn_completed") completed = true;
           if (event.type === "agent.permission_requested") {
             const mode = this.#modeFor(input.threadId, input.owner);
             const needsPerson =
@@ -1313,6 +1319,11 @@ export class AgentTurnReactor {
         input.signal.removeEventListener("abort", onAbort);
         if (this.#cliPrompts.get(input.threadId) === open) this.#cliPrompts.delete(input.threadId);
       }
+      const memory = input.agentSettings?.memory;
+      if (provider !== "omp" && completed && answer && memory?.enabled && memory.retainCliTurns) {
+        // After the turn, on a slot of its own: the thread never waits on it.
+        void this.#retainAnswer({ ...input, answer }).catch(this.onError);
+      }
     } finally {
       if (run) {
         this.#cliRuns.delete(run);
@@ -1322,6 +1333,67 @@ export class AgentTurnReactor {
       // overlay any more. A failure to delete it is the operator's to hear.
       await overlay?.dispose().catch(this.onError);
       await bridge?.dispose().catch(this.onError);
+    }
+  }
+
+  /**
+   * End-of-turn retention (solution §7.3, OM7.2): a Claude Code or Codex
+   * turn's final answer read by OMP's `smol` role with only the `retain`
+   * tool, under an overlay naming the project's bank, so a decision made in
+   * one provider's thread is recalled in another's. Billed to the
+   * OpenRouter key, on an OMP slot; nothing without a key.
+   */
+  async #retainAnswer(input: {
+    ownerId: string;
+    owner: { openrouterKeyEncrypted: string | null; defaultModel: string | null };
+    projectId: string;
+    threadId: string;
+    workspace: string;
+    agentSettings?: WorkspaceAgentSettings;
+    answer: string;
+  }): Promise<void> {
+    const providers = this.options.providers;
+    if (!providers) return;
+    let openrouterKey: string;
+    try {
+      openrouterKey = this.#decryptKey(input.owner.openrouterKeyEncrypted);
+    } catch {
+      return;
+    }
+    const release = await this.#scheduler.acquire({ ownerId: input.ownerId, kind: "omp", threadId: input.threadId });
+    let overlay: { dispose(): Promise<void> } | undefined;
+    try {
+      const resolved = await providers.resolve(input.ownerId, "omp", { openrouterKey, ompPreset: "standard" });
+      const omp = resolved.provider as Partial<BriefAsker>;
+      if (!omp.ask) return;
+      const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), randomUUID(), {
+        settings: {
+          ...DEFAULT_OMP_SETTINGS,
+          models: { default: resolveModel(undefined, input.owner.defaultModel, this.options.defaultModel) },
+          memory: input.agentSettings?.memory ?? DEFAULT_OMP_SETTINGS.memory,
+        },
+        memoryDbPath: providers.ompMemoryDb(input.ownerId, input.projectId),
+        memoryToolsOnly: true,
+        preset: "standard",
+        // Nobody to ask, and `retain` is its only tool.
+        permissionMode: "allow_all",
+        trusted: false,
+        workersPerTurn: 1,
+        webSearch: false,
+        hostTools: [],
+      });
+      overlay = written;
+      await omp.ask({
+        ctx: resolved.ctx(input.workspace),
+        omp: { overlayPath: written.path, guardHookPath: providers.ompGuardHook(input.ownerId) },
+        prompt: RETAIN_PROMPT,
+        stdin: retainStdin(input.answer),
+        model: "@smol",
+        tools: ["retain"],
+      });
+    } finally {
+      release();
+      await overlay?.dispose().catch(this.onError);
     }
   }
 
@@ -1342,9 +1414,11 @@ export class AgentTurnReactor {
     input: {
       ownerId: string;
       owner: { openrouterKeyEncrypted: string | null; defaultModel: string | null };
+      projectId: string;
       threadId: string;
       turnId: string;
       workspace: string;
+      agentSettings?: WorkspaceAgentSettings;
     },
   ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { dispose(): Promise<void> }) | null> {
     const options = this.options.ompBridge;
@@ -1356,6 +1430,7 @@ export class AgentTurnReactor {
     } catch {
       return null;
     }
+    const memory = input.agentSettings?.memory ?? DEFAULT_OMP_SETTINGS.memory;
     const disposers: (() => Promise<void> | void)[] = [];
     const dispose = async () => {
       for (const step of disposers.splice(0).reverse()) await step();
@@ -1367,7 +1442,10 @@ export class AgentTurnReactor {
         settings: {
           ...DEFAULT_OMP_SETTINGS,
           models: { default: resolveModel(undefined, input.owner.defaultModel, this.options.defaultModel) },
+          memory,
         },
+        // The project's bank, as its OMP turns have it (OM7.2).
+        ...(memory.enabled ? { memoryDbPath: providers.ompMemoryDb(input.ownerId, input.projectId), memoryToolsOnly: true } : {}),
         preset: "standard",
         // A bridge call has no one to ask: its `omp` runs headless, under
         // `--approval-mode yolo`. The person is asked by Claude Code, about
@@ -1395,6 +1473,7 @@ export class AgentTurnReactor {
         token: lease.token,
         maxSeconds: options.maxSeconds,
         trusted: false,
+        memory: memory.enabled,
       });
       const runDir = providers.cliRunDir(input.ownerId, provider);
       if (provider === "codex") {

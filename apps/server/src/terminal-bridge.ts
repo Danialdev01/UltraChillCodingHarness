@@ -2,7 +2,7 @@ import { rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { projects, users, workspaces, type Database } from "@ucch/db";
-import { readAgentSettings } from "@ucch/protocol";
+import { readAgentSettings, type WorkspaceAgentSettings } from "@ucch/protocol";
 import { codexMcpArgs } from "@ucch/providers";
 import { decryptSecret } from "./crypto.js";
 import { BRIDGE_CALL_OVERHEAD_SEC, bridgeServer } from "./omp-bridge-config.js";
@@ -38,6 +38,8 @@ export interface TerminalBridgeFacts {
   enabled: boolean;
   openrouterKeyEncrypted: string | null;
   defaultModel: string | null;
+  /** The workspace's memory setting: the bridge recalls from and retains to the project's bank (OM7.2). */
+  memory: WorkspaceAgentSettings["memory"];
 }
 
 export interface TerminalBridgeOptions extends OmpBridgeOptions {
@@ -47,6 +49,8 @@ export interface TerminalBridgeOptions extends OmpBridgeOptions {
   /** The subject's `omp/run` and `omp/agent` (`ProviderService`). */
   runDir(subject: string): string;
   agentDir(subject: string): string;
+  /** The project's mnemopi bank under the subject (`ProviderService.ompMemoryDb`). */
+  memoryDb(subject: string, projectId: string): string;
   /** The workspace's setting, and the subject's key and the person's model. */
   facts(projectId: string, subject: string, userId: string): Promise<TerminalBridgeFacts | null>;
 }
@@ -89,7 +93,12 @@ export class TerminalBridge {
     };
     try {
       const overlay = await writeOmpOverlay(options.runDir(input.subject), `bridge-term-${input.terminalId}`, {
-        settings: { ...DEFAULT_OMP_SETTINGS, models: { default: resolveModel(undefined, facts.defaultModel, options.defaultModel) } },
+        settings: {
+          ...DEFAULT_OMP_SETTINGS,
+          models: { default: resolveModel(undefined, facts.defaultModel, options.defaultModel) },
+          memory: facts.memory,
+        },
+        ...(facts.memory.enabled ? { memoryDbPath: options.memoryDb(input.subject, input.projectId), memoryToolsOnly: true } : {}),
         preset: "standard",
         // The bridge's own `omp` is headless; the CLI asked its person first.
         permissionMode: "allow_all",
@@ -112,6 +121,7 @@ export class TerminalBridge {
         token: lease.token,
         maxSeconds: options.maxSeconds,
         trusted: false,
+        memory: facts.memory.enabled,
       });
       const envFile = `${base}.bridge.json`;
       const visible = { UCCH_BRIDGE_ENV_FILE: envFile };
@@ -164,8 +174,10 @@ export function terminalBridgeFacts(db: Database): TerminalBridgeOptions["facts"
     const workspace = workspaceOfSubject(subject);
     // A workspace subject is only ever this project's own workspace.
     if (workspace && workspace !== project.workspaceId) return null;
+    const settings = readAgentSettings(project.agent);
     return {
-      enabled: readAgentSettings(project.agent).ompBridge.enabled,
+      enabled: settings.ompBridge.enabled,
+      memory: settings.memory,
       openrouterKeyEncrypted: workspace ? project.workspaceKey : person.key,
       defaultModel: person.defaultModel,
     };

@@ -607,6 +607,10 @@ The role prompts live in `packages/providers/src/omp-roles.ts`, next to the code
   - `omp_retain(fact, kind)` runs the same command with the `retain` tool.
   - The model call goes through `mnemopi.llmMode: smol`. With `llmMode: none`, recall is full-text search only.
 - **End-of-turn retention** (workspace toggle, off by default). After a CLI turn completes, the reactor runs `omp_retain` with the turn's final assistant message, never tool output (§0.2).
+- **As built (OM7.2).**
+  - The bridge gets memory as the workspace has it: the bridge overlay names the project's bank, and the env carries `UCCH_OMP_MEMORY=1`. This holds for turns and for terminals.
+  - Retention is `memory.retainCliTurns`. It is not a bridge call: the reactor runs `OmpProvider.ask` (`omp -p --no-session --tools retain`, `@smol`) on an OMP slot of its own after the turn, with the text of the last `agent.message` on stdin (`omp-memory.ts`), cut at 16 000 characters. The prompt asks for at most five durable facts with project scope, and no secrets or task state.
+  - The bridge and retention overlays set `autoRecall: false` and `autoRetain: false` (`memoryToolsOnly`). With `autoRetain` on, mnemopi stored the retention run's whole prompt and stdin as a memory, verbatim, next to the fact the model kept. A bridge call would likewise store its assignment. Only OMP turns recall and retain on their own.
 - **Settings UI.** A memory card with `/memory stats` and `/memory clear` equivalents. OM0: slash commands do not run in `-p` (the model received the literal `/memory stats`; only prompt templates such as `/review` expand), so the card reads the project's `mnemopi.db` (SQLite) directly, and clear deletes that file.
 
 ---

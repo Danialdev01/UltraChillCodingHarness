@@ -422,6 +422,7 @@ const terminals = new TerminalReactor(
       defaultModel: config.DEFAULT_MODEL,
       runDir: (subject) => providerService.ompRunDir(subject),
       agentDir: (subject) => providerService.ompAgentDir(subject),
+      memoryDb: (subject, projectId) => providerService.ompMemoryDb(subject, projectId),
       facts: terminalBridgeFacts(db),
     }),
     // A sign-in terminal: the CLI's own login flow, in the user's credential

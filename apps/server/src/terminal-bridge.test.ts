@@ -38,13 +38,15 @@ describe("TerminalBridge", () => {
       defaultModel: "anthropic/claude-sonnet-4.5",
       runDir: () => join(root, "run"),
       agentDir: () => "/creds/u/omp/agent",
+      memoryDb: (subject, projectId) => `/creds/${subject}/omp/memories/${projectId}/mnemopi.db`,
       facts: async () => facts,
     });
     return { terminal, tokens };
   }
   const open = (terminal: TerminalBridge) =>
     terminal.open({ projectId: "p", subject: "u", userId: "u", terminalId: TERMINAL, cwd: "/ws/p" });
-  const on = { enabled: true, openrouterKeyEncrypted: encryptSecret("sk-or-term", SECRET), defaultModel: null };
+  const memoryOff = { enabled: false, llmMode: "smol" as const, retainCliTurns: false };
+  const on = { enabled: true, openrouterKeyEncrypted: encryptSecret("sk-or-term", SECRET), defaultModel: null, memory: memoryOff };
 
   it("writes the Claude config, the Codex arguments and one 0600 file with the key; and takes all of it down", async () => {
     const { terminal, tokens } = bridge(on);
@@ -63,6 +65,8 @@ describe("TerminalBridge", () => {
     const env = JSON.parse(readFileSync(envFile, "utf8")) as Record<string, string>;
     expect(env).toMatchObject({ OPENROUTER_API_KEY: "sk-or-term", UCCH_BRIDGE_TOKEN: "tok", UCCH_WORKTREE: "/ws/p", UCCH_BRIDGE_MAX_SECONDS: "300" });
     expect(env.UCCH_OMP_TRUSTED).toBeUndefined();
+    expect(env.UCCH_OMP_MEMORY).toBeUndefined();
+    expect(readFileSync(join(root, "run", `bridge-term-${TERMINAL}.yml`), "utf8")).toContain('memory:\n  backend: "off"\n');
     const files = readdirSync(join(root, "run")).sort();
     expect(files).toEqual([`bridge-term-${TERMINAL}.yml`, `term-${TERMINAL}.bridge.json`, `term-${TERMINAL}.codex`, `term-${TERMINAL}.mcp.json`]);
     for (const file of files) expect(statSync(join(root, "run", file)).mode & 0o777, file).toBe(0o600);
@@ -89,6 +93,18 @@ describe("TerminalBridge", () => {
     expect(existsSync(join(root, "run", `term-${TERMINAL}.mcp.json`))).toBe(false);
   });
 
+  it("recalls from and retains to the project's bank when the workspace keeps memory (OM7.2)", async () => {
+    const { terminal } = bridge({ ...on, memory: { ...memoryOff, enabled: true } });
+    const handle = await open(terminal);
+    const env = JSON.parse(readFileSync(join(root, "run", `term-${TERMINAL}.bridge.json`), "utf8")) as Record<string, string>;
+    expect(env.UCCH_OMP_MEMORY).toBe("1");
+    const overlay = readFileSync(join(root, "run", `bridge-term-${TERMINAL}.yml`), "utf8");
+    expect(overlay).toContain('memory:\n  backend: "mnemopi"\n');
+    expect(overlay).toContain('  dbPath: "/creds/u/omp/memories/p/mnemopi.db"\n');
+    expect(overlay).toContain("  autoRecall: false\n  autoRetain: false\n");
+    await handle!.dispose();
+  });
+
   it("refuses a terminal id that is not one", () => {
     expect(() => bridge(on).terminal.path("u", "../x")).toThrow();
   });
@@ -111,6 +127,7 @@ describe("terminalBridgeFacts", () => {
       enabled: true,
       openrouterKeyEncrypted: "person-key",
       defaultModel: "openai/gpt-5",
+      memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
     });
     expect(await terminalBridgeFacts(db([project], [person]))("p", "ws-w1", "u")).toMatchObject({ openrouterKeyEncrypted: "ws-key" });
   });
