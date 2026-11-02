@@ -115,3 +115,31 @@ export function billingLabel(provider: string | undefined): string {
       return "API credits";
   }
 }
+
+/** One project's OMP memory, as the memory card shows it (counts only). */
+export interface OmpMemoryStats {
+  exists: boolean;
+  facts: number;
+  episodes: number;
+  total: number;
+  bytes: number;
+  lastAt: string | null;
+}
+
+export async function fetchOmpMemory(projectId: string, workspaceId?: string): Promise<OmpMemoryStats> {
+  return check<OmpMemoryStats>(
+    await fetch(scoped(`/api/omp-memory/${encodeURIComponent(projectId)}`, { workspace: workspaceId }), {
+      credentials: "include",
+      cache: "no-store",
+    }),
+  );
+}
+
+export async function clearOmpMemory(projectId: string, workspaceId?: string): Promise<void> {
+  await check(
+    await fetch(scoped(`/api/omp-memory/${encodeURIComponent(projectId)}`, { workspace: workspaceId }), {
+      method: "DELETE",
+      credentials: "include",
+    }),
+  );
+}

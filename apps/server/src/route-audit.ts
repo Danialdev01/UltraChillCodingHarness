@@ -306,6 +306,7 @@ const TABLE: Record<string, Describe> = {
   "PUT /api/settings/claude-token": () => account("settings.claude", "Changed the Claude token"),
   "PUT /api/settings/default-provider": () => account("settings.provider", "Changed the default provider"),
   "DELETE /api/providers/:id/credentials": (p) => account("settings.credentials", `Signed out of ${p.id ?? "a provider"}`),
+  "DELETE /api/omp-memory/:projectId": () => account("settings.memory", "Cleared a project's OMP memory"),
 
   // -- Database connections --------------------------------------------------
   "POST /api/workspaces/:id/database-connections": (_p, b) =>

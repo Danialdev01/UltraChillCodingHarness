@@ -5,6 +5,7 @@ import dynamic from "next/dynamic"
 import {
   AlertTriangleIcon,
   BotIcon,
+  BrainIcon,
   CheckIcon,
   KeyRoundIcon,
   Loader2Icon,
@@ -20,14 +21,18 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
+  clearOmpMemory,
+  fetchOmpMemory,
   fetchProviders,
   saveClaudeToken,
   saveDefaultProvider,
   signOutProvider,
+  type OmpMemoryStats,
   type ProviderCard,
   type ProviderId,
   type ProvidersResponse,
 } from "@/lib/providers-api"
+import { formatBytes } from "@/lib/attachments"
 import { cn } from "@/lib/utils"
 
 // xterm comes with the sign-in terminal, which most visits to settings never open.
@@ -146,6 +151,8 @@ export function ProviderSettings({
         onLogin={() => setLogin("codex-login")}
         onChanged={() => void load(true)}
       />
+
+      {projects.length > 0 && <MemoryCard projects={projects} workspaceId={workspaceId} readOnly={readOnly} />}
 
       <div className="flex items-center gap-3">
         <Button variant="outline" size="sm" onClick={() => void load(true)} disabled={refreshing}>
@@ -567,5 +574,128 @@ function CodexCard({
       </div>
       {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
     </CardShell>
+  )
+}
+
+/**
+ * One project's OMP memory (OMP OM7.3, solution §7.3): how much the bank
+ * holds, and a Clear button. Counts only -- the memories themselves stay on
+ * the server. The bank is the one the cards above pay for: yours, or with
+ * `workspaceId` the workspace's dedicated subscription's.
+ */
+function MemoryCard({
+  projects,
+  workspaceId,
+  readOnly,
+}: {
+  projects: { id: string; name: string }[]
+  workspaceId?: string
+  readOnly: boolean
+}) {
+  const [projectId, setProjectId] = React.useState(projects[0]!.id)
+  const [stats, setStats] = React.useState<{ projectId: string; value: OmpMemoryStats } | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const [confirming, setConfirming] = React.useState(false)
+  const [clearing, setClearing] = React.useState(false)
+
+  React.useEffect(() => {
+    let live = true
+    setError(null)
+    setConfirming(false)
+    fetchOmpMemory(projectId, workspaceId).then(
+      (value) => live && setStats({ projectId, value }),
+      (e: unknown) => live && setError(e instanceof Error ? e.message : "Could not read the memory."),
+    )
+    return () => {
+      live = false
+    }
+  }, [projectId, workspaceId])
+
+  async function clear() {
+    setClearing(true)
+    setError(null)
+    try {
+      await clearOmpMemory(projectId, workspaceId)
+      setStats({ projectId, value: await fetchOmpMemory(projectId, workspaceId) })
+      setConfirming(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not clear the memory.")
+    } finally {
+      setClearing(false)
+    }
+  }
+
+  const current = stats?.projectId === projectId ? stats.value : null
+
+  return (
+    <section className="rounded-lg border p-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-medium">
+          <BrainIcon className="text-muted-foreground size-4" />
+          OMP memory
+        </h2>
+        {projects.length > 1 && (
+          <select
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            aria-label="Project"
+            className="border-input bg-background h-7 rounded-md border px-2 text-xs"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
+        What Custom turns have kept about this project{workspaceId ? " on the workspace's subscription" : ""}: facts
+        they retained, and summaries of past turns. Turned on under the workspace&apos;s Harness settings.
+      </p>
+      <p className="text-warning mt-2 max-w-prose text-sm">
+        Do not ask an agent to remember secrets: memory is stored as plain text and recalled into later turns.
+      </p>
+      {!current && !error && <Skeleton className="mt-4 h-5 w-72" />}
+      {current && (
+        <p className="mt-4 text-sm">
+          {current.exists ? (
+            <>
+              {current.facts} {current.facts === 1 ? "fact" : "facts"}, {current.episodes}{" "}
+              {current.episodes === 1 ? "turn summary" : "turn summaries"}
+              <span className="text-muted-foreground">
+                {" "}
+                · {formatBytes(current.bytes)}
+                {current.lastAt ? ` · last added ${new Date(current.lastAt).toLocaleString()}` : ""}
+              </span>
+            </>
+          ) : (
+            <span className="text-muted-foreground">Nothing remembered yet.</span>
+          )}
+        </p>
+      )}
+      {current?.exists && !readOnly && (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {confirming ? (
+            <>
+              <span className="text-sm">Forget everything for this project?</span>
+              <Button variant="destructive" size="sm" onClick={() => void clear()} disabled={clearing}>
+                {clearing ? <Loader2Icon className="animate-spin" /> : <TrashIcon />}
+                Clear memory
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setConfirming(false)} disabled={clearing}>
+                Keep it
+              </Button>
+            </>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => setConfirming(true)}>
+              <TrashIcon />
+              Clear…
+            </Button>
+          )}
+        </div>
+      )}
+      {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
+    </section>
   )
 }

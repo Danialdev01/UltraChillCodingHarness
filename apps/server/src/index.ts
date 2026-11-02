@@ -87,6 +87,7 @@ import { TaskScheduler } from "./task-scheduler.js";
 import { registerDatabaseRoutes } from "./database-routes.js";
 import { WorkspaceMemberService } from "./workspace-members.js";
 import { registerWorkspaceMemberRoutes } from "./workspace-members-routes.js";
+import { registerOmpMemoryRoutes } from "./omp-memory-routes.js";
 import { WebProxy } from "./web-proxy.js";
 import { FileWatcher } from "./file-watcher.js";
 import { registerDbManagerRoutes } from "./db-manager-routes.js";
@@ -2391,6 +2392,16 @@ async function providerSubject(
   if (!z.string().uuid().safeParse(workspaceId).success) return null;
   return (await workspaceService.allows(workspaceId, userId, permission)) ? workspaceSubject(workspaceId) : null;
 }
+
+registerOmpMemoryRoutes(app, {
+  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  subjectFor: providerSubject,
+  visibleProject: async (projectId, userId) => {
+    const [row] = await db.select({ workspaceId: projects.workspaceId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+    return row && (await workspaceService.canView(row.workspaceId, userId)) ? row : null;
+  },
+  memoryDb: (subject, projectId) => providerService.ompMemoryDb(subject, projectId),
+});
 
 registerDbManagerRoutes(app, {
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),

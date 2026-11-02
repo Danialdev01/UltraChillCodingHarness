@@ -612,6 +612,10 @@ The role prompts live in `packages/providers/src/omp-roles.ts`, next to the code
   - Retention is `memory.retainCliTurns`. It is not a bridge call: the reactor runs `OmpProvider.ask` (`omp -p --no-session --tools retain`, `@smol`) on an OMP slot of its own after the turn, with the text of the last `agent.message` on stdin (`omp-memory.ts`), cut at 16 000 characters. The prompt asks for at most five durable facts with project scope, and no secrets or task state.
   - The bridge and retention overlays set `autoRecall: false` and `autoRetain: false` (`memoryToolsOnly`). With `autoRetain` on, mnemopi stored the retention run's whole prompt and stdin as a memory, verbatim, next to the fact the model kept. A bridge call would likewise store its assignment. Only OMP turns recall and retain on their own.
 - **Settings UI.** A memory card with `/memory stats` and `/memory clear` equivalents. OM0: slash commands do not run in `-p` (the model received the literal `/memory stats`; only prompt templates such as `/review` expand), so the card reads the project's `mnemopi.db` (SQLite) directly, and clear deletes that file.
+  - **As built (OM7.3).** An "OMP memory" card in `provider-settings.tsx`, with a project picker. It reads the bank of the subject the cards pay for: yours, or with `?workspace=` the workspace's.
+  - `GET /api/omp-memory/:projectId` (`omp-memory-routes.ts`) counts `working_memory` rows by `memory_type` (`fact` and `episode`) plus `episodic_memory`, through `node:sqlite` read-only. It returns only counts, size and the newest timestamp.
+  - `DELETE` removes the file with its `-wal`, `-shm` and `-journal` companions. It needs `credentials.manage` for a workspace's bank, and the action is audited.
+  - The project must be one the caller can see, and a workspace's bank serves only that workspace's projects.
 
 ---
 
