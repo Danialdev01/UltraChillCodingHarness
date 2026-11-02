@@ -176,6 +176,23 @@ RUN set -eux; \
   test -d "/opt/omp/natives/${OMP_VERSION}"; \
   rm -rf /tmp/omp-warm
 ENV PATH=/opt/omp/bin:$PATH
+# Language servers for OMP's `lsp` tool (solution §8.2, OM7.4): TypeScript
+# and Python. They start only for a trusted project; every other turn runs
+# `--no-lsp`, because a repository's own LSP config is a command (§0.3). A
+# project's own node_modules/.bin copy wins over these when it has one.
+# TypeScript stays on 5.x: 7.x is the native compiler, which ships no
+# tsserver for typescript-language-server to drive.
+ARG OMP_LSP_TS_SERVER_VERSION=6.0.2
+ARG OMP_LSP_TYPESCRIPT_VERSION=5.9.3
+ARG OMP_LSP_PYRIGHT_VERSION=1.1.414
+RUN npm install -g \
+    "typescript-language-server@${OMP_LSP_TS_SERVER_VERSION}" \
+    "typescript@${OMP_LSP_TYPESCRIPT_VERSION}" \
+    "pyright@${OMP_LSP_PYRIGHT_VERSION}" \
+  && npm cache clean --force \
+  && test "$(typescript-language-server --version)" = "${OMP_LSP_TS_SERVER_VERSION}" \
+  && command -v pyright-langserver \
+  && pyright --version
 ENV SHELL=/bin/bash
 
 # --- app: the single container ----------------------------------------------
