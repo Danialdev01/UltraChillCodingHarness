@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { failure, runOmpCall } from "../call.js";
-import { tool, where, withText, worktreeState } from "./tool.js";
+import { tool, untrusted, where, withText, worktreeState } from "./tool.js";
 
 /** `omp_symbols`' operations, as OMP's `lsp` tool names its actions (18.14.1). */
 const LSP_ACTION = {
@@ -27,6 +27,7 @@ export const ompSymbols = tool({
   },
   annotations: { title: "OMP symbols", readOnlyHint: true, openWorldHint: false },
   run: ({ op, symbol, file, line, packageDir }, ctx) => {
+    if (!ctx.config.trusted) return Promise.resolve(failure(untrusted("code intelligence")));
     if (op !== "diagnostics" && !symbol) return Promise.resolve(failure(`${op} needs a symbol`));
     const target = op === "diagnostics" ? `for \`${file ?? "*"}\`` : `of \`${symbol}\`${where(file, line)}`;
     const prompt = [
@@ -59,6 +60,7 @@ export const ompRename = tool({
   },
   annotations: { title: "OMP rename", destructiveHint: false, openWorldHint: false },
   run: async ({ symbol, file, line, newName, apply }, ctx) => {
+    if (!ctx.config.trusted) return failure(untrusted("code intelligence"));
     const before = apply ? null : await worktreeState(ctx);
     const prompt = apply
       ? `Using the lsp tool's \`rename\` action, rename \`${symbol}\`${where(file, line)} to \`${newName}\`, applying it. Then list every file it changed.`

@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { runOmpCall } from "../call.js";
-import { tool } from "./tool.js";
+import { failure, runOmpCall } from "../call.js";
+import { tool, untrusted } from "./tool.js";
 
 /**
  * `omp_debug`: a debugging session with OMP's `debug` tool (DAP), returning
@@ -24,6 +24,7 @@ export const ompDebug = tool({
   },
   annotations: { title: "OMP debug", openWorldHint: false },
   run: ({ goal, program, args, attachPid, breakpoints }, ctx) => {
+    if (!ctx.config.trusted) return Promise.resolve(failure(untrusted("debugging")));
     const lines = [
       `Using the debug tool, investigate: ${goal}`,
       attachPid ? `Attach to process ${attachPid}.` : program ? `Launch \`${program}\`${args?.length ? ` with arguments ${JSON.stringify(args)}` : ""}.` : "",

@@ -696,6 +696,7 @@ Every tool:
 - **A codemod preview ends itself.** `ast_edit` only stages a proposal. OMP then forces the model to `write` it to `xd://resolve` or `xd://reject`, and a call with no `write` fails after three forced turns. So the preview gets `ast_edit,read` only, and the bridge sends `abort` once `ast_edit` has answered (`stopAfter`), returning the staged diff. Denying `write` by policy does not help: `xd://reject` is not a device with its own approval key.
 - **`/review` is not a command under `--no-extensions`.** The model receives the literal text. `omp_review` sends OMP's own headless review request (the text `/review` expands to) with the diff the bridge reads from git, and answers with the reviewer subagent's result.
 - **The whole exchange is timed.** `--max-time` plus 30 s covers the stats and prompt commands as well as the wait, so a process that stops answering cannot hold the CLI's tool call.
+- **No language server or debugger for an untrusted project** (§0.3). A cloned repository's own LSP and debug-adapter config would run, so `lsp` and `debug` need `UCCH_OMP_TRUSTED=1`. Without it every call passes `--no-lsp`, `omp_task` drops `lsp` from its list, and `omp_symbols`, `omp_rename` and `omp_debug` answer "off for this project" without starting OMP. The server sets the variable from the project's trust (OM7.6).
 
 ### 10.3 Wiring
 

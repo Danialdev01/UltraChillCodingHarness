@@ -23,7 +23,8 @@ export const ompTask = tool({
   },
   annotations: { title: "OMP subagent", openWorldHint: false },
   run: ({ agent, assignment, files }, ctx) => {
-    const tools = ["read", "grep", "glob", "lsp", "task"];
+    // `lsp` only where a language server may start at all (`config.trusted`).
+    const tools = ["read", "grep", "glob", ...(ctx.config.trusted ? ["lsp"] : []), "task"];
     if (agent === "sonic") tools.push("edit", "write");
     if (agent === "scout" && ctx.config.webSearch) tools.push("web_search");
     const start = files?.length ? `\n\nStart from these files: ${files.map((file) => `\`${file}\``).join(", ")}.` : "";

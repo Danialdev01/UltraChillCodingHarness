@@ -44,8 +44,10 @@ describe("callArgv", () => {
     ]);
   });
 
-  it("starts a language server only for a call that asks for lsp, and no tools at all for an empty list", () => {
-    expect(callArgv(config, { tools: ["lsp", "read"], model: "@smol" })).not.toContain("--no-lsp");
+  it("starts a language server only for a trusted project's call that asks for lsp, and no tools at all for an empty list", () => {
+    expect(callArgv(config, { tools: ["lsp", "read"], model: "@smol" })).toContain("--no-lsp");
+    expect(callArgv({ ...config, trusted: true }, { tools: ["lsp", "read"], model: "@smol" })).not.toContain("--no-lsp");
+    expect(callArgv({ ...config, trusted: true }, { tools: ["read"], model: "@smol" })).toContain("--no-lsp");
     const none = callArgv(config, { tools: [], model: "@smol" });
     expect(none).toContain("--no-tools");
     expect(none).not.toContain("--tools");

@@ -71,19 +71,23 @@ async function run(name: string, input: unknown, options: Parameters<typeof ctx>
 const FORMATTED = /\n\nomp: 1\.2k in \/ 80 out · \$0\.0012 · \d+ s$/;
 
 describe("each bridge tool's row (solution §10.2)", () => {
-  it("omp_task: a bundled agent, read-only unless sonic; scout searches the web only with a key", async () => {
+  it("omp_task: a bundled agent, read-only unless sonic; lsp only when trusted; scout searches the web only with a key", async () => {
     const scout = await run("omp_task", { agent: "scout", assignment: "Map src/.", files: ["src/a.ts"] });
-    expect(scout.tools).toEqual(["read", "grep", "glob", "lsp", "task"]);
+    expect(scout.tools).toEqual(["read", "grep", "glob", "task"]);
+    expect(scout.lsp).toBe(false);
     expect(scout.model).toBe("@smol");
     expect(scout.prompt).toBe("Use the `scout` subagent: Map src/.\n\nStart from these files: `src/a.ts`.\n\nReturn the subagent's result as it gave it.");
     expect(scout.text).toMatch(FORMATTED);
 
-    const searching = await run("omp_task", { agent: "scout", assignment: "x" }, { env: { UCCH_OMP_WEB_SEARCH: "1" } });
+    const trusted = await run("omp_task", { agent: "scout", assignment: "x" }, { env: { UCCH_OMP_TRUSTED: "1" } });
+    expect(trusted.tools).toEqual(["read", "grep", "glob", "lsp", "task"]);
+    expect(trusted.lsp).toBe(true);
+    const searching = await run("omp_task", { agent: "scout", assignment: "x" }, { env: { UCCH_OMP_WEB_SEARCH: "1", UCCH_OMP_TRUSTED: "1" } });
     expect(searching.tools).toEqual(["read", "grep", "glob", "lsp", "task", "web_search"]);
-    const sonic = await run("omp_task", { agent: "sonic", assignment: "x" }, { env: { UCCH_OMP_WEB_SEARCH: "1" } });
+    const sonic = await run("omp_task", { agent: "sonic", assignment: "x" }, { env: { UCCH_OMP_WEB_SEARCH: "1", UCCH_OMP_TRUSTED: "1" } });
     expect(sonic.tools).toEqual(["read", "grep", "glob", "lsp", "task", "edit", "write"]);
     for (const agent of ["reviewer", "security-reviewer"]) {
-      expect((await run("omp_task", { agent, assignment: "x" })).tools).toEqual(["read", "grep", "glob", "lsp", "task"]);
+      expect((await run("omp_task", { agent, assignment: "x" })).tools).toEqual(["read", "grep", "glob", "task"]);
     }
   });
 
@@ -119,31 +123,31 @@ describe("each bridge tool's row (solution §10.2)", () => {
   });
 
   it("omp_symbols: the lsp tool alone, with its own action names", async () => {
-    const refs = await run("omp_symbols", { op: "references", symbol: "a", file: "a.ts", line: 1 });
+    const refs = await run("omp_symbols", { op: "references", symbol: "a", file: "a.ts", line: 1 }, { env: { UCCH_OMP_TRUSTED: "1" } });
     expect(refs.tools).toEqual(["lsp", "read"]);
     expect(refs.lsp).toBe(true);
     expect(refs.prompt).toMatch(/^Using the lsp tool only, run its `references` action of `a` in `a.ts` at line 1\./);
-    expect((await run("omp_symbols", { op: "implementations", symbol: "a" })).prompt).toContain("`implementation` action");
-    expect((await run("omp_symbols", { op: "type", symbol: "a" })).prompt).toContain("`type_definition` action");
-    expect((await run("omp_symbols", { op: "diagnostics", file: "src/**/*.ts" })).prompt).toContain("`diagnostics` action for `src/**/*.ts`");
+    expect((await run("omp_symbols", { op: "implementations", symbol: "a" }, { env: { UCCH_OMP_TRUSTED: "1" } })).prompt).toContain("`implementation` action");
+    expect((await run("omp_symbols", { op: "type", symbol: "a" }, { env: { UCCH_OMP_TRUSTED: "1" } })).prompt).toContain("`type_definition` action");
+    expect((await run("omp_symbols", { op: "diagnostics", file: "src/**/*.ts" }, { env: { UCCH_OMP_TRUSTED: "1" } })).prompt).toContain("`diagnostics` action for `src/**/*.ts`");
     expect(refs.text).toMatch(FORMATTED);
   });
 
   it("omp_symbols: a lookup without a symbol is refused before omp starts", async () => {
-    const missing = await run("omp_symbols", { op: "definition" });
+    const missing = await run("omp_symbols", { op: "definition" }, { env: { UCCH_OMP_TRUSTED: "1" } });
     expect(missing).toMatchObject({ started: 0, text: "definition needs a symbol" });
   });
 
   it("omp_rename: a preview gets no write tool; apply adds edit and write", async () => {
     const worktree = checkout();
     const before = readFileSync(join(worktree, "a.ts"), "utf8");
-    const preview = await run("omp_rename", { symbol: "a", file: "a.ts", newName: "b", apply: false }, { worktree });
+    const preview = await run("omp_rename", { symbol: "a", file: "a.ts", newName: "b", apply: false }, { worktree, env: { UCCH_OMP_TRUSTED: "1" } });
     expect(preview.tools).toEqual(["lsp", "read"]);
     expect(preview.prompt).toContain("with `apply: false`");
     expect(preview.text).toMatch(FORMATTED);
     expect(readFileSync(join(worktree, "a.ts"), "utf8")).toBe(before);
 
-    const apply = await run("omp_rename", { symbol: "a", file: "a.ts", line: 1, newName: "b", apply: true }, { worktree });
+    const apply = await run("omp_rename", { symbol: "a", file: "a.ts", line: 1, newName: "b", apply: true }, { worktree, env: { UCCH_OMP_TRUSTED: "1" } });
     expect(apply.tools).toEqual(["lsp", "read", "edit", "write"]);
     expect(apply.prompt).toContain("applying it");
   });
@@ -171,7 +175,7 @@ describe("each bridge tool's row (solution §10.2)", () => {
       program: "scripts/sum.js",
       args: ["--n", "3"],
       breakpoints: [{ file: "scripts/sum.js", line: 4, condition: "i === 2" }],
-    });
+    }, { env: { UCCH_OMP_TRUSTED: "1" } });
     expect(debug.tools).toEqual(["debug", "read", "bash", "grep"]);
     expect(debug.model).toBe("@default");
     expect(debug.prompt).toBe(
@@ -216,6 +220,34 @@ describe("each bridge tool's row (solution §10.2)", () => {
   });
 });
 
+describe("an untrusted project (solution §0.3)", () => {
+  it("gets no language server and no debugger: those tools say why, without starting omp", async () => {
+    for (const [name, input, what] of [
+      ["omp_symbols", { op: "references", symbol: "a" }, "code intelligence"],
+      ["omp_rename", { symbol: "a", file: "a.ts", newName: "b", apply: false }, "code intelligence"],
+      ["omp_debug", { goal: "x" }, "debugging"],
+    ] as const) {
+      const refused = await run(name, input);
+      expect(refused.started, name).toBe(0);
+      expect(refused.result.isError, name).toBe(true);
+      expect(refused.text, name).toBe(
+        `${what} is off for this project: it is not marked trusted, and a cloned repository's own ${what} config would run (solution §0.3)`,
+      );
+    }
+  });
+
+  it("runs every other call with --no-lsp", async () => {
+    const worktree = checkout();
+    for (const [name, input] of [
+      ["omp_task", { agent: "scout", assignment: "x" }],
+      ["omp_review", { scope: "uncommitted" }],
+      ["omp_handoff_brief", { transcript: "x" }],
+    ] as const) {
+      expect((await run(name, input, { worktree })).lsp, name).toBe(false);
+    }
+  });
+});
+
 describe("apply: false", () => {
   const WRITES = new Set(["write", "edit"]);
 
@@ -225,7 +257,7 @@ describe("apply: false", () => {
       ["omp_rename", { symbol: "a", file: "a.ts", newName: "b", apply: false }],
       ["omp_codemod", { description: "x", apply: false }],
     ] as const) {
-      const { tools } = await run(name, input, { worktree, fixture: name === "omp_codemod" ? "omp-bridge-codemod.jsonl" : undefined });
+      const { tools } = await run(name, input, { worktree, env: { UCCH_OMP_TRUSTED: "1" }, fixture: name === "omp_codemod" ? "omp-bridge-codemod.jsonl" : undefined });
       expect(tools, name).not.toBeNull();
       expect(tools!.filter((tool) => WRITES.has(tool)), name).toEqual([]);
     }
@@ -239,7 +271,7 @@ describe("apply: false", () => {
       ["omp_debug", { goal: "x" }],
       ["omp_handoff_brief", { transcript: "x" }],
     ] as const) {
-      const { tools } = await run(name, input);
+      const { tools } = await run(name, input, { env: { UCCH_OMP_TRUSTED: "1" } });
       expect(tools!.filter((tool) => WRITES.has(tool)), name).toEqual([]);
     }
   });

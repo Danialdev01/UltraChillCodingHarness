@@ -28,6 +28,16 @@ export interface BridgeConfig {
   /** OMP's own `web_search` has a search key (`UCCH_OMP_WEB_SEARCH=1`); likewise. */
   webSearch: boolean;
   /**
+   * The project is trusted (`UCCH_OMP_TRUSTED=1`, solution §0.3): only then
+   * may a call start a language server or a debugger. A cloned
+   * repository's `lsp.json` / `.omp/lsp.json` is an arbitrary command that
+   * loads unless `--no-lsp`, and its `dap.json` loads under every flag, so
+   * an untrusted project's calls run `--no-lsp` and have no `lsp` or
+   * `debug` -- which OMP then does not have at all (`--tools lsp` with
+   * `--no-lsp` fails to start, 18.14.1).
+   */
+  trusted: boolean;
+  /**
    * The server's scheduler socket (`UCCH_SCHEDULER_SOCK`), where every call
    * takes an OMP slot first (solution §10.5). Unset -- a bridge someone
    * added to their own Claude Code -- there is no server to ask.
@@ -59,6 +69,7 @@ export function readBridgeConfig(env: NodeJS.ProcessEnv, cwd: string = process.c
     maxSeconds: Number.isInteger(seconds) && seconds > 0 ? seconds : DEFAULT_MAX_SECONDS,
     memory: env.UCCH_OMP_MEMORY === "1",
     webSearch: env.UCCH_OMP_WEB_SEARCH === "1",
+    trusted: env.UCCH_OMP_TRUSTED === "1",
     schedulerSock: set("UCCH_SCHEDULER_SOCK"),
     leaseToken: set("UCCH_BRIDGE_TOKEN"),
     maxCalls: env.UCCH_BRIDGE_MAX_CALLS !== undefined && Number.isInteger(calls) && calls >= 0 ? calls : DEFAULT_MAX_CALLS,

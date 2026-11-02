@@ -17,6 +17,11 @@ export function tool<Shape extends z.ZodRawShape>(definition: BridgeTool<Shape>)
   return definition;
 }
 
+/** Why a call that needs a language server or a debugger is refused on an untrusted project. */
+export function untrusted(what: string): string {
+  return `${what} is off for this project: it is not marked trusted, and a cloned repository's own ${what} config would run (solution §0.3)`;
+}
+
 /** A result with its text parts rewritten. */
 export function withText(result: CallToolResult, change: (text: string) => string): CallToolResult {
   return { ...result, content: result.content.map((part) => (part.type === "text" ? { ...part, text: change(part.text) } : part)) };

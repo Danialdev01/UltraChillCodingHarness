@@ -74,8 +74,9 @@ export function callArgv(config: BridgeConfig, call: Pick<OmpCall, "tools" | "mo
     // A turn's guards (solution §0.3): nothing from the repository loads.
     "--no-extensions",
     "--no-rules",
-    // A call that asks for no code intelligence starts no language server.
-    ...(call.tools.includes("lsp") ? [] : ["--no-lsp"]),
+    // A language server only for a trusted project's call that asks for
+    // one: a cloned repository's LSP config is a command (§0.3).
+    ...(config.trusted && call.tools.includes("lsp") ? [] : ["--no-lsp"]),
     ...(config.overlay ? ["--config", config.overlay] : []),
   ];
 }

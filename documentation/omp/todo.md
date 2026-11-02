@@ -489,6 +489,7 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Rows.** Solution §10.2 is corrected where 18.14.1 differs: `omp_codemod` runs `ast_edit` without `ast_grep` (off by default, and a missing `--tools` name stops OMP); recall and retain use `@smol` (there is no `tiny` role); `omp_review` sends the headless review request with the diff, because `/review` is plain text under `--no-extensions`.
     - **Previews.** Neither preview gets `write` or `edit`. A codemod preview would be forced to resolve its staged proposal until it failed, so the bridge aborts once `ast_edit` has answered (`stopAfter`, fixture `omp-bridge-codemod.jsonl`). `ast_edit` is in the preview's list, but it only stages.
     - **Tests.** `tools.test.ts` checks each row's `--tools`, `--model` and prompt, the result format, and the previews; `call.test.ts` checks argv, cost line, cap, timeout and stop; `server.test.ts` checks the MCP face. All run on fake-omp.
+    - **Trust (later fix).** `lsp` and `debug` run only with `UCCH_OMP_TRUSTED=1`; otherwise every call passes `--no-lsp` and the code-intelligence and debug tools refuse without starting OMP (solution §10.2).
     - **Manual run.** Every tool ran on real OMP with the scripted model. The LSP rename ran with typescript-language-server 4.3.4, previewed and applied; recall found a fact a separate process had retained. `omp_debug` needs the debug adapters (OM7.5). The built bundle answered over stdio.
 - [x] **OM6.3 — Scheduler lease and budget** — 32cfa61
 
