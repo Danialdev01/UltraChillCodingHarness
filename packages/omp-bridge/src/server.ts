@@ -1,7 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ProcessHost } from "@ucch/providers";
+import { failure } from "./call.js";
 import { ompEnv, refuseForeignCredentials, type BridgeConfig } from "./config.js";
+import { BRIDGE_TOOLS } from "./tools/index.js";
 
 /**
  * The bridge as an MCP server: OMP's tools, offered to Claude Code and Codex
@@ -38,9 +40,21 @@ export function createBridgeServer(config: BridgeConfig, host: ProcessHost, pare
     },
   );
 
-  return server;
-}
+  const ctx = { config, host, parentEnv };
+  for (const definition of BRIDGE_TOOLS) {
+    server.registerTool(
+      definition.name,
+      { description: definition.description, inputSchema: definition.inputSchema, annotations: definition.annotations },
+      async (input: unknown): Promise<CallToolResult> => {
+        try {
+          return await definition.run(input as never, ctx);
+        } catch (error) {
+          // Never thrown to the CLI: a tool error, with one line.
+          return failure(`${definition.name} failed: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
+        }
+      },
+    );
+  }
 
-function failure(reason: string): CallToolResult {
-  return { content: [{ type: "text", text: reason }], isError: true };
+  return server;
 }

@@ -278,6 +278,35 @@ export const scenarios = [
       await turn(ctx, "Hello?", 120000);
     },
   },
+  {
+    // An omp_codemod preview, as the bridge runs it (OM6.2): its flags, no
+    // `write`, and an `abort` once `ast_edit` has staged its proposal --
+    // OMP would otherwise force the model to resolve it until the turn fails.
+    name: "bridge-codemod",
+    mode: "rpc",
+    args: ["--no-session", "--approval-mode", "yolo", "--tools", "ast_edit,read", "--no-extensions", "--no-rules", "--no-lsp"],
+    files: {
+      "src/a.ts": "export function oldName(x: number) {\n  return x + 1;\n}\n",
+      "src/b.ts": 'import { oldName } from "./a";\nexport const y = oldName(2);\n',
+    },
+    script: [
+      {
+        toolCalls: [
+          { name: "ast_edit", arguments: { i: "Renaming the calls", ops: [{ pat: "oldName($$$A)", out: "newName($$$A)" }], paths: ["src/**/*.ts"] } },
+        ],
+      },
+      { text: "Not reached: the host aborts first." },
+    ],
+    async run(ctx) {
+      await command(ctx, { type: "get_session_stats" });
+      await command(ctx, { type: "prompt", message: "Preview renaming the oldName calls to newName." });
+      await ctx.waitFor((f) => f.type === "tool_execution_end" && f.toolName === "ast_edit", 60000, "ast_edit result");
+      await command(ctx, { type: "abort" });
+      await ctx.waitFor(terminalEnd, 60000, "agent_end");
+      await ctx.waitFor(promptDone, 60000, "prompt_result");
+      await command(ctx, { type: "get_session_stats" });
+    },
+  },
 ];
 
 export { approveAll };

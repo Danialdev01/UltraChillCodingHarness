@@ -597,7 +597,7 @@ The role prompts live in `packages/providers/src/omp-roles.ts`, next to the code
 
 ### 7.3 Claude Code and Codex
 - **Bridge tools.**
-  - `omp_recall(query)` runs `omp -p --no-session --tools recall --model @tiny "<query>"` and returns the recalled facts.
+  - `omp_recall(query)` runs one `omp --mode rpc --no-session --tools recall --model @smol` call (§10.2; there is no `tiny` role, OM6.2) and returns the recalled facts.
   - `omp_retain(fact, kind)` runs the same command with the `retain` tool.
   - The model call goes through `mnemopi.llmMode: smol`. With `llmMode: none`, recall is full-text search only.
 - **End-of-turn retention** (workspace toggle, off by default). After a CLI turn completes, the reactor runs `omp_retain` with the turn's final assistant message, never tool output (§0.2).
@@ -629,7 +629,7 @@ The role prompts live in `packages/providers/src/omp-roles.ts`, next to the code
 ## §9 Code review ([review](https://omp.sh/docs/review))
 
 ### 9.1 Engine
-- **Command.** `omp -p "/review <mode> <focus>" --mode json --no-session --config <overlay> --model @slow`, run in the thread's worktree.
+- **Command.** `omp -p "/review <mode> <focus>" --mode json --no-session --config <overlay> --model @slow`, run in the thread's worktree. OM6.2: under `--no-extensions`, which every UCCH run keeps, `/review` is not expanded and reaches the model as text, so the engine sends the headless review request `/review` expands to, as `omp_review` does.
 - **Modes.**
   - The Git view's **Review changes** runs uncommitted changes.
   - **Review branch** runs against the base branch, using the project's default branch.
@@ -676,18 +676,26 @@ Every tool:
 | Tool | Input schema | OMP side | `--tools` |
 |---|---|---|---|
 | `omp_task` | `{ agent: "scout"\|"reviewer"\|"security-reviewer"\|"sonic", assignment: string, files?: string[] }` | prompt: "Use the `<agent>` subagent: `<assignment>`" (bundled agents only, §6.4) | `read,grep,glob,lsp,task` (sonic adds `edit,write`; scout adds `web_search` for research) |
-| `omp_review` | `{ scope: "uncommitted"\|"branch"\|"commit", ref?: string, focus?: string }` | `/review …` (§9) | (review's own) |
+| `omp_review` | `{ scope: "uncommitted"\|"branch"\|"commit", ref?: string, focus?: string }` | OMP's headless review request, with the diff from git (§9; OM6.2) | `read,grep,glob,task` |
 | `omp_symbols` | `{ op: "definition"\|"references"\|"implementations"\|"type"\|"diagnostics", symbol?: string, file?: string, line?: number, packageDir?: string }` | "Using the lsp tool only, …" | `lsp,read` |
 | `omp_rename` | `{ symbol: string, file: string, line?: number, newName: string, apply: boolean }` | LSP rename, previewed; applied when `apply` | `lsp,read` (+`edit,write` when apply) |
-| `omp_codemod` | `{ description: string, pattern?: string, rewrite?: string, language?: string, paths?: string[], apply: boolean }` | `ast_edit` propose, then accept when `apply` | `ast_grep,ast_edit,read` |
+| `omp_codemod` | `{ description: string, pattern?: string, rewrite?: string, language?: string, paths?: string[], apply: boolean }` | `ast_edit` propose, then accept when `apply` | `ast_edit,read` (+`write` when apply; OM6.2) |
 | `omp_debug` | `{ goal: string, program?: string, args?: string[], attachPid?: number, breakpoints?: {file, line, condition?}[] }` | debug session, returns findings (no fix) | `debug,read,bash,grep` · `--model @default` |
-| `omp_recall` | `{ query: string }` | §7.3 | `recall` · `--model @tiny` |
-| `omp_retain` | `{ fact: string, kind?: "convention"\|"decision"\|"lesson" }` | §7.3 | `retain` · `--model @tiny` |
+| `omp_recall` | `{ query: string }` | §7.3 | `recall` (OM6.2: `@smol`) |
+| `omp_retain` | `{ fact: string, kind?: "convention"\|"decision"\|"lesson" }` | §7.3 | `retain` (OM6.2: `@smol`) |
 | `omp_handoff_brief` | `{ focus?: string }` | brief from the *calling CLI's* own summary of the session (passed in as `transcript`) | none |
 
 **Result format.** Text content, at most 64 KB, with usage and cost appended as a final line (`omp: 3.1k in / 0.8k out · $0.004 · 21 s`), so the CLI's transcript records cost.
 
 **Errors.** Timeouts, missing auth and OMP failures return `isError: true` with a one-line reason. They never throw.
+
+**As built (OM6.2),** measured with 18.14.1 against the scripted model (spike report, "Measured later"):
+- **`--tools` must name only tools the session has.** A missing one stops OMP before `ready` ("Built-in tool unavailable in this session"). `ast_grep` exists only with `astGrep.enabled`, which is off by default, and `ast_edit` matches as well as rewrites, so `omp_codemod` runs without it. `recall` and `retain` exist only with memory on, so the bridge reads `UCCH_OMP_MEMORY=1` and answers "memory is off" without starting OMP. Likewise `web_search` for a scout needs `UCCH_OMP_WEB_SEARCH=1`.
+- **There is no `tiny` role** (the role set is `default, smol, slow, plan, vision, commit`), so recall and retain run on `@smol`. With `scoping: global` and a per-project `dbPath`, a fact retained by one process is recalled by the next.
+- **Allowlisted tools are top-level.** `lsp`, `ast_edit` and `debug` are `xd://` devices in a default session, but under `--tools` they are ordinary tools. Their action names are the binary's (`implementation`, `type_definition`; `lsp` `rename` applies unless `apply: false`). A rename preview needs no write tool and changes nothing; an applied one edits through the language server.
+- **A codemod preview ends itself.** `ast_edit` only stages a proposal. OMP then forces the model to `write` it to `xd://resolve` or `xd://reject`, and a call with no `write` fails after three forced turns. So the preview gets `ast_edit,read` only, and the bridge sends `abort` once `ast_edit` has answered (`stopAfter`), returning the staged diff. Denying `write` by policy does not help: `xd://reject` is not a device with its own approval key.
+- **`/review` is not a command under `--no-extensions`.** The model receives the literal text. `omp_review` sends OMP's own headless review request (the text `/review` expands to) with the diff the bridge reads from git, and answers with the reviewer subagent's result.
+- **The whole exchange is timed.** `--max-time` plus 30 s covers the stats and prompt commands as well as the wait, so a process that stops answering cannot hold the CLI's tool call.
 
 ### 10.3 Wiring
 

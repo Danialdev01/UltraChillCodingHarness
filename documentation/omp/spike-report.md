@@ -335,6 +335,14 @@ Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`)
 - **`task.maxConcurrency`** (OM5.4): with UCCH's own overlay (`ompOverlay`, `workersPerTurn: 4`, under `--no-extensions --no-rules --no-lsp`), one `task` call of 10 scouts, each model reply taking 1.5 s, ran them in waves of 4, 4 and 2: `subagent_lifecycle` never showed more than 4 started and not yet completed. The same run with `workersPerTurn: 10` had all 10 running at once, so the overlay's value is what holds it. Under the default permission mode `task` asks first (`Allow tool: task … Batch agents: scout ×10`), once for the whole batch.
 - **Isolated workers** (OM5.5): with `task.isolation.enabled: true` (apply on, `merge: patch`) and `isolated: true` per task, in a git checkout, each worker's `async-result` adds `<merge-summary>Applied patches: yes</merge-summary>` and "ran isolated and cannot be resumed or messaged". Two workers writing different files: both files land in the checkout. Two writing the same line: the first applies; the second still reports `status="completed"`, with a merge summary of `&lt;system-notification>Patches were not applied and must be handled manually.&lt;/system-notification>` and the path of a `.patch` artifact in its session directory. Its lifecycle frame says `completed` too.
 
+- **The bridge's calls** (OM6.2), each through the bridge's own `runOmpCall` with its argv (`--mode rpc --no-session --approval-mode yolo --tools … --no-extensions --no-rules`):
+  - `--tools ast_grep,…` exits 2 before `ready`: `Built-in tool unavailable in this session: ast_grep.` (`astGrep.enabled` defaults to false). `--tools recall,retain` without memory: `Built-in tools unavailable in this session: recall, retain.`
+  - Under `--tools`, `lsp`, `ast_edit` and `debug` are top-level tools (no `xd://` section in the system prompt). `lsp` actions: `diagnostics, definition, references, hover, symbols, rename, rename_file, code_actions, type_definition, implementation, status, reload, capabilities, request`.
+  - With typescript-language-server 4.3.4 on `PATH` and a `tsconfig.json` at the root: `rename` with `apply: false` answered "Rename preview: src/a.ts: 1 edit, src/b.ts: 2 edits" and changed nothing; without `apply` it applied both files. Without a root marker: "No language server found for this action".
+  - `ast_edit` staged its rewrite ("Staged as a proposal — files NOT modified yet. To apply: write a one-sentence reason to xd://resolve"); a `write` to `xd://resolve` applied it. With no `write` tool, the turn failed: `Soft tool requirement 'write' was not satisfied after 3 forced turns`. With `write` offered and `tools.approval.write: deny`, a write to `xd://reject` was blocked by the same policy. An `abort` after the `ast_edit` result ended the turn at once, unapplied (`omp-bridge-codemod.jsonl`).
+  - Memory: `retain` (items `{ content, context?, scope: project|global }`) wrote to the overlay's `mnemopi.dbPath`; a second process's `recall` found the entry there. With `llmMode: none` the match is lexical ("pnpm" found it, "package manager" did not).
+  - Under `--no-extensions`, a prompt of `/review` reached the model as the literal text `/review`.
+
 ## Corrections made to `solution.md`
 
 | Section | Was | Now |
@@ -365,6 +373,7 @@ Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`)
 | §7.3 | `omp -p "/memory stats"` | slash commands do not run in `-p`; read the SQLite file |
 | §9.2 | structured `--mode json`, or `ucch-reviewer` | the bundled `reviewer`'s structured output; no `ucch-reviewer` |
 | §10.3 Codex | `-c` syntax (verify) | confirmed for registration; runtime blocked on a Codex login |
+| §10.2 (OM6.2) | `omp_codemod` `--tools ast_grep,ast_edit,read`; recall/retain on `@tiny`; `omp_review` runs `/review` | `ast_edit,read` (+`write`), the preview aborted after `ast_edit`; `@smol`; the headless review request with the diff |
 
 ## Blocked
 

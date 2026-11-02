@@ -41,10 +41,48 @@ function recording(answer: Partial<RunResult> | Error) {
 }
 
 describe("the omp bridge", () => {
-  it("offers omp_ping", async () => {
+  it("offers omp_ping and the §10.2 tools, each with an input schema", async () => {
     const client = await connect({ UCCH_OMP_BIN: FAKE_OMP });
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual(["omp_ping"]);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "omp_ping",
+      "omp_task",
+      "omp_review",
+      "omp_symbols",
+      "omp_rename",
+      "omp_codemod",
+      "omp_debug",
+      "omp_recall",
+      "omp_retain",
+      "omp_handoff_brief",
+    ]);
+    const task = tools.find((tool) => tool.name === "omp_task")!;
+    expect(task.inputSchema).toMatchObject({
+      type: "object",
+      properties: { agent: { enum: ["scout", "reviewer", "security-reviewer", "sonic"] } },
+      required: ["agent", "assignment"],
+    });
+    const rename = tools.find((tool) => tool.name === "omp_rename")!;
+    expect(rename.inputSchema.required).toEqual(["symbol", "file", "newName", "apply"]);
+  });
+
+  it("answers a tool call over MCP with omp's answer and its cost", async () => {
+    const client = await connect(
+      { UCCH_OMP_BIN: FAKE_OMP },
+      new HostProcessHost(),
+      { PATH: process.env.PATH, FAKE_OMP_FIXTURE: join(import.meta.dirname, "../../providers/src/fixtures/omp-plain.jsonl") },
+    );
+    const result = await client.callTool({ name: "omp_handoff_brief", arguments: { transcript: "Did a thing." } });
+    expect(result.isError).toBeUndefined();
+    expect((result.content as { text: string }[])[0]!.text).toMatch(/^Hello from the scripted model\.\n\nomp: 1\.2k in \/ 80 out · \$0\.0012 · \d+ s$/);
+  });
+
+  it("refuses input that does not fit a tool's schema before starting omp", async () => {
+    const { host, seen } = recording({});
+    const client = await connect({ UCCH_OMP_BIN: FAKE_OMP }, host);
+    const result = await client.callTool({ name: "omp_task", arguments: { agent: "evil", assignment: "x" } });
+    expect(result.isError).toBe(true);
+    expect(seen).toEqual([]);
   });
 
   it("answers omp_ping with the version omp reports", async () => {

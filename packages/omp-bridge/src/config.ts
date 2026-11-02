@@ -18,6 +18,15 @@ export interface BridgeConfig {
   worktree: string;
   /** `--max-time` for every call, in seconds. */
   maxSeconds: number;
+  /**
+   * The workspace keeps OMP memory (`UCCH_OMP_MEMORY=1`): `recall` and
+   * `retain` exist only then. OMP refuses to start when `--tools` names a
+   * tool the session does not have (18.14.1: "Built-in tools unavailable in
+   * this session"), so the bridge has to know.
+   */
+  memory: boolean;
+  /** OMP's own `web_search` has a search key (`UCCH_OMP_WEB_SEARCH=1`); likewise. */
+  webSearch: boolean;
 }
 
 const DEFAULT_MAX_SECONDS = 300;
@@ -32,6 +41,8 @@ export function readBridgeConfig(env: NodeJS.ProcessEnv, cwd: string = process.c
     openrouterKey: set("OPENROUTER_API_KEY"),
     worktree: set("UCCH_WORKTREE") ?? cwd,
     maxSeconds: Number.isInteger(seconds) && seconds > 0 ? seconds : DEFAULT_MAX_SECONDS,
+    memory: env.UCCH_OMP_MEMORY === "1",
+    webSearch: env.UCCH_OMP_WEB_SEARCH === "1",
   };
 }
 

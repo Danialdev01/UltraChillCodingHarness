@@ -12,6 +12,8 @@ describe("readBridgeConfig", () => {
           OPENROUTER_API_KEY: "sk-or-test",
           UCCH_WORKTREE: "/ws/p",
           UCCH_BRIDGE_MAX_SECONDS: "120",
+          UCCH_OMP_MEMORY: "1",
+          UCCH_OMP_WEB_SEARCH: "1",
         },
         "/elsewhere",
       ),
@@ -22,6 +24,8 @@ describe("readBridgeConfig", () => {
       openrouterKey: "sk-or-test",
       worktree: "/ws/p",
       maxSeconds: 120,
+      memory: true,
+      webSearch: true,
     });
   });
 
@@ -33,6 +37,8 @@ describe("readBridgeConfig", () => {
       openrouterKey: null,
       worktree: "/here",
       maxSeconds: 300,
+      memory: false,
+      webSearch: false,
     });
   });
 });
