@@ -570,13 +570,18 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
 
 ## Phase OM7: Memory, code intelligence, structural edits, debugging, review
 
-- [ ] **OM7.1 — mnemopi memory on OMP threads**
+- [x] **OM7.1 — mnemopi memory on OMP threads** — 9995621
 
   - **Depends:** OM2.6, OM0.5
   - **Files:** `omp-overlay.ts`, `apps/server/src/agent.ts` (a stable project path, if OM0.5 Q5 requires one; solution §7.1), workspace settings (memory on/off, `llmMode`)
   - **Steps:** enable per the solution §4 memory block, with the workspace toggles.
   - **Acceptance:** a fact retained in thread A (one worktree) is recalled in thread B (another worktree) of the same project, and not in another project.
   - **Verify:** manual run, plus `pnpm test -- omp-overlay`
+  - **As built:**
+    - **Setting.** `memory { enabled, llmMode: smol|none }` in `WorkspaceAgentSettings`, off by default, with a "Project memory" card in the harness settings that carries OMP's warning about secrets. An OMP turn passes it to the overlay together with `ProviderService.ompMemoryDb(subject, projectId)`, `<subject>/omp/memories/<projectId>/mnemopi.db` (0700 directory). The side calls (titles, search) keep memory off.
+    - **Manual run.** `omp -p` under the real `writeOmpOverlay`, scripted model. In project A's first worktree `retain` stored the fact. A run in A's second worktree had it recalled into its first request, and a run in project B did not. Only the two per-project `mnemopi.db` files were created.
+    - **No embeddings.** `noEmbeddings: false` downloaded ~770 MB into HOME on the first turn (bge-base ONNX, onnxruntime, npm packages), so the overlay sets `true`. Recall is then full-text: it needs shared words ("Which Fly.io region…" found the fact, "Work on the deploy." did not), under both `llmMode` values. Solution §4 and §7.1 and the spike report are updated.
+    - **Tests.** `agent.test.ts` covers the overlay with memory off and on, the bank path and its mode. Also the settings defaults and the PATCH round trip.
 - [ ] **OM7.2 — Memory for CLI turns**
 
   - **Depends:** OM7.1, OM6.2
