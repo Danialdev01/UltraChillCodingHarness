@@ -718,7 +718,14 @@ Every tool:
 
 **Codex (`codexArgv`, `codex.ts`):**
 - Append `-c mcp_servers.omp.command="node"`, `-c mcp_servers.omp.args=["/opt/ucch/omp-bridge.mjs"]` and `-c mcp_servers.omp.env.UCCH_…=…`. OM0 confirmed the syntax (Codex 0.166.0: `codex -c 'mcp_servers.omp.command="node"' -c 'mcp_servers.omp.args=[…]' -c 'mcp_servers.omp.env.X="…"' mcp list` lists the server, enabled), so no `config.toml` fallback is needed.
-- The key goes through `env` the same way. Whether `codex exec` calls the tool, and whether the server has network under `workspace-write`, needs a logged-in Codex and is re-checked in OM6.5. `codex exec --help` scopes `--sandbox` to "model-generated shell commands", which an MCP server is not.
+- The key does not go through `-c` (argv): it goes in a 0600 file the bridge reads (as built, below). OM6.5 checked whether `codex exec` calls the tool, and whether the server has network under `workspace-write`; both do. `codex exec --help` scopes `--sandbox` to "model-generated shell commands", which an MCP server is not.
+
+**As built (OM6.5),** measured with Codex 0.166.0 `exec` against a scripted Responses API (spike report, "Measured later"):
+- **The key is not in argv.** `-c` values are Codex's own argv, which every user on the host can read in `ps`. So the bridge's environment goes in `<subject>/codex/run/<turnId>.bridge.json` (0600). The argv carries only `mcp_servers.omp.env.UCCH_BRIDGE_ENV_FILE="<path>"`, and the bridge reads the file in (`withEnvFile`; its values win). The file is deleted with the turn.
+- **Pre-approved.** `codex exec` refuses an MCP tool not marked read-only ("MCP tool call requires approval, but approval policy is never"). The flags therefore set `default_tools_approval_mode="approve"`. Codex already acts unasked in its sandbox, since UCCH's permission modes do not reach it, and so do the bridge's tools.
+- **Timeout.** `tool_timeout_sec` is `OMP_BRIDGE_MAX_SECONDS` plus 70 s: the bridge's 35 s wait for a slot and its 30 s grace on the exchange.
+- **Runtime.** The MCP server is not sandboxed under `workspace-write`: it reached the scheduler socket and OMP's model. Its environment is `HOME`, `PATH` and the configured `env` only. The model sees the tools as one `mcp__omp` namespace, and the stream reports each call as an `mcp_tool_call` item. A real `codex exec` called `omp_task` scout through the real bridge and OMP.
+- **Same setting.** `agent_settings.ompBridge` covers both CLIs, as do the key rule (no key, no bridge), the overlay and the token.
 
 **CLIs started by hand (`apps/server/src/shell/ucch.bashrc`, `ucch.fish`):** the `claude()` and `codex()` wrappers already add knowledge. They gain `--mcp-config "$UCCH_OMP_MCP"` and `-c mcp_servers.omp…` when the workspace has the bridge enabled. The terminal reactor exports `UCCH_OMP_MCP` (a per-terminal 0600 file).
 

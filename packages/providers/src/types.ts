@@ -84,6 +84,12 @@ export interface ProviderRunInput {
    * file and never in the CLI's own.
    */
   mcpConfigPath?: string;
+  /**
+   * Codex: the OMP bridge as an MCP server, passed as
+   * `-c mcp_servers.omp.*` (solution §10.3). Its `env` is argv, so it holds
+   * nothing secret: the key is in the file `UCCH_BRIDGE_ENV_FILE` names.
+   */
+  codexMcp?: CodexMcpServer;
   /** What only an OMP run takes; the server writes and owns all of it. */
   omp?: OmpRunFiles;
   /**
@@ -97,6 +103,23 @@ export interface ProviderRunInput {
    * cancels the call. Required whenever `hostTools` is not empty.
    */
   onHostToolCall?(call: HostToolCall, signal: AbortSignal): Promise<HostToolResult>;
+}
+
+/** One MCP server for Codex's `-c mcp_servers.<name>.*` (OM0 confirmed the syntax). */
+export interface CodexMcpServer {
+  command: string;
+  args: readonly string[];
+  /** Visible in `ps`: paths and switches only, never a key. */
+  env: Readonly<Record<string, string>>;
+  /** How long Codex waits for one call before it gives up on it. */
+  toolTimeoutSec: number;
+  /**
+   * `default_tools_approval_mode` (0.166.0: `auto`, `prompt`, `writes`,
+   * `approve`). `codex exec` cannot ask, and refuses a tool not marked
+   * read-only unless it is pre-approved ("MCP tool call requires approval,
+   * but approval policy is never").
+   */
+  toolsApproval?: "auto" | "prompt" | "writes" | "approve";
 }
 
 /** A host tool as the model is offered it: JSON Schema parameters. */

@@ -6,6 +6,7 @@ import type {
   AgentProvider,
   AgentRun,
   ProviderHealth,
+  CodexMcpServer,
   ProviderRunInput,
   RunContext,
 } from "./types.js";
@@ -51,6 +52,8 @@ export function codexArgv(input: {
   /** Whether the workspace is a git repository. Codex refuses one that is not, unless told. */
   isRepo: boolean;
   caps: CodexCapabilities;
+  /** The OMP bridge (solution §10.3). Absent: no MCP server is added. */
+  mcp?: CodexMcpServer;
 }): string[] {
   const argv = [input.bin, "exec"];
   if (input.resumeToken) argv.push("resume", input.resumeToken);
@@ -63,7 +66,31 @@ export function codexArgv(input: {
   // stranger, so it does not apply.
   if (input.caps.ignoreRules) argv.push("--ignore-rules");
   if (input.model) argv.push("--model", input.model);
+  if (input.mcp) argv.push(...codexMcpArgs("omp", input.mcp));
   return argv;
+}
+
+/**
+ * `-c` overrides adding one MCP server. Values are TOML: a JSON string is
+ * a TOML basic string (the same escapes), and a JSON array of strings a
+ * TOML array, so no path can break out into another key.
+ */
+export function codexMcpArgs(name: string, server: CodexMcpServer): string[] {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`not an MCP server name: ${name}`);
+  const key = `mcp_servers.${name}`;
+  const args = [
+    "-c",
+    `${key}.command=${JSON.stringify(server.command)}`,
+    "-c",
+    `${key}.args=${JSON.stringify(server.args)}`,
+  ];
+  for (const [variable, value] of Object.entries(server.env)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable)) throw new Error(`not an environment variable: ${variable}`);
+    args.push("-c", `${key}.env.${variable}=${JSON.stringify(value)}`);
+  }
+  args.push("-c", `${key}.tool_timeout_sec=${Math.ceil(server.toolTimeoutSec)}`);
+  if (server.toolsApproval) args.push("-c", `${key}.default_tools_approval_mode=${JSON.stringify(server.toolsApproval)}`);
+  return args;
 }
 
 /**
@@ -443,6 +470,7 @@ export class CodexProvider implements AgentProvider {
           ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
           isRepo: this.isRepo(input.ctx.cwd),
           caps,
+          ...(input.codexMcp ? { mcp: input.codexMcp } : {}),
         }),
         stdin: codexPrompt(input.prompt, input.instructions, input.resumeToken),
       },

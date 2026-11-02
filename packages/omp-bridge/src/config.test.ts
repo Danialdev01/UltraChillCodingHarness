@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ompEnv, readBridgeConfig, refuseForeignCredentials } from "./config.js";
+import { ompEnv, readBridgeConfig, refuseForeignCredentials, withEnvFile } from "./config.js";
 
 describe("readBridgeConfig", () => {
   it("reads solution §10.1's variables", () => {
@@ -52,6 +52,35 @@ describe("readBridgeConfig", () => {
       leaseToken: null,
       maxCalls: 12,
     });
+  });
+});
+
+describe("withEnvFile", () => {
+  it("reads the turn's variables from the file, over the environment's", () => {
+    const files: Record<string, string> = {
+      "/run/t.bridge.json": JSON.stringify({ OPENROUTER_API_KEY: "sk-or-file", UCCH_BRIDGE_TOKEN: "tok", UCCH_OMP_TRUSTED: "0" }),
+    };
+    const env = withEnvFile({ PATH: "/bin", UCCH_BRIDGE_ENV_FILE: "/run/t.bridge.json", UCCH_OMP_TRUSTED: "1" }, (path) => files[path]!);
+    expect(env).toEqual({
+      PATH: "/bin",
+      UCCH_BRIDGE_ENV_FILE: "/run/t.bridge.json",
+      OPENROUTER_API_KEY: "sk-or-file",
+      UCCH_BRIDGE_TOKEN: "tok",
+      UCCH_OMP_TRUSTED: "0",
+    });
+    expect(readBridgeConfig(env)).toMatchObject({ openrouterKey: "sk-or-file", leaseToken: "tok", trusted: false });
+  });
+
+  it("is the environment as it is without the variable, and refuses a file it cannot use", () => {
+    const env = { PATH: "/bin" };
+    expect(withEnvFile(env, () => { throw new Error("unread"); })).toBe(env);
+    const missing = () => {
+      throw new Error("ENOENT");
+    };
+    expect(() => withEnvFile({ UCCH_BRIDGE_ENV_FILE: "/x" }, missing)).toThrow("UCCH_BRIDGE_ENV_FILE (/x) could not be read: ENOENT");
+    for (const text of ["[]", '{"A":1}', "null", "not json"]) {
+      expect(() => withEnvFile({ UCCH_BRIDGE_ENV_FILE: "/x" }, () => text)).toThrow(/UCCH_BRIDGE_ENV_FILE \(\/x\)/);
+    }
   });
 });
 

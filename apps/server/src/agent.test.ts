@@ -1291,16 +1291,22 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
   }
 
   /** A Claude Code that runs nothing, through the real `ProviderService` (no token in the database). */
-  function bridgeReactor(personRow: Record<string, unknown>, agentSettings: unknown, withBridge = true) {
+  function bridgeReactor(personRow: Record<string, unknown>, agentSettings: unknown, withBridge = true, id: "claude" | "codex" = "claude") {
     const seen: Seen[] = [];
     const claude: AgentProvider = {
-      id: "claude",
-      label: "Claude Code",
+      id,
+      label: id,
       models: [],
       probe: async () => ({ installed: true, authenticated: true, authMode: "subscription" }),
       run: (input) => {
-        const path = input.mcpConfigPath;
-        const config = path ? (JSON.parse(readFileSync(path, "utf8")) as Seen["config"]) : null;
+        // Codex's argv names a file with the environment in it; read it as the bridge would.
+        const path = input.mcpConfigPath ?? input.codexMcp?.env.UCCH_BRIDGE_ENV_FILE;
+        const read = path ? (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>) : null;
+        const config = !read
+          ? null
+          : input.codexMcp
+            ? { mcpServers: { omp: { command: input.codexMcp.command, args: [...input.codexMcp.args], env: read as Record<string, string> } } }
+            : (read as unknown as Seen["config"]);
         const overlay = config?.mcpServers.omp.env.UCCH_OMP_OVERLAY;
         seen.push({
           input,
@@ -1332,7 +1338,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     const real = createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: "omp" });
     const providers = new NoToken({} as Database, { CREDS_ROOT: join(root, "creds") } as Config, new HostProcessHost(), {
       ...real,
-      claude,
+      [id]: claude,
     });
     const tokens = new Map<string, { ownerId: string; threadId: string }>();
     const registered: string[] = [];
@@ -1361,8 +1367,8 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     return { ...built, seen, tokens, registered };
   }
 
-  async function turn(run: ReturnType<typeof bridgeReactor>) {
-    run.agent.react(ask, [message]);
+  async function turn(run: ReturnType<typeof bridgeReactor>, command: Command = ask) {
+    run.agent.react(command, [message]);
     const deadline = Date.now() + 5_000;
     const done = (e: DomainEvent) => e.type === "agent.turn_completed" || e.type === "agent.turn_failed";
     while (!run.appended.flat().some(done) && Date.now() < deadline) await settle();
@@ -1407,6 +1413,29 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     expect(run.tokens.size).toBe(0);
   });
 
+  it("hands Codex the server by -c flags that name a 0600 file, with the key in the file and not in argv", async () => {
+    const run = bridgeReactor(keyed, { ompBridge: { enabled: true } }, true, "codex");
+    await turn(run, { ...ask, provider: "codex" });
+    const [{ input, config, mode }] = run.seen as [Seen];
+    expect(input.mcpConfigPath).toBeUndefined();
+    const file = join(root, "creds", USER, "codex", "run", `${input.turnId}.bridge.json`);
+    // What Codex's argv carries (`codexMcpArgs`): paths, and a timeout past the bridge's own.
+    expect(input.codexMcp).toEqual({
+      command: process.execPath,
+      args: ["/opt/ucch/omp-bridge.mjs"],
+      env: { UCCH_BRIDGE_ENV_FILE: file },
+      toolTimeoutSec: 240 + 70,
+      toolsApproval: "approve",
+    });
+    expect(JSON.stringify(input.codexMcp)).not.toContain("sk-or-bridge");
+    expect(mode).toBe(0o600);
+    expect(config!.mcpServers.omp.env).toMatchObject({ OPENROUTER_API_KEY: "sk-or-bridge", UCCH_BRIDGE_TOKEN: "tok-0", UCCH_WORKTREE: input.ctx.cwd });
+    expect(forbiddenEnvPresent(input.ctx.env)).toBeNull();
+    expect(Object.keys(input.ctx.env).filter((name) => /_API_KEY$|_OAUTH_TOKEN$/.test(name))).toEqual([]);
+    expect(existsSync(file)).toBe(false);
+    expect(run.tokens.size).toBe(0);
+  });
+
   it("offers nothing with the setting off, with no bridge on the server, or with no key to bill", async () => {
     for (const run of [
       bridgeReactor(keyed, undefined),
@@ -1416,6 +1445,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     ]) {
       await turn(run);
       expect(run.seen[0]!.input.mcpConfigPath).toBeUndefined();
+      expect(run.seen[0]!.input.codexMcp).toBeUndefined();
       expect(run.registered).toEqual([]);
     }
   });

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DomainEvent } from "@ucch/protocol";
 import { describe, expect, it } from "vitest";
-import { CodexNormaliser, CodexProvider, codexArgv, codexPrompt, isCodexLimit, probeCodex } from "./codex.js";
+import { CodexNormaliser, CodexProvider, codexArgv, codexMcpArgs, codexPrompt, isCodexLimit, probeCodex } from "./codex.js";
 import { FakeProcessHost, stdout } from "./testing.js";
 
 const WORKSPACE = "/srv/ucch/workspaces/11111111-1111-4111-8111-111111111111";
@@ -49,6 +49,47 @@ describe("codexArgv", () => {
     expect(argv).toContain("--skip-git-repo-check");
     expect(argv).not.toContain("--ignore-rules");
     expect(argv.join(" ")).toContain("--model gpt-5");
+  });
+});
+
+describe("codexArgv with the OMP bridge (solution §10.3)", () => {
+  const caps = { ignoreRules: true };
+  const mcp = {
+    command: "/usr/bin/node",
+    args: ["/opt/ucch/omp-bridge.mjs"],
+    env: { UCCH_BRIDGE_ENV_FILE: "/creds/u/codex/run/t.bridge.json" },
+    toolTimeoutSec: 370,
+    toolsApproval: "approve" as const,
+  };
+
+  it("is unchanged with the bridge off", () => {
+    expect(codexArgv({ bin: "codex", isRepo: false, caps, resumeToken: "th-1", model: "gpt-5" })).toEqual([
+      "codex", "exec", "resume", "th-1", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check",
+      "--ignore-rules", "--model", "gpt-5",
+    ]);
+  });
+
+  it("adds the server with -c, new and resumed", () => {
+    const flags = [
+      "-c", 'mcp_servers.omp.command="/usr/bin/node"',
+      "-c", 'mcp_servers.omp.args=["/opt/ucch/omp-bridge.mjs"]',
+      "-c", 'mcp_servers.omp.env.UCCH_BRIDGE_ENV_FILE="/creds/u/codex/run/t.bridge.json"',
+      "-c", "mcp_servers.omp.tool_timeout_sec=370",
+      "-c", 'mcp_servers.omp.default_tools_approval_mode="approve"',
+    ];
+    expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp })).toEqual([
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "--ignore-rules", ...flags,
+    ]);
+    expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp, resumeToken: "th-1" }).slice(0, 4)).toEqual(["codex", "exec", "resume", "th-1"]);
+    expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp, resumeToken: "th-1" }).slice(-10)).toEqual(flags);
+  });
+
+  it("quotes values as TOML strings, and refuses a name that would be another key", () => {
+    const odd = codexMcpArgs("omp", { ...mcp, args: ['/a "b"\\c'], env: { X: "line\nbreak" } });
+    expect(odd).toContain('mcp_servers.omp.args=["/a \\"b\\"\\\\c"]');
+    expect(odd).toContain('mcp_servers.omp.env.X="line\\nbreak"');
+    expect(() => codexMcpArgs("omp.x", mcp)).toThrow();
+    expect(() => codexMcpArgs("omp", { ...mcp, env: { "A.B": "x" } })).toThrow();
   });
 });
 

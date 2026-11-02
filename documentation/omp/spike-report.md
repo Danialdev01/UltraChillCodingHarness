@@ -343,6 +343,13 @@ Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`)
   - Memory: `retain` (items `{ content, context?, scope: project|global }`) wrote to the overlay's `mnemopi.dbPath`; a second process's `recall` found the entry there. With `llmMode: none` the match is lexical ("pnpm" found it, "package manager" did not).
   - Under `--no-extensions`, a prompt of `/review` reached the model as the literal text `/review`.
 
+- **Codex and an MCP server** (OM6.5), `@openai/codex@0.166.0` in a scratch directory, with no login: `codex exec` was pointed at a scripted Responses API through a custom provider (`-c model_provider=…`, `-c model_providers.<id>={base_url, wire_api="responses", env_key}`), so the model side is fixed and nothing is billed. The MCP side is what a subscription run does.
+  - The server's tools reach the model as one `namespace` tool, `mcp__omp`, holding the server's functions. A call is a `function_call` with `namespace: "mcp__omp"` and `name: "omp_task"`. In the JSON stream it is an `mcp_tool_call` item (`server`, `tool`, `arguments`, `result`, `status`), which `CodexNormaliser` already maps.
+  - **A tool not marked read-only is refused in `exec`:** `"MCP tool call requires approval, but approval policy is never"`. A `readOnlyHint` tool runs. `mcp_servers.<id>.default_tools_approval_mode` takes `auto`, `prompt`, `writes` or `approve`, and with `approve` every bridge tool runs. Per-tool overrides use `mcp_servers.<id>.tools.<tool>.approval_mode`.
+  - The server's environment is `HOME`, `PATH` and the configured `env` (and `env_vars`, a list of names forwarded from Codex's own). Nothing else is inherited.
+  - The server is not sandboxed: under `--sandbox workspace-write` it reached a TCP port on 127.0.0.1, and the bridge reached the scheduler's Unix socket. The real bridge ran `omp_task` scout end to end on real OMP.
+  - `tool_timeout_sec` and `startup_timeout_sec` are per-server keys (`codex mcp get --json` shows them).
+
 ## Corrections made to `solution.md`
 
 | Section | Was | Now |
@@ -372,10 +379,11 @@ Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`)
 | §7.1 | symlink + `--cwd` | `dbPath` |
 | §7.3 | `omp -p "/memory stats"` | slash commands do not run in `-p`; read the SQLite file |
 | §9.2 | structured `--mode json`, or `ucch-reviewer` | the bundled `reviewer`'s structured output; no `ucch-reviewer` |
-| §10.3 Codex | `-c` syntax (verify) | confirmed for registration; runtime blocked on a Codex login |
+| §10.3 Codex | `-c` syntax (verify) | confirmed for registration and, in OM6.5, at runtime (scripted provider, no login) |
+| §10.3 Codex (OM6.5) | the key in `-c mcp_servers.omp.env.…` | argv is world-readable in `ps`: the env goes in a 0600 file named by `UCCH_BRIDGE_ENV_FILE`; plus `default_tools_approval_mode="approve"` (exec refuses unapproved tools) and `tool_timeout_sec` |
 | §10.2 (OM6.2) | `omp_codemod` `--tools ast_grep,ast_edit,read`; recall/retain on `@tiny`; `omp_review` runs `/review` | `ast_edit,read` (+`write`), the preview aborted after `ast_edit`; `@smol`; the headless review request with the diff |
 
 ## Blocked
 
-- **OM0.5 Q2, runtime half:** needs a logged-in Codex (see above).
+- **OM0.5 Q2, runtime half:** settled in OM6.5 without a login (see "Measured later"). Only the subscription's own auth path is unexercised, and the MCP server does not touch it.
 - **Recorded with a real OpenRouter model:** nothing. A cheap-model recording is still useful for two things the scripted model cannot do: the reviewer's `yield` payload (OM7.7) and an `auto_retry_*` sequence, if OMP ever emits one. Both are noted at the task that needs them.

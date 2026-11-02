@@ -364,8 +364,8 @@ function IsolatedFanOutSection({
 }
 
 /**
- * The OMP bridge (OMP OM6.4, solution §10): Claude Code turns are offered
- * OMP's tools as an MCP server. Each call is billed to the OpenRouter key
+ * The OMP bridge (OMP OM6.4–OM6.5, solution §10): Claude Code and Codex
+ * turns are offered OMP's tools as an MCP server. Each call is billed to the OpenRouter key
  * the Custom provider uses; without one, turns run without the tools.
  */
 function OmpBridgeSection({
@@ -391,13 +391,14 @@ function OmpBridgeSection({
     <section className="rounded-lg border p-6">
       <h2 className="flex items-center gap-2 text-sm font-medium">
         <PlugIcon className="text-muted-foreground size-4" />
-        OMP tools for Claude Code
+        OMP tools for Claude Code &amp; Codex
       </h2>
       <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Gives Claude Code turns the Custom agent&apos;s tools: subagents that explore and report back, symbol-aware
+        Gives Claude Code and Codex turns the Custom agent&apos;s tools: subagents that explore and report back, symbol-aware
         navigation and renames, codemods across many files, and a second-opinion review. Each call is billed to the
-        OpenRouter key Custom turns use; with no key, turns run without these tools. Under Normal permissions the
-        read-only tools run unasked and the rest ask first.
+        OpenRouter key Custom turns use; with no key, turns run without these tools. In Claude Code under Normal
+        permissions the read-only tools run unasked and the rest ask first. Codex runs them without asking, as it
+        runs its own commands.
       </p>
       <label className="mt-4 flex items-center gap-2 text-sm">
         <input
@@ -405,7 +406,7 @@ function OmpBridgeSection({
           checked={enabled}
           disabled={!manages || busy}
           onChange={(e) => save(e.target.checked)}
-          aria-label="OMP tools for Claude Code"
+          aria-label="OMP tools for Claude Code and Codex"
         />
         On
       </label>

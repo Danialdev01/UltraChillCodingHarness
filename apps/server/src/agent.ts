@@ -63,7 +63,7 @@ import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 import { TurnScheduler, type TurnKind } from "./turn-scheduler.js";
 import { DEFAULT_OMP_SETTINGS, writeOmpOverlay, type OmpPreset } from "./omp-overlay.js";
-import { bridgeServer, writeClaudeMcpConfig } from "./omp-bridge-config.js";
+import { bridgeServer, writeClaudeMcpConfig, writeCodexBridge } from "./omp-bridge-config.js";
 import type { ArgvWrapper } from "./child-priority.js";
 import { registry as metrics } from "./metrics.js";
 
@@ -124,8 +124,8 @@ export interface AgentOptions {
    */
   dispatch?: (principal: Principal, command: Command) => Promise<EngineResult>;
   /**
-   * The OMP bridge (solution §10), offered to a Claude Code turn when its
-   * workspace turns it on (`agent_settings.ompBridge`). Absent: never.
+   * The OMP bridge (solution §10), offered to a Claude Code or Codex turn
+   * when its workspace turns it on (`agent_settings.ompBridge`). Absent: never.
    */
   ompBridge?: OmpBridgeOptions;
 }
@@ -1151,7 +1151,7 @@ export class AgentTurnReactor {
 
     let run: AgentRun | undefined;
     let overlay: { dispose(): Promise<void> } | undefined;
-    let bridge: { mcpConfigPath: string; dispose(): Promise<void> } | null = null;
+    let bridge: (Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { dispose(): Promise<void> }) | null = null;
     try {
       await this.#prepareWorkspace(input.workspace);
       const knowledge = await readProjectKnowledge(input.workspace).catch((error: unknown) => {
@@ -1225,7 +1225,7 @@ export class AgentTurnReactor {
             }),
         };
       }
-      if (provider === "claude" && input.agentSettings?.ompBridge.enabled) bridge = await this.#openBridge(input);
+      if (provider !== "omp" && input.agentSettings?.ompBridge.enabled) bridge = await this.#openBridge(provider, input);
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
         prompt: input.text,
@@ -1238,7 +1238,8 @@ export class AgentTurnReactor {
         permissionMode,
         ...(instructions ? { instructions } : {}),
         ...(omp ? { omp } : {}),
-        ...(bridge ? { mcpConfigPath: bridge.mcpConfigPath } : {}),
+        ...(bridge?.mcpConfigPath ? { mcpConfigPath: bridge.mcpConfigPath } : {}),
+        ...(bridge?.codexMcp ? { codexMcp: bridge.codexMcp } : {}),
         ...host,
       });
       this.#cliRuns.add(run);
@@ -1304,22 +1305,27 @@ export class AgentTurnReactor {
   }
 
   /**
-   * The OMP bridge for one Claude Code turn (solution §10.3): its overlay,
-   * a scheduler token, and the MCP config that hands both to the bridge,
-   * with the OpenRouter key its calls are billed to. Disposing deletes the
-   * files and revokes the token; a bridge still running then gets no slot.
+   * The OMP bridge for one Claude Code or Codex turn (solution §10.3): its
+   * overlay, a scheduler token, and the MCP config that hands both to the
+   * bridge, with the OpenRouter key its calls are billed to -- Claude
+   * Code's `--mcp-config` file, or for Codex the `-c` flags and the 0600
+   * file they name. Disposing deletes the files and revokes the token; a
+   * bridge still running then gets no slot.
    *
    * Null -- the turn runs without the bridge -- when the server has no
-   * bridge, or there is no key to bill it to: the tools are an extra, and a
-   * Claude Code turn is on its subscription whether they are there or not.
+   * bridge, or there is no key to bill it to: the tools are an extra, and
+   * the CLI is on its subscription whether they are there or not.
    */
-  async #openBridge(input: {
-    ownerId: string;
-    owner: { openrouterKeyEncrypted: string | null; defaultModel: string | null };
-    threadId: string;
-    turnId: string;
-    workspace: string;
-  }): Promise<{ mcpConfigPath: string; dispose(): Promise<void> } | null> {
+  async #openBridge(
+    provider: "claude" | "codex",
+    input: {
+      ownerId: string;
+      owner: { openrouterKeyEncrypted: string | null; defaultModel: string | null };
+      threadId: string;
+      turnId: string;
+      workspace: string;
+    },
+  ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { dispose(): Promise<void> }) | null> {
     const options = this.options.ompBridge;
     const providers = this.options.providers;
     if (!options || !providers) return null;
@@ -1369,7 +1375,13 @@ export class AgentTurnReactor {
         maxSeconds: options.maxSeconds,
         trusted: false,
       });
-      const config = await writeClaudeMcpConfig(providers.cliRunDir(input.ownerId, "claude"), input.turnId, server);
+      const runDir = providers.cliRunDir(input.ownerId, provider);
+      if (provider === "codex") {
+        const codex = await writeCodexBridge(runDir, input.turnId, server, options.maxSeconds);
+        disposers.push(() => codex.dispose());
+        return { codexMcp: codex.mcp, dispose };
+      }
+      const config = await writeClaudeMcpConfig(runDir, input.turnId, server);
       disposers.push(() => config.dispose());
       return { mcpConfigPath: config.path, dispose };
     } catch (error) {

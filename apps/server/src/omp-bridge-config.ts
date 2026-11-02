@@ -1,5 +1,6 @@
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { CodexMcpServer } from "@ucch/providers";
 
 /**
  * The OMP bridge as a Claude Code or Codex turn is given it (solution §10.3):
@@ -56,6 +57,45 @@ export function bridgeServer(input: BridgeServerInput): BridgeServer {
       UCCH_BRIDGE_MAX_SECONDS: String(input.maxSeconds),
       ...(input.trusted ? { UCCH_OMP_TRUSTED: "1" } : {}),
     },
+  };
+}
+
+/**
+ * What one bridge call may take beyond `--max-time`, for the CLI's own
+ * wait on the tool: the bridge's 35 s for a scheduler slot (`lease.ts`)
+ * and its 30 s grace on the exchange (`call.ts`), plus a little.
+ */
+export const BRIDGE_CALL_OVERHEAD_SEC = 70;
+
+/**
+ * The bridge for one Codex turn. Codex takes its MCP servers as
+ * `-c mcp_servers.omp.*` -- its own argv, which every user on the host can
+ * read in `ps` -- so the environment goes in `<runDir>/<turnId>.bridge.json`
+ * (0600), and the argv names only that file (`UCCH_BRIDGE_ENV_FILE`, read
+ * by the bridge's `withEnvFile`). Codex waits up to `--max-time` plus the
+ * bridge's overhead for a call; its own default is shorter than a call.
+ */
+export async function writeCodexBridge(
+  runDir: string,
+  turnId: string,
+  server: BridgeServer,
+  maxSeconds: number,
+): Promise<{ mcp: CodexMcpServer; dispose(): Promise<void> }> {
+  if (!/^[A-Za-z0-9-]+$/.test(turnId)) throw new Error(`not a turn id: ${turnId}`);
+  const path = join(runDir, `${turnId}.bridge.json`);
+  await writeFile(path, `${JSON.stringify(server.env, null, 2)}\n`, { mode: 0o600 });
+  return {
+    mcp: {
+      command: server.command,
+      args: server.args,
+      env: { UCCH_BRIDGE_ENV_FILE: path },
+      toolTimeoutSec: maxSeconds + BRIDGE_CALL_OVERHEAD_SEC,
+      // `codex exec` asks no one: unapproved, every tool not marked
+      // read-only is refused. Codex already acts unasked in its sandbox
+      // (UCCH's permission modes do not reach it), and so do these.
+      toolsApproval: "approve",
+    },
+    dispose: () => rm(path, { force: true }),
   };
 }
 

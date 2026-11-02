@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { forbiddenEnvFor, isOmpCredentialEnv } from "@ucch/providers";
 
 /**
@@ -51,6 +52,29 @@ export interface BridgeConfig {
    * is the turn's budget.
    */
   maxCalls: number;
+}
+
+/**
+ * The environment with `UCCH_BRIDGE_ENV_FILE` read into it: a JSON object
+ * of variables the server wrote to a 0600 file for the turn. Codex is told
+ * its MCP servers' environment with `-c mcp_servers.omp.env.X=…`, which is
+ * its own argv -- readable by every user on the host in `ps` -- so a Codex
+ * turn's config passes only this path, and the key travels in the file
+ * (solution §10.3). The file's variables win over the environment's.
+ */
+export function withEnvFile(env: NodeJS.ProcessEnv, read: (path: string) => string = (path) => readFileSync(path, "utf8")): NodeJS.ProcessEnv {
+  const path = env.UCCH_BRIDGE_ENV_FILE;
+  if (!path) return env;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(read(path));
+  } catch (error) {
+    throw new Error(`UCCH_BRIDGE_ENV_FILE (${path}) could not be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((value) => typeof value !== "string")) {
+    throw new Error(`UCCH_BRIDGE_ENV_FILE (${path}) is not an object of strings`);
+  }
+  return { ...env, ...(parsed as Record<string, string>) };
 }
 
 const DEFAULT_MAX_SECONDS = 300;

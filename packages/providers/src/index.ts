@@ -36,6 +36,7 @@ export {
   CODEX_MODELS,
   CODEX_SUBSCRIPTION_WARNING,
   codexArgv,
+  codexMcpArgs,
   probeCodex,
 } from "./codex.js";
 export { createProviders, isCliProviderId, PROVIDER_LABELS, type CliProviders } from "./registry.js";
