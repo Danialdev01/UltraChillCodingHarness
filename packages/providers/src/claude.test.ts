@@ -31,7 +31,7 @@ function feed(normaliser: ClaudeNormaliser, text: string): DomainEvent[] {
   return events;
 }
 
-const caps = { permissionPrompts: true, settingSources: true };
+const caps = { permissionPrompts: true, settingSources: true, mcpConfig: true };
 
 describe("explainClaudeError", () => {
   const EXPIRED = "Failed to authenticate: OAuth session expired and could not be refreshed";
@@ -82,7 +82,7 @@ describe("claudeArgv", () => {
     for (const argv of [
       claudeArgv({ bin: "claude", caps }),
       claudeArgv({ bin: "claude", caps, model: "opus", resumeToken: "abc" }),
-      claudeArgv({ bin: "claude", caps: { permissionPrompts: false, settingSources: false } }),
+      claudeArgv({ bin: "claude", caps: { permissionPrompts: false, settingSources: false, mcpConfig: false } }),
     ]) {
       expect(argv).not.toContain("--bare");
       expect(argv).not.toContain("bypassPermissions");
@@ -115,7 +115,7 @@ describe("claudeArgv", () => {
   });
 
   it("drops flags the installed CLI lacks", () => {
-    const argv = claudeArgv({ bin: "claude", caps: { permissionPrompts: false, settingSources: false } });
+    const argv = claudeArgv({ bin: "claude", caps: { permissionPrompts: false, settingSources: false, mcpConfig: false } });
     expect(argv).not.toContain("--permission-prompts");
     expect(argv).not.toContain("--setting-sources");
   });
@@ -124,6 +124,52 @@ describe("claudeArgv", () => {
     const argv = claudeArgv({ bin: "claude", caps, model: "sonnet", resumeToken: "sess-1" });
     expect(argv.join(" ")).toContain("--resume sess-1");
     expect(argv.join(" ")).toContain("--model sonnet");
+  });
+
+  describe("with the OMP bridge (solution §10.3)", () => {
+    // The argv every turn ran with before the bridge: with it off, nothing changes.
+    it("is unchanged with the bridge off", () => {
+      const turn = { bin: "claude", caps, model: "sonnet", effort: "high", resumeToken: "s1", appendSystemPrompt: "k" } as const;
+      expect(claudeArgv(turn)).toEqual([
+        "claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        "--input-format", "stream-json", "--permission-mode", "acceptEdits", "--permission-prompt-tool", "stdio",
+        "--permission-prompts", "host", "--setting-sources", "user", "--model", "sonnet", "--effort", "high",
+        "--resume", "s1", "--append-system-prompt", "k",
+      ]);
+      for (const permissionMode of ["strict", "normal", "allow_all"] as const) {
+        expect(claudeArgv({ ...turn, permissionMode }).join(" ")).not.toMatch(/mcp|allowedTools/);
+      }
+    });
+
+    it("loads only the turn's MCP config, and pre-allows the read-only tools under Normal alone", () => {
+      const normal = claudeArgv({ bin: "claude", caps, mcpConfigPath: "/c/run/t.mcp.json" });
+      const at = normal.indexOf("--mcp-config");
+      expect(normal.slice(at, at + 3)).toEqual(["--mcp-config", "/c/run/t.mcp.json", "--strict-mcp-config"]);
+      const allowed = normal.indexOf("--allowedTools");
+      expect(normal.slice(allowed + 1, allowed + 5)).toEqual([
+        "mcp__omp__omp_symbols",
+        "mcp__omp__omp_recall",
+        "mcp__omp__omp_review",
+        "mcp__omp__omp_task",
+      ]);
+      // `--allowedTools` takes every word up to the next flag: whatever follows it is one.
+      const resumed = claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", model: "opus", resumeToken: "s1" });
+      expect(resumed[resumed.indexOf("--allowedTools") + 5]).toMatch(/^--/);
+      expect(claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", permissionMode: "normal" })).toEqual(
+        claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x" }),
+      );
+      // Strict asks for everything; Allow All is answered by the harness.
+      for (const permissionMode of ["strict", "allow_all"] as const) {
+        const argv = claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", permissionMode });
+        expect(argv).toContain("--strict-mcp-config");
+        expect(argv).not.toContain("--allowedTools");
+      }
+    });
+
+    it("offers no bridge to a CLI without the flags", () => {
+      const old = claudeArgv({ bin: "claude", caps: { ...caps, mcpConfig: false }, mcpConfigPath: "/x" });
+      expect(old.join(" ")).not.toMatch(/mcp|allowedTools/);
+    });
   });
 
   // The prompt is not in argv at all: it travels on stdin.
@@ -511,12 +557,12 @@ describe("probeClaude", () => {
   it("reports a fresh install as installed but signed out", async () => {
     const host = new FakeProcessHost([
       { match: (a) => a[1] === "--version", lines: [stdout("2.1.270 (Claude Code)")] },
-      { match: (a) => a[1] === "-p" && a[2] === "--help", lines: [stdout("--permission-prompts <target>\n--setting-sources <s>")] },
+      { match: (a) => a[1] === "-p" && a[2] === "--help", lines: [stdout("--permission-prompts <target>\n--setting-sources <s>\n--mcp-config <configs...>\n--strict-mcp-config")] },
       { match: (a) => a[1] === "auth", lines: [stdout('{"loggedIn":false}')], exit: { code: 1, signal: null } },
     ]);
     const health = await probeClaude(ctx(host), "claude");
     expect(health).toMatchObject({ installed: true, authenticated: false, authMode: "none", version: "2.1.270" });
-    expect(health.caps).toEqual({ permissionPrompts: true, settingSources: true });
+    expect(health.caps).toEqual({ permissionPrompts: true, settingSources: true, mcpConfig: true });
     expect(health.account).toBeUndefined();
   });
 

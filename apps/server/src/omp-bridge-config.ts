@@ -1,0 +1,77 @@
+import { rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+/**
+ * The OMP bridge as a Claude Code or Codex turn is given it (solution §10.3):
+ * an MCP server the CLI starts with `node`, configured by its environment
+ * alone (`packages/omp-bridge/src/config.ts` reads it).
+ *
+ * The environment is the bridge's, not the CLI's. The OpenRouter key every
+ * bridge call is billed to goes here and nowhere else, so the CLI's own
+ * environment keeps no API key (`forbiddenEnvPresent`) and the CLI stays on
+ * its subscription; the bridge hands the key to the `omp` it starts, with
+ * every other credential dropped (`ompEnv`).
+ */
+export interface BridgeServer {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
+export interface BridgeServerInput {
+  /** The `node` to run the bridge with: the server's own. */
+  node: string;
+  /** `OMP_BRIDGE_BIN`, the bundled `omp-bridge.mjs`. */
+  bridgeBin: string;
+  /** `OMP_BIN`. */
+  ompBin: string;
+  /** The subject's `omp/agent` (`PI_CODING_AGENT_DIR`). */
+  agentDir: string;
+  /** This turn's bridge overlay (`writeOmpOverlay`). */
+  overlay: string;
+  openrouterKey: string;
+  /** The worktree the CLI works in; every call runs there. */
+  worktree: string;
+  /** The server's scheduler socket and this turn's token for it (`BridgeLeases`). */
+  schedulerSock: string;
+  token: string;
+  /** `OMP_BRIDGE_MAX_SECONDS`: `--max-time` for every call. */
+  maxSeconds: number;
+  /** Only a trusted project gets a language server or debugger (§0.3). */
+  trusted: boolean;
+}
+
+export function bridgeServer(input: BridgeServerInput): BridgeServer {
+  return {
+    command: input.node,
+    args: [input.bridgeBin],
+    env: {
+      UCCH_OMP_BIN: input.ompBin,
+      UCCH_OMP_AGENT_DIR: input.agentDir,
+      UCCH_OMP_OVERLAY: input.overlay,
+      OPENROUTER_API_KEY: input.openrouterKey,
+      UCCH_WORKTREE: input.worktree,
+      UCCH_SCHEDULER_SOCK: input.schedulerSock,
+      UCCH_BRIDGE_TOKEN: input.token,
+      UCCH_BRIDGE_MAX_SECONDS: String(input.maxSeconds),
+      ...(input.trusted ? { UCCH_OMP_TRUSTED: "1" } : {}),
+    },
+  };
+}
+
+/**
+ * Writes Claude Code's `--mcp-config` for one turn to
+ * `<runDir>/<turnId>.mcp.json`, mode 0600, and returns its path and a
+ * disposer that deletes it. `runDir` is the subject's `claude/run`
+ * (`ProviderService.cliRunDir`); the file holds the OpenRouter key.
+ */
+export async function writeClaudeMcpConfig(
+  runDir: string,
+  turnId: string,
+  server: BridgeServer,
+): Promise<{ path: string; dispose(): Promise<void> }> {
+  if (!/^[A-Za-z0-9-]+$/.test(turnId)) throw new Error(`not a turn id: ${turnId}`);
+  const path = join(runDir, `${turnId}.mcp.json`);
+  await writeFile(path, `${JSON.stringify({ mcpServers: { omp: server } }, null, 2)}\n`, { mode: 0o600 });
+  return { path, dispose: () => rm(path, { force: true }) };
+}

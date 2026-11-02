@@ -155,6 +155,22 @@ export class ProviderService {
     return join(this.ensureCredsDir(userId, "omp"), "run");
   }
 
+  /** The subject's `PI_CODING_AGENT_DIR`: what the OMP bridge's calls run with too. */
+  ompAgentDir(userId: string): string {
+    return join(this.ensureCredsDir(userId, "omp"), "agent");
+  }
+
+  /**
+   * Where a Claude Code or Codex turn's own files are written -- the MCP
+   * config that offers the OMP bridge (`omp-bridge-config.ts`) -- made
+   * `0700` on first use, beside the CLI's login.
+   */
+  cliRunDir(userId: string, id: "claude" | "codex"): string {
+    const dir = join(this.ensureCredsDir(userId, id), "run");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return dir;
+  }
+
   /**
    * A project's OMP sessions under the subject (`--session-dir`), made
    * `0700` on first use. Per project, so `--resume` only ever finds a

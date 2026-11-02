@@ -24,6 +24,8 @@ export {
   ClaudeNormaliser,
   CLAUDE_MODELS,
   claudeArgv,
+  OMP_BRIDGE_READ_TOOLS,
+  ompBridgeToolName,
   maskEmail,
   probeClaude,
   workspaceRelative,

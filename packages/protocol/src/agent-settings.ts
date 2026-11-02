@@ -28,6 +28,13 @@ export const WorkspaceAgentSettings = z.object({
    * is already the thread's own.
    */
   isolatedFanOut: z.object({ enabled: z.boolean().default(false) }).default({}),
+  /**
+   * The OMP bridge (solution §10, OM6.4): Claude Code turns are offered
+   * OMP's tools -- subagents, code intelligence, codemods, review -- as an
+   * MCP server, each call billed to the OpenRouter key the workspace's
+   * Custom turns use. Off: the CLI runs as it always has.
+   */
+  ompBridge: z.object({ enabled: z.boolean().default(false) }).default({}),
 });
 export type WorkspaceAgentSettings = z.infer<typeof WorkspaceAgentSettings>;
 

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowRightLeftIcon, BotIcon, GitForkIcon, KeyRoundIcon, Loader2Icon, TrashIcon } from "lucide-react"
+import { ArrowRightLeftIcon, BotIcon, GitForkIcon, KeyRoundIcon, Loader2Icon, PlugIcon, TrashIcon } from "lucide-react"
 import type { CredentialPolicy, CredentialSource, ProviderId } from "@ucch/protocol"
 
 import { ProviderSettings } from "@/components/provider-settings"
@@ -77,6 +77,9 @@ export function WorkspaceHarnessSettings({
       )}
       {settings && (
         <IsolatedFanOutSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+      )}
+      {settings && (
+        <OmpBridgeSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
       )}
       {settings && settings.credentialPolicy !== "member" && (
         <>
@@ -351,6 +354,58 @@ function IsolatedFanOutSection({
           disabled={!manages || busy}
           onChange={(e) => save(e.target.checked)}
           aria-label="Isolated parallel edits"
+        />
+        On
+      </label>
+      {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
+      <Outcome error={error} done={done} />
+    </section>
+  )
+}
+
+/**
+ * The OMP bridge (OMP OM6.4, solution §10): Claude Code turns are offered
+ * OMP's tools as an MCP server. Each call is billed to the OpenRouter key
+ * the Custom provider uses; without one, turns run without the tools.
+ */
+function OmpBridgeSection({
+  workspaceId,
+  settings,
+  manages,
+  onChange,
+}: {
+  workspaceId: string
+  settings: HarnessSettings
+  manages: boolean
+  onChange: (settings: HarnessSettings) => void
+}) {
+  const { busy, error, done, run } = useOutcome()
+  const { enabled } = settings.agent.ompBridge
+  const save = (next: boolean) =>
+    void run(async () => {
+      onChange(await setAgentSettings(workspaceId, { ompBridge: { enabled: next } }))
+      return "Saved."
+    })
+
+  return (
+    <section className="rounded-lg border p-6">
+      <h2 className="flex items-center gap-2 text-sm font-medium">
+        <PlugIcon className="text-muted-foreground size-4" />
+        OMP tools for Claude Code
+      </h2>
+      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
+        Gives Claude Code turns the Custom agent&apos;s tools: subagents that explore and report back, symbol-aware
+        navigation and renames, codemods across many files, and a second-opinion review. Each call is billed to the
+        OpenRouter key Custom turns use; with no key, turns run without these tools. Under Normal permissions the
+        read-only tools run unasked and the rest ask first.
+      </p>
+      <label className="mt-4 flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={!manages || busy}
+          onChange={(e) => save(e.target.checked)}
+          aria-label="OMP tools for Claude Code"
         />
         On
       </label>

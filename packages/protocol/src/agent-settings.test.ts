@@ -7,6 +7,7 @@ describe("readAgentSettings", () => {
       expect(readAgentSettings(stored)).toEqual({
         autoHandoff: { enabled: false, fallbackProvider: null },
         isolatedFanOut: { enabled: false },
+        ompBridge: { enabled: false },
       });
     }
   });
@@ -15,8 +16,10 @@ describe("readAgentSettings", () => {
     expect(readAgentSettings({ autoHandoff: { enabled: true, fallbackProvider: "codex" } })).toEqual({
       autoHandoff: { enabled: true, fallbackProvider: "codex" },
       isolatedFanOut: { enabled: false },
+      ompBridge: { enabled: false },
     });
     expect(readAgentSettings({ isolatedFanOut: { enabled: true } }).isolatedFanOut).toEqual({ enabled: true });
+    expect(readAgentSettings({ ompBridge: { enabled: true } }).ompBridge).toEqual({ enabled: true });
     expect(readAgentSettings({ autoHandoff: { enabled: "yes", fallbackProvider: "gemini" } })).toEqual(
       WorkspaceAgentSettings.parse({}),
     );

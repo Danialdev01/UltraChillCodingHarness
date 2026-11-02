@@ -36,13 +36,15 @@ import {
   type TokenUsage,
   type WorkspaceAgentSettings,
 } from "@ucch/protocol";
-import type {
-  AgentRun,
-  HostToolCall,
-  HostToolResult,
-  OmpMaintenanceInput,
-  OmpRunFiles,
-  ProviderRunInput,
+import {
+  OMP_BRIDGE_READ_TOOLS,
+  ompBridgeToolName,
+  type AgentRun,
+  type HostToolCall,
+  type HostToolResult,
+  type OmpMaintenanceInput,
+  type OmpRunFiles,
+  type ProviderRunInput,
 } from "@ucch/providers";
 import { detectStack } from "./clone.js";
 import { decryptSecret } from "./crypto.js";
@@ -61,6 +63,7 @@ import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 import { TurnScheduler, type TurnKind } from "./turn-scheduler.js";
 import { DEFAULT_OMP_SETTINGS, writeOmpOverlay, type OmpPreset } from "./omp-overlay.js";
+import { bridgeServer, writeClaudeMcpConfig } from "./omp-bridge-config.js";
 import type { ArgvWrapper } from "./child-priority.js";
 import { registry as metrics } from "./metrics.js";
 
@@ -120,6 +123,25 @@ export interface AgentOptions {
    * handoff fails with why.
    */
   dispatch?: (principal: Principal, command: Command) => Promise<EngineResult>;
+  /**
+   * The OMP bridge (solution §10), offered to a Claude Code turn when its
+   * workspace turns it on (`agent_settings.ompBridge`). Absent: never.
+   */
+  ompBridge?: OmpBridgeOptions;
+}
+
+/** What the server knows about the OMP bridge: where it is, and where its calls take a slot. */
+export interface OmpBridgeOptions {
+  /** `OMP_BRIDGE_BIN`. */
+  bin: string;
+  /** `OMP_BIN`: the `omp` each bridge call starts. */
+  ompBin: string;
+  /** The scheduler socket `leases` listens on. */
+  socket: string;
+  /** `OMP_BRIDGE_MAX_SECONDS`. */
+  maxSeconds: number;
+  /** One token per turn, revoked when it ends (`bridge-leases.ts`). */
+  leases: { register(holder: { ownerId: string; threadId: string }): { token: string; revoke(): void } };
 }
 
 /** How a turn was asked for: carried on the command, not the event. */
@@ -1093,7 +1115,7 @@ export class AgentTurnReactor {
     provider: CliProviderId,
     input: {
       ownerId: string;
-      owner: { agentPermissionMode: string | null; openrouterKeyEncrypted: string | null };
+      owner: { agentPermissionMode: string | null; openrouterKeyEncrypted: string | null; defaultModel: string | null };
       threadId: string;
       turnId: string;
       projectId: string;
@@ -1129,6 +1151,7 @@ export class AgentTurnReactor {
 
     let run: AgentRun | undefined;
     let overlay: { dispose(): Promise<void> } | undefined;
+    let bridge: { mcpConfigPath: string; dispose(): Promise<void> } | null = null;
     try {
       await this.#prepareWorkspace(input.workspace);
       const knowledge = await readProjectKnowledge(input.workspace).catch((error: unknown) => {
@@ -1202,6 +1225,7 @@ export class AgentTurnReactor {
             }),
         };
       }
+      if (provider === "claude" && input.agentSettings?.ompBridge.enabled) bridge = await this.#openBridge(input);
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
         prompt: input.text,
@@ -1214,6 +1238,7 @@ export class AgentTurnReactor {
         permissionMode,
         ...(instructions ? { instructions } : {}),
         ...(omp ? { omp } : {}),
+        ...(bridge ? { mcpConfigPath: bridge.mcpConfigPath } : {}),
         ...host,
       });
       this.#cliRuns.add(run);
@@ -1274,6 +1299,82 @@ export class AgentTurnReactor {
       // The events end when the process has exited, so nothing reads the
       // overlay any more. A failure to delete it is the operator's to hear.
       await overlay?.dispose().catch(this.onError);
+      await bridge?.dispose().catch(this.onError);
+    }
+  }
+
+  /**
+   * The OMP bridge for one Claude Code turn (solution §10.3): its overlay,
+   * a scheduler token, and the MCP config that hands both to the bridge,
+   * with the OpenRouter key its calls are billed to. Disposing deletes the
+   * files and revokes the token; a bridge still running then gets no slot.
+   *
+   * Null -- the turn runs without the bridge -- when the server has no
+   * bridge, or there is no key to bill it to: the tools are an extra, and a
+   * Claude Code turn is on its subscription whether they are there or not.
+   */
+  async #openBridge(input: {
+    ownerId: string;
+    owner: { openrouterKeyEncrypted: string | null; defaultModel: string | null };
+    threadId: string;
+    turnId: string;
+    workspace: string;
+  }): Promise<{ mcpConfigPath: string; dispose(): Promise<void> } | null> {
+    const options = this.options.ompBridge;
+    const providers = this.options.providers;
+    if (!options || !providers) return null;
+    let openrouterKey: string;
+    try {
+      openrouterKey = this.#decryptKey(input.owner.openrouterKeyEncrypted);
+    } catch {
+      return null;
+    }
+    const disposers: (() => Promise<void> | void)[] = [];
+    const dispose = async () => {
+      for (const step of disposers.splice(0).reverse()) await step();
+    };
+    try {
+      const overlay = await writeOmpOverlay(providers.ompRunDir(input.ownerId), `bridge-${input.turnId}`, {
+        // Each call names a role (`@smol`, `@slow`); every role is the
+        // account's OpenRouter model until the workspace picks its own.
+        settings: {
+          ...DEFAULT_OMP_SETTINGS,
+          models: { default: resolveModel(undefined, input.owner.defaultModel, this.options.defaultModel) },
+        },
+        preset: "standard",
+        // A bridge call has no one to ask: its `omp` runs headless, under
+        // `--approval-mode yolo`. The person is asked by Claude Code, about
+        // the bridge tool itself (`claudePromptNeedsPerson`), before the
+        // call starts.
+        permissionMode: "allow_all",
+        // No project is trusted until a person can say so (OM7.6).
+        trusted: false,
+        // A call is one tool call of a turn, not a turn: two subagents.
+        workersPerTurn: 2,
+        webSearch: false,
+      });
+      disposers.push(() => overlay.dispose());
+      const lease = options.leases.register({ ownerId: input.ownerId, threadId: input.threadId });
+      disposers.push(() => lease.revoke());
+      const server = bridgeServer({
+        node: process.execPath,
+        bridgeBin: options.bin,
+        ompBin: options.ompBin,
+        agentDir: providers.ompAgentDir(input.ownerId),
+        overlay: overlay.path,
+        openrouterKey,
+        worktree: input.workspace,
+        schedulerSock: options.socket,
+        token: lease.token,
+        maxSeconds: options.maxSeconds,
+        trusted: false,
+      });
+      const config = await writeClaudeMcpConfig(providers.cliRunDir(input.ownerId, "claude"), input.turnId, server);
+      disposers.push(() => config.dispose());
+      return { mcpConfigPath: config.path, dispose };
+    } catch (error) {
+      await dispose().catch(this.onError);
+      throw error;
     }
   }
 
@@ -1595,13 +1696,24 @@ export function withResearchUsage(
 /** Claude Code's tools that change files; `acceptEdits` covers them inside the workspace. */
 const CLAUDE_EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
+/** The OMP bridge's read-only tools, as Claude Code names them. */
+const OMP_BRIDGE_READS: ReadonlySet<string> = new Set(OMP_BRIDGE_READ_TOOLS.map(ompBridgeToolName));
+
 /**
  * Whether a Claude Code prompt goes to a person under `mode`.
  *
  * In Normal the CLI runs in `acceptEdits`, so an edit it still asks about
  * is one outside the workspace -- risky by definition, and asked.
+ *
+ * An OMP bridge tool runs a model and tools of its own, billed to the
+ * OpenRouter key, so it is not "other" and allowed: under Normal only the
+ * read-only ones run unasked (Claude Code is started with them allowed,
+ * so it does not ask about those at all); under Strict every one asks.
  */
-function claudePromptNeedsPerson(mode: AgentPermissionMode, toolName: string, input: unknown): boolean {
+export function claudePromptNeedsPerson(mode: AgentPermissionMode, toolName: string, input: unknown): boolean {
+  if (toolName.startsWith(ompBridgeToolName(""))) {
+    return mode === "allow_all" ? false : !(mode === "normal" && OMP_BRIDGE_READS.has(toolName));
+  }
   if (CLAUDE_EDIT_TOOLS.has(toolName)) return mode !== "allow_all";
   const kind = toolName === "Bash" ? "exec" : "other";
   return needsApproval(mode, { kind, command: shellCommandOf(input) });

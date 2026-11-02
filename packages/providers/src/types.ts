@@ -77,6 +77,13 @@ export interface ProviderRunInput {
    * appended system prompt, Codex ahead of a new session's first message.
    */
   instructions?: string;
+  /**
+   * Claude Code: the turn's MCP config, which offers the OMP bridge
+   * (solution §10.3). Written 0600 by the server and deleted after the
+   * turn; the bridge's environment, the OpenRouter key with it, is in the
+   * file and never in the CLI's own.
+   */
+  mcpConfigPath?: string;
   /** What only an OMP run takes; the server writes and owns all of it. */
   omp?: OmpRunFiles;
   /**

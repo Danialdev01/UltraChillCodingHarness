@@ -280,6 +280,14 @@ const agentTurns = new AgentTurnReactor(
     streamFlushMs: config.STREAM_FLUSH_MS,
     ompWorkersPerTurn: config.OMP_WORKERS_PER_TURN,
     ompEnabled: config.OMP_ENABLED,
+    // Offered to a Claude Code turn when its workspace turns it on.
+    ompBridge: {
+      bin: config.OMP_BRIDGE_BIN,
+      ompBin: config.OMP_BIN,
+      socket: BRIDGE_SOCKET,
+      maxSeconds: config.OMP_BRIDGE_MAX_SECONDS,
+      leases: bridgeLeases,
+    },
     // Bound late: the engine is built from these reactors.
     dispatch: (principal, command) => engine.dispatch(principal, command),
   },

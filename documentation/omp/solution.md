@@ -708,6 +708,14 @@ Every tool:
 - **Permissions.** Under `normal`, the read-only tools are pre-allowed with `--allowedTools "mcp__omp__omp_symbols mcp__omp__omp_recall mcp__omp__omp_review mcp__omp__omp_task"`; the others ask through the existing `--permission-prompt-tool stdio` flow. Under `strict` everything asks. Under `allow_all` nothing asks (the existing `#allowAll` path).
 - **The MCP server's `env` carries `OPENROUTER_API_KEY`.** That is the bridge's environment, not the CLI's. Claude Code still has no API key in its own environment, so `forbiddenEnvPresent` still holds for the CLI. The key sits in a 0600 file for the turn's duration and is deleted after.
 
+**As built (OM6.4),** checked with Claude Code 2.1.316 against a scripted API, with real OMP behind the built bridge:
+- **The setting.** `agent_settings.ompBridge.enabled`, off by default, under Workspace settings → Harness. A Claude Code turn gets the bridge only when it is on, the server has `OMP_BRIDGE_BIN`, and the account has an OpenRouter key to bill. Without a key the turn runs as before, without the tools.
+- **Files.** The MCP config is `<subject>/claude/run/<turnId>.mcp.json` (0600). The bridge's overlay is `<subject>/omp/run/bridge-<turnId>.yml`. It uses the Allow All approval mapping, because the bridge's `omp` is headless and the person has already been asked about the tool itself. It runs two workers, every role is the account's OpenRouter model, and it is untrusted. Both files are deleted, and the scheduler token revoked, when the turn ends.
+- **Command.** `command` is the server's own `node` (`process.execPath`), not `node` on the CLI's `PATH`. The `env` carries the bridge's settings (`UCCH_BRIDGE_MAX_SECONDS` from `OMP_BRIDGE_MAX_SECONDS`) and the OpenRouter key; the CLI's environment carries no key at all (`agent.test.ts`).
+- **Flags.** `probeClaude` detects the flags by `--strict-mcp-config` in `-p --help`. `--allowedTools` is variadic, so each tool is its own argument; every argument that follows is a flag.
+- **Prompts.** An MCP tool that is not allowed comes back as a `can_use_tool` control request with `tool_name: "mcp__omp__<tool>"`. `claudePromptNeedsPerson` sends a bridge tool to a person unless the mode is Allow All, or the mode is Normal and the tool is one of the four read-only ones. `omp_ping` is not one of them.
+- **MCP tools are deferred.** In 2.1.316 they are not in the request's `tools` until the model loads them with `ToolSearch` (`select:mcp__omp__omp_symbols`). Claude Code's own model does this unprompted; a guide (§10.4) should name the tools so the model knows to look for them.
+
 **Codex (`codexArgv`, `codex.ts`):**
 - Append `-c mcp_servers.omp.command="node"`, `-c mcp_servers.omp.args=["/opt/ucch/omp-bridge.mjs"]` and `-c mcp_servers.omp.env.UCCH_…=…`. OM0 confirmed the syntax (Codex 0.166.0: `codex -c 'mcp_servers.omp.command="node"' -c 'mcp_servers.omp.args=[…]' -c 'mcp_servers.omp.env.X="…"' mcp list` lists the server, enabled), so no `config.toml` fallback is needed.
 - The key goes through `env` the same way. Whether `codex exec` calls the tool, and whether the server has network under `workspace-write`, needs a logged-in Codex and is re-checked in OM6.5. `codex exec --help` scopes `--sandbox` to "model-generated shell commands", which an MCP server is not.
@@ -848,7 +856,7 @@ A section appended to `instructions` for CLI providers when the bridge is on, ab
 | `OMP_BIN`, `OMP_ENABLED`, `NATIVE_LOOP_FALLBACK`, `OMP_BRIDGE_BIN`, `OMP_TURN_TOTAL`, `OMP_WORKERS_PER_TURN`, `OMP_BRIDGE_MAX_SECONDS` | operator (`.env`) | server config §1.3 |
 | `PI_CODING_AGENT_DIR`, `OMP_WORKTREE_DIR`, `OMP_SKIP_SETUP`, `PI_TASK_MAX_OUTPUT_BYTES`, `PI_NATIVES_DIR`, `OPENROUTER_API_KEY` | server, per run | OMP process §3.3 ([env](https://omp.sh/docs/env)) |
 | `JS_DEBUG_DAP_SERVER` | image | DAP §8.3 |
-| `UCCH_OMP_BIN`, `UCCH_OMP_AGENT_DIR`, `UCCH_OMP_OVERLAY`, `UCCH_WORKTREE`, `UCCH_BRIDGE_MAX_SECONDS`, `UCCH_BRIDGE_MAX_CALLS`, `UCCH_SCHEDULER_SOCK`, `UCCH_BRIDGE_TOKEN`, `UCCH_OMP_MEMORY`, `UCCH_OMP_WEB_SEARCH` | server, in MCP config | bridge §10 |
+| `UCCH_OMP_BIN`, `UCCH_OMP_AGENT_DIR`, `UCCH_OMP_OVERLAY`, `UCCH_WORKTREE`, `UCCH_BRIDGE_MAX_SECONDS`, `UCCH_BRIDGE_MAX_CALLS`, `UCCH_SCHEDULER_SOCK`, `UCCH_BRIDGE_TOKEN`, `UCCH_OMP_MEMORY`, `UCCH_OMP_WEB_SEARCH`, `UCCH_OMP_TRUSTED` | server, in MCP config | bridge §10 |
 | `UCCH_OMP_MCP` | terminal reactor | hand-started CLIs §10.3 |
 
 ## Appendix B: Protocol additions
@@ -869,7 +877,7 @@ A section appended to `instructions` for CLI providers when the bridge is on, ab
 - `packages/providers/assets/omp-hooks/ucch-guard.ts`, `assets/omp-bridge-guide.md`, `src/omp-roles.ts` (§6.4)
 - `packages/omp-bridge/` (`src/index.ts`, `src/tools/*.ts`, `build.mjs`, tests)
 - `packages/agent/src/run-tool.ts`
-- `apps/server/src/omp-overlay.ts`, `omp-review.ts`, `omp-handoff.ts`, plus tests
+- `apps/server/src/omp-overlay.ts`, `omp-review.ts`, `omp-handoff.ts`, `bridge-leases.ts`, `omp-bridge-config.ts`, plus tests
 - `scripts/load/fake-omp.mjs`
 - `documentation/omp/spike-report.md` (OM0 output)
 

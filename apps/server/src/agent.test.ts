@@ -1,13 +1,23 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
 import type { Command, DomainEvent } from "@ucch/protocol";
-import { ClaudeNormaliser, createProviders, HostProcessHost, OmpProvider, type AgentProvider, type ProviderRunInput } from "@ucch/providers";
+import {
+  ClaudeNormaliser,
+  createProviders,
+  forbiddenEnvFor,
+  forbiddenEnvPresent,
+  HostProcessHost,
+  OmpProvider,
+  type AgentProvider,
+  type ProviderRunInput,
+} from "@ucch/providers";
 import {
   AgentTurnReactor,
+  claudePromptNeedsPerson,
   ompInstructions,
   resolveModel,
   resolveProvider,
@@ -1257,5 +1267,176 @@ describe("automatic handoff on a usage limit (OM4.6)", () => {
       await settled(run);
       expect(run.dispatched).toEqual([]);
     }
+  });
+});
+
+describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
+  const SECRET = "ab".repeat(32);
+  const keyed = { ...person, openrouterKeyEncrypted: encryptSecret("sk-or-bridge", SECRET), defaultModel: "openai/gpt-5" };
+  const ask: Command = { type: "thread.send", threadId: THREAD, text: "hi", provider: "claude" };
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "ucch-bridge-"));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** What the turn handed Claude Code, read while the CLI "runs". */
+  interface Seen {
+    input: ProviderRunInput;
+    config: { mcpServers: { omp: { command: string; args: string[]; env: Record<string, string> } } } | null;
+    mode: number | null;
+    overlay: string | null;
+  }
+
+  /** A Claude Code that runs nothing, through the real `ProviderService` (no token in the database). */
+  function bridgeReactor(personRow: Record<string, unknown>, agentSettings: unknown, withBridge = true) {
+    const seen: Seen[] = [];
+    const claude: AgentProvider = {
+      id: "claude",
+      label: "Claude Code",
+      models: [],
+      probe: async () => ({ installed: true, authenticated: true, authMode: "subscription" }),
+      run: (input) => {
+        const path = input.mcpConfigPath;
+        const config = path ? (JSON.parse(readFileSync(path, "utf8")) as Seen["config"]) : null;
+        const overlay = config?.mcpServers.omp.env.UCCH_OMP_OVERLAY;
+        seen.push({
+          input,
+          config,
+          mode: path ? statSync(path).mode & 0o777 : null,
+          overlay: overlay ? readFileSync(overlay, "utf8") : null,
+        });
+        return {
+          events: (async function* () {
+            yield {
+              type: "agent.turn_completed",
+              threadId: input.threadId,
+              turnId: input.turnId,
+              stopReason: "end_turn",
+              usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+              costUsd: 0,
+            } satisfies DomainEvent;
+          })(),
+          interrupt: async () => {},
+          kill: async () => {},
+        };
+      },
+    };
+    class NoToken extends ProviderService {
+      override async claudeToken(): Promise<string | null> {
+        return null;
+      }
+    }
+    const real = createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: "omp" });
+    const providers = new NoToken({} as Database, { CREDS_ROOT: join(root, "creds") } as Config, new HostProcessHost(), {
+      ...real,
+      claude,
+    });
+    const tokens = new Map<string, { ownerId: string; threadId: string }>();
+    const registered: string[] = [];
+    const leases = {
+      register(holder: { ownerId: string; threadId: string }) {
+        const token = `tok-${registered.length}`;
+        registered.push(token);
+        tokens.set(token, holder);
+        return { token, revoke: () => void tokens.delete(token) };
+      },
+    };
+    const built = reactorWith(
+      {
+        workspaceRoot: join(root, "workspaces"),
+        secretKey: SECRET,
+        defaultModel: "anthropic/claude-sonnet-4.5",
+        cliEnabled: true,
+        providers,
+        ...(withBridge ? { ompBridge: { bin: "/opt/ucch/omp-bridge.mjs", ompBin: "/usr/bin/omp", socket: "/c/omp-scheduler.sock", maxSeconds: 240, leases } } : {}),
+      },
+      [thread],
+      [{ stack: null, agent: agentSettings }],
+      [owner],
+      [personRow],
+    );
+    return { ...built, seen, tokens, registered };
+  }
+
+  async function turn(run: ReturnType<typeof bridgeReactor>) {
+    run.agent.react(ask, [message]);
+    const deadline = Date.now() + 5_000;
+    const done = (e: DomainEvent) => e.type === "agent.turn_completed" || e.type === "agent.turn_failed";
+    while (!run.appended.flat().some(done) && Date.now() < deadline) await settle();
+    await settle();
+    expect(run.appended.flat().find(done)?.type).toBe("agent.turn_completed");
+    expect(run.errors).toEqual([]);
+  }
+
+  it("hands Claude Code an MCP config with the bridge's environment, and keeps the key out of the CLI's own", async () => {
+    const run = bridgeReactor(keyed, { ompBridge: { enabled: true } });
+    await turn(run);
+    const [{ input, config, mode, overlay }] = run.seen as [Seen];
+    expect(input.mcpConfigPath).toBe(join(root, "creds", USER, "claude", "run", `${input.turnId}.mcp.json`));
+    expect(mode).toBe(0o600);
+    const server = config!.mcpServers.omp;
+    expect(server.command).toBe(process.execPath);
+    expect(server.args).toEqual(["/opt/ucch/omp-bridge.mjs"]);
+    expect(server.env).toEqual({
+      UCCH_OMP_BIN: "/usr/bin/omp",
+      UCCH_OMP_AGENT_DIR: join(root, "creds", USER, "omp", "agent"),
+      UCCH_OMP_OVERLAY: join(root, "creds", USER, "omp", "run", `bridge-${input.turnId}.yml`),
+      OPENROUTER_API_KEY: "sk-or-bridge",
+      UCCH_WORKTREE: input.ctx.cwd,
+      UCCH_SCHEDULER_SOCK: "/c/omp-scheduler.sock",
+      UCCH_BRIDGE_TOKEN: "tok-0",
+      UCCH_BRIDGE_MAX_SECONDS: "240",
+    });
+    // Billing: the CLI's environment has no key of any kind; the bridge's has the OpenRouter key alone.
+    expect(forbiddenEnvPresent(input.ctx.env)).toBeNull();
+    expect(Object.keys(input.ctx.env).filter((name) => /_API_KEY$|_OAUTH_TOKEN$/.test(name))).toEqual([]);
+    expect(forbiddenEnvFor("omp", server.env)).toBeNull();
+    // The overlay: headless approvals, the account's OpenRouter model on every role, no debugger.
+    expect(overlay).toContain('  default: "openrouter/openai/gpt-5"\n');
+    expect(overlay).toContain('  smol: "openrouter/openai/gpt-5"\n');
+    expect(overlay).toContain("  maxConcurrency: 2\n");
+    expect(overlay).toContain('    bash: "allow"\n');
+    expect(overlay).toContain('    debug: "deny"\n');
+    // Gone with the turn: both files, and the token.
+    expect(existsSync(input.mcpConfigPath!)).toBe(false);
+    expect(existsSync(server.env.UCCH_OMP_OVERLAY!)).toBe(false);
+    expect(run.registered).toEqual(["tok-0"]);
+    expect(run.tokens.size).toBe(0);
+  });
+
+  it("offers nothing with the setting off, with no bridge on the server, or with no key to bill", async () => {
+    for (const run of [
+      bridgeReactor(keyed, undefined),
+      bridgeReactor(keyed, { ompBridge: { enabled: false } }),
+      bridgeReactor(keyed, { ompBridge: { enabled: true } }, false),
+      bridgeReactor(person, { ompBridge: { enabled: true } }),
+    ]) {
+      await turn(run);
+      expect(run.seen[0]!.input.mcpConfigPath).toBeUndefined();
+      expect(run.registered).toEqual([]);
+    }
+  });
+});
+
+describe("claudePromptNeedsPerson for the OMP bridge's tools", () => {
+  const reads = ["omp_symbols", "omp_recall", "omp_review", "omp_task"];
+  const rest = ["omp_rename", "omp_codemod", "omp_debug", "omp_retain", "omp_handoff_brief", "omp_ping"];
+  it("asks under Strict, asks for all but the read-only ones under Normal, and never after Allow All", () => {
+    for (const tool of [...reads, ...rest]) {
+      const name = `mcp__omp__${tool}`;
+      expect(claudePromptNeedsPerson("strict", name, {}), name).toBe(true);
+      expect(claudePromptNeedsPerson("normal", name, {}), name).toBe(!reads.includes(tool));
+      expect(claudePromptNeedsPerson("allow_all", name, {}), name).toBe(false);
+    }
+  });
+
+  it("leaves Claude Code's own tools as they were", () => {
+    expect(claudePromptNeedsPerson("normal", "Bash", { command: "ls" })).toBe(false);
+    expect(claudePromptNeedsPerson("normal", "Bash", { command: "rm -rf /" })).toBe(true);
+    expect(claudePromptNeedsPerson("normal", "Edit", {})).toBe(true);
+    expect(claudePromptNeedsPerson("normal", "WebFetch", {})).toBe(false);
   });
 });

@@ -49,7 +49,20 @@ export const CLAUDE_MODELS = [
 export interface ClaudeCapabilities {
   permissionPrompts: boolean;
   settingSources: boolean;
+  /** `--mcp-config` with `--strict-mcp-config`: what the OMP bridge is offered through. */
+  mcpConfig: boolean;
 }
+
+/**
+ * The bridge's tools that only read (solution §10.3): under Normal they run
+ * unasked, as Claude Code's own reads do. The rest -- a rename, a codemod,
+ * a debugging session, a memory write, a handoff brief -- ask, as a command
+ * does; under Strict everything asks, and after "Allow All" nothing does.
+ */
+export const OMP_BRIDGE_READ_TOOLS = ["omp_symbols", "omp_recall", "omp_review", "omp_task"] as const;
+
+/** How Claude Code names an MCP server's tool: `mcp__<server>__<tool>`. */
+export const ompBridgeToolName = (tool: string) => `mcp__omp__${tool}`;
 
 export function claudeArgv(input: {
   bin: string;
@@ -69,6 +82,12 @@ export function claudeArgv(input: {
    * the conversation across `--resume`, not the flags it was started with.
    */
   appendSystemPrompt?: string;
+  /**
+   * The turn's MCP config, offering the OMP bridge (solution §10.3). Only
+   * UCCH's servers load (`--strict-mcp-config`), as only the user's
+   * settings do. Absent, or a CLI without the flags: no MCP config at all.
+   */
+  mcpConfigPath?: string;
 }): string[] {
   const argv = [
     input.bin,
@@ -99,6 +118,13 @@ export function claudeArgv(input: {
   // -- its hooks, its MCP servers -- is model-visible instruction from
   // whoever wrote the repository, and this is a harness that clones anything.
   if (input.caps.settingSources) argv.push("--setting-sources", "user");
+  if (input.mcpConfigPath && input.caps.mcpConfig) {
+    argv.push("--mcp-config", input.mcpConfigPath, "--strict-mcp-config");
+    // Normal is the default mode (`DEFAULT_AGENT_PERMISSION_MODE`).
+    if ((input.permissionMode ?? "normal") === "normal") {
+      argv.push("--allowedTools", ...OMP_BRIDGE_READ_TOOLS.map(ompBridgeToolName));
+    }
+  }
   if (input.model) argv.push("--model", input.model);
   if (input.effort && input.effort !== "off") argv.push("--effort", input.effort);
   if (input.resumeToken) argv.push("--resume", input.resumeToken);
@@ -125,7 +151,7 @@ export async function probeClaude(
   ctx: RunContext,
   bin: string,
 ): Promise<ProviderHealth & { caps: ClaudeCapabilities }> {
-  const caps: ClaudeCapabilities = { permissionPrompts: false, settingSources: false };
+  const caps: ClaudeCapabilities = { permissionPrompts: false, settingSources: false, mcpConfig: false };
   const forbidden = forbiddenEnvPresent(ctx.env);
   const warnings = forbidden
     ? [`${forbidden} is set in the provider environment; runs would bill an API key.`]
@@ -150,6 +176,7 @@ export async function probeClaude(
   const helpText = help?.stdout ?? "";
   caps.permissionPrompts = helpText.includes("--permission-prompts");
   caps.settingSources = helpText.includes("--setting-sources");
+  caps.mcpConfig = helpText.includes("--strict-mcp-config");
 
   const status = await ctx.host
     .run(spec(["auth", "status"]), { timeoutMs: 15_000 })
@@ -861,7 +888,7 @@ export class ClaudeProvider implements AgentProvider {
   run(input: ProviderRunInput): AgentRun {
     // Assume the modern flags when nothing has probed yet: they exist on the
     // pinned version, and the settings page probes long before a turn runs.
-    const caps = this.#caps ?? { permissionPrompts: true, settingSources: true };
+    const caps = this.#caps ?? { permissionPrompts: true, settingSources: true, mcpConfig: true };
     const normaliser = new ClaudeNormaliser({
       projectId: input.projectId,
       threadId: input.threadId,
@@ -879,6 +906,7 @@ export class ClaudeProvider implements AgentProvider {
           ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
           ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
           ...(input.instructions ? { appendSystemPrompt: input.instructions } : {}),
+          ...(input.mcpConfigPath ? { mcpConfigPath: input.mcpConfigPath } : {}),
           caps,
         }),
         stdin: `${JSON.stringify(userLine(input.prompt))}\n`,
