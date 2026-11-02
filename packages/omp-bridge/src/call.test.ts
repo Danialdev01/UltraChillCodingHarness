@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HostProcessHost, type ProcessHost } from "@ucch/providers";
 import { ManualChild } from "@ucch/providers/testing";
@@ -21,8 +22,8 @@ function ctx(host: ProcessHost, fixture = "omp-plain.jsonl", env: NodeJS.Process
 describe("callArgv", () => {
   const config = readBridgeConfig({ UCCH_OMP_BIN: "/opt/omp/bin/omp", UCCH_BRIDGE_MAX_SECONDS: "120", UCCH_OMP_OVERLAY: "/c/omp/run/b.yml" }, "/w");
 
-  it("runs one throwaway RPC session on the allowlist, unattended, with a turn's guards", () => {
-    expect(callArgv(config, { tools: ["read", "grep"], model: "@smol" })).toEqual([
+  it("runs one throwaway RPC session on the allowlist, unattended, with a turn's guards and the call's guard last", () => {
+    expect(callArgv(config, { tools: ["read", "grep"], model: "@smol" }, "/tmp/g/guard.yml")).toEqual([
       "/opt/omp/bin/omp",
       "--mode",
       "rpc",
@@ -41,20 +42,22 @@ describe("callArgv", () => {
       "--no-lsp",
       "--config",
       "/c/omp/run/b.yml",
+      "--config",
+      "/tmp/g/guard.yml",
     ]);
   });
 
   it("starts a language server only for a trusted project's call that asks for lsp, and no tools at all for an empty list", () => {
-    expect(callArgv(config, { tools: ["lsp", "read"], model: "@smol" })).toContain("--no-lsp");
-    expect(callArgv({ ...config, trusted: true }, { tools: ["lsp", "read"], model: "@smol" })).not.toContain("--no-lsp");
-    expect(callArgv({ ...config, trusted: true }, { tools: ["read"], model: "@smol" })).toContain("--no-lsp");
-    const none = callArgv(config, { tools: [], model: "@smol" });
+    expect(callArgv(config, { tools: ["lsp", "read"], model: "@smol" }, "/tmp/g/guard.yml")).toContain("--no-lsp");
+    expect(callArgv({ ...config, trusted: true }, { tools: ["lsp", "read"], model: "@smol" }, "/tmp/g/guard.yml")).not.toContain("--no-lsp");
+    expect(callArgv({ ...config, trusted: true }, { tools: ["read"], model: "@smol" }, "/tmp/g/guard.yml")).toContain("--no-lsp");
+    const none = callArgv(config, { tools: [], model: "@smol" }, "/tmp/g/guard.yml");
     expect(none).toContain("--no-tools");
     expect(none).not.toContain("--tools");
   });
 
   it("never runs RPC with prompts: yolo, under an allowlist", () => {
-    const argv = callArgv(config, { tools: ["read"], model: "@smol" });
+    const argv = callArgv(config, { tools: ["read"], model: "@smol" }, "/tmp/g/guard.yml");
     expect(argv[argv.indexOf("--approval-mode") + 1]).toBe("yolo");
     expect(argv).not.toContain("rpc-ui");
   });
@@ -109,6 +112,28 @@ describe("runOmpCall", () => {
     expect(env.OPENROUTER_API_KEY).toBe("sk-or-ws");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("passes each call its guard as the last --config, and removes it once the call is over", async () => {
+    const { host, spawned } = watched();
+    let guard = "";
+    let seen: { tools: { approval: Record<string, string> }; dev: { autoqa: boolean } } | null = null;
+    const reading: ProcessHost = {
+      spawn(spec) {
+        guard = spec.argv[spec.argv.length - 1]!;
+        seen = JSON.parse(readFileSync(guard, "utf8"));
+        return host.spawn(spec);
+      },
+      run: (spec, options) => host.run(spec, options),
+    };
+    const result = await runOmpCall(ctx(reading), { tools: ["read", "task"], model: "@smol", prompt: "x", answer: {} });
+    expect(result.isError).toBeUndefined();
+    const argv = spawned[0]!.spec.argv;
+    expect(argv.slice(-2)).toEqual(["--config", guard]);
+    expect(seen!.tools.approval.bash).toBe("deny");
+    expect(seen!.tools.approval.task).toBeUndefined();
+    expect(seen!.dev.autoqa).toBe(false);
+    expect(existsSync(guard)).toBe(false);
   });
 
   it("reports an omp that will not start as a tool error", async () => {

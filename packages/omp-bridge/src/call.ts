@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { DomainEvent } from "@ucch/protocol";
 import { OmpNormaliser, OmpRpc, type OmpSessionStats, type ProcessHost } from "@ucch/providers";
 import { ompEnv, refuseForeignCredentials, type BridgeConfig } from "./config.js";
+import { writeGuard } from "./guard.js";
 import type { CallGate } from "./lease.js";
 
 /**
@@ -15,7 +16,11 @@ import type { CallGate } from "./lease.js";
  * tool returned, and what the call cost.
  */
 export interface OmpCall {
-  /** `--tools`; empty is `--no-tools`. Only these run: the allowlist is the control (§10.2). */
+  /**
+   * `--tools`; empty is `--no-tools`. The session has only these, and the
+   * call's guard denies every other tool to the subagents it spawns
+   * (`guard.ts`), which `--tools` does not reach (§10.2).
+   */
   tools: readonly string[];
   /** `--model`: a role (`@smol`) or a model. */
   model: string;
@@ -54,8 +59,12 @@ export const RESULT_BYTES = 64 * 1024;
 /** How long past `--max-time` the bridge waits before it kills a call that did not stop: OMP's own stop comes first. */
 const KILL_AFTER_MS = 30_000;
 
-/** The argv for a call (§10.2): one throwaway session, no prompts, only the allowlisted tools. */
-export function callArgv(config: BridgeConfig, call: Pick<OmpCall, "tools" | "model">): string[] {
+/**
+ * The argv for a call (§10.2): one throwaway session, no prompts, only the
+ * allowlisted tools, and the call's guard (`writeGuard`) as the last
+ * `--config`, above the bridge overlay.
+ */
+export function callArgv(config: BridgeConfig, call: Pick<OmpCall, "tools" | "model">, guard: string): string[] {
   return [
     config.ompBin,
     "--mode",
@@ -67,7 +76,7 @@ export function callArgv(config: BridgeConfig, call: Pick<OmpCall, "tools" | "mo
     "--max-time",
     String(config.maxSeconds),
     // Headless prompts fail rather than wait (approvals docs); the
-    // allowlist is what limits a call.
+    // allowlist and the guard are what limit a call.
     "--approval-mode",
     "yolo",
     ...(call.tools.length > 0 ? ["--tools", call.tools.join(",")] : ["--no-tools"]),
@@ -78,6 +87,8 @@ export function callArgv(config: BridgeConfig, call: Pick<OmpCall, "tools" | "mo
     // one: a cloned repository's LSP config is a command (§0.3).
     ...(config.trusted && call.tools.includes("lsp") ? [] : ["--no-lsp"]),
     ...(config.overlay ? ["--config", config.overlay] : []),
+    "--config",
+    guard,
   ];
 }
 
@@ -89,13 +100,23 @@ export async function runOmpCall(ctx: CallContext, call: OmpCall): Promise<CallT
   const admitted = ctx.gate ? await ctx.gate.enter() : null;
   if (admitted && "refused" in admitted) return failure(admitted.refused);
   try {
-    return await callOmp(ctx, call, env);
+    let guard: Awaited<ReturnType<typeof writeGuard>>;
+    try {
+      guard = await writeGuard(call.tools);
+    } catch (error) {
+      return failure(`omp did not start: its guard could not be written: ${firstLine(describe(error))}`);
+    }
+    try {
+      return await callOmp(ctx, call, env, guard.path);
+    } finally {
+      await guard.dispose();
+    }
   } finally {
     admitted?.release();
   }
 }
 
-async function callOmp(ctx: CallContext, call: OmpCall, env: Record<string, string>): Promise<CallToolResult> {
+async function callOmp(ctx: CallContext, call: OmpCall, env: Record<string, string>, guard: string): Promise<CallToolResult> {
   const now = ctx.now ?? Date.now;
   const started = now();
 
@@ -115,7 +136,7 @@ async function callOmp(ctx: CallContext, call: OmpCall, env: Record<string, stri
   try {
     rpc = await OmpRpc.start({
       host: ctx.host,
-      argv: callArgv(ctx.config, call),
+      argv: callArgv(ctx.config, call, guard),
       cwd: ctx.config.worktree,
       env,
       onFrame: (frame) => {

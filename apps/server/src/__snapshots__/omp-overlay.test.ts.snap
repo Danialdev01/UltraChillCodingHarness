@@ -126,6 +126,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -255,6 +256,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -384,6 +386,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -513,6 +516,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -642,6 +646,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -771,6 +776,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -900,6 +906,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -1029,6 +1036,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -1158,6 +1166,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -1287,6 +1296,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -1416,6 +1426,7 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;
 
@@ -1545,5 +1556,6 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "opencode", "windsurf", "github"]
 "
 `;

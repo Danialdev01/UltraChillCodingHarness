@@ -3,6 +3,7 @@ export * from "./process.js";
 export { runCli, type Normaliser } from "./run.js";
 export { OMP_CREDENTIAL_ENV, isOmpCredentialEnv } from "./omp-credentials.js";
 export { ompBridgeGuide, ompGuardHookSource } from "./omp-assets.js";
+export { OMP_FOREIGN_SOURCES, OMP_TOOL_TIERS, type OmpTier } from "./omp-tools.js";
 export { OmpRpc, type OmpRpcOptions } from "./omp-rpc.js";
 export type * from "./omp-rpc-types.js";
 export {

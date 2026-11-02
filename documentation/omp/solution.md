@@ -433,6 +433,10 @@ commands:
   enableOpencodeProject: false
 mcp:
   enableProjectConfig: false
+
+# Nor any other agent's configuration (OM6.8): OMP reads Claude Code's
+# skills, rules and MCP servers whenever CLAUDE_CONFIG_DIR is set.
+disabledProviders: [claude, claude-plugins, codex, cursor, gemini, opencode, windsurf, github]
 ```
 
 - **Workspace overrides.** `workspace-harness-settings.tsx` stores the workspace values: models per role, memory on or off, `llmMode`, economy, advisor, browser. The overlay writer (`apps/server/src/omp-overlay.ts`) merges them in.
@@ -671,7 +675,7 @@ Every tool:
 - collects the final assistant text, or the subagent's structured output;
 - closes.
 
-`--model @smol` unless stated otherwise. `--max-time ${UCCH_BRIDGE_MAX_SECONDS}s`. `--approval-mode yolo` with a `--tools` allowlist, because headless prompts fail ([approvals](https://omp.sh/docs/approvals)) and the allowlist is the real control.
+`--model @smol` unless stated otherwise. `--max-time ${UCCH_BRIDGE_MAX_SECONDS}s`. `--approval-mode yolo` with a `--tools` allowlist, because headless prompts fail ([approvals](https://omp.sh/docs/approvals)), and the call's guard overlay as the last `--config` (below, OM6.8): the allowlist bounds the session, the guard bounds the subagents it spawns.
 
 | Tool | Input schema | OMP side | `--tools` |
 |---|---|---|---|
@@ -696,6 +700,7 @@ Every tool:
 - **A codemod preview ends itself.** `ast_edit` only stages a proposal. OMP then forces the model to `write` it to `xd://resolve` or `xd://reject`, and a call with no `write` fails after three forced turns. So the preview gets `ast_edit,read` only, and the bridge sends `abort` once `ast_edit` has answered (`stopAfter`), returning the staged diff. Denying `write` by policy does not help: `xd://reject` is not a device with its own approval key.
 - **`/review` is not a command under `--no-extensions`.** The model receives the literal text. `omp_review` sends OMP's own headless review request (the text `/review` expands to) with the diff the bridge reads from git, and answers with the reviewer subagent's result.
 - **The whole exchange is timed.** `--max-time` plus 30 s covers the stats and prompt commands as well as the wait, so a process that stops answering cannot hold the CLI's tool call.
+- **The call's guard** (OM6.8, `packages/omp-bridge/src/guard.ts`). `--tools` does not reach subagents: each gets its own agent's tools. Under `--tools read,grep,glob,task`, an `omp_task` reviewer got `bash` and `web_search`, and its `bash` ran; a sonic got `bash`, `eval` and `web_search`; a scout `web_search` without `UCCH_OMP_WEB_SEARCH`. So every call writes a guard (0600, in its own temp directory, removed when the call ends) passed after the bridge overlay. It sets `tools.approval: deny` for every tool of the pinned version that the call does not name, except `read, glob, grep, find, ast_grep, inspect_image, todo, wait, checkpoint, rewind`; a denied tool stays in the schema and answers `Tool "bash" is blocked by user policy`. It also sets `web_search.enabled` only when the call names it, `dev.autoqa: false` (otherwise `xd://report_issue` is mounted and can report to qa.omp.sh), telemetry export off, the project sources off as in §4, and `disabledProviders` to OMP's sources for other agents' configuration (`OMP_FOREIGN_SOURCES`). OMP opts Claude Code's in whenever `CLAUDE_CONFIG_DIR` is set, and a bridge call from a Claude Code then mounted that Claude Code's own `omp` server as `xd://mcp__omp_*` devices.
 - **No language server or debugger for an untrusted project** (§0.3). A cloned repository's own LSP and debug-adapter config would run, so `lsp` and `debug` need `UCCH_OMP_TRUSTED=1`. Without it every call passes `--no-lsp`, `omp_task` drops `lsp` from its list, and `omp_symbols`, `omp_rename` and `omp_debug` answer "off for this project" without starting OMP. The server sets the variable from the project's trust (OM7.6).
 
 ### 10.3 Wiring

@@ -350,6 +350,12 @@ Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`)
   - The server is not sandboxed: under `--sandbox workspace-write` it reached a TCP port on 127.0.0.1, and the bridge reached the scheduler's Unix socket. The real bridge ran `omp_task` scout end to end on real OMP.
   - `tool_timeout_sec` and `startup_timeout_sec` are per-server keys (`codex mcp get --json` shows them).
 
+- **What a bridge call can reach beyond `--tools`** (OM6.8), through the bridge's `omp_task` with the scripted model playing the subagent, and through the README's recipe (Claude Code 2.1.316 with the bridge added at user scope, no UCCH overlay):
+  - `--tools` limits the session, not its subagents. Under `--tools read,grep,glob,task`: a scout got `read, grep, glob, web_search` (`read, find, grep, glob, web_search` in the recipe); a reviewer `read, grep, glob, bash, web_search, task, wait`; a sonic (`…,edit,write`) `read, bash, edit, eval, glob, grep, task, wait, web_search, write`. A reviewer's `bash` ran (`echo … > file` wrote the file).
+  - A second `--config` ranks above the first. `tools.approval.bash: deny` in it refused the reviewer's `bash` (`Tool "bash" is blocked by user policy.`), with `bash` still in the request's schema. `web_search.enabled: false` in it took `web_search` out of the scout's tools.
+  - With no `dev.autoqa: false`, each session also got a `write` tool for `xd://report_issue`, OMP's tool QA, which may send reports to `https://qa.omp.sh/v1/grievances` (default on; the first report asks for consent). `write` reaches only `xd://` devices and `local://` files, not the worktree.
+  - OMP's sources for other agents' configuration (`cursor, codex, claude, claude-plugins, gemini, opencode, windsurf, github`) are opt-in, but the binary enables `claude` whenever `CLAUDE_CONFIG_DIR` is set. In the recipe, the bridge's OMP then mounted the Claude Code config's own `omp` server as `xd://mcp__omp_task` and the rest. An OMP turn under `ompOverlay` with `CLAUDE_CONFIG_DIR` pointing at a config with one MCP server mounted `xd://mcp__demo_omp_probe`. `disabledProviders` is checked before every opt-in, and with all eight listed, neither run mounted anything.
+
 ## Corrections made to `solution.md`
 
 | Section | Was | Now |
@@ -381,6 +387,7 @@ Each with 18.14.1, against the scripted model (`scripts/omp/scripted-model.mjs`)
 | §9.2 | structured `--mode json`, or `ucch-reviewer` | the bundled `reviewer`'s structured output; no `ucch-reviewer` |
 | §10.3 Codex | `-c` syntax (verify) | confirmed for registration and, in OM6.5, at runtime (scripted provider, no login) |
 | §10.3 Codex (OM6.5) | the key in `-c mcp_servers.omp.env.…` | argv is world-readable in `ps`: the env goes in a 0600 file named by `UCCH_BRIDGE_ENV_FILE`; plus `default_tools_approval_mode="approve"` (exec refuses unapproved tools) and `tool_timeout_sec` |
+| §10.2 (OM6.8) | "the allowlist is the real control" | `--tools` does not bound subagents: each call adds a guard `--config` that denies every unnamed tool, turns off `dev.autoqa` and `web_search`, and disables other agents' config sources; the turn overlay (§4) gains `disabledProviders` |
 | §10.2 (OM6.2) | `omp_codemod` `--tools ast_grep,ast_edit,read`; recall/retain on `@tiny`; `omp_review` runs `/review` | `ast_edit,read` (+`write`), the preview aborted after `ast_edit`; `@smol`; the headless review request with the diff |
 
 ## Blocked
