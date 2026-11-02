@@ -542,13 +542,18 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Log.** The guide is logged as `context.injected` with a new source, `omp_bridge`, which the chat does not draw, as with the other non-compaction sources. It is added only once `#openBridge` has given the turn the bridge, so a turn without an OpenRouter key gets no guide. The bundle ships it next to `server.mjs`.
     - **Resumed Codex.** A resumed Codex session is not handed instructions (`codexPrompt`), so it gets no guide and the log records none.
     - **Tests.** `agent.test.ts`: the guide on for Claude and Codex, off with the setting off or no key, absent on a resumed Codex turn, and the instructions unchanged without it. `omp-bridge/src/guide.test.ts`: the guide names exactly `BRIDGE_TOOLS` and stays within 25 lines.
-- [ ] **OM6.7 — CLIs started by hand**
+- [x] **OM6.7 — CLIs started by hand** — 7f436d9
 
   - **Depends:** OM6.4, OM6.5
   - **Files:** `apps/server/src/shell/ucch.bashrc`, `ucch.fish`, `apps/server/src/terminals.ts` (export `UCCH_OMP_MCP`), `ucch-knowledge.test.ts`
   - **Steps:** the `claude()` / `codex()` wrappers add the bridge flags when `UCCH_OMP_MCP` is set (solution §10.3).
   - **Acceptance:** in a project terminal, `claude` and `codex` list the `omp` MCP server.
   - **Verify:** `pnpm test -- ucch-knowledge`, plus a manual run in the terminal
+  - **As built:**
+    - **Pieces.** The new `terminal-bridge.ts` gives each project shell `UCCH_OMP_MCP` at spawn (the reactor's `#open` stays synchronous) and writes the files after, only with the setting on and a key: the env file, the `.codex` arguments, then the Claude config. `terminals.ts` disposes them, and revokes the token, on close, on exit, and in `closeAll`, which shutdown now awaits.
+    - **Wrappers.** `claude` gets `--mcp-config=<path>`; the spaced form would swallow the prompt, because the flag is variadic. `codex` gets the `.codex` file's lines. Both add nothing without the file. A CLI started by hand asks its person, so nothing is pre-approved.
+    - **Tests.** `ucch-knowledge.test.ts` sources both init files with stand-in CLIs: no flags without the files, the exact flags with them, passthrough subcommands untouched, and knowledge after the bridge. `terminals.test.ts` covers the env var, open per terminal, disposal on close, exit and `closeAll` (also when closed mid-write), and none for sign-in terminals. `terminal-bridge.test.ts` covers the files, 0600, the key in one file only, cleanup, the off cases, and whose key.
+    - **Manual run.** With the files from a real `TerminalBridge` and the real init files, `codex mcp list` lists `omp` from bash and from fish, and `claude -p "say ok"` reports `omp` connected. The key never appears in argv. `claude mcp list` does not show `--mcp-config` servers (2.1.316), so a session's `mcp_servers` is the check for Claude.
 - [ ] **OM6.8 — Dev-machine recipe**
 
   - **Depends:** OM6.2
