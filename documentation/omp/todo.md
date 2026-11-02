@@ -666,13 +666,25 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
       - `omp.test.ts` (`call`), `decide.test.ts`, `engine.test.ts`, `omp-overlay.test.ts`.
     - **Manual run.** The server's own code against real OMP 18.14.1, with a scripted model (spike report, "Measured later"). It gave a P0 on `math.ts:2` and excluded the lock file. The reviewer's `bash` was refused by the overlay under `yolo`. The scripted model made the `yield` calls, so solution §9.2's note that only a real model could was corrected.
     - **Not done here.** PR mode (§9.1, needs `gh`), and listing past reviews over HTTP, which the Git view needs (OM7.8).
-- [ ] **OM7.8 — Review in the Git view**
+- [x] **OM7.8 — Review in the Git view** — 2b58271
 
   - **Depends:** OM7.7
   - **Files:** `apps/web/src/components/git/*`
   - **Steps:** add Review changes, Review branch and per-commit Review, with the findings overlay, the verdict banner and Send to agent (solution §9.3).
   - **Acceptance:** findings render on the diff lines, and Send to agent posts them to the selected thread.
   - **Verify:** `pnpm --filter @ucch/web build && pnpm --filter @ucch/web e2e -- review`
+  - **As built:**
+    - **Server.** `GET /api/projects/:hash/reviews?session=` (`review-routes.ts`) returns a tree's last 20 reviews as `ReviewRecord` (`@ucch/protocol`). A session's are those of every thread in its tree. The web refetches them on `review.*` events.
+    - **Web.**
+      - `use-reviews.ts`: list, run, send.
+      - `review-banner.tsx`: the verdict, findings to pick, and Send to agent.
+      - `review-finding.tsx`: the priority badge, confidence bar and note.
+      - `lib/review-anchor.ts`: places findings on diff lines.
+      - `lib/review-api.ts`: the fetch and the message that Send to agent posts.
+      - The Review menu in `git-toolbar.tsx`, and Review on a commit in `git-view.tsx`.
+      - `project-workspace.tsx` passes the session to the Git view. Send to agent is disabled outside a session, which is where the Git tab is on a project page without one.
+    - **Tests.** `review-routes.test.ts`, `review-api.test.ts`, `review-anchor.test.ts`, and the e2e `review.spec.ts`. The e2e runs against `scripts/load/fake-omp-review.sh`, which replays the OM7.7 fixture, and passed: verdict, excluded lock file, one P0 note under the flagged line, the same after a reload, and the finding in the chat after Send to agent. The build passed.
+    - **Run it as `pnpm --filter @ucch/web e2e review`.** With `--`, the filter is not passed and every spec runs. The other specs need replays of their own: the handoff and stream specs start turns on the dev user's default provider.
 - [ ] **OM7.9 — Verify with OMP in the task pipeline**
 
   - **Depends:** OM7.7, OM1.4
