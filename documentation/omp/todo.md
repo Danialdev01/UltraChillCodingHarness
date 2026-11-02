@@ -490,13 +490,17 @@ The output of this phase is knowledge, not product code: `documentation/omp/spik
     - **Previews.** Neither preview gets `write` or `edit`. A codemod preview would be forced to resolve its staged proposal until it failed, so the bridge aborts once `ast_edit` has answered (`stopAfter`, fixture `omp-bridge-codemod.jsonl`). `ast_edit` is in the preview's list, but it only stages.
     - **Tests.** `tools.test.ts` checks each row's `--tools`, `--model` and prompt, the result format, and the previews; `call.test.ts` checks argv, cost line, cap, timeout and stop; `server.test.ts` checks the MCP face. All run on fake-omp.
     - **Manual run.** Every tool ran on real OMP with the scripted model. The LSP rename ran with typescript-language-server 4.3.4, previewed and applied; recall found a fact a separate process had retained. `omp_debug` needs the debug adapters (OM7.5). The built bundle answered over stdio.
-- [ ] **OM6.3 — Scheduler lease and budget**
+- [x] **OM6.3 — Scheduler lease and budget** — 32cfa61
 
   - **Depends:** OM6.2, OM2.6
   - **Files:** `apps/server/src/turn-scheduler.ts` (`lease()`), a new local socket endpoint, `packages/omp-bridge/src/lease.ts`
   - **Steps:** implement solution §10.5. Bridge calls take an OMP slot or return "busy" after 30 s. `UCCH_BRIDGE_MAX_CALLS` is enforced per process.
   - **Acceptance:** with `OMP_TURN_TOTAL=1`, a second concurrent bridge call waits, then reports busy.
   - **Verify:** `pnpm test -- turn-scheduler omp-bridge`
+  - **As built:**
+    - **Pieces.** The socket endpoint is `apps/server/src/bridge-leases.ts`, at `<CREDS_ROOT>/omp-scheduler.sock`. The connection is the lease. Its tokens are registered per turn, which OM6.4 does when it writes the MCP config. Solution §10.5 has the protocol.
+    - **Tests.** `turn-scheduler.test.ts` and `bridge-leases.test.ts` run with one OMP slot: the second call waits, is told busy, and gives up its place. `lease.test.ts` covers the budget, busy and fail-closed paths, and a call that never starts `omp` while busy.
+    - **Manual run.** Two built bridges over stdio on one `BridgeLeases` with `ompTotal: 1` and a 3 s fake-omp call each: B was told busy after the wait, A finished, and B's next call ran.
 - [ ] **OM6.4 — Wire into Claude Code turns**
 
   - **Depends:** OM6.2, OM0.5
