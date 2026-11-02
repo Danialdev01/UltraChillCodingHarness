@@ -618,3 +618,111 @@ describe("a terminal's priority", () => {
     expect(wrapped[0]!.cwd).toBe(started[0]!.cwd);
   });
 });
+
+describe("the OMP bridge in a project terminal (OM6.7)", () => {
+  /** A pty double that records what it was asked to start, and can be made to exit. */
+  function fakeSpawn() {
+    const calls: { env: Record<string, string> }[] = [];
+    let exit: ((e: { exitCode: number; signal?: number }) => void) | undefined;
+    const spawn = ((_file: string, _args: string[], options: { env: Record<string, string> }) => {
+      calls.push({ env: options.env });
+      return {
+        write() {},
+        resize() {},
+        kill() {},
+        onData() {},
+        onExit(listener: typeof exit) {
+          exit = listener;
+        },
+      };
+    }) as unknown as typeof import("@lydell/node-pty").spawn;
+    return { calls, spawn, exit: () => exit?.({ exitCode: 0 }) };
+  }
+
+  /** A bridge double: what it was asked to open, and what was disposed. */
+  function fakeBridge(writes = true) {
+    const opened: Record<string, string>[] = [];
+    const disposed: string[] = [];
+    let finish!: () => void;
+    const written = new Promise<void>((resolve) => (finish = resolve));
+    return {
+      opened,
+      disposed,
+      finish,
+      bridge: {
+        path: (subject: string, terminalId: string) => `/creds/${subject}/omp/run/term-${terminalId}.mcp.json`,
+        open: async (input: { projectId: string; subject: string; userId: string; terminalId: string; cwd: string }) => {
+          opened.push(input);
+          await written;
+          return writes ? { dispose: async () => void disposed.push(input.terminalId) } : null;
+        },
+      },
+    };
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 10));
+
+  it("names the files in the shell's environment, opens them for this terminal, and takes them down on close", async () => {
+    const { calls, spawn } = fakeSpawn();
+    const fake = fakeBridge();
+    const terminals = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, spawn, ompBridge: fake.bridge }, () => {});
+    terminals.react(
+      { type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24, credentialWorkspaceId: "w1" },
+      USER,
+    );
+    expect(calls[0]!.env.UCCH_OMP_MCP).toBe(`/creds/ws-w1/omp/run/term-${TERMINAL}.mcp.json`);
+    expect(fake.opened).toEqual([{ projectId: PROJECT, subject: "ws-w1", userId: USER, terminalId: TERMINAL, cwd: join(root, PROJECT) }]);
+    // Closed while the files are still being written: they go once they are.
+    terminals.close(TERMINAL, USER);
+    await settle();
+    expect(fake.disposed).toEqual([]);
+    fake.finish();
+    await settle();
+    expect(fake.disposed).toEqual([TERMINAL]);
+  });
+
+  it("takes them down when the shell exits, and once only; closeAll waits for it", async () => {
+    const { spawn, exit } = fakeSpawn();
+    const fake = fakeBridge();
+    fake.finish();
+    const terminals = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, spawn, ompBridge: fake.bridge }, () => {});
+    terminals.react({ type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24 }, USER);
+    await settle();
+    exit();
+    await terminals.closeAll();
+    await settle();
+    expect(fake.disposed).toEqual([TERMINAL]);
+
+    const other = fakeBridge();
+    other.finish();
+    const second = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, spawn: fakeSpawn().spawn, ompBridge: other.bridge }, () => {});
+    second.react({ type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24 }, USER);
+    await second.closeAll();
+    expect(other.disposed).toEqual([TERMINAL]);
+  });
+
+  it("gives a sign-in terminal no bridge, and a shell without one no variable", () => {
+    const { calls, spawn } = fakeSpawn();
+    const fake = fakeBridge();
+    const login = new TerminalReactor(
+      {
+        workspaceRoot: root,
+        allowHostShell: true,
+        spawn,
+        ompBridge: fake.bridge,
+        login: () => ({ argv: ["claude", "auth", "login"], cwd: "/creds", env: { PATH: "/usr/bin" } }),
+      },
+      () => {},
+    );
+    login.react({ type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24, program: "claude-login" }, USER);
+    expect(calls[0]!.env.UCCH_OMP_MCP).toBeUndefined();
+    expect(fake.opened).toEqual([]);
+    void login.closeAll();
+
+    const plain = fakeSpawn();
+    const none = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, spawn: plain.spawn }, () => {});
+    none.react({ type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24 }, USER);
+    expect(plain.calls[0]!.env.UCCH_OMP_MCP).toBeUndefined();
+    void none.closeAll();
+  });
+});

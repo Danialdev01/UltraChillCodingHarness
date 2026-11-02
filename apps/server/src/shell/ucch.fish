@@ -72,6 +72,13 @@ end
 # knowledge, as every agent the harness runs is; see ucch-knowledge.sh.
 # Subcommands that start no session (`claude auth`, `claude mcp`, ...) are
 # passed through untouched.
+#
+# When the workspace has the OMP bridge on, the server writes the files
+# `UCCH_OMP_MCP` names just after the terminal opens (terminal-bridge.ts),
+# and both CLIs are given the `omp` MCP server: `claude` its MCP config --
+# as `--mcp-config=<path>`, since the flag takes every word after it
+# otherwise -- and `codex` the `-c` arguments in the `.codex` file beside it,
+# one per line. Without the file, nothing is added.
 set -g __ucch_knowledge (path dirname -- (status filename))/ucch-knowledge.sh
 
 function claude --wraps claude --description "claude, told about the project's .ucch/ folder"
@@ -80,19 +87,28 @@ function claude --wraps claude --description "claude, told about the project's .
             command claude $argv
             return
     end
+    set -l bridge
+    if set -q UCCH_OMP_MCP; and test -f "$UCCH_OMP_MCP"
+        set bridge --mcp-config=$UCCH_OMP_MCP
+    end
     set -l knowledge (sh $__ucch_knowledge $UCCH_ROOT | string collect)
     if test -n "$knowledge"
-        command claude --append-system-prompt $knowledge $argv
+        command claude $bridge --append-system-prompt $knowledge $argv
     else
-        command claude $argv
+        command claude $bridge $argv
     end
 end
 
 function codex --wraps codex --description "codex, told about the project's .ucch/ folder"
+    set -l bridge
+    if set -q UCCH_OMP_MCP; and test -f "$UCCH_OMP_MCP"
+        set -l args (string replace -r '\.mcp\.json$' '' -- $UCCH_OMP_MCP).codex
+        test -f "$args"; and set bridge (cat -- $args)
+    end
     set -l knowledge (sh $__ucch_knowledge --toml $UCCH_ROOT | string collect)
     if test -n "$knowledge"
-        command codex -c "developer_instructions=$knowledge" $argv
+        command codex $bridge -c "developer_instructions=$knowledge" $argv
     else
-        command codex $argv
+        command codex $bridge $argv
     end
 end

@@ -67,6 +67,10 @@ interface Session {
   userId: string;
   pty: pty.IPty;
   idleTimer: NodeJS.Timeout;
+  /** Its OMP bridge's files and token, once written; see `TerminalOptions.ompBridge`. */
+  bridge?: Promise<{ dispose(): Promise<void> } | null>;
+  /** Its bridge being taken down, once that has started. */
+  unbridged?: Promise<void>;
 }
 
 /** A program a terminal can run other than the shell. */
@@ -98,6 +102,22 @@ export interface TerminalOptions {
   spawn?: typeof pty.spawn;
   /** Rewrites a shell's argv just before it starts: its priority (child-priority.ts). */
   wrapArgv?: ArgvWrapper;
+  /**
+   * The OMP bridge for CLIs started by hand (`terminal-bridge.ts`, OM6.7):
+   * a project shell gets `UCCH_OMP_MCP` = `path(...)` when it starts, and
+   * `open` writes the files there just after, if the workspace has the
+   * bridge on. They go when the terminal does.
+   */
+  ompBridge?: {
+    path(subject: string, terminalId: string): string;
+    open(input: {
+      projectId: string;
+      subject: string;
+      userId: string;
+      terminalId: string;
+      cwd: string;
+    }): Promise<{ dispose(): Promise<void> } | null>;
+  };
 }
 
 /** How long a watched-but-not-yet-opened terminal id stays reserved. */
@@ -255,11 +275,27 @@ export class TerminalReactor {
     } catch {
       /* already gone */
     }
+    void this.#closeBridge(session);
   }
 
-  /** Every terminal, on the way down. */
-  closeAll(): void {
-    for (const id of [...this.#sessions.keys()]) this.close(id);
+  /** Every terminal, on the way down; resolves once their bridge files are gone. */
+  async closeAll(): Promise<void> {
+    const sessions = [...this.#sessions.values()];
+    for (const session of sessions) this.close(session.id);
+    await Promise.all(sessions.map((session) => this.#closeBridge(session)));
+  }
+
+  /**
+   * Deletes a terminal's bridge files and revokes its token, waiting for
+   * them to be written first if they are still on the way. Every call gets
+   * the same promise.
+   */
+  #closeBridge(session: Session): Promise<void> {
+    session.unbridged ??= (async () => {
+      const handle = await session.bridge;
+      await handle?.dispose().catch(this.onError);
+    })();
+    return session.unbridged;
   }
 
   /**
@@ -303,6 +339,8 @@ export class TerminalReactor {
       this.#say(projectId, terminalId, "That sign-in flow is not available on this server.\r\n");
       return;
     }
+    const bridged = program === "shell" ? this.options.ompBridge : undefined;
+    if (bridged) launch.env.UCCH_OMP_MCP = bridged.path(credentialSubject, terminalId);
 
     const [file, ...args] = this.options.wrapArgv?.(launch.argv, launch.env, launch.cwd) ?? launch.argv;
     const child = (this.options.spawn ?? pty.spawn)(file!, args, {
@@ -322,6 +360,14 @@ export class TerminalReactor {
     };
     session.idleTimer.unref();
     this.#sessions.set(terminalId, session);
+    if (bridged) {
+      session.bridge = bridged
+        .open({ projectId, subject: credentialSubject, userId, terminalId, cwd: launch.cwd })
+        .catch((error: unknown) => {
+          this.onError(error);
+          return null;
+        });
+    }
 
     child.onData((data) => {
       // Split rather than truncated: a chunk cut in half mid-escape-sequence
@@ -335,6 +381,7 @@ export class TerminalReactor {
     child.onExit(({ exitCode, signal }) => {
       clearTimeout(session.idleTimer);
       this.#sessions.delete(terminalId);
+      void this.#closeBridge(session);
       const how = signal ? `signal ${signal}` : `code ${exitCode}`;
       this.#say(projectId, terminalId, `\r\n\x1b[2m[exited with ${how}]\x1b[0m\r\n`);
     });

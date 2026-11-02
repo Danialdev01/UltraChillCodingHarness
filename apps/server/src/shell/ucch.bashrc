@@ -39,7 +39,8 @@ __ucch_branch() {
 PS1='\u@\h$(__ucch_where)$(__ucch_branch)> '
 
 # `claude` and `codex` started here are told about the project's `.ucch/`
-# knowledge; see ucch.fish and ucch-knowledge.sh.
+# knowledge, and given the OMP bridge when the workspace has it on; see
+# ucch.fish, ucch-knowledge.sh and terminal-bridge.ts.
 __ucch_knowledge=$(dirname -- "${BASH_SOURCE[0]}")/ucch-knowledge.sh
 
 claude() {
@@ -50,20 +51,26 @@ claude() {
       ;;
   esac
   local knowledge
+  local -a bridge=()
+  [ -n "$UCCH_OMP_MCP" ] && [ -f "$UCCH_OMP_MCP" ] && bridge=("--mcp-config=$UCCH_OMP_MCP")
   knowledge=$(sh "$__ucch_knowledge" "$UCCH_ROOT")
   if [ -n "$knowledge" ]; then
-    command claude --append-system-prompt "$knowledge" "$@"
+    command claude "${bridge[@]}" --append-system-prompt "$knowledge" "$@"
   else
-    command claude "$@"
+    command claude "${bridge[@]}" "$@"
   fi
 }
 
 codex() {
-  local knowledge
+  local knowledge line
+  local -a bridge=()
+  if [ -n "$UCCH_OMP_MCP" ] && [ -f "$UCCH_OMP_MCP" ] && [ -f "${UCCH_OMP_MCP%.mcp.json}.codex" ]; then
+    while IFS= read -r line; do bridge+=("$line"); done < "${UCCH_OMP_MCP%.mcp.json}.codex"
+  fi
   knowledge=$(sh "$__ucch_knowledge" --toml "$UCCH_ROOT")
   if [ -n "$knowledge" ]; then
-    command codex -c "developer_instructions=$knowledge" "$@"
+    command codex "${bridge[@]}" -c "developer_instructions=$knowledge" "$@"
   else
-    command codex "$@"
+    command codex "${bridge[@]}" "$@"
   fi
 }

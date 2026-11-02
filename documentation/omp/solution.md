@@ -729,6 +729,20 @@ Every tool:
 
 **CLIs started by hand (`apps/server/src/shell/ucch.bashrc`, `ucch.fish`):** the `claude()` and `codex()` wrappers already add knowledge. They gain `--mcp-config "$UCCH_OMP_MCP"` and `-c mcp_servers.omp…` when the workspace has the bridge enabled. The terminal reactor exports `UCCH_OMP_MCP` (a per-terminal 0600 file).
 
+**As built (OM6.7):**
+- **The path is fixed first.** `TerminalReactor.#open` is synchronous, and the setting is a database read. So a project shell always gets `UCCH_OMP_MCP=<subject>/omp/run/term-<terminalId>.mcp.json`, and `TerminalBridge.open` writes the files just after, only with the setting on and a key. The wrappers add the flags only while the file exists, so without the bridge both CLIs run exactly as before. Sign-in terminals get neither.
+- **Files.** Each is 0600 and written atomically:
+  - `term-<id>.bridge.json`: the environment and key, named by `UCCH_BRIDGE_ENV_FILE`;
+  - `term-<id>.codex`: Codex's `-c` arguments, one per line;
+  - `term-<id>.mcp.json`: Claude Code's config, written last because its existence means "ready";
+  - `bridge-term-<id>.yml`: the overlay.
+
+  A lease token is registered as well. All of it goes when the terminal closes or its shell exits, and shutdown waits for it (`closeAll`).
+- **Key and model.** The key is the terminal's credential subject's: the workspace key for `ws-<id>`, the person's otherwise. The model is the person's default.
+- **`--mcp-config=<path>`.** The flag is variadic (`<configs...>`), so `claude --mcp-config <path> "fix it"` would read the prompt as a second config file. The wrapper uses the `=` form. The server's own argv puts a flag after it.
+- **Nothing pre-approved.** A CLI started by hand asks its person itself, so there is no `--allowedTools` and no `default_tools_approval_mode`.
+- **`claude mcp list` does not show `--mcp-config` servers** (2.1.316); a session's `mcp_servers` does. `codex -c … mcp list` shows it.
+
 **This dev machine (optional, documented only).** `claude mcp add omp -- node <repo>/packages/omp-bridge/dist/omp-bridge.mjs`, with `UCCH_OMP_*` exported. The same bridge then works in a personal Claude Code session.
 
 ### 10.4 Telling the CLIs when to use it
@@ -871,6 +885,7 @@ A section appended to `instructions` for CLI providers when the bridge is on, ab
 | `JS_DEBUG_DAP_SERVER` | image | DAP §8.3 |
 | `UCCH_OMP_BIN`, `UCCH_OMP_AGENT_DIR`, `UCCH_OMP_OVERLAY`, `UCCH_WORKTREE`, `UCCH_BRIDGE_MAX_SECONDS`, `UCCH_BRIDGE_MAX_CALLS`, `UCCH_SCHEDULER_SOCK`, `UCCH_BRIDGE_TOKEN`, `UCCH_OMP_MEMORY`, `UCCH_OMP_WEB_SEARCH`, `UCCH_OMP_TRUSTED` | server, in MCP config | bridge §10 |
 | `UCCH_OMP_MCP` | terminal reactor | hand-started CLIs §10.3 |
+| `UCCH_BRIDGE_ENV_FILE` | server, in Codex's `-c` and the terminal's MCP config | bridge §10.3: the 0600 file holding the bridge's environment |
 
 ## Appendix B: Protocol additions
 
@@ -890,7 +905,7 @@ A section appended to `instructions` for CLI providers when the bridge is on, ab
 - `packages/providers/assets/omp-hooks/ucch-guard.ts`, `assets/omp-bridge-guide.md`, `src/omp-roles.ts` (§6.4)
 - `packages/omp-bridge/` (`src/index.ts`, `src/tools/*.ts`, `build.mjs`, tests)
 - `packages/agent/src/run-tool.ts`
-- `apps/server/src/omp-overlay.ts`, `omp-review.ts`, `omp-handoff.ts`, `bridge-leases.ts`, `omp-bridge-config.ts`, plus tests
+- `apps/server/src/omp-overlay.ts`, `omp-review.ts`, `omp-handoff.ts`, `bridge-leases.ts`, `omp-bridge-config.ts`, `terminal-bridge.ts`, plus tests
 - `scripts/load/fake-omp.mjs`
 - `documentation/omp/spike-report.md` (OM0 output)
 

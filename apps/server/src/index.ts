@@ -58,6 +58,7 @@ import {
   contentDisposition,
 } from "./uploads.js";
 import { TerminalReactor } from "./terminals.js";
+import { TerminalBridge, terminalBridgeFacts } from "./terminal-bridge.js";
 import { serverReadings, Watchdog } from "./watchdog.js";
 import { probePriorityTools, terminalPriority, unwrapped, wrapperFor } from "./child-priority.js";
 import { AuthService, DEV_USER_ID } from "./auth.js";
@@ -409,6 +410,20 @@ const terminals = new TerminalReactor(
     maxTotal: config.TERMINAL_MAX_TOTAL,
     idleMs: config.TERMINAL_IDLE_MINUTES * 60_000,
     wrapArgv: wrapTerminal,
+    // `claude` and `codex` started by hand get the OMP bridge when the
+    // workspace has it on (solution §10.3).
+    ompBridge: new TerminalBridge({
+      bin: config.OMP_BRIDGE_BIN,
+      ompBin: config.OMP_BIN,
+      socket: BRIDGE_SOCKET,
+      maxSeconds: config.OMP_BRIDGE_MAX_SECONDS,
+      leases: bridgeLeases,
+      secretKey: config.SECRET_KEY,
+      defaultModel: config.DEFAULT_MODEL,
+      runDir: (subject) => providerService.ompRunDir(subject),
+      agentDir: (subject) => providerService.ompAgentDir(subject),
+      facts: terminalBridgeFacts(db),
+    }),
     // A sign-in terminal: the CLI's own login flow, in the user's credential
     // directory, so what it writes is what every later turn reads.
     login: (userId, program) => {
@@ -3926,7 +3941,8 @@ const shutdown = async (signal: string) => {
   // Shells do not survive the server that spawned them, and nor do CLI
   // turns: SIGTERM here, so the CLI records nothing and resumes the
   // unfinished turn next time, rather than the SIGINT the stop button sends.
-  terminals.closeAll();
+  // Waits for their OMP bridge files to be deleted: they hold a key.
+  await terminals.closeAll();
   await fileWatcher.closeAll();
   await agentTurns.killAll();
   await bridgeLeases.close();
