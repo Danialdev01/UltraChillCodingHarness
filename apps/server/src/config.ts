@@ -55,11 +55,6 @@ const Env = z.object({
 
   /** Host path bind-mounted into project containers as /workspace. */
   WORKSPACE_ROOT: z.string().default("/srv/ucch/workspaces"),
-  PREVIEW_ROOT: z.string().default("/srv/ucch/previews"),
-
-  DOCKER_SOCKET: z.string().default("/var/run/docker.sock"),
-  PROJECT_NETWORK: z.string().default("ucch-projects"),
-  BASE_IMAGE: z.string().default("ucch/base:latest"),
 
   ANTHROPIC_API_KEY: z.string().optional(),
 
@@ -178,7 +173,7 @@ const Env = z.object({
   CODEX_BIN: z.string().default("codex"),
 
   /**
-   * The oh-my-pi agent (`documentation/omp/solution.md`), which takes over
+   * The oh-my-pi agent (`documentation/architecture.md` §7), which takes over
    * the "Custom" provider from the native loop. A bare name resolves through
    * PATH; the image pins `/opt/omp/bin/omp`.
    */
@@ -259,8 +254,6 @@ const Env = z.object({
     .string()
     .optional()
     .transform((v) => v === "true" || v === "1"),
-
-  IDLE_STOP_MINUTES: z.coerce.number().int().positive().default(30),
 
   /**
    * The largest single file the composer may attach.

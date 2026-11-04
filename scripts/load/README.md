@@ -1,8 +1,8 @@
 # Load testing
 
 Tools for measuring UCCH under many users without billing anyone or
-touching the network. The plan behind them is `documentation/solution.md`
-§1; the numbers they produce go in `documentation/perf/`.
+touching the network. What they measured, and the before/after figures, are in
+`documentation/solutions.md` §1; raw runs land in `documentation/perf/` (created by the run).
 
 | File | What it is |
 | --- | --- |

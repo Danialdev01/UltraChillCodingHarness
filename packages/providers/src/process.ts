@@ -67,8 +67,6 @@ export interface ProcessHost {
 
 /** What the CLIs exit with after SIGTERM: 128 + 15. */
 export const EXIT_SIGTERM = 143;
-/** And after SIGINT: 128 + 2. */
-export const EXIT_SIGINT = 130;
 
 /**
  * Splits a byte stream into lines, keeping whatever has not been terminated.

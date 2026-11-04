@@ -36,8 +36,6 @@ export interface DocumentsProvider extends DocumentsBackends {
   look(request: LookRequest): Promise<string>;
 }
 
-export const DEFAULT_DOC_VISION_MODEL = "google/gemini-2.5-flash";
-
 /** The kit beside this package's sources, which is where it ships. */
 export function defaultKitDir(): string {
   return fileURLToPath(new URL("../doc-kit", import.meta.url));

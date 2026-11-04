@@ -4,6 +4,7 @@ import * as React from "react"
 import {
   CaseSensitiveIcon,
   ChevronRightIcon,
+  ListIcon,
   Loader2Icon,
   RegexIcon,
   ReplaceAllIcon,
@@ -20,6 +21,7 @@ import {
   allKeys,
   groupByFile,
   highlight,
+  keywordsOf,
   matchKey,
   previewSegments,
   replaceInFiles,
@@ -64,6 +66,8 @@ export function SearchPanel() {
   const [query, setQuery] = React.useState("")
   const [caseSensitive, setCaseSensitive] = React.useState(false)
   const [regex, setRegex] = React.useState(false)
+  // Commas are everywhere in code, so splitting on them is asked for.
+  const [multi, setMulti] = React.useState(false)
   const [result, setResult] = React.useState<SearchResult | null>(null)
   const [searching, setSearching] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -91,6 +95,7 @@ export function SearchPanel() {
       void searchFiles(target, trimmed, {
         caseSensitive,
         regex,
+        multi,
         signal: controller.signal,
       })
         .then(setResult)
@@ -109,12 +114,12 @@ export function SearchPanel() {
       clearTimeout(timer)
       controller.abort()
     }
-  }, [target, query, caseSensitive, regex, rerun])
+  }, [target, query, caseSensitive, regex, multi, rerun])
 
   // New results start with every match ticked.
   React.useEffect(() => setSelected(allKeys(result?.matches ?? [])), [result])
   // A different search makes the last replace's summary about something else.
-  React.useEffect(() => setDone(null), [query, caseSensitive, regex])
+  React.useEffect(() => setDone(null), [query, caseSensitive, regex, multi])
 
   const groups = React.useMemo(() => groupByFile(result?.matches ?? []), [result])
   const total = result?.matches.length ?? 0
@@ -139,6 +144,7 @@ export function SearchPanel() {
       query: query.trim(),
       caseSensitive,
       regex,
+      multi,
       replacement,
       files: ticked,
     })
@@ -175,7 +181,7 @@ export function SearchPanel() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search all files…"
+              placeholder={multi ? "foo, bar, baz…" : "Search all files…"}
               spellCheck={false}
               autoComplete="off"
               // autoFocus: the panel is opened in order to type in it.
@@ -236,6 +242,12 @@ export function SearchPanel() {
             icon={CaseSensitiveIcon}
           />
           <Flag label="Regular expression" pressed={regex} onToggle={() => setRegex((on) => !on)} icon={RegexIcon} />
+          <Flag
+            label="Multiple keywords (comma-separated)"
+            pressed={multi}
+            onToggle={() => setMulti((on) => !on)}
+            icon={ListIcon}
+          />
           {replaceOpen && occurrences > 0 && (
             <button
               type="button"
@@ -275,7 +287,17 @@ export function SearchPanel() {
         title={`Replace ${plural(tickedCount, "occurrence")} in ${plural(ticked.length, "file")}?`}
         description={
           <>
-            <span className="font-mono">{query.trim()}</span> becomes{" "}
+            {multi ? (
+              keywordsOf(query).map((term, i) => (
+                <React.Fragment key={term}>
+                  {i > 0 && ", "}
+                  <span className="font-mono">{term}</span>
+                </React.Fragment>
+              ))
+            ) : (
+              <span className="font-mono">{query.trim()}</span>
+            )}{" "}
+            {multi && keywordsOf(query).length > 1 ? "become" : "becomes"}{" "}
             {replacement ? <span className="font-mono">{replacement}</span> : "nothing (deleted)"}. The files are
             written straight away.
           </>
@@ -447,7 +469,7 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`
 }
 
-/** One of the search's two switches. */
+/** One of the search's switches. */
 function Flag({
   label,
   pressed,

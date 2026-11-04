@@ -87,7 +87,7 @@ function readmeFor(name: string): string {
  * directory to look at.
  *
  * It lives here rather than in `packages/vcs`, which does not exist yet;
- * §12 of `idea.md` is explicit that this moves when that package is built.
+ * it moves there when that package is built.
  *
  * The work runs in a `DrainableWorker` for the same reason the orchestration
  * queue does: one clone at a time, and a test can await genuine completion

@@ -76,6 +76,8 @@ export interface PreviewGatewayOptions {
   devBypass?: boolean;
   log: { error(obj: object, msg: string): void };
   now?: () => number;
+  /** Most hash lookups kept at once; the oldest go first. Any well-formed host can add one. */
+  resolveCacheMax?: number;
 }
 
 export const PREVIEW_COOKIE = "ucch_preview";
@@ -84,6 +86,7 @@ const TICKET_TTL_MS = 60_000;
 const COOKIE_TTL_MS = 12 * 60 * 60 * 1000;
 /** How long a hash -> project lookup, or a host choice, is trusted before asking again. */
 const RESOLVE_TTL_MS = 5_000;
+const RESOLVE_CACHE_MAX = 1_000;
 const PROBE_TIMEOUT_MS = 500;
 
 /** Cookies that belong to the harness and must never reach the user's app. */
@@ -266,8 +269,29 @@ export class PreviewGateway {
     const cached = this.#resolved.get(hash);
     if (cached && cached.expiresAt > this.#now()) return cached.project;
     const project = await this.options.resolve(hash);
-    this.#resolved.set(hash, { project, expiresAt: this.#now() + RESOLVE_TTL_MS });
+    this.#remember(hash, project);
     return project;
+  }
+
+  /**
+   * Caches a lookup, misses included (so a flood of made-up hosts does not
+   * become a flood of queries), within a fixed size: expired entries are
+   * swept first, then the oldest are dropped.
+   */
+  #remember(hash: string, project: PreviewProject | null): void {
+    const max = this.options.resolveCacheMax ?? RESOLVE_CACHE_MAX;
+    this.#resolved.delete(hash);
+    if (this.#resolved.size >= max) {
+      const now = this.#now();
+      for (const [key, entry] of this.#resolved) {
+        if (entry.expiresAt <= now) this.#resolved.delete(key);
+      }
+      for (const key of this.#resolved.keys()) {
+        if (this.#resolved.size < max) break;
+        this.#resolved.delete(key);
+      }
+    }
+    this.#resolved.set(hash, { project, expiresAt: this.#now() + RESOLVE_TTL_MS });
   }
 
   /** Where to send somebody who needs a cookie: back through the alias, which re-issues one. */

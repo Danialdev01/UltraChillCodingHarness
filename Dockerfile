@@ -7,7 +7,7 @@
 #            agent workers, the Next.js UI behind them, and PostgreSQL (plus
 #            MariaDB with ENABLE_MYSQL=true), supervised by s6-overlay.
 #            One port (3000), one volume (/data). See "Deploying on Dokploy"
-#            in README.md, and documentation/plan.md, Part A.
+#            in README.md, and documentation/architecture.md §8.
 #
 # Dokploy builds it on the VPS from this file (Build Type: Dockerfile). CI's
 # .github/workflows/image.yml can build the same image instead and push it
@@ -151,7 +151,7 @@ RUN set -e; dir=/home/node/.cache/typst/packages/preview; \
   chown -R node:node /home/node/.cache
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 # OMP (oh-my-pi), the agent behind the "Custom" provider
-# (documentation/omp/solution.md §1.1). The release binary, not the install
+# (documentation/architecture.md §7). The release binary, not the install
 # script: the script resolves the file through a second service, and prefers
 # a Bun install whenever Bun is on PATH. The binary is self-contained (glibc
 # only). Bumping it is OM8.6: version, checksum and the recorded fixtures

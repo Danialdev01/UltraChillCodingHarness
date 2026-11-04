@@ -268,6 +268,41 @@ describe("PreviewGateway", () => {
     expect(resolves - before).toBe(2);
   });
 
+  it("keeps the lookup cache bounded, dropping the oldest hosts first", async () => {
+    let calls = 0;
+    const small = new PreviewGateway({
+      rootDomain: ROOT,
+      scheme: "http",
+      webOrigin: WEB,
+      resolve: async () => {
+        calls += 1;
+        return null;
+      },
+      target: (_p, port) => ({ hosts: ["127.0.0.1"], port }),
+      log: { error: () => {} },
+      now: () => now,
+      resolveCacheMax: 2,
+    });
+    const server = createServer((req, res) => {
+      if (!small.handleRequest(req, res)) res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    const visit = (hash: string) => send(port, { host: `p8001-${hash}.${ROOT}` });
+    try {
+      await visit("aaaaaaaaaaa1");
+      await visit("aaaaaaaaaaa2");
+      await visit("aaaaaaaaaaa3");
+      expect(calls).toBe(3);
+      await visit("aaaaaaaaaaa3"); // still cached
+      expect(calls).toBe(3);
+      await visit("aaaaaaaaaaa1"); // dropped to make room
+      expect(calls).toBe(4);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
   it("proxies a WebSocket upgrade with a valid cookie", async () => {
     const cookie = await login();
     const ws = new WebSocket(`ws://127.0.0.1:${gwPort}/hmr`, {

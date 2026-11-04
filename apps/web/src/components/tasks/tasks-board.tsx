@@ -27,8 +27,8 @@ import { projectPageHref } from "@/lib/sections"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 import { STAGE_LABELS, TaskCard } from "./task-card"
-import { TaskDetailDialog } from "./task-detail-dialog"
-import { TaskDialog, type TaskDialogState } from "./task-dialog"
+import { TaskDetailDialog, TaskDialog } from "@/components/on-demand"
+import type { TaskDialogState } from "./task-dialog"
 
 /** The columns a person can drop a card into; the others are the AI's. */
 const MANUAL: ReadonlySet<TaskStage> = new Set(["idea", "research", "done"])
@@ -187,6 +187,10 @@ export function TasksBoard({ project: seed, projects }: { project: Project; proj
   }
 
   const open = tasks?.find((t) => t.id === openId) ?? null
+  // The dialogs' chunks load the first time one is wanted, then stay mounted
+  // so they can animate closed.
+  const [dialogsWanted, setDialogsWanted] = React.useState(false)
+  if (!dialogsWanted && (dialog || open)) setDialogsWanted(true)
   const dragged = tasks?.find((t) => t.id === dragId) ?? null
   const autoRun = settings?.autoRun
 
@@ -293,6 +297,8 @@ export function TasksBoard({ project: seed, projects }: { project: Project; proj
         })}
       </div>
 
+      {dialogsWanted && (
+      <>
       <TaskDialog
         state={dialog}
         projects={projects}
@@ -318,6 +324,8 @@ export function TasksBoard({ project: seed, projects }: { project: Project; proj
           setOpenId(null)
         }}
       />
+      </>
+      )}
     </div>
   )
 }

@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   MAX_SEARCH_MATCHES,
+  MAX_SEARCH_TERMS,
   SearchError,
   parseMatches,
   searchArgv,
+  searchTerms,
   searchWorkspace,
 } from "./search.js";
 
@@ -30,7 +32,33 @@ function match(over: {
   });
 }
 
+describe("searchTerms", () => {
+  it("is the whole query when the search is not of several keywords", () => {
+    expect(searchTerms({ query: "a, b" })).toEqual(["a, b"]);
+  });
+
+  it("splits on commas, trimming and dropping empties and repeats", () => {
+    expect(searchTerms({ query: " foo ,, bar,foo , ", multi: true }).sort()).toEqual(["bar", "foo"]);
+  });
+
+  it("puts longer keywords first, so one inside another is still found whole", () => {
+    expect(searchTerms({ query: "foo, foobar, x", multi: true })).toEqual(["foobar", "foo", "x"]);
+  });
+
+  it("refuses too many keywords", () => {
+    const query = Array.from({ length: MAX_SEARCH_TERMS + 1 }, (_, i) => `k${i}`).join(",");
+    expect(() => searchTerms({ query, multi: true })).toThrow(SearchError);
+  });
+});
+
 describe("searchArgv", () => {
+  it("passes each keyword as its own attached pattern", () => {
+    const argv = searchArgv({ query: "foo, --files", multi: true }, ROOT);
+    expect(argv).toContain("--regexp=--files");
+    expect(argv).toContain("--regexp=foo");
+    expect(argv.slice(argv.indexOf("--") + 1)).toEqual([ROOT]);
+  });
+
   it("searches for literal text by default", () => {
     // `config.get(` is four metacharacters and nobody typing it meant them.
     const argv = searchArgv({ query: "config.get(" }, ROOT);
@@ -217,6 +245,15 @@ describe("searchWorkspace", () => {
 
     const strict = await searchWorkspace(workspace, { query: "TOKEN", caseSensitive: true });
     expect(strict.matches.map((m) => m.path)).toEqual(["src/Token.md"]);
+  }, 30_000);
+
+  it("finds any of several keywords", async () => {
+    const { matches } = await searchWorkspace(workspace, { query: "other, about", multi: true });
+    expect(matches.map((m) => `${m.path}:${m.line}`).sort()).toEqual(["src/Token.md:2", "src/app.ts:2"]);
+  }, 30_000);
+
+  it("finds nothing for keywords that are only commas", async () => {
+    expect(await searchWorkspace(workspace, { query: " , ,", multi: true })).toEqual({ matches: [], truncated: false });
   }, 30_000);
 
   it("treats the query as text, not as a pattern", async () => {

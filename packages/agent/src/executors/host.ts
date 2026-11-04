@@ -121,7 +121,7 @@ export interface HostExecutorOptions {
  * Runs tools on the host, in the project's workspace directory.
  *
  * This is remote code execution by whichever model the composer selected,
- * and that was chosen knowingly -- see `idea.md` §2.1. The mitigations here
+ * and that was chosen knowingly -- see `documentation/solutions.md` §5. The mitigations here
  * are real and none of them changes that fact: the working directory is
  * pinned, every path goes through `resolve()`, commands are argv arrays,
  * the environment is rebuilt rather than inherited, and everything has a

@@ -7,7 +7,7 @@ import { ChevronRightIcon, FileIcon } from "lucide-react"
 import { FileTypeIcon } from "@/components/file-type-icon"
 import { CodeLinesSkeleton, ListRowsSkeleton } from "@/components/page-skeletons"
 import type { FileNode } from "@/lib/files-api"
-import { highlightLines } from "@/lib/highlight-lines"
+import type { Token } from "@/lib/highlight-lines"
 import { PublicApiError, fetchPublicFile, fetchPublicTree } from "@/lib/public-api"
 import { cn } from "@/lib/utils"
 import { useTransitionRouter } from "@/lib/view-transitions"
@@ -178,9 +178,31 @@ function Tree({
   )
 }
 
-/** A file's text with line numbers, coloured by the editor's grammar. */
+/**
+ * The highlighter pulls in every CodeMirror grammar, so it is loaded only
+ * once a file is opened rather than with the page.
+ */
+let highlighter: Promise<typeof import("@/lib/highlight-lines")> | null = null
+const loadHighlighter = () => (highlighter ??= import("@/lib/highlight-lines"))
+
+function plainLines(code: string): Token[][] {
+  return code.split("\n").map((text) => (text ? [{ text, cls: "" }] : []))
+}
+
+/** A file's text with line numbers, coloured by the editor's grammar once it loads. */
 function CodeView({ content, path }: { content: string; path: string }) {
-  const lines = React.useMemo(() => highlightLines(content, path), [content, path])
+  const plain = React.useMemo(() => plainLines(content), [content])
+  const [coloured, setColoured] = React.useState<{ content: string; path: string; lines: Token[][] } | null>(null)
+  React.useEffect(() => {
+    let live = true
+    void loadHighlighter().then(({ highlightLines }) => {
+      if (live) setColoured({ content, path, lines: highlightLines(content, path) })
+    })
+    return () => {
+      live = false
+    }
+  }, [content, path])
+  const lines = coloured && coloured.content === content && coloured.path === path ? coloured.lines : plain
   return (
     <table className="w-full border-collapse font-mono text-xs leading-5">
       <tbody>

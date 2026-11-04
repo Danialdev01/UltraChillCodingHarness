@@ -161,7 +161,7 @@ export interface TurnOutcome {
  * writers.
  *
  * All results come back before the next model call, in one batch.
- * `plan.md` §6.4: splitting tool results across messages trains the model out
+ * `documentation/solutions.md` §7: splitting tool results across messages trains the model out
  * of parallel calls.
  *
  * And results are ordered by the assistant's `tool_calls` array, never by
@@ -279,7 +279,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
       throw error;
     }
 
-    // The cache canary (`plan.md` §10), and the reason it is here rather than
+    // The cache canary (`documentation/solutions.md` §7), and the reason it is here rather than
     // in a test: a prompt cache fails silently. Every reply still looks
     // right, the turn just costs several times what it should, and the only
     // symptom is a number nobody is reading. From the second iteration on,
@@ -577,7 +577,7 @@ const MAX_PARALLEL_CALLS = 10;
  * `results` is filled by index, never by arrival, so the array this returns is
  * in the assistant's order whatever happens underneath. The loop then appends
  * and replays it in that order -- splitting or reordering tool results trains
- * the model out of asking for parallel calls at all (`plan.md` §6.4).
+ * the model out of asking for parallel calls at all (`documentation/solutions.md` §7).
  *
  * The cap drains the whole pool rather than freeing one slot at a time. With
  * a ceiling of ten and a model that asks for a handful, the branch is close to

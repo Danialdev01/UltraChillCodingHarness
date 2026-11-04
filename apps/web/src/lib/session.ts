@@ -343,28 +343,6 @@ export const listProjects = cache(async function listProjects(workspaceId: strin
   }
 });
 
-/** Saved database servers in a workspace. Empty when the workspace is not the caller's. */
-export const listDatabaseConnections = cache(async function listDatabaseConnections(workspaceId: string): Promise<DatabaseConnectionSummary[]> {
-  if (!workspaceId) return [];
-  const boot = await getBootstrap();
-  if (boot?.activeWorkspaceId === workspaceId) return boot.connections;
-  const jar = await cookies();
-  const token = jar.get("ucch_session");
-  if (!token) return [];
-
-  const origin = process.env.SERVER_ORIGIN ?? "http://127.0.0.1:3001";
-  try {
-    const response = await apiFetch(`${origin}/api/workspaces/${workspaceId}/database-connections`, {
-      headers: { cookie: `ucch_session=${token.value}` },
-      cache: "no-store",
-    });
-    if (!response.ok) return [];
-    return ((await response.json()) as { connections: DatabaseConnectionSummary[] }).connections;
-  } catch {
-    return [];
-  }
-});
-
 /** One saved database server, or null if it is not the caller's. */
 export const getDatabaseConnection = cache(async function getDatabaseConnection(id: string): Promise<DatabaseConnectionSummary | null> {
   const jar = await cookies();

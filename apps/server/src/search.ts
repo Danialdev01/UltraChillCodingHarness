@@ -41,6 +41,8 @@ export interface SearchOptions {
   regex?: boolean;
   /** Only search paths matching this glob, e.g. `*.ts`. */
   glob?: string | null;
+  /** The query is several comma-separated keywords, any of which is a match. */
+  multi?: boolean;
 }
 
 /**
@@ -60,6 +62,28 @@ const SEARCH_TIMEOUT_MS = 15_000;
 
 /** Refused before ripgrep is spawned, so an empty box searches for nothing. */
 export const MAX_QUERY_LENGTH = 200;
+
+/** The most keywords one multi-keyword search may hold. */
+export const MAX_SEARCH_TERMS = 20;
+
+/**
+ * The patterns one search looks for.
+ *
+ * A plain search is its query, whole. A multi-keyword one is the query split
+ * on commas -- trimmed, with empties and repeats dropped -- and sorted longest
+ * first. The order matters: ripgrep and JavaScript both take the first
+ * alternative that matches at a position, so `foo, foobar` must try `foobar`
+ * first or neither would ever find it whole. Search and replace both build
+ * from this list, so the match a replace re-checks is the match ripgrep found.
+ */
+export function searchTerms(options: Pick<SearchOptions, "query" | "multi">): string[] {
+  if (!options.multi) return [options.query];
+  const terms = [...new Set(options.query.split(",").map((term) => term.trim()).filter(Boolean))];
+  if (terms.length > MAX_SEARCH_TERMS) {
+    throw new SearchError(`a search may hold at most ${MAX_SEARCH_TERMS} keywords`, true);
+  }
+  return terms.sort((a, b) => b.length - a.length);
+}
 
 /**
  * The argv for one search.
@@ -93,7 +117,14 @@ export function searchArgv(options: SearchOptions, root: string): string[] {
   if (!options.regex) argv.push("--fixed-strings");
   argv.push(options.caseSensitive ? "--case-sensitive" : "--ignore-case");
   if (options.glob) argv.push("-g", options.glob);
-  argv.push("--", options.query, root);
+  if (options.multi) {
+    // Each keyword as `--regexp=<term>`, one argument with the value attached,
+    // so a keyword of `--files` is still a pattern and never a flag.
+    for (const term of searchTerms(options)) argv.push(`--regexp=${term}`);
+    argv.push("--", root);
+  } else {
+    argv.push("--", options.query, root);
+  }
   return argv;
 }
 
@@ -124,10 +155,16 @@ export async function searchWorkspace(
 ): Promise<SearchResult> {
   const executor = new HostExecutor(workspace);
   const root = executor.root();
+  // Keywords that are all commas and spaces are no search -- and with no
+  // pattern given, ripgrep would take the root as its pattern instead.
+  if (options.multi && searchTerms(options).length === 0) return { matches: [], truncated: false };
+  // Built outside the try: a refused query (too many keywords) is the
+  // caller's to fix, not a failure to run ripgrep.
+  const argv = searchArgv(options, root);
 
   let result;
   try {
-    result = await executor.exec(searchArgv(options, root), {
+    result = await executor.exec(argv, {
       timeoutMs: SEARCH_TIMEOUT_MS,
       ...(signal ? { signal } : {}),
     });

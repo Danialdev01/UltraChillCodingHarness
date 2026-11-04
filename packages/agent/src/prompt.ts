@@ -36,7 +36,7 @@ export const MAX_KNOWLEDGE_ENTRIES = 200;
  * The fixed part, and deliberately the first thing in the prefix.
  *
  * Not one interpolated value in it: no timestamp, no working directory, no
- * model name. `plan.md` §10 names a timestamp in the system prompt as a
+ * model name. `documentation/solutions.md` §7 names a timestamp in the system prompt as a
  * silent cache invalidator, and silent is the problem -- every reply still
  * looks right while every turn pays full price.
  */
@@ -75,7 +75,7 @@ Then write the answer. Cite the URL beside every claim it supports. Keep what th
 /**
  * Assembles the system prompt, stable first and volatile last.
  *
- * `plan.md` §6.4 puts the fixed rules ahead of the detected stack, ahead of
+ * The design (`documentation/solutions.md` §7) puts the fixed rules ahead of the detected stack, ahead of
  * the project's `.ucch/` knowledge and its own instructions, ahead of the
  * file tree -- because caching is a prefix match, so anything that changes
  * between turns must sit after everything that does not. A tree that gained a file then costs the tree,

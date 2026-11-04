@@ -74,8 +74,3 @@ export function FilePreview({ hash, path }: { hash: ProjectTarget; path: string 
     </div>
   )
 }
-
-/** The icon for a previewable file, for the tab bar. */
-export function previewIcon(path: string) {
-  return previewKindFor(path) === "pdf" ? FileTextIcon : ImageIcon
-}

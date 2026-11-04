@@ -21,7 +21,7 @@ import { webFetch, webSearch } from "./tools/web.js";
 /**
  * Every tool, in the one order that exists.
  *
- * `plan.md` §10 names non-deterministic tool ordering as a silent prompt-cache
+ * `documentation/solutions.md` §7 names non-deterministic tool ordering as a silent prompt-cache
  * invalidator. The tool block is the first thing in the cached prefix, so one
  * changed byte costs the whole turn's cache -- and nothing about the reply
  * looks wrong when it happens, which is what makes it worth this much care.

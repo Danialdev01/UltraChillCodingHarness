@@ -29,8 +29,8 @@ import {
 
 /**
  * OMP (oh-my-pi) as a provider: `omp --mode rpc-ui`, one process per turn,
- * talked to over JSONL (`omp-rpc.ts`). Design: documentation/omp/solution.md
- * §3; what the pinned version actually does: spike-report.md.
+ * talked to over JSONL (`omp-rpc.ts`). Design: documentation/architecture.md §7 and
+ * documentation/solutions.md §3-§4.
  *
  * Three flags are load-bearing, and each was measured rather than assumed:
  *

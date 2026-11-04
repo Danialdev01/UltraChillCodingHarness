@@ -15,7 +15,7 @@ import { openrouterPluginProvider } from "./web.js";
  *
  * Its own module so the native loop and OMP's host-tool runner share it: a
  * host tool an OMP turn calls is the same tool, under the same rules, as the
- * one a native turn calls (documentation/omp/solution.md §3.7).
+ * one a native turn calls (documentation/architecture.md §7).
  */
 
 /** A tool that names no timeout of its own still gets one. */
@@ -55,7 +55,7 @@ export interface ToolOutcome {
  *
  * Total by construction: unknown tool, malformed JSON, a schema violation, a
  * throw, a timeout and an abort all come back as `isError: true` with a
- * message the model can act on. `plan.md` §6.4 is explicit that a failed tool
+ * message the model can act on. `documentation/solutions.md` §7 is explicit that a failed tool
  * returns `is_error` rather than nothing, and there is a wire-level reason
  * too -- an assistant message carrying a `tool_call` with no matching reply
  * is rejected outright.

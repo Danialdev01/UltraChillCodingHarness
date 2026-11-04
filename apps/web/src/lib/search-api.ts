@@ -28,6 +28,8 @@ export interface SearchResult {
 export interface SearchOptions {
   caseSensitive?: boolean;
   regex?: boolean;
+  /** The query is several comma-separated keywords, any of which is a match. */
+  multi?: boolean;
   /** An abort signal, so a superseded search is cancelled rather than raced. */
   signal?: AbortSignal;
 }
@@ -47,6 +49,7 @@ export async function searchFiles(
   const params: Record<string, string> = { q: query };
   if (options.caseSensitive) params.case = "1";
   if (options.regex) params.regex = "1";
+  if (options.multi) params.multi = "1";
 
   // Through the target, so a session's search is of its own worktree -- the
   // tree a replace from these results would write to.
@@ -60,6 +63,14 @@ export async function searchFiles(
     throw new Error(body.error ?? "The search could not be run.");
   }
   return (await response.json()) as SearchResult;
+}
+
+/**
+ * The keywords in a multi-keyword query, as the server splits them: on commas,
+ * trimmed, empties and repeats dropped. For showing, so in the order typed.
+ */
+export function keywordsOf(query: string): string[] {
+  return [...new Set(query.split(",").map((term) => term.trim()).filter(Boolean))]
 }
 
 /** One file's matches, in the order the file has them. */
@@ -138,6 +149,7 @@ export interface ReplaceRequest {
   query: string;
   caseSensitive: boolean;
   regex: boolean;
+  multi: boolean;
   replacement: string;
   files: Array<{ path: string; matches: Array<{ line: number; start: number; end: number }> }>;
 }

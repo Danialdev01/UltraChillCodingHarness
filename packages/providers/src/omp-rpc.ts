@@ -10,7 +10,7 @@ import type {
 
 /**
  * A client for one OMP process in `--mode rpc` / `rpc-ui`
- * (documentation/omp/solution.md §2).
+ * (documentation/architecture.md §7).
  *
  * One JSON frame per line each way. The rules it keeps, from the
  * [rpc](https://omp.sh/docs/rpc) docs and what the pinned version does:

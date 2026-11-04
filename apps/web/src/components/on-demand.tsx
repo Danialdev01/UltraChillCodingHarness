@@ -34,6 +34,7 @@ const loaders = {
   renameSession: () => import("@/components/rename-session-dialog"),
   deleteProject: () => import("@/components/delete-project-dialog"),
   task: () => import("@/components/tasks/task-dialog"),
+  taskDetail: () => import("@/components/tasks/task-detail-dialog"),
   preview: () => import("@/components/preview-dialog"),
   search: () => import("@/components/search-panel"),
   quickMenu: () => import("@/components/quick-menu-palette"),
@@ -55,6 +56,7 @@ export const CreateDatabaseDialog = dynamic(() => loaders.createDatabase().then(
 export const RenameSessionDialog = dynamic(() => loaders.renameSession().then((m) => m.RenameSessionDialog), { ssr: false })
 export const DeleteProjectDialog = dynamic(() => loaders.deleteProject().then((m) => m.DeleteProjectDialog), { ssr: false })
 export const TaskDialog = dynamic(() => loaders.task().then((m) => m.TaskDialog), { ssr: false })
+export const TaskDetailDialog = dynamic(() => loaders.taskDetail().then((m) => m.TaskDetailDialog), { ssr: false })
 export const PreviewDialog = dynamic(() => loaders.preview().then((m) => m.PreviewDialog), { ssr: false })
 export const QuickMenuPalette = dynamic(() => loaders.quickMenu().then((m) => m.QuickMenuPalette), { ssr: false })
 

@@ -1,7 +1,7 @@
 /**
  * The agent core: the execution boundary, the tool registry, and the tools.
  *
- * Kept out of `apps/server` so the boundary in `plan.md` §5.3 is a package
+ * Kept out of `apps/server` so the boundary in `documentation/architecture.md` §3 is a package
  * edge rather than a convention -- nothing here may reach for the database,
  * the event store, or Fastify.
  */

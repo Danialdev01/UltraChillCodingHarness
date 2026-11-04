@@ -10,7 +10,7 @@ import { expect, test, type Page } from "@playwright/test";
  *            Router commits together with the page (or its loading.tsx)
  *   content  click -> nothing in <main> is a skeleton any more
  *
- * It walks the routes the plan names (documentation/plan.md §B.10), picking
+ * It walks the routes the plan names (documentation/solutions.md §13), picking
  * real hashes from the API so it runs against any dev database. Each hop is
  * a soft navigation: through the app's own link when one is on screen,
  * otherwise through the router itself -- never a full page load.

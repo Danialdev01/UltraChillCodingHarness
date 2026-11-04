@@ -35,7 +35,3 @@ export function createDatabase(url: string, { max = DEFAULT_POOL_MAX }: PoolOpti
   const sql = postgres(url, { ...POOL, max });
   return drizzle(sql, { schema });
 }
-
-export function createClient(url: string, { max = DEFAULT_POOL_MAX }: PoolOptions = {}) {
-  return postgres(url, { ...POOL, max });
-}

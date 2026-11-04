@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # /api/bootstrap's server time for a big workspace: 200 projects holding
 # 20,000 turns between them (1,000 threads of 20), which is what
-# listProjects' per-project sums run over (plan.md, finding 2).
+# listProjects' per-project sums run over (documentation/solutions.md §1, cause 2).
 #
 #   bash scripts/load/probes/bootstrap-big.sh [requests]   (default 200)
 #

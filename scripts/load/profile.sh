@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The measurement profile behind documentation/perf/: PF0.9's baseline, and
+# The measurement profile behind documentation/solutions.md §1: PF0.9's baseline, and
 # what PF3.1 re-runs to compare against it. Against the target up.sh starts,
 # seeded (README.md), with nothing else using it.
 #
@@ -22,7 +22,7 @@
 #   long     load-4000.json, stream-4000.json, stream-4000-cpu4x.json: a
 #            4,000-token answer under 5 minutes of load, at full speed and with
 #            the page's CPU throttled fourfold
-# Everything lands in documentation/perf/<label>/.
+# Everything lands in documentation/perf/<label>/ (created here).
 #
 # Environment: PORT (3397), GEN_CORES (8-15: cores off the container's, for
 # everything that generates load or drives a browser), E2E_CHROME.

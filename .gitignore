@@ -15,3 +15,4 @@ test-results/
 playwright-report/
 !apps/web/e2e/results/bundle-baseline.json
 load-out/
+apps/web/next-env.d.ts

@@ -3,6 +3,7 @@ import {
   allKeys,
   groupByFile,
   highlight,
+  keywordsOf,
   matchKey,
   previewSegments,
   selectionBody,
@@ -131,5 +132,11 @@ describe("previewSegments", () => {
 
   it("shows a deletion as only the struck text", () => {
     expect(previewSegments("foo", [[0, 3]], () => true, "")).toEqual([{ text: "foo", kind: "removed" }]);
+  });
+});
+
+describe("keywordsOf", () => {
+  it("splits on commas as the server does, keeping the order typed", () => {
+    expect(keywordsOf(" foo ,, bar,foo , ")).toEqual(["foo", "bar"]);
   });
 });

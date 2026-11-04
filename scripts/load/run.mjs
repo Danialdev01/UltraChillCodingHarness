@@ -11,7 +11,7 @@
  *     [--poll-every 30] [--type-rate 5] [--type-via frame|dispatch]
  *     [--sidebar workspace|per-project] [--replay batched|per-event]
  *
- * Every virtual user, as the browser does (solution.md §1):
+ * Every virtual user, as the browser does (documentation/solutions.md §1):
  *   - takes a ws-ticket and opens /ws, subscribing to `user`, the shared
  *     workspace (whose `project.activity` is the sidebar), a quiet `project`
  *     topic for the project it has open -- with `files: true` for the git

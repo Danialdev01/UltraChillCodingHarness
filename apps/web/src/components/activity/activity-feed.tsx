@@ -246,17 +246,3 @@ function ActivitySkeletonRows({ rows = 8 }: { rows?: number }) {
     </>
   )
 }
-
-/** The page's shape before the project has been looked up. */
-export function ActivitySkeleton() {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b pr-2 pl-4">
-        <Skeleton className="size-4 rounded-sm" />
-        <Skeleton className="h-3 w-16" />
-      </div>
-      <div className="h-11 border-b" />
-      <ActivitySkeletonRows />
-    </div>
-  )
-}

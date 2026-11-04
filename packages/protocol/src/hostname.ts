@@ -87,15 +87,6 @@ export function previewUrl(hash: string, rootDomain: string, scheme = "https"): 
   return `${scheme}://pv-${hash}.${rootDomain}`;
 }
 
-/** Container name for a project's workspace. Must match `runtime/docker.ts`. */
-export function projectContainerName(projectHash: string): string {
-  return `ucch-proj-${projectHash}`;
-}
-
-export function previewContainerName(previewHash: string): string {
-  return `ucch-preview-${previewHash}`;
-}
-
 /**
  * Parses the path-based alias kept for backwards compatibility:
  * `/{projectHash}/port:{n}/rest` -> a 302 to the equivalent subdomain.

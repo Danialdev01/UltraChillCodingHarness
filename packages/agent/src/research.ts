@@ -90,9 +90,6 @@ export interface ResearchProvider {
   browser?: BrowserAgent;
 }
 
-/** The search model when the harness names none. */
-export const DEFAULT_RESEARCH_SEARCH_MODEL = "perplexity/sonar";
-
 /**
  * Binds the backends to one turn's key.
  *

@@ -27,6 +27,25 @@ describe("compilePattern", () => {
 });
 
 describe("applyReplacements", () => {
+  it("replaces several keywords with one value", () => {
+    const content = "foo = baz(foo)\n";
+    const pattern = compilePattern({ query: "foo, baz", regex: false, caseSensitive: true, multi: true });
+    const targets = [{ line: 1, start: 0, end: 3 }, { line: 1, start: 6, end: 9 }, { line: 1, start: 10, end: 13 }];
+    expect(applyReplacements(content, pattern, "X", targets, false)).toEqual({ content: "X = X(X)\n", replaced: 3, stale: 0 });
+  });
+
+  it("takes a keyword inside another whole, as the search found it", () => {
+    const pattern = compilePattern({ query: "foo, foobar", regex: false, caseSensitive: true, multi: true });
+    const out = applyReplacements("foobar foo", pattern, "X", [{ line: 1, start: 0, end: 6 }, { line: 1, start: 7, end: 10 }], false);
+    expect(out).toEqual({ content: "X X", replaced: 2, stale: 0 });
+  });
+
+  it("replaces several regular expressions, groups numbered across them", () => {
+    const pattern = compilePattern({ query: "a(\\d), b(\\d)", regex: true, caseSensitive: true, multi: true });
+    const out = applyReplacements("a1 b2", pattern, "<$1$2>", [{ line: 1, start: 0, end: 2 }, { line: 1, start: 3, end: 5 }], true);
+    expect(out).toEqual({ content: "<1> <2>", replaced: 2, stale: 0 });
+  });
+
   it("replaces literal text, metacharacters and all", () => {
     const content = "a.b(1)\na.b(2)\n";
     const pattern = compilePattern({ query: "a.b(", regex: false, caseSensitive: true });

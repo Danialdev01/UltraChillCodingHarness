@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * `omp-bridge`: an MCP stdio server that lends OMP's tools to Claude Code and
- * Codex turns (documentation/omp/solution.md §10). The CLI starts it from
+ * Codex turns (documentation/spec.md §9, documentation/reference.md "Packages"). The CLI starts it from
  * the MCP config the server writes for the turn, and the environment in that
  * config -- with the file `UCCH_BRIDGE_ENV_FILE` names, for Codex -- is all
  * it is told (`config.ts`).

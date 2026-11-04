@@ -828,7 +828,6 @@ export type ProjectKey = typeof projectKeys.$inferSelect;
 export type Preview = typeof previews.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
-export type EventRow = typeof events.$inferSelect;
 export type DatabaseConnection = typeof databaseConnections.$inferSelect;
 
 /**

@@ -1,4 +1,4 @@
-import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { and, eq, lt, ne, sql } from "drizzle-orm";
 import { sessions, users, type Database } from "@ucch/db";
 import { isAvatarDataUrl, type Scope } from "@ucch/protocol";
@@ -417,11 +417,4 @@ export const DEV_USER_ID = "00000000-0000-4000-8000-000000000001";
  */
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
-}
-
-export function constantTimeEqual(a: string, b: string): boolean {
-  const ba = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ba.length !== bb.length) return false;
-  return timingSafeEqual(ba, bb);
 }

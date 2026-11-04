@@ -4,7 +4,7 @@ A cloud coding harness. Clone a GitHub repository into a container, run it, poin
 
 Built for **HTML, PHP, Laravel, React (Vite), and Next.js**. Deployed on a Dokploy VPS.
 
-> **Status: Phase 1 of 8.** The event-sourced server, wire protocol, database, authentication, and web shell are built and verified. Containers, the routing gateway, the agent, and previews are specified but not yet implemented — see [Current status](#current-status). The architecture and remaining phases are in [`documentation/plan.md`](documentation/plan.md).
+> **Docs:** [`architecture.md`](documentation/architecture.md) (stack, structure, integrations) · [`spec.md`](documentation/spec.md) (every feature, end to end, plus open work) · [`solutions.md`](documentation/solutions.md) (problems and how they were solved) · [`reference.md`](documentation/reference.md) (routes, frames, commands, events, modules).
 
 ---
 
@@ -13,30 +13,16 @@ Built for **HTML, PHP, Laravel, React (Vite), and Next.js**. Deployed on a Dokpl
 ### The shape of the system
 
 ```
-                    Cloudflare DNS  *.ucch.danialirfan.dev
-                              │
-                    ┌─────────▼─────────┐
-                    │ Traefik (Dokploy) │  wildcard TLS via DNS-01
-                    └─────────┬─────────┘
-                    ┌─────────▼─────────┐
-                    │     gateway       │  subdomain → container:port
-                    └────┬─────────┬────┘
-                         │         │
-       ┌─────────────────▼──┐   ┌──▼──────────────────────────┐
-       │  web (Next.js UI)  │   │  project containers (N)     │
-       └─────────┬──────────┘   │    ucch-proj-{hash}         │
-                 │ WSS /ws      │    ucch-preview-{hash}      │
-       ┌─────────▼──────────┐   └──▲──────────────────────────┘
-       │  server (Fastify)  │──────┘ docker exec
-       │   event log        │
-       │   agent loop       │   ┌──────────────┐
-       │   orchestrator     │──▶│  Postgres    │
-       └────────────────────┘   └──────────────┘
-                 │
-       /srv/ucch/workspaces/{projectId}   ← bind-mounted into containers
+          browser  ──HTTPS / WSS──▶  one container (s6-overlay), port 3000, volume /data
+                                      ├─ server  (Fastify: /api, /ws, preview proxy, terminals, agents)
+                                      │    └─ streams everything else to ─▶ web (Next.js, loopback)
+                                      ├─ collab  (Hocuspocus, loopback; /collab is passed through)
+                                      ├─ postgres (+ mariadb with ENABLE_MYSQL)
+                                      └─ child processes: shells, git, rg, claude, codex, omp, dev servers
+          p{port}-{hash}.ROOT_DOMAIN ─▶ server's preview proxy ─▶ that project's dev server
 ```
 
-**The server is the execution boundary.** Every container operation, terminal, git command, and file read happens on the server. The browser renders events and diffs; it never executes anything and holds no independent model of the world. `server` is the only process with the Docker socket and the Anthropic API key.
+**The server is the execution boundary.** Every terminal, git command, file read and agent turn happens on the server or in a child of it, inside the one container, as its unprivileged `node` user. The browser renders events and diffs; it never executes anything and holds no independent model of the world. Details: [`documentation/architecture.md`](documentation/architecture.md).
 
 ### Workspaces, projects, sub-agents
 
@@ -92,15 +78,9 @@ Only the project's owner can open it: the entry point mints a single-use ticket,
 
 Locally the address is `http://p8001-{hash}.ucch.localhost:3001` — `*.ucch.localhost` resolves to 127.0.0.1 on Linux, and `PUBLIC_PREVIEW_PORT=3001` puts the server's port on the URL because nothing sits in front of it.
 
-### Reverting is honest
-
-Every agent turn is bracketed by a workspace snapshot stored as a hidden git ref (`refs/ucch/checkpoints/{thread}/{turn}`), captured through a temporary index so it never disturbs your HEAD, branch, staged changes, or stash. Reverting a turn rolls back **files and conversation together** — rolling back the chat while leaving modified files on disk is the specific failure this design exists to prevent.
-
 ### What the agent can and cannot do
 
-The agent runs as a streaming loop against the Claude API with a plugin tool registry — `read_file`, `edit_file`, `glob`, `grep`, `bash`, `git_commit`, and so on. **Every tool executes inside the project container** via `docker exec`; the server never touches workspace files directly, so a rogue command is confined to the container.
-
-There is deliberately **no `git_push` tool**. The agent can commit; only a person can push. Commits land on a `ucch/{thread}` branch, so `main` is never written to by accident.
+Agents run as one of four harnesses: the built-in loop (`packages/agent`, over OpenRouter), Claude Code, Codex, or OMP. Each session works in its own git worktree on a `ucch/{hash}` branch, so `main` and other sessions are never touched. The built-in loop's tools (`read_file`, `edit_file`, `glob`, `grep`, `bash`, …) are confined to the project directory: no symlinks out, no writes into `.git`, commands as argv arrays. There is deliberately **no push tool**: agents can commit; only a person pushes. Per-turn checkpoints and revert are specified in the protocol but not built yet ([`spec.md` Open work](documentation/spec.md#open-work)).
 
 ### Research
 
@@ -160,10 +140,10 @@ corepack enable && pnpm dev:up
 
 1. creates `.env` from `.env.development.example` if there isn't one, with a fresh `SECRET_KEY` and `DATABASE_URL` pointing at the dev database;
 2. `pnpm install`;
-3. starts PostgreSQL on `localhost:55432` from [`docker-compose.dev.yml`](docker-compose.dev.yml) and waits until it is healthy (if you already have the older `ucch-pg-dev` container, it starts that one instead, so your data stays);
+3. starts PostgreSQL on `localhost:55432` and a dev MySQL on `localhost:53306` (user/password `dev`) from [`docker-compose.dev.yml`](docker-compose.dev.yml) and waits until they are healthy (if you already have the older `ucch-pg-dev` container, it starts that one instead of the compose PostgreSQL, so your data stays);
 4. runs the API server (:3001) and the web UI (:3000) with hot reload. Migrations apply on server boot.
 
-Open **http://localhost:3000**. Ctrl-C stops the app; `pnpm dev:down` stops the database too. Want a dev MySQL as well? `docker compose -f docker-compose.dev.yml --profile mysql up -d` (port 53306, user/password `dev`).
+Open **http://localhost:3000**. Ctrl-C stops the app; `pnpm dev:down` stops the database too.
 
 The defaults in `.env.development.example` are for local work; `.env.example` is the production file for Dokploy. To run the two services in separate terminals instead, use `pnpm --filter @ucch/server dev` and `pnpm --filter @ucch/web dev`.
 
@@ -188,21 +168,16 @@ There are three ways to authenticate, and the server refuses to start unless at 
 
 ### Local wildcard domains
 
-`*.ucch.localhost` resolves to `127.0.0.1` automatically on Linux, so subdomain routing works locally with no `/etc/hosts` entries once the gateway lands in Phase 3.
+`*.ucch.localhost` resolves to `127.0.0.1` automatically on Linux, so live-preview subdomains work locally with no `/etc/hosts` entries (`PUBLIC_PREVIEW_PORT=3001`).
 
 ### Checks
 
 ```bash
-pnpm test                        # 59 unit tests
-pnpm typecheck                   # all four packages
-node scripts/smoke-phase1.mjs    # end-to-end against a running server
+pnpm test                        # every unit test (vitest, from the root)
+pnpm typecheck                   # every package
 ```
 
-The smoke script drives a real client through the whole protocol: health, authentication, ticket issue, WebSocket connect, `ready` frame, heartbeat, malformed-frame rejection, a `project.create` command, authorization failure, subscription, and a live push. Point it anywhere:
-
-```bash
-UCCH_BASE=https://api.ucch.danialirfan.dev node scripts/smoke-phase1.mjs
-```
+For an end-to-end check against the built image, see `scripts/smoke-container.sh`.
 
 ### About previews
 
@@ -210,7 +185,7 @@ Two different things share the word "preview":
 
 - **Previewing your work on UCCH itself** — that's the local run above.
 - **The live preview** (`p{port}-{hash}.ucch.danialirfan.dev`) of a dev server you started in a project's terminal — described above, and working.
-- **Published previews** (`pv-{hash}.ucch.danialirfan.dev`), where UCCH builds a project from a specific commit into a frozen container you can share. That's **Phase 7** and is not implemented yet. It is specified in [`documentation/plan.md` §6.6](documentation/plan.md), including the per-stack build recipes.
+- **Published previews** (`pv-{hash}.ucch.danialirfan.dev`), where UCCH builds a project from a specific commit into a frozen container you can share. Not implemented yet; see [`documentation/spec.md` Open work](documentation/spec.md#open-work).
 
 ---
 
@@ -246,7 +221,7 @@ Everything stateful lives under **`/data`**: `postgres/`, `mysql/`, `workspaces/
 
 `docker build .` builds the same image anywhere else.
 
-The image also carries [OMP](https://omp.sh) (oh-my-pi), the agent that is taking over the "Custom" provider (`documentation/omp/`). It is the pinned release binary in `/opt/omp`, checked against its SHA-256, with its native modules unpacked once at build time (`PI_NATIVES_DIR`); the build arguments `OMP_VERSION` and `OMP_SHA256` move the pin together. It adds about 390 MB and is off until `OMP_ENABLED=true`.
+The image also carries [OMP](https://omp.sh) (oh-my-pi), the agent that is taking over the "Custom" provider ([`documentation/architecture.md` §7](documentation/architecture.md#7-agent-providers)). It is the pinned release binary in `/opt/omp`, checked against its SHA-256, with its native modules unpacked once at build time (`PI_NATIVES_DIR`); the build arguments `OMP_VERSION` and `OMP_SHA256` move the pin together. It adds about 390 MB and is off until `OMP_ENABLED=true`.
 
 #### Alternative: a prebuilt image from CI
 
@@ -416,7 +391,7 @@ Stop with `docker compose down` (add `-v` to wipe all data).
 
 ## Use the OMP bridge in your own Claude Code
 
-`packages/omp-bridge` is the MCP server UCCH gives its Claude Code and Codex turns. It lends them OMP's tools: `omp_task` subagents, `omp_symbols` / `omp_rename` code intelligence, `omp_codemod`, `omp_debug`, `omp_review`, memory and handoff briefs (`documentation/omp/solution.md` §10). It runs just as well in a personal Claude Code session on this machine, outside UCCH.
+`packages/omp-bridge` is the MCP server UCCH gives its Claude Code and Codex turns. It lends them OMP's tools: `omp_task` subagents, `omp_symbols` / `omp_rename` code intelligence, `omp_codemod`, `omp_debug`, `omp_review`, memory and handoff briefs ([`documentation/reference.md`](documentation/reference.md#ucchomp-bridge-packagesomp-bridgesrc)). It runs just as well in a personal Claude Code session on this machine, outside UCCH.
 
 **Needs:** `omp` (18.14.1, the version UCCH pins) on the `PATH` and an OpenRouter key. Every call is billed to that key, and Claude Code itself stays on your subscription.
 
@@ -456,7 +431,7 @@ Start `claude` in a project and `/mcp` lists `omp`. The bridge works in the dire
 | `UCCH_OMP_AGENT_DIR` | OMP's own (`~/.omp/agent`) | `PI_CODING_AGENT_DIR` for the calls. |
 | `UCCH_WORKTREE` | Claude Code's directory | Where the calls run. |
 | `UCCH_OMP_TRUSTED` | off | `1` turns on the language server and debugger (`omp_symbols`, `omp_rename`, `omp_debug`, and `lsp` in subagents). Set it only for repositories you trust: a repository's own LSP and debug-adapter config is a command OMP runs. |
-| `UCCH_OMP_MEMORY` | off | `1` offers `omp_recall` / `omp_retain`. It needs mnemopi memory in the overlay (solution §7). |
+| `UCCH_OMP_MEMORY` | off | `1` offers `omp_recall` / `omp_retain`. It needs mnemopi memory in the overlay ([`spec.md` §8](documentation/spec.md#8-context-compaction-handoff-and-memory)). |
 | `UCCH_OMP_WEB_SEARCH` | off | `1` lets a scout use OMP's `web_search`. It needs a search provider set up in OMP. |
 | `UCCH_BRIDGE_MAX_SECONDS` | `300` | `--max-time` for each call. |
 | `UCCH_BRIDGE_MAX_CALLS` | `12` | Calls per bridge process. In a personal session that is per Claude Code session. |
@@ -467,38 +442,21 @@ Whatever your overlay and OMP config say, each call adds its own overlay last (`
 
 ---
 
-## Current status
-
-| Phase | Scope                                                     | State                    |
-| ----- | --------------------------------------------------------- | ------------------------ |
-| 1     | Protocol, database, event-sourced server, auth, web shell | **Done, verified** |
-| 2     | Base image, Docker driver, terminals                      | Planned                  |
-| 3     | Gateway, wildcard routing, cold start                     | Live preview proxy done; containers and cold start planned |
-| 4     | Git clone/commit/push, editor, diff                       | Planned                  |
-| 5     | Agent loop, tool registry, chat                           | Planned                  |
-| 6     | Checkpoints, per-turn revert, fork                        | Planned                  |
-| 7     | Live previews                                             | Planned                  |
-| 8     | Context editing, compaction, quotas, cost                 | Planned                  |
-
-**59 unit tests, four packages typechecking clean.** Coverage concentrates where it earns the most: the subdomain grammar against hostile input (16), the decision rules including authorization and path traversal (24), plus ticket semantics, secret encryption, and worker drain behavior.
-
-### Layout
+## Layout
 
 ```
-apps/server      Fastify + WebSocket + event log + orchestration
-apps/web         Next.js UI (Tailwind v4 + shadcn/ui)
-packages/protocol  Zod schemas: events, commands, RPC, hostname grammar
-packages/db        Drizzle schema + migrations
-packages/runtime   Docker driver, port discovery          (planned; empty)
-packages/agent     Agent loop, tool registry              (Phase 5)
-packages/vcs       git + checkpoint refs                  (planned; empty)
-deploy/s6          the single container's services (s6-overlay)
-images/base        The universal project runtime image    (Phase 2)
-documentation/     Architecture and implementation plan
+apps/server         Fastify API, /ws gateway, event engine, reactors, terminals, preview proxy, collab service
+apps/web            Next.js UI (Tailwind v4 + shadcn/ui)
+packages/protocol   zod schemas: commands, events, RPC frames, hostnames, roles, permissions
+packages/db         Drizzle schema + migrations
+packages/agent      the built-in agent loop, tool registry, tools, document kit
+packages/providers  Claude Code, Codex and OMP adapters, process host
+packages/omp-bridge MCP server lending OMP's tools to Claude Code and Codex
+deploy/             the single container's s6 services, init and backup scripts
+scripts/            dev setup, load-test kit, OMP spike tooling, smoke test
+documentation/      architecture.md, spec.md, solutions.md, reference.md
 ```
-
----
 
 ## Further reading
 
-[`documentation/plan.md`](documentation/plan.md) — the single-container, performance and realtime plan; [`documentation/todo.md`](documentation/todo.md) — its task list, ticked off as it lands.
+[`documentation/architecture.md`](documentation/architecture.md) · [`documentation/spec.md`](documentation/spec.md) · [`documentation/solutions.md`](documentation/solutions.md) · [`documentation/reference.md`](documentation/reference.md)

@@ -374,21 +374,6 @@ export function TimelineChartSkeleton({ rows = 5 }: { rows?: number }) {
   )
 }
 
-/** A project's keys: the toolbar, then name, masked value, tags and URL per row. */
-export function KeysSkeleton({ rows = 4 }: { rows?: number }) {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b pr-2 pl-4">
-        <Skeleton className="size-4 rounded-sm" />
-        <Skeleton className="h-3 w-12" />
-        <div className="flex-1" />
-        <Skeleton className="h-7 w-20 rounded-lg" />
-      </div>
-      <KeysRowsSkeleton rows={rows} />
-    </div>
-  )
-}
-
 /** The keys table alone, for the workspace to show under its own toolbar. */
 export function KeysRowsSkeleton({ rows = 4 }: { rows?: number }) {
   return (

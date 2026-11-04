@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end check of the single-container image (documentation/todo.md D9).
+# End-to-end check of the single-container image (documentation/architecture.md §8).
 #
 #   bash scripts/smoke-container.sh            build, then test
 #   SKIP_BUILD=1 bash scripts/smoke-container.sh

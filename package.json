@@ -15,8 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "pnpm --filter @ucch/db generate",
-    "db:migrate": "pnpm --filter @ucch/db migrate",
-    "smoke:phase1": "node scripts/smoke-phase1.mjs"
+    "db:migrate": "pnpm --filter @ucch/db migrate"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

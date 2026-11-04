@@ -29,10 +29,6 @@ export async function fetchTree(target: ProjectTarget): Promise<{ tree: FileNode
   return (await response.json()) as { tree: FileNode[]; truncated: boolean };
 }
 
-export async function fetchFile(target: ProjectTarget, path: string): Promise<string> {
-  return (await fetchFileVersion(target, path)).content;
-}
-
 /** A file's text and the version naming it, for a save that must not overwrite another. */
 export async function fetchFileVersion(
   target: ProjectTarget,

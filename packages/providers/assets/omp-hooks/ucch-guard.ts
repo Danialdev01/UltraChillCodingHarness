@@ -1,5 +1,5 @@
 /**
- * UCCH's guard for OMP turns (documentation/omp/solution.md §3.9).
+ * UCCH's guard for OMP turns (documentation/solutions.md §4).
  *
  * Copied into the subject's `omp/agent/` by `ensureCredsDir("omp")` and
  * loaded with `--hook <path>`: the one way to load a hook that survives

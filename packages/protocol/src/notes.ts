@@ -10,8 +10,6 @@ export interface NoteDoc {
   content?: unknown[];
 }
 
-export const EMPTY_NOTE_DOC: NoteDoc = { type: "doc", content: [] };
-
 /** A title is a line in a tree row, not a paragraph. */
 export const NOTE_TITLE_MAX = 200;
 

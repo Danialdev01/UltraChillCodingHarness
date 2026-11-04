@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Folds one profile.sh run into the figures documentation/perf/ keeps:
+ * Folds one profile.sh run into the headline figures (documentation/solutions.md §1):
  *
  *   node scripts/load/summarise.mjs documentation/perf/baseline-2026-10-25
  *
  * Writes `<dir>.json` beside the directory -- every figure the Definition of
- * Done in documentation/todo.md asks for, plus what PF0.9 records about the
+ * Done in documentation/solutions.md §1 tracks, plus what PF0.9 records about the
  * run -- and prints the Definition of Done rows as a Markdown table.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";

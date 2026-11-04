@@ -666,7 +666,7 @@ describe("safe and exclusive dispatch", () => {
 
   it("returns results in the assistant's order, whatever finishes first", async () => {
     // Splitting or reordering tool results trains the model out of asking
-    // for parallel calls at all (`plan.md` §6.4), so this is load-bearing.
+    // for parallel calls at all (`documentation/solutions.md` §7), so this is load-bearing.
     const { order } = await trace(
       call("call_0", "read_file", '{"path":"index.ts","offset":null,"limit":null}'),
       call("call_1", "current_time", '{"timezone":null}'),

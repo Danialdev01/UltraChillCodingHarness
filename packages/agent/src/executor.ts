@@ -1,7 +1,7 @@
 /**
  * The execution boundary.
  *
- * `plan.md` §5.3 states the invariant: every tool executes inside the
+ * `documentation/architecture.md` §7 states the invariant: every tool executes inside the
  * project container, and the server never touches workspace files directly.
  * There is no Docker driver yet, so the invariant is expressed as this
  * interface and satisfied later -- `DockerExecutor` replaces `HostExecutor`

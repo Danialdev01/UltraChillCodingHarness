@@ -11,7 +11,7 @@ const MAX_TIMEOUT_MS = 600_000;
  *
  * Until the container runtime lands this is remote code execution by
  * whichever model the composer selected, and it was chosen knowingly rather
- * than arrived at -- see `idea.md` §2.1. Three things hold it in: the
+ * than arrived at -- see `documentation/solutions.md` §5. Three things hold it in: the
  * registry refuses to offer this tool in production unless
  * `AGENT_ALLOW_HOST_SHELL` is set, the working directory is the project's
  * workspace, and the environment the child gets is rebuilt rather than

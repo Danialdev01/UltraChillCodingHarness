@@ -1,11 +1,10 @@
 "use client"
 
 import * as React from "react"
+import dynamic from "next/dynamic"
 import { usePathname, useSearchParams } from "next/navigation"
 import { LibraryBigIcon } from "lucide-react"
 
-import { DiagramsView } from "@/components/diagrams/diagrams-view"
-import { KeysWorkspace } from "@/components/keys/keys-workspace"
 import { DocViewTabs } from "@/components/notes/doc-view-toggle"
 import { NoteEditor } from "@/components/notes/note-editor"
 import { NotesProvider, type NotesContextValue } from "@/components/notes/notes-context"
@@ -39,6 +38,10 @@ import { projectQueries } from "@/lib/queries/project-data"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 import type { Project } from "@/lib/session"
 import { useTransitionRouter } from "@/lib/view-transitions"
+
+// The diagram editor (collab, yjs) and the keys table load only when their view is opened.
+const DiagramsView = dynamic(() => import("@/components/diagrams/diagrams-view").then((m) => m.DiagramsView))
+const KeysWorkspace = dynamic(() => import("@/components/keys/keys-workspace").then((m) => m.KeysWorkspace))
 
 /** Which page of the notes is open (null for the root), and which view. */
 export interface DocLocation {

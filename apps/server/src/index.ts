@@ -1677,7 +1677,7 @@ app.get<{ Querystring: { url?: string } }>("/api/git/refs", async (request, repl
  */
 app.get<{
   Params: { hash: string };
-  Querystring: { q?: string; case?: string; regex?: string; glob?: string };
+  Querystring: { q?: string; case?: string; regex?: string; glob?: string; multi?: string };
 }>("/api/projects/:hash/search", async (request, reply) => {
   const project = await projectFor(request);
   if (!project) return reply.code(404).send({ error: "project not found" });
@@ -1699,6 +1699,7 @@ app.get<{
       query,
       caseSensitive: request.query.case === "1",
       regex: request.query.regex === "1",
+      multi: request.query.multi === "1",
       glob: request.query.glob?.trim() || null,
     });
   } catch (error) {
@@ -1725,6 +1726,7 @@ const ReplaceRequest = z.object({
   query: z.string().min(1).max(MAX_QUERY_LENGTH),
   caseSensitive: z.boolean().default(false),
   regex: z.boolean().default(false),
+  multi: z.boolean().default(false),
   replacement: z.string().max(10_000),
   files: z
     .array(
@@ -1751,11 +1753,11 @@ app.post<{ Params: { hash: string } }>("/api/projects/:hash/replace", async (req
   if (!parsed.success) {
     return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "a search and the matches to replace are required" });
   }
-  const { query, caseSensitive, regex, replacement, files } = parsed.data;
+  const { query, caseSensitive, regex, multi, replacement, files } = parsed.data;
 
   let pattern: RegExp;
   try {
-    pattern = compilePattern({ query, caseSensitive, regex });
+    pattern = compilePattern({ query, caseSensitive, regex, multi });
   } catch (error) {
     if (error instanceof SearchError) return reply.code(400).send({ error: error.message });
     throw error;

@@ -1,4 +1,4 @@
-import { SearchError, type SearchOptions } from "./search.js";
+import { SearchError, searchTerms, type SearchOptions } from "./search.js";
 
 /**
  * Replacing what the search sidebar found.
@@ -35,9 +35,19 @@ export interface ReplaceOutcome {
  * Sticky, so a match is tried at one offset and only there. Unicode where the
  * pattern allows it, for the same case folding ripgrep does; a pattern that
  * only parses without it still works, as it did in ripgrep.
+ *
+ * Several keywords become one alternation, in `searchTerms` order, as ripgrep
+ * joins them. In a regular-expression search their groups are numbered across
+ * all of them, so `$1` in the replacement is the first keyword's first group.
  */
-export function compilePattern(options: Pick<SearchOptions, "query" | "caseSensitive" | "regex">): RegExp {
-  const source = options.regex ? options.query : escapeRegExp(options.query);
+export function compilePattern(
+  options: Pick<SearchOptions, "query" | "caseSensitive" | "regex" | "multi">,
+): RegExp {
+  const terms = searchTerms(options);
+  if (terms.length === 0) throw new SearchError("there is nothing to search for", true);
+  const source = terms
+    .map((term) => (options.regex ? (options.multi ? `(?:${term})` : term) : escapeRegExp(term)))
+    .join("|");
   const flags = options.caseSensitive ? "y" : "iy";
   try {
     return new RegExp(source, `${flags}u`);

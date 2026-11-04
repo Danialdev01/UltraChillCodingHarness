@@ -86,13 +86,6 @@ export async function fetchUploadText(hash: string, uploadId: string): Promise<U
   return (await response.json()) as UploadText;
 }
 
-/** Everything still staged for a project. */
-export async function listUploads(hash: string): Promise<StagedUpload[]> {
-  const response = await fetch(`/api/projects/${hash}/uploads`, { credentials: "include" });
-  if (!response.ok) await fail(response, "Could not list staged uploads.");
-  return ((await response.json()) as { uploads: StagedUpload[] }).uploads;
-}
-
 /**
  * Moves a staged file into the project working directory.
  *
