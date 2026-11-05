@@ -221,6 +221,21 @@ RUN set -eux; \
     > /home/node/.omp/agent/dap.json; \
   chown -R node:node /home/node/.omp
 ENV JS_DEBUG_DAP_SERVER=/opt/js-debug/js-debug/src/dapDebugServer.js
+# Claude Code and Codex, the subscription providers. The server finds them on
+# PATH (CLAUDE_BIN, CODEX_BIN); each person signs in from Settings -> Providers
+# and the login lands in /data/creds, so a rebuild keeps it. Installed as root
+# and run as node, which cannot write here, so Claude Code's self-update is off
+# and bumping these versions is how either CLI changes. They need
+# AGENT_ALLOW_HOST_SHELL=true at runtime (.env.example sets it).
+ARG CLAUDE_CODE_VERSION=2.1.318
+ARG CODEX_VERSION=0.166.0
+ENV DISABLE_AUTOUPDATER=1
+RUN npm install -g \
+    "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    "@openai/codex@${CODEX_VERSION}" \
+  && npm cache clean --force \
+  && claude --version | grep -F "${CLAUDE_CODE_VERSION}" \
+  && codex --version | grep -F "${CODEX_VERSION}"
 ENV SHELL=/bin/bash
 
 # --- app: the single container ----------------------------------------------
