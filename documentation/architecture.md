@@ -75,7 +75,7 @@ flowchart TB
 | Bundling | esbuild | 0.28 | server, collab and bridge bundles |
 | Tests | vitest 2.1, Playwright 1.64 | | unit tests next to the code, e2e in `apps/web/e2e` |
 | Process supervision | s6-overlay | 3.2.3.2 | the single container's services |
-| Agent CLIs | Claude Code (`claude`), Codex (`codex`), OMP (`omp` 18.14.1) | OMP pinned with SHA-256; the other two are found on `PATH` | agent providers |
+| Agent CLIs | Claude Code (`claude` 2.1.318), Codex (`codex` 0.166.0), OMP (`omp` 18.14.1) | OMP pinned with SHA-256; the other two pinned npm installs in the image, found on `PATH` | agent providers |
 | Document toolchain | pandoc 3.6, Typst 0.13.1, LibreOffice Writer, poppler, graphviz, Chromium + mermaid-cli, Python (python-docx, pypdf, pdfplumber, vl-convert) | | Documentation mode |
 | Search | ripgrep | (Debian package) | project search, the agent's `grep` |
 
