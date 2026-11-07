@@ -13,5 +13,6 @@ import { stackIconName } from "@/lib/stack-icons"
 export function ProjectStackIcon({ stack }: { stack: string | null | undefined }) {
   const icon = stackIconName(stack)
   if (!icon) return <FolderIcon aria-hidden />
-  return <FileTypeIcon kind="icon" name={icon} />
+  // The same folder stands in if the stack's icon cannot be loaded.
+  return <FileTypeIcon kind="icon" name={icon} fallback={FolderIcon} />
 }

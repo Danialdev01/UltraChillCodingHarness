@@ -142,7 +142,7 @@ test("a diagram goes live once written, and undo is per person", async ({ browse
   const ws = workspaces.find((w: Json) => w.kind === "project" && !w.archived);
   const { projects } = await api("GET", `/api/workspaces/${ws.id}/projects`);
   const project = projects[0];
-  const file = { hash: project.hash, path: ".ucch/diagrams/user-flow.mmd" };
+  const file = { hash: project.hash, path: ".agent/diagrams/user-flow.mmd" };
   const exists = await fetch(`${API}/api/projects/${file.hash}/file?path=${encodeURIComponent(file.path)}`, {
     headers: { cookie: `ucch_session=${COOKIE}` },
   });

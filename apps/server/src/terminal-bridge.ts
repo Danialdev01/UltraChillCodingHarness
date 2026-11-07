@@ -46,6 +46,8 @@ export interface TerminalBridgeFacts {
 
 export interface TerminalBridgeOptions extends OmpBridgeOptions {
   secretKey: string | undefined;
+  /** As `AgentOptions.onKeyUsed`: the ciphertext of a key just decrypted. */
+  onKeyUsed?: (encrypted: string) => void;
   /** `DEFAULT_MODEL`, for a person with none of their own. */
   defaultModel: string;
   /** The subject's `omp/run` and `omp/agent` (`ProviderService`). */
@@ -86,6 +88,7 @@ export class TerminalBridge {
     const facts = await options.facts(input.projectId, input.subject, input.userId);
     if (!facts?.enabled || !facts.openrouterKeyEncrypted || !options.secretKey) return null;
     const openrouterKey = decryptSecret(facts.openrouterKeyEncrypted, options.secretKey);
+    options.onKeyUsed?.(facts.openrouterKeyEncrypted);
 
     const mcpPath = this.path(input.subject, input.terminalId);
     const base = mcpPath.slice(0, -".mcp.json".length);

@@ -1,6 +1,8 @@
 "use client";
 
 import { BotIcon, ChevronRightIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { subagentAnchor } from "@/lib/subagent-lineage";
 import { Markdown } from "@/components/markdown";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDuration, type SubagentRun, type ToolPart } from "@/lib/chat-messages";
@@ -16,6 +18,74 @@ import { formatUsd } from "@/lib/stats-format";
  * a subagent that has not reported yet shows a skeleton line where its
  * progress will be, not a spinner.
  */
+/**
+ * A turn's subagents, on the page rather than folded into its work: one
+ * line saying how many went off and how many are still out, then a card
+ * per call. Who is working on what is the first thing a reader looks for
+ * once agents fan out, so it should not take a click to find.
+ */
+export function SubagentGroup({ calls }: { calls: readonly ToolPart[] }) {
+  const runs = calls.flatMap((call) => (call.subagents?.length ? call.subagents : [null]));
+  const count = runs.length;
+  const working = calls.reduce(
+    (n, call) =>
+      n +
+      (call.subagents?.length
+        ? call.subagents.filter((run) => run.status === "running").length
+        : call.result === null
+          ? 1
+          : 0),
+    0,
+  );
+  const failed = calls.reduce(
+    (n, call) => n + (call.subagents?.filter((run) => run.status === "failed").length ?? (call.isError ? 1 : 0)),
+    0,
+  );
+  const longest = calls
+    .flatMap((call) => call.subagents ?? [])
+    .reduce<number | null>((max, run) => (run.durationMs === null ? max : Math.max(max ?? 0, run.durationMs)), null);
+  const state = working > 0 ? `${working} working` : failed > 0 ? `${failed} failed` : `${count} done`;
+
+  return (
+    <section className="flex flex-col gap-2" aria-label="Subagents" data-testid="subagent-group">
+      <div className="flex items-center gap-2.5 text-xs">
+        <span className="flex -space-x-1.5" aria-hidden>
+          {Array.from({ length: Math.min(count, 3) }, (_, i) => (
+            <span
+              key={i}
+              className={cn(
+                "bg-card ring-background grid size-6 place-items-center rounded-full border ring-2",
+                working > 0 && "text-ucch-active",
+              )}
+            >
+              <BotIcon className="size-3.5" />
+            </span>
+          ))}
+        </span>
+        <span className="flex flex-col leading-tight">
+          <span className="text-foreground font-medium">
+            {count} {count === 1 ? "subagent" : "subagents"}
+          </span>
+          <span
+            className={cn(
+              "text-2xs",
+              working > 0 ? "text-ucch-active" : failed > 0 ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            {state}
+          </span>
+        </span>
+        {longest !== null && working === 0 && (
+          <span className="text-muted-foreground ml-auto tabular-nums">{formatDuration(longest)}</span>
+        )}
+      </div>
+      {calls.map((call) => (
+        <SubagentCard key={call.id} call={call} />
+      ))}
+    </section>
+  );
+}
+
 export function SubagentCard({ call }: { call: ToolPart }) {
   const runs = call.subagents ?? [];
   const running = runs.length > 0 ? runs.some((run) => run.status === "running") : call.result === null;
@@ -28,7 +98,8 @@ export function SubagentCard({ call }: { call: ToolPart }) {
 
   return (
     <details
-      className={`group/subagent rounded-md border text-xs ${failed ? "border-destructive/40" : ""}`}
+      id={subagentAnchor(call.id)}
+      className={`group/subagent bg-card/40 scroll-mt-4 rounded-lg border text-xs ${failed ? "border-destructive/40" : ""}`}
       data-testid="subagent-card"
       data-status={running ? "running" : failed ? "failed" : "done"}
     >

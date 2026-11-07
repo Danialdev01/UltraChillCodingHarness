@@ -231,7 +231,7 @@ Migrations live in `packages/db/migrations` (32 of them, up to `0031_reviews.sql
 | `WORKSPACE_ROOT/{projectId}/` | the project's own checkout |
 | `WORKSPACE_ROOT/.worktrees/{projectId}/{treeHash}/` | one session's git worktree |
 | `WORKSPACE_ROOT/.uploads/{projectId}/` | staged attachments (`{id}` + metadata), swept after `UPLOAD_TTL_HOURS` |
-| `{project}/.ucch/` | project knowledge the agents read, plus `.ucch/diagrams/*.mmd` |
+| `{project}/.agent/` | project knowledge the agents read: `index.md`, `diagrams/*.mmd`, and `env.val` (encrypted environment variables) |
 | `CREDS_ROOT/{subject}/claude`, `/codex`, `/omp` | CLI logins (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, OMP's agent dir), `0700`, per user or `ws-<workspaceId>` |
 | `/data/postgres`, `/data/mysql` | embedded database data |
 | `/data/secrets` | generated `secret_key`, database passwords, default user password |

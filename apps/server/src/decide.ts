@@ -292,6 +292,24 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       ]);
     }
 
+    case "thread.update": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      const { title, pinned, archived } = command;
+      if (title === undefined && pinned === undefined && archived === undefined) {
+        return fail("invalid", "nothing to change");
+      }
+      return ok([
+        {
+          type: "thread.updated",
+          threadId: thread.value.id,
+          ...(title !== undefined ? { title } : {}),
+          ...(pinned !== undefined ? { pinned } : {}),
+          ...(archived !== undefined ? { archived } : {}),
+        },
+      ]);
+    }
+
     case "thread.cancel": {
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;

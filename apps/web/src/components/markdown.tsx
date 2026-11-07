@@ -6,6 +6,7 @@ import ReactMarkdown, { type Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 
+import { FileTypeIcon } from "@/components/file-type-icon"
 import { copyText } from "@/lib/clipboard"
 import { nodeLanguage, nodeText, type SyntaxNode } from "@/lib/code-text"
 import { streamingCut } from "@/lib/streaming-markdown"
@@ -94,6 +95,18 @@ const COMPONENTS: Components = {
   code: ({ className, children }) => {
     const fenced = /language-(\w+)/.exec(className ?? "")
     if (!fenced) {
+      // A file name or path (`src/brand.ts`, `index.css`) is a reference to
+      // the project, not a fragment of code: it gets its file's icon, so a
+      // list of "where to change things" reads as a list of files.
+      const text = typeof children === "string" ? children : null
+      if (text && looksLikeFilePath(text)) {
+        return (
+          <code className="bg-muted inline-flex max-w-full items-center gap-1 rounded px-1 py-0.5 align-[-0.15em] font-mono text-[0.85em]">
+            <FileTypeIcon name={text.split("/").at(-1)!} className="size-3.5" />
+            <span className="truncate">{text}</span>
+          </code>
+        )
+      }
       return (
         <code className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
       )
@@ -238,4 +251,24 @@ export function StreamingMarkdown({ children, className }: { children: string; c
       <Markdown className={className}>{children.slice(cut)}</Markdown>
     </div>
   )
+}
+
+/** Extensions that name a file rather than a property: `console.log` is code. */
+const FILE_EXTENSIONS = new Set(
+  (
+    "ts tsx js jsx mjs cjs json jsonc md mdx css scss sass less html htm vue svelte astro py rb go rs java kt " +
+    "swift c h cpp hpp cc cs php sh bash zsh fish sql prisma graphql gql yml yaml toml ini env lock txt " +
+    "xml svg png jpg jpeg gif webp ico pdf csv dockerfile conf cfg example local sample"
+  ).split(" "),
+)
+
+/**
+ * `src/brand.ts`, `index.css`, `.env.example`: one token with no spaces, a
+ * name with a letter in it, and an extension files actually have -- so
+ * `1.5`, `e.g.`, `a.b()` and `console.log` stay plain code.
+ */
+export function looksLikeFilePath(text: string): boolean {
+  if (text.length > 120 || /\s|:\/\//.test(text)) return false
+  if (!/^(?:[\w@.-]+\/)*[\w@.-]*[A-Za-z][\w@-]*\.[A-Za-z][A-Za-z0-9]{0,9}$/.test(text)) return false
+  return FILE_EXTENSIONS.has(text.slice(text.lastIndexOf(".") + 1).toLowerCase())
 }

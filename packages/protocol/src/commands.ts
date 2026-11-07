@@ -122,6 +122,18 @@ const ThreadSend = z.object({
   mode: MessageMode.optional(),
 });
 
+/**
+ * Renames, pins or archives a session. Only the fields given change; at
+ * least one must be. A title is trimmed, and an empty one refused.
+ */
+const ThreadUpdate = z.object({
+  type: z.literal("thread.update"),
+  threadId: z.string().uuid(),
+  title: z.string().trim().min(1).max(200).optional(),
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
+});
+
 /** Interrupts a running turn between tool calls. */
 const ThreadCancel = z.object({
   type: z.literal("thread.cancel"),
@@ -321,6 +333,7 @@ export const Command = z.discriminatedUnion("type", [
   ProjectDelete,
   ThreadCreate,
   ThreadSend,
+  ThreadUpdate,
   ThreadCancel,
   ThreadPermissionReply,
   ThreadRevert,

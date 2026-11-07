@@ -1,13 +1,9 @@
 "use client";
 
 import {
-  CodeIcon,
   DatabaseIcon,
   FolderGitIcon,
-  GitBranchIcon,
   ListTodoIcon,
-  RocketIcon,
-  StickyNoteIcon,
   LayersIcon,
   MessageSquarePlusIcon,
 } from "lucide-react";
@@ -26,7 +22,14 @@ import {
 import type { Project } from "@/lib/session";
 import type { Workspace } from "@/components/workspace-switcher";
 import { countLabel } from "@/lib/workspace-api";
-import { projectHref, sectionById, sectionHref } from "@/lib/sections";
+import { SoonBadge } from "@/components/ui/badge";
+import { SECTIONS, projectHref, sectionEntry } from "@/lib/sections";
+import {
+  SETTINGS_GROUPS,
+  settingsEntryHref,
+  settingsEntryIcon,
+  settingsEntryTitle,
+} from "@/lib/settings-index";
 
 /**
  * The command palette `QuickMenu` opens: its own chunk (`on-demand.tsx`), so
@@ -84,6 +87,7 @@ export function QuickMenuPalette({
               <CommandItem onSelect={onNewSession}>
                 <MessageSquarePlusIcon />
                 New session
+                <CommandShortcut>⇧⌘O</CommandShortcut>
               </CommandItem>
             )
           ) : (
@@ -108,7 +112,7 @@ export function QuickMenuPalette({
             <CommandItem key={item.label} disabled>
               <item.icon />
               {item.label}
-              <CommandShortcut>{item.note}</CommandShortcut>
+              <SoonBadge className="ml-auto" />
             </CommandItem>
           ))}
         </CommandGroup>
@@ -153,21 +157,36 @@ export function QuickMenuPalette({
 
         <CommandSeparator />
         <CommandGroup heading="Go to">
-          <CommandItem onSelect={() => onGo(sectionHref(sectionById("dashboard"), ws))}>
-            <CodeIcon />
-            Coding
-          </CommandItem>
-          <CommandItem onSelect={() => onGo(sectionHref(sectionById("database"), ws))}>
-            <DatabaseIcon />
-            Database
-          </CommandItem>
-          {SECTION_LINKS.map((section) => (
-            <CommandItem key={section.label} disabled>
+          {SECTIONS.map((section) => (
+            <CommandItem
+              key={section.id}
+              value={`go ${section.title}`}
+              onSelect={() => onGo(sectionEntry(section, ws))}
+            >
               <section.icon />
-              {section.label}
-              <CommandShortcut>{section.note}</CommandShortcut>
+              {section.title}
+              {SOON_SECTIONS.has(section.id) && <SoonBadge className="ml-auto" />}
             </CommandItem>
           ))}
+        </CommandGroup>
+
+        <CommandSeparator />
+        <CommandGroup heading="Settings">
+          {SETTINGS_GROUPS.flatMap((group) => group.entries)
+            .filter((entry) => entry.scope === "account" || ws)
+            .map((entry) => {
+              const Icon = settingsEntryIcon(entry)
+              return (
+                <CommandItem
+                  key={`${entry.scope}-${entry.id}`}
+                  value={`settings ${settingsEntryTitle(entry)} ${entry.keywords}`}
+                  onSelect={() => onGo(settingsEntryHref(entry, ws))}
+                >
+                  <Icon />
+                  {settingsEntryTitle(entry)}
+                </CommandItem>
+              )
+            })}
         </CommandGroup>
       </CommandList>
     </CommandDialog>
@@ -175,13 +194,7 @@ export function QuickMenuPalette({
 }
 
 /** Create actions whose storage does not exist yet. */
-const UNBUILT = [
-  { label: "New todo", icon: ListTodoIcon, note: "with the agent core" },
-  { label: "New note", icon: StickyNoteIcon, note: "with the agent core" },
-] as const;
+const UNBUILT = [{ label: "New workspace todo", icon: ListTodoIcon }] as const;
 
-const SECTION_LINKS = [
-  { label: "Git", icon: GitBranchIcon, note: "with git integration" },
-  { label: "Publish", icon: RocketIcon, note: "with previews" },
-  { label: "Todo", icon: ListTodoIcon, note: "with the agent core" },
-] as const;
+/** Sections whose page is still a placeholder: reachable, and marked so. */
+const SOON_SECTIONS: ReadonlySet<string> = new Set(["publish", "todo"]);

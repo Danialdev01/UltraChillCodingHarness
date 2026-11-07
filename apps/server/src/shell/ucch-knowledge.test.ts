@@ -25,25 +25,25 @@ describe("ucch-knowledge.sh", () => {
   });
 
   it("says what a harness-run agent is told, word for word", async () => {
-    await mkdir(join(root, ".ucch", "diagrams"), { recursive: true });
-    await writeFile(join(root, ".ucch", "INFO.md"), '\n# Demo\n\nSay "hi" \\ there\n\n');
-    await writeFile(join(root, ".ucch", "diagrams", "database.mmd"), "erDiagram\n");
-    await writeFile(join(root, ".ucch", "notes.md"), "x\n");
-    await symlink("/etc/passwd", join(root, ".ucch", "leak"));
+    await mkdir(join(root, ".agent", "diagrams"), { recursive: true });
+    await writeFile(join(root, ".agent", "index.md"), '\n# Demo\n\nSay "hi" \\ there\n\n');
+    await writeFile(join(root, ".agent", "diagrams", "database.mmd"), "erDiagram\n");
+    await writeFile(join(root, ".agent", "notes.md"), "x\n");
+    await symlink("/etc/passwd", join(root, ".agent", "leak"));
 
     const expected = await readProjectKnowledge(root);
-    expect(expected).toContain("--- .ucch/INFO.md ---");
+    expect(expected).toContain("--- .agent/index.md ---");
     expect(await shell(root)).toBe(`${expected}\n`);
   });
 
   it("gives the same text as a TOML string for codex", async () => {
-    await mkdir(join(root, ".ucch"), { recursive: true });
-    await writeFile(join(root, ".ucch", "INFO.md"), 'a "quote"\tand \\ a\nsecond line\n');
+    await mkdir(join(root, ".agent"), { recursive: true });
+    await writeFile(join(root, ".agent", "index.md"), 'a "quote"\tand \\ a\nsecond line\n');
     const expected = await readProjectKnowledge(root);
     expect(JSON.parse(await shell("--toml", root))).toBe(expected);
   });
 
-  it("says nothing for a project without .ucch/", async () => {
+  it("says nothing for a project without .agent/", async () => {
     expect(await shell(root)).toBe("");
     expect(await shell("--toml", root)).toBe("");
   });
@@ -129,8 +129,8 @@ describe("the claude and codex wrappers with the OMP bridge", () => {
 
     it.skipIf(name === "fish" && !hasFish)(`${name}: keeps the project's knowledge after the bridge`, async () => {
       await bridged();
-      await mkdir(join(root, "project", ".ucch"), { recursive: true });
-      await writeFile(join(root, "project", ".ucch", "INFO.md"), "Demo\n");
+      await mkdir(join(root, "project", ".agent"), { recursive: true });
+      await writeFile(join(root, "project", ".agent", "index.md"), "Demo\n");
       const claude = await wrapped("claude", ["go"]);
       expect(claude.slice(0, 3)).toEqual(["claude", `--mcp-config=${mcp}`, "--append-system-prompt"]);
       expect(claude.at(-1)).toBe("go");

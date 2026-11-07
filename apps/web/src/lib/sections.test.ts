@@ -224,7 +224,8 @@ describe("databasePathFromPath", () => {
 
 describe("docViewFromParam", () => {
   it("names the documentation view, keys included", () => {
-    expect(docViewFromParam("keys")).toBe("keys");
+    expect(docViewFromParam("env")).toBe("env");
+    expect(docViewFromParam("keys")).toBe("env");
     expect(docViewFromParam("diagrams")).toBe("diagrams");
   });
 

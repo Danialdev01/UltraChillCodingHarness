@@ -17,6 +17,8 @@ import {
   PROJECT_MODE_LABELS,
   PROJECT_MODES,
   suggestDevDatabaseName,
+  PROJECT_KEY_MAX,
+  PROJECT_KEY_MIN,
 } from "@ucch/protocol/plain";
 import type { DevDatabaseName, ProjectMode, DatabaseEngine, ProjectDatabase } from "@ucch/protocol";
 
@@ -46,6 +48,9 @@ import {
 } from "@/components/form-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createProject } from "@/lib/create-project";
+import { setupProjectKey } from "@/lib/env-api";
+import { unlockProject } from "@/lib/project-key-store";
+import { newKeyProblem } from "@/lib/project-key";
 import {
   NoGithubToken,
   fetchBranches,
@@ -132,6 +137,9 @@ export function NewProjectDialog({
   const [dbName, setDbName] = React.useState("");
   /** True once the database name has been edited, so the project name stops overwriting it. */
   const [dbNameTouched, setDbNameTouched] = React.useState(false);
+  /** Optional; encrypts the project's environment variables. Set up once the project exists. */
+  const [projectKey, setProjectKey] = React.useState("");
+  const [projectKeyConfirm, setProjectKeyConfirm] = React.useState("");
 
   // -- The GitHub tab --------------------------------------------------------
   const [account, setAccount] = React.useState<GithubAccount | null>(null);
@@ -165,6 +173,8 @@ export function NewProjectDialog({
     setEngine("");
     setDbName("");
     setDbNameTouched(false);
+    setProjectKey("");
+    setProjectKeyConfirm("");
     setAccount(null);
     setRepos(null);
     setReposError(null);
@@ -343,9 +353,12 @@ export function NewProjectDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, picked, name, ghBranch, repoUrl, branch, mode, engine, dbName, dbNameValid]);
 
+  // Blank is fine: the key is optional. Typed, it must be one that can be set up.
+  const projectKeyError = projectKey || projectKeyConfirm ? newKeyProblem(projectKey, projectKeyConfirm) : null;
+
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !workspaceId || !command) return;
+    if (busy || !workspaceId || !command || projectKeyError) return;
 
     setError(null);
 
@@ -356,6 +369,20 @@ export function NewProjectDialog({
       // the reason travels with it.
       if (created.databaseError) {
         toast({ title: "No development database", description: created.databaseError, tone: "error" });
+      }
+      // Not part of `project.create`: commands are kept as events, and the
+      // key must never be written down. Set up once the project's files exist.
+      if (projectKey) {
+        try {
+          await setupProjectKey(created.hash, projectKey);
+          unlockProject(created.hash, projectKey);
+        } catch (e) {
+          toast({
+            title: "Project key not set up",
+            description: `${e instanceof Error ? e.message : String(e)} Set one up under Manage → Project key.`,
+            tone: "error",
+          });
+        }
       }
 
       onOpenChange(false);
@@ -377,7 +404,7 @@ export function NewProjectDialog({
       description="Each project runs in an isolated workspace — the only place the agent can read or write."
       onSubmit={submit}
       footer={
-        <FormDialogFooter hint="Isolated workspace" hintIcon={LockIcon} busy={busy} disabled={!command}>
+        <FormDialogFooter hint="Isolated workspace" hintIcon={LockIcon} busy={busy} disabled={!command || Boolean(projectKeyError)}>
           {stage === "cloning"
             ? source === "new"
               ? "Initialising…"
@@ -502,6 +529,49 @@ export function NewProjectDialog({
                 </p>
               </div>
             )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="new-project-key" className={LABEL}>
+                  Project key <span className="text-(--fd-text-disabled)">· optional, recommended</span>
+                </label>
+                <input
+                  id="new-project-key"
+                  type="password"
+                  value={projectKey}
+                  onChange={(e) => setProjectKey(e.target.value)}
+                  autoComplete="new-password"
+                  data-1p-ignore
+                  data-lpignore="true"
+                  maxLength={PROJECT_KEY_MAX}
+                  disabled={busy}
+                  aria-invalid={Boolean(projectKeyError && projectKey.length < PROJECT_KEY_MIN && projectKey)}
+                  className={FIELD}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="new-project-key-confirm" className={LABEL}>
+                  Confirm the key
+                </label>
+                <input
+                  id="new-project-key-confirm"
+                  type="password"
+                  value={projectKeyConfirm}
+                  onChange={(e) => setProjectKeyConfirm(e.target.value)}
+                  autoComplete="new-password"
+                  data-1p-ignore
+                  data-lpignore="true"
+                  maxLength={PROJECT_KEY_MAX}
+                  disabled={busy || !projectKey}
+                  className={FIELD}
+                />
+              </div>
+              <p className={cn(HELPER, "sm:col-span-2", projectKeyError && projectKeyConfirm && "text-destructive")}>
+                {projectKeyError && projectKeyConfirm
+                  ? projectKeyError
+                  : "Encrypts the environment variables in .agent/env.val. It cannot be recovered, and can also be set up later under Manage."}
+              </p>
+            </div>
 
             <div role="separator" className="h-px bg-(--fd-border-subtle)" />
 

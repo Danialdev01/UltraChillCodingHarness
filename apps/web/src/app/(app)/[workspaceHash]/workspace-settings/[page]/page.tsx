@@ -1,5 +1,7 @@
 import { notFound } from "next/navigation";
 
+import { EmptyState } from "@/components/layout/empty-state";
+import { PageContainer } from "@/components/layout/page-container";
 import { WorkspaceSettingsPage } from "@/components/workspace-settings-page";
 import { isWorkspaceSettingsPageId } from "@/lib/sections";
 import { getSession, listProjects } from "@/lib/session";
@@ -15,8 +17,7 @@ export default async function Page({ params }: { params: Promise<{ workspaceHash
   const projects = active && page === "harness" ? await listProjects(active.id) : [];
 
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto p-4">
-      <div className="w-full max-w-3xl">
+    <PageContainer width="prose">
         {active ? (
           <WorkspaceSettingsPage
             page={page}
@@ -25,9 +26,8 @@ export default async function Page({ params }: { params: Promise<{ workspaceHash
             projects={projects.map((p) => ({ id: p.id, name: p.name }))}
           />
         ) : (
-          <p className="text-muted-foreground text-sm">There is no workspace to configure yet.</p>
+          <EmptyState framed title="There is no workspace to configure yet." />
         )}
-      </div>
-    </div>
+    </PageContainer>
   );
 }

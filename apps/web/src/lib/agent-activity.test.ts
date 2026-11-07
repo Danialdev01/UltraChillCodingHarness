@@ -12,7 +12,7 @@ const P = "11111111-1111-4111-8111-111111111111";
 const A = "22222222-2222-4222-8222-222222222222";
 const B = "33333333-3333-4333-8333-333333333333";
 const TURN = "44444444-4444-4444-8444-444444444444";
-type State = "queued" | "running" | "done" | "failed" | "idle";
+type State = "queued" | "running" | "waiting" | "done" | "failed" | "idle";
 const activity = (threadId: string, state: State): DomainEvent => ({
   type: "project.activity",
   projectId: P,
@@ -44,6 +44,12 @@ describe("agent activity", () => {
     expect(agentStatus(state[P], false, 1_000)).toBe("working");
     expect(agentStatus(reduceActivity(state, completed(B), 1_000)[P], false, 1_000)).toBe("done");
   });
+
+  it("keeps working while a turn waits on a permission prompt", () => {
+    const state = fold([started(A), activity(A, "waiting")])
+    expect(agentStatus(state[P], false, 1_000)).toBe("working")
+    expect(agentStatus(reduceActivity(state, completed(A), 1_000)[P], false, 1_000)).toBe("done")
+  })
 
   it("is not marked done when the turn failed or was stopped", () => {
     expect(agentStatus(fold([started(A), failed(A)])[P], false, 1_000)).toBe("error");

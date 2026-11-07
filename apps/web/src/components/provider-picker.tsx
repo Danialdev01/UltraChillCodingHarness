@@ -1,8 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { BotIcon } from "lucide-react"
 
+import { HarnessIcon } from "@/components/harness-icon"
 import { PickerChevron, pickerTrigger, type PickerLook } from "@/components/model-picker"
 import { Button } from "@/components/ui/button"
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
@@ -94,7 +94,7 @@ export function ProviderSelect({
           // On the toolbar, a narrow panel shows the robot alone; the name
           // is in the title and in the list it opens.
           <>
-            <BotIcon className="size-4 @md:hidden" />
+            <HarnessIcon harness={value} size={16} />
             <span className="sr-only @md:not-sr-only @md:truncate">{current?.label ?? value}</span>
             <span className="hidden @md:contents">
               <PickerChevron look={look} />
@@ -102,6 +102,7 @@ export function ProviderSelect({
           </>
         ) : (
           <>
+            <HarnessIcon harness={value} size={16} />
             <span className="truncate">{current?.label ?? value}</span>
             <PickerChevron look={look} />
           </>
@@ -129,6 +130,7 @@ export function ProviderSelect({
                       setOpen(false)
                     }}
                   >
+                    <HarnessIcon harness={id} size={16} />
                     <span className="shrink-0">{card?.label ?? id}</span>
                     {why && (
                       <span className="text-muted-foreground ml-auto min-w-0 truncate text-[10px]">

@@ -225,6 +225,20 @@
       "when": 1793605599737,
       "tag": "0031_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794026018892,
+      "tag": "0032_account_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794052820648,
+      "tag": "0033_session_sidebar",
+      "breakpoints": true
     }
   ]
 }

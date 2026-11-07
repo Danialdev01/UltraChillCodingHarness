@@ -74,6 +74,11 @@ import { registry as metrics } from "./metrics.js";
 
 export interface AgentOptions {
   secretKey: string | undefined;
+  /**
+   * A stored OpenRouter key was decrypted for a call: its ciphertext, for
+   * the account's "last used" (`KeyUsage.touchCiphertext`). Never the key.
+   */
+  onKeyUsed?: (encrypted: string) => void;
   defaultModel: string;
   /** For `web_search` and for compaction. Never the coding model. */
   searchModel: string;
@@ -1180,13 +1185,13 @@ export class AgentTurnReactor {
 
   /**
    * The workspace as every turn expects to find it: there, and with its
-   * `.ucch/INFO.md`. Run before every turn of every harness, which is what
-   * gives a project made before `.ucch` existed its folder.
+   * `.agent/index.md`. Run before every turn of every harness, which is what
+   * gives a project made before `.agent` existed its folder.
    *
    * Only once the checkout exists: `git clone` refuses a directory that is
-   * not empty, so a `.ucch` written while the clone is still queued would
+   * not empty, so a `.agent` written while the clone is still queued would
    * fail it -- and the clone writes the folder itself when it lands. A
-   * `.ucch` the harness cannot write -- a symlink, a file of that name -- is
+   * `.agent` the harness cannot write -- a symlink, a file of that name -- is
    * the operator's to hear about, not a reason to fail the person's turn.
    */
   async #prepareWorkspace(workspace: string): Promise<void> {
@@ -1889,7 +1894,9 @@ export class AgentTurnReactor {
     if (!encrypted) {
       throw new Error("No OpenRouter API key is set. Add one in Settings -- or, when this workspace uses its own subscription, in Workspace settings -> Harness -- to talk to the agent.");
     }
-    return decryptSecret(encrypted, this.options.secretKey);
+    const key = decryptSecret(encrypted, this.options.secretKey);
+    this.options.onKeyUsed?.(encrypted);
+    return key;
   }
 }
 
@@ -1990,7 +1997,7 @@ ${DOCUMENTATION_RULES}`;
 
 /**
  * What an OMP turn adds to OMP's system prompt (solution §3.8): the
- * project's `.ucch/` knowledge, then the few rules that are UCCH's rather
+ * project's `.agent/` knowledge, then the few rules that are UCCH's rather
  * than the project's, then the composer mode's. OMP reads the worktree's
  * AGENTS.md itself.
  */

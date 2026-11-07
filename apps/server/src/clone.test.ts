@@ -498,14 +498,14 @@ describe("CloneReactor: settings and development database", () => {
     return { made, adapterFor };
   }
 
-  it("writes .ucch/INFO.md for every project, and nothing about a database", async () => {
+  it("writes .agent/index.md for every project, and nothing about a database", async () => {
     const root = join(scratch, "ctx-1");
     const { clones, emitted, errors } = reactor(root, created({ mode: "research", database: null }));
     await clones.drain();
 
     expect(errors).toEqual([]);
     expect(emitted[0]).not.toHaveProperty("databaseError");
-    const context = await readFile(join(root, PROJECT, ".ucch", "INFO.md"), "utf8");
+    const context = await readFile(join(root, PROJECT, ".agent", "index.md"), "utf8");
     expect(context).toContain("Mode: Research");
     expect(context).not.toContain("database");
     await expect(readFile(join(root, PROJECT, ".env"), "utf8")).rejects.toThrow();
@@ -535,7 +535,7 @@ describe("CloneReactor: settings and development database", () => {
       "DATABASE_URL=postgres://dev:p%40ss@db.local:5432/app_dev\n",
     );
     expect(await readFile(join(dest, ".gitignore"), "utf8")).toContain(".env\n");
-    const context = await readFile(join(dest, ".ucch", "INFO.md"), "utf8");
+    const context = await readFile(join(dest, ".agent", "index.md"), "utf8");
     expect(context).toContain("`app_dev`");
     expect(context).not.toContain("p@ss");
 
@@ -577,7 +577,7 @@ describe("CloneReactor: settings and development database", () => {
 
     const dest = join(root, PROJECT);
     const { stdout: tracked } = await run("git", ["-C", dest, "ls-files"]);
-    expect(tracked.split("\n").filter(Boolean).sort()).toEqual([".gitignore", ".ucch/INFO.md", "README.md"]);
+    expect(tracked.split("\n").filter(Boolean).sort()).toEqual([".agent/index.md", ".gitignore", "README.md"]);
     const { stdout: status } = await run("git", ["-C", dest, "status", "--porcelain"]);
     expect(status.trim()).toBe("");
     expect(await readFile(join(dest, ".env"), "utf8")).toContain("DATABASE_URL=");

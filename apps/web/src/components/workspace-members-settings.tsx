@@ -19,6 +19,7 @@ import { addMember, listMembers, removeMember, updateMember, type WorkspaceMembe
 import { useTransitionRouter } from "@/lib/view-transitions"
 import { useCachedState } from "@/lib/queries/cached-state"
 import { qk } from "@/lib/query-keys"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 export const ROLE_LABELS: Record<WorkspaceRole, string> = {
   owner: "Owner",
@@ -68,15 +69,8 @@ export function WorkspaceMembersSettings({
     <div className="flex flex-col gap-4">
       {manages && <AddMember workspaceId={workspace.id} actor={actor} onAdded={load} />}
 
-      <section className="rounded-lg border p-6">
-        <h2 className="flex items-center gap-2 text-sm font-medium">
-          <UsersRoundIcon className="text-muted-foreground size-4" />
-          Members of {workspace.name}
-        </h2>
-        <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-          Each person has a role. Project and session creation can also be allowed or refused per
-          person, whatever their role says.
-        </p>
+      <SettingsSection icon={UsersRoundIcon} title={<>Members of {workspace.name}</>} description={<>Each person has a role. Project and session creation can also be allowed or refused per
+          person, whatever their role says.</>} bare>
 
         {loadError && <p className="text-destructive mt-4 text-sm">{loadError}</p>}
         {!members && !loadError && <ListRowsSkeleton rows={3} className="mt-4 flex flex-col gap-2" />}
@@ -94,9 +88,9 @@ export function WorkspaceMembersSettings({
             ))}
           </ul>
         )}
-      </section>
+      </SettingsSection>
 
-      <section className="rounded-lg border p-6">
+      <section className="bg-card rounded-lg border p-4">
         <h2 className="text-sm font-medium">Roles</h2>
         <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-[8rem_1fr]">
           {(Object.keys(ROLE_LABELS) as WorkspaceRole[]).map((role) => (
@@ -128,15 +122,8 @@ function AddMember({
   const { busy, error, done, run } = useOutcome()
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <UserPlusIcon className="text-muted-foreground size-4" />
-        Add a member
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Someone who already has an account here, by username or email. For anyone else, make an
-        invite link under Sharing.
-      </p>
+    <SettingsSection icon={UserPlusIcon} title="Add a member" description={<>Someone who already has an account here, by username or email. For anyone else, make an
+        invite link under Sharing.</>} bare>
       <form
         className="mt-4 flex max-w-xl flex-col gap-3 sm:flex-row sm:items-end"
         onSubmit={(e) => {
@@ -175,7 +162,7 @@ function AddMember({
         </Button>
       </form>
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 

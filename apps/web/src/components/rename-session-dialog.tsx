@@ -5,16 +5,21 @@ import { PencilIcon } from "lucide-react"
 
 import { FIELD, FormDialog, FormDialogFooter, FormField } from "@/components/form-dialog"
 import { renameProject } from "@/lib/create-project"
-import type { Project } from "@/lib/session"
-
+/**
+ * Renames a session. A session workspace's session is its project, renamed
+ * by default; `save` names it some other way (a project's session, whose
+ * title is its thread's).
+ */
 export function RenameSessionDialog({
   session,
   onOpenChange,
   onRenamed,
+  save,
 }: {
-  session: Project | null
+  session: { hash: string; name: string } | null
   onOpenChange: (open: boolean) => void
   onRenamed: () => void
+  save?: (name: string) => Promise<void>
 }) {
   const [name, setName] = React.useState("")
   const [pending, setPending] = React.useState(false)
@@ -32,7 +37,7 @@ export function RenameSessionDialog({
     setPending(true)
     setError(null)
     try {
-      await renameProject(session.hash, name.trim())
+      await (save ? save(name.trim()) : renameProject(session.hash, name.trim()))
       onOpenChange(false)
       onRenamed()
     } catch (e) {

@@ -1,4 +1,4 @@
-import { stoppedShort, type DomainEvent, type ProjectActivityState } from "@ucch/protocol";
+import { stoppedShort, titleFromPrompt, type DomainEvent, type ProjectActivityState } from "@ucch/protocol";
 import type { EventBus, Publication } from "./bus.js";
 
 /**
@@ -21,6 +21,11 @@ export function activityOf(event: DomainEvent): { threadId: string; state: Proje
       return { threadId: event.threadId, state: "failed" };
     case "turn.dequeued":
       return { threadId: event.threadId, state: "idle" };
+    // A prompt holds the turn until someone answers it: the sidebar says so.
+    case "agent.permission_requested":
+      return { threadId: event.threadId, state: "waiting" };
+    case "agent.permission_resolved":
+      return { threadId: event.threadId, state: "running" };
     default:
       return null;
   }
@@ -42,6 +47,14 @@ export function activityOf(event: DomainEvent): { threadId: string; state: Proje
  * that arrive while it is in flight wait on the same promise and go out in
  * the order they came.
  */
+const SESSION_ROWS: ReadonlySet<DomainEvent["type"]> = new Set([
+  "thread.created",
+  "thread.removed",
+  "thread.updated",
+  "thread.worktree_ready",
+  "thread.worktree_failed",
+]);
+
 export class ProjectActivityPublisher {
   #workspaces = new Map<string, Promise<string | null>>();
 
@@ -59,13 +72,23 @@ export class ProjectActivityPublisher {
   #onPublication({ projectId, event }: Publication): void {
     const activity = activityOf(event);
     const stack = event.type === "project.stack_detected";
-    if (!activity && !stack) return;
+    // A session coming or going is a row in every sidebar listing the
+    // workspace's sessions, not only in the open project's.
+    // A message that can name its session may just have done so (the
+    // engine titles a placeholder-named thread on its first message): the
+    // sidebars read the new title now rather than when the turn ends.
+    const sessions =
+      SESSION_ROWS.has(event.type) || (event.type === "user.message" && titleFromPrompt(event.text) !== null);
+    if (!activity && !stack && !sessions) return;
 
     void this.#workspace(projectId).then((workspaceId) => {
       if (!workspaceId) return;
       if (activity) {
         this.bus.publishToWorkspace(workspaceId, { type: "project.activity", projectId, ...activity });
-      } else {
+      }
+      if (sessions) {
+        this.bus.publishToWorkspace(workspaceId, { type: "resource.changed", projectId, resource: "sessions" });
+      } else if (stack) {
         this.bus.publishToWorkspace(workspaceId, { type: "resource.changed", projectId, resource: "projects" });
       }
     });

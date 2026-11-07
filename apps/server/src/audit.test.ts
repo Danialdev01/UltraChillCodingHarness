@@ -33,22 +33,39 @@ describe("textDelta", () => {
 
 describe("describeRoute", () => {
   it("skips reads, self-logging routes and ignored ones", () => {
-    expect(describeRoute("GET", "/api/projects/:hash/keys", {}, undefined)).toBeNull();
+    expect(describeRoute("GET", "/api/projects/:hash/env", {}, undefined)).toBeNull();
     expect(describeRoute("PATCH", "/api/projects/:hash/notes/:noteId", {}, {})).toBeNull();
     expect(describeRoute("POST", "/api/ws-ticket", {}, {})).toBeNull();
   });
 
-  it("names a key by its name and never by its value", () => {
-    const change = describeRoute("POST", "/api/projects/:hash/keys", { hash: "abc" }, { name: "Stripe", value: "sk_live_secret" });
-    expect(change).toMatchObject({ action: "key.create", scope: "project", resource: "keys" });
+  it("names a variable by its name and never by its value or the project key", () => {
+    const body = { name: "Stripe", value: "sk_live_secret", projectKey: "hunter2-hunter2" };
+    const change = describeRoute("POST", "/api/projects/:hash/env/vars", { hash: "abc" }, body);
+    expect(change).toMatchObject({ action: "env_var.create", scope: "project", resource: "keys" });
     expect(JSON.stringify(change)).not.toContain("sk_live_secret");
+    expect(JSON.stringify(change)).not.toContain("hunter2");
+    const patch = describeRoute("PATCH", "/api/projects/:hash/env/vars/:varId", { hash: "abc", varId: "v" }, body);
+    expect(JSON.stringify(patch)).not.toContain("hunter2");
+    expect(JSON.stringify(patch)).not.toContain("projectKey");
   });
 
   it("puts account settings on the account", () => {
-    expect(describeRoute("PUT", "/api/settings/openrouter", {}, { key: "sk-or-secret" })).toMatchObject({
+    expect(describeRoute("PUT", "/api/settings/default-model", {}, { model: "x" })).toMatchObject({
       scope: "account",
       resource: "account_settings",
     });
+  });
+
+  it("leaves the API key routes to log themselves, once", () => {
+    for (const [method, url] of [
+      ["PUT", "/api/settings/openrouter"],
+      ["PUT", "/api/account/keys/:provider"],
+      ["DELETE", "/api/account/keys/:provider"],
+      ["POST", "/api/account/keys/:provider/reveal"],
+      ["POST", "/api/account/reauth"],
+    ] as const) {
+      expect(describeRoute(method, url, { provider: "openrouter" }, { key: "sk-or-secret", password: "pw" })).toBeNull();
+    }
   });
 
   it("describes the database manager's routes from their shape", () => {

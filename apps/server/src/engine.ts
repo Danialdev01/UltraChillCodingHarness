@@ -3,6 +3,8 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   generateHash,
   hasScope,
+  PLACEHOLDER_TITLES,
+  titleFromPrompt,
   REQUIRED_SCOPE,
   type Command,
   type ContainerState,
@@ -422,6 +424,17 @@ export async function applyProjection(
           .where(eq(threads.id, event.threadId));
         break;
 
+      case "thread.updated": {
+        // A hand-given title replaces whatever the first message made, and
+        // is never replaced by one: it is not a placeholder.
+        const set: Partial<typeof threads.$inferInsert> = {};
+        if (event.title !== undefined) set.title = event.title;
+        if (event.pinned !== undefined) set.pinned = event.pinned;
+        if (event.archived !== undefined) set.archivedAt = event.archived ? new Date() : null;
+        await tx.update(threads).set(set).where(eq(threads.id, event.threadId));
+        break;
+      }
+
       case "user.message": {
         // The message claims the thread. `decide` refuses a send unless the
         // thread is idle or errored, but two sends can both read it so; only
@@ -429,10 +442,31 @@ export async function applyProjection(
         // `turn.started` moves it on to `running`, `turn.dequeued` back.
         const claimed = await tx
           .update(threads)
-          .set({ status: "queued" })
+          .set({ status: "queued", lastActivityAt: sql`now()` })
           .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["idle", "error"])))
           .returning({ id: threads.id });
         if (claimed.length === 0) throw new ProjectionConflict("this thread already has a turn in progress");
+        // The first thing said names the session, if nobody has yet: a pure
+        // function of the event, so a replayed log titles it the same way.
+        const title = titleFromPrompt(event.text);
+        if (title) {
+          await tx
+            .update(threads)
+            .set({ title })
+            .where(and(eq(threads.id, event.threadId), inArray(threads.title, [...PLACEHOLDER_TITLES])));
+          // In a session workspace the card is the project's: its name is
+          // the session's title, so it is named the same way.
+          await tx
+            .update(projects)
+            .set({ name: title })
+            .where(
+              and(
+                eq(projects.id, projectOfThread(event.threadId)),
+                inArray(projects.name, [...PLACEHOLDER_TITLES]),
+                sql`exists (select 1 from ${workspaces} where ${workspaces.id} = ${projects.workspaceId} and ${workspaces.kind} = 'session')`,
+              ),
+            );
+        }
         break;
       }
 
@@ -556,7 +590,10 @@ export async function applyProjection(
           .update(turns)
           .set({ usage: event.usage, costUsd: event.costUsd, stopReason: event.stopReason })
           .where(eq(turns.id, event.turnId));
-        await tx.update(threads).set({ status: "idle" }).where(eq(threads.id, event.threadId));
+        await tx
+          .update(threads)
+          .set({ status: "idle", lastActivityAt: sql`now()` })
+          .where(eq(threads.id, event.threadId));
         // Added to, never read and written back: the agent reactor appends
         // alongside the engine, and a read-modify-write would lose one.
         const { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens } = event.usage;
@@ -574,7 +611,10 @@ export async function applyProjection(
 
       case "agent.turn_failed":
         await tx.update(turns).set({ error: event.error }).where(eq(turns.id, event.turnId));
-        await tx.update(threads).set({ status: "error" }).where(eq(threads.id, event.threadId));
+        await tx
+          .update(threads)
+          .set({ status: "error", lastActivityAt: sql`now()` })
+          .where(eq(threads.id, event.threadId));
         await markLastTurnFailed(tx, event.turnId);
         break;
 

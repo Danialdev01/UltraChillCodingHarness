@@ -9,7 +9,7 @@ import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, inArray, lt, ne, notLike, or, sql } from "drizzle-orm";
-import { createDatabase, notes, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
+import { accountKeys, createDatabase, notes, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
 import { HeavyJobGate } from "@ucch/agent";
 import {
   AgentPermissionMode,
@@ -79,8 +79,14 @@ import { StorageService } from "./storage.js";
 import { NotesService } from "./notes.js";
 import { registerNoteRoutes } from "./notes-routes.js";
 import { registerTimelineRoutes } from "./timeline-routes.js";
-import { registerKeyRoutes } from "./keys-routes.js";
-import { ProjectKeyService } from "./keys.js";
+import { registerEnvRoutes } from "./env-routes.js";
+import { registerAccountKeyRoutes } from "./account-keys-routes.js";
+import { backfillSessionTitles } from "./session-titles.js";
+import { registerSessionRoutes } from "./session-routes.js";
+import { DbAccountKeys, KeyUsage, backfillAccountKeyMetadata, checkKeyLive } from "./account-keys.js";
+import { DbStepUpStore } from "./step-up.js";
+import { LOG_REDACT } from "./log-redact.js";
+import { EnvVarService } from "./env-vars.js";
 import { TimelineService } from "./timeline.js";
 import { TasksService } from "./tasks.js";
 import { registerTaskRoutes } from "./tasks-routes.js";
@@ -95,7 +101,7 @@ import { FileWatcher } from "./file-watcher.js";
 import { registerDbManagerRoutes } from "./db-manager-routes.js";
 import { adapterFor } from "./db-manager/index.js";
 import { DatabaseConnectionService } from "./database-connections.js";
-import { devServersFromConfig, ensureProjectInfo, renderDefaultInfo } from "./dev-database.js";
+import { devServersFromConfig, ensureProjectInfo, refreshIndexFiles, renderDefaultInfo } from "./dev-database.js";
 import { probe } from "./database-probe.js";
 import { GitService } from "./git.js";
 import { registerGitRoutes } from "./git-routes.js";
@@ -203,6 +209,8 @@ const audit = new AuditLog(
   },
   (error) => app.log.error({ err: error }, "could not write to the activity log"),
 );
+/** "Last used" on the API keys page: touched when a stored key is decrypted for a call. */
+const keyUsage = new KeyUsage(db, (error) => app.log.warn({ err: error }, "could not record key use"));
 const workspaceFiles = new WorkspaceFiles(config.WORKSPACE_ROOT);
 const storageService = new StorageService(db, workspaceService, config.WORKSPACE_ROOT);
 
@@ -267,6 +275,7 @@ const agentTurns = new AgentTurnReactor(
   store,
   {
     secretKey: config.SECRET_KEY,
+    onKeyUsed: (encrypted) => keyUsage.touchCiphertext("openrouter", encrypted),
     defaultModel: config.DEFAULT_MODEL,
     searchModel: config.SEARCH_MODEL,
     workspaceRoot: config.WORKSPACE_ROOT,
@@ -313,6 +322,7 @@ async function ownerCredentials(
 ): Promise<{ token: string | null; author: { name: string; email: string } }> {
   const [owner] = await db
     .select({
+      id: users.id,
       login: users.login,
       name: users.name,
       email: users.email,
@@ -325,8 +335,10 @@ async function ownerCredentials(
     .limit(1);
   if (!owner) return { token: null, author: { name: "UltraChillCodingHarness", email: "harness@localhost" } };
 
+  const pat = decryptOrNull(owner.github);
+  if (pat) keyUsage.touch(owner.id, "github");
   return {
-    token: decryptOrNull(owner.github) ?? decryptOrNull(owner.oauth),
+    token: pat ?? decryptOrNull(owner.oauth),
     author: {
       name: owner.name || owner.login,
       // A commit needs an address and an account may have none. The
@@ -423,6 +435,7 @@ const terminals = new TerminalReactor(
       maxSeconds: config.OMP_BRIDGE_MAX_SECONDS,
       leases: bridgeLeases,
       secretKey: config.SECRET_KEY,
+      onKeyUsed: (encrypted) => keyUsage.touchCiphertext("openrouter", encrypted),
       defaultModel: config.DEFAULT_MODEL,
       runDir: (subject) => providerService.ompRunDir(subject),
       agentDir: (subject) => providerService.ompAgentDir(subject),
@@ -595,6 +608,15 @@ async function auditCommand(
       entry.targetId = created && "threadId" in created ? created.threadId : null;
       break;
     }
+    case "thread.update": {
+      const what = [
+        command.title !== undefined ? `renamed it to "${command.title}"` : null,
+        command.pinned !== undefined ? (command.pinned ? "pinned it" : "unpinned it") : null,
+        command.archived !== undefined ? (command.archived ? "archived it" : "restored it") : null,
+      ].filter(Boolean);
+      entry = thread("session.update", `Changed a session: ${what.join(", ")}`);
+      break;
+    }
     case "thread.cancel":
       entry = thread("chat.cancel", "Stopped the agent");
       break;
@@ -725,7 +747,11 @@ const web = config.WEB_UPSTREAM
   : null;
 
 const app = Fastify({
-  logger: { level: logLevel(config) },
+  logger: {
+    level: logLevel(config),
+    // Secrets by field name, wherever they appear (log-redact.ts).
+    redact: LOG_REDACT,
+  },
   // One line per request drowned the log; the slow ones and the failures
   // are logged below, and /metrics counts every one.
   disableRequestLogging: true,
@@ -2480,10 +2506,89 @@ const taskScheduler = new TaskScheduler({
 });
 taskScheduler.start();
 
-registerKeyRoutes(app, {
+registerEnvRoutes(app, {
   projectFor,
-  keys: config.SECRET_KEY ? new ProjectKeyService(db, config.SECRET_KEY) : null,
+  userFor: async (request) => (await auth.resolveSession(request.cookies[SESSION_COOKIE]))?.userId ?? null,
+  env: new EnvVarService(
+    db,
+    (projectId) => join(config.WORKSPACE_ROOT, projectId),
+    config.SECRET_KEY ?? null,
+    (dir) => refreshIndexFiles(dir),
+  ),
 });
+
+registerSessionRoutes(app, {
+  db,
+  principal: (request) => auth.resolveSession(request.cookies[SESSION_COOKIE]),
+  canView: (workspaceId, userId) => workspaceService.canView(workspaceId, userId),
+});
+
+registerAccountKeyRoutes(app, {
+  principal: (request) => auth.resolveSession(request.cookies[SESSION_COOKIE]),
+  // Listing and removing need no SECRET_KEY; storing and revealing are
+  // refused without one before this is reached.
+  keys: new DbAccountKeys(db, config.SECRET_KEY ?? ""),
+  encryptionAvailable: Boolean(config.SECRET_KEY),
+  check: (provider, key) => checkKeyLive(provider, key),
+  password: {
+    check: (userId, password) => auth.checkPassword(userId, password),
+    // Under DEV_AUTH_BYPASS any cookie is the dev user already, so the hour
+    // a first password must wait guards nothing; waived so a local run (and
+    // the e2e suite) can set one and use it at once.
+    state: async (userId) => {
+      const state = await auth.passwordState(userId);
+      return config.DEV_AUTH_BYPASS ? { ...state, addedAt: null } : state;
+    },
+  },
+  stepUp: new DbStepUpStore(db),
+  // Present or not; never decrypted here.
+  githubFromLogin: async (userId) => {
+    const [row] = await db
+      .select({ has: sql<boolean>`${users.accessTokenEncrypted} is not null` })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return Boolean(row?.has);
+  },
+  audit: async (entry) => {
+    await audit.record({
+      projectId: null,
+      userId: entry.userId,
+      clientId: null,
+      action: entry.action,
+      targetType: "api_key",
+      targetId: entry.provider,
+      summary: entry.summary,
+      details: entry.details,
+    });
+  },
+  changed: (userId, provider) => {
+    // A new key has a new balance; the old one's must not show for a minute.
+    if (provider === "openrouter") {
+      quotaCache.delete(userId);
+      sessionQuotaCache.delete(userId);
+    }
+    bus.publishToUser(userId, { type: "resource.changed", projectId: null, resource: "account_settings" });
+  },
+});
+
+// Metadata for keys stored before `account_keys` existed: decrypted once,
+// here, for their prefix and last four. A no-op once caught up.
+if (config.SECRET_KEY) {
+  backfillAccountKeyMetadata(db, config.SECRET_KEY, (provider, userId) =>
+    app.log.warn({ provider, userId }, "a stored key could not be decrypted for its metadata"),
+  ).then(
+    (written) => written > 0 && app.log.info({ written }, "backfilled account key metadata"),
+    (error) => app.log.error({ err: error }, "account key metadata backfill failed"),
+  );
+}
+
+// Sessions whose first message came before the engine titled them, still
+// "Untitled": named the way the engine names them now. A no-op once caught up.
+backfillSessionTitles(db).then(
+  (titled) => titled > 0 && app.log.info({ titled }, "titled sessions left untitled"),
+  (error) => app.log.error({ err: error }, "session title backfill failed"),
+);
 
 registerDatabaseRoutes(app, {
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
@@ -3026,7 +3131,12 @@ async function githubTokenFor(userId: string): Promise<string | null> {
     .where(eq(users.id, userId))
     .limit(1);
   if (!row) return null;
-  return decryptOrNull(row.token) ?? decryptOrNull(row.oauth);
+  const token = decryptOrNull(row.token);
+  if (token) {
+    keyUsage.touch(userId, "github");
+    return token;
+  }
+  return decryptOrNull(row.oauth);
 }
 
 /**
@@ -3047,21 +3157,13 @@ async function defaultModelFor(userId: string): Promise<string> {
 }
 
 /**
- * What the settings page is allowed to know about a stored key: that there is
- * one, and enough of it to recognise which. The key itself never comes back
- * out of the server.
+ * What a settings reply may say about a stored key: that there is one, and
+ * its last four from `account_keys` -- read, never decrypted. The full
+ * metadata is `GET /api/account/keys`.
  */
-function describeKey(encrypted: string | null): { configured: boolean; hint: string | null } {
-  if (!encrypted || !config.SECRET_KEY) return { configured: false, hint: null };
-  try {
-    const key = decryptSecret(encrypted, config.SECRET_KEY);
-    return { configured: true, hint: `…${key.slice(-4)}` };
-  } catch {
-    // A key encrypted under a SECRET_KEY that has since changed is not
-    // recoverable, and saying "configured" would be a lie the user cannot act
-    // on -- they would have no way to tell why every turn fails.
-    return { configured: false, hint: null };
-  }
+function describeKey(encrypted: string | null, last4: string | null | undefined): { configured: boolean; hint: string | null } {
+  if (!encrypted) return { configured: false, hint: null };
+  return { configured: true, hint: last4 ? `…${last4}` : null };
 }
 
 /**
@@ -3276,6 +3378,7 @@ app.get("/api/account/openrouter/quota", async (request, reply) => {
     .limit(1);
   const apiKey = decryptOrNull(row?.openrouter ?? null);
   if (!apiKey) return reply.code(404).send({ error: "no_key" });
+  keyUsage.touch(principal.userId, "openrouter");
 
   try {
     const quota = await keyQuota(apiKey, AbortSignal.timeout(10_000));
@@ -3356,6 +3459,7 @@ async function sessionQuotasFor(userId: string): Promise<SessionQuotas> {
       .limit(1);
     const apiKey = decryptOrNull(row?.openrouter ?? null);
     if (!apiKey) return { provider: "native", status: "no_auth" };
+    keyUsage.touch(userId, "openrouter");
     try {
       const quota = await keyQuota(apiKey, AbortSignal.timeout(10_000));
       quotaCache.set(userId, { at: Date.now(), quota });
@@ -3395,14 +3499,19 @@ app.get("/api/settings", async (request, reply) => {
     .from(users)
     .where(eq(users.id, principal.userId))
     .limit(1);
+  const metas = await db
+    .select({ provider: accountKeys.provider, last4: accountKeys.last4 })
+    .from(accountKeys)
+    .where(eq(accountKeys.userId, principal.userId));
+  const last4 = (provider: string) => metas.find((m) => m.provider === provider)?.last4;
 
   // Only ever whether a key is set and its last four characters. The values
   // themselves are decrypted where they are used and nowhere else.
   return {
-    openrouter: describeKey(row?.openrouter ?? null),
-    resend: describeKey(row?.resend ?? null),
+    openrouter: describeKey(row?.openrouter ?? null, last4("openrouter")),
+    resend: describeKey(row?.resend ?? null, last4("resend")),
     github: {
-      ...describeKey(row?.github ?? null),
+      ...describeKey(row?.github ?? null, last4("github")),
       // Whether the repository list will work without a token of its own,
       // which is the difference between "set one up" and "you already can".
       inheritedFromLogin: Boolean(decryptOrNull(row?.oauth ?? null)),
@@ -3449,86 +3558,8 @@ app.put("/api/settings/agent-permission-mode", async (request, reply) => {
   return { agentPermissionMode: parsed.data.mode };
 });
 
-const ApiKeyBody = z.object({
-  /** null clears the stored key. */
-  apiKey: z.string().trim().min(1).max(400).nullable(),
-});
-
-/**
- * Stores or clears one of the account's third-party keys.
- *
- * One handler for both providers because the handling is identical and must
- * stay that way: write-only, encrypted with `SECRET_KEY`, refused outright
- * when there is no key to encrypt with, and answered with nothing but the
- * hint. A second copy of this would be a second place for one of those to
- * quietly stop being true.
- */
-async function storeApiKey(
-  request: { cookies: Record<string, string | undefined>; body: unknown },
-  reply: {
-    code(status: number): { send(body: unknown): unknown };
-  },
-  provider: "openrouter" | "resend" | "github",
-) {
-  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
-  if (!principal) return reply.code(401).send({ error: "unauthorized" });
-
-  const parsed = ApiKeyBody.safeParse(request.body);
-  if (!parsed.success) return reply.code(400).send({ error: "an api key or null is required" });
-
-  if (parsed.data.apiKey && !config.SECRET_KEY) {
-    // Storing it in the clear would be worse than refusing.
-    return reply
-      .code(409)
-      .send({ error: "SECRET_KEY is not configured, so a key cannot be stored safely" });
-  }
-
-  const encrypted = parsed.data.apiKey
-    ? encryptSecret(parsed.data.apiKey, config.SECRET_KEY!)
-    : null;
-
-  await db
-    .update(users)
-    .set(
-      provider === "openrouter"
-        ? { openrouterKeyEncrypted: encrypted }
-        : provider === "resend"
-          ? { resendKeyEncrypted: encrypted }
-          : { githubTokenEncrypted: encrypted },
-    )
-    .where(eq(users.id, principal.userId));
-
-  // A new key has a new balance; the old one's must not show for a minute.
-  if (provider === "openrouter") {
-    quotaCache.delete(principal.userId);
-    sessionQuotaCache.delete(principal.userId);
-  }
-
-  return { [provider]: describeKey(encrypted) };
-}
-
-app.put("/api/settings/openrouter", (request, reply) =>
-  storeApiKey(request, reply, "openrouter"),
-);
-
-/**
- * The Resend key: transactional email out of the harness.
- *
- * Nothing sends mail yet -- address verification is what it is for, and that
- * lands with it. The key is stored now so the account page is one place
- * rather than two, and so the encryption question is answered once.
- */
-app.put("/api/settings/resend", (request, reply) => storeApiKey(request, reply, "resend"));
-
-/**
- * The GitHub token: listing your repositories, and cloning the private ones.
- *
- * Stored in its own column rather than over the OAuth token from signing in,
- * which the login flow owns and replaces. Saving one is answered with the
- * hint alone, like every other key here -- whether it *works* is a question
- * for `/api/github/repos`, which is the call that would use it.
- */
-app.put("/api/settings/github", (request, reply) => storeApiKey(request, reply, "github"));
+// The account's own keys -- OpenRouter, Resend, GitHub -- and the older
+// `PUT /api/settings/:provider` routes live in account-keys-routes.ts.
 
 const DefaultModelBody = z.object({
   /** null clears the choice, so the server's own default applies again. */
@@ -3800,6 +3831,10 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
       worktreeError: threads.worktreeError,
       treeHash: threads.treeHash,
       handoffFromThreadId: threads.handoffFromThreadId,
+      pinned: threads.pinned,
+      archivedAt: threads.archivedAt,
+      lastActivityAt: threads.lastActivityAt,
+      createdByUserId: threads.createdByUserId,
       createdAt: threads.createdAt,
     })
     .from(threads)
@@ -4137,7 +4172,7 @@ await bridgeLeases
   .listen(BRIDGE_SOCKET)
   .catch((error: unknown) => app.log.warn({ err: error, path: BRIDGE_SOCKET }, "could not open the OMP bridge's scheduler socket"));
 
-// Every project keeps its knowledge in `.ucch/`, and projects made before
+// Every project keeps its knowledge in `.agent/` (once `.ucch/`), and projects made before
 // that did not get the folder at creation. Each turn fills it in too; this is
 // for the projects nobody has opened a chat in. Checkouts only: a clone still
 // queued must find its directory empty.
@@ -4146,11 +4181,11 @@ void (async () => {
   for (const row of rows) {
     const dir = join(config.WORKSPACE_ROOT, row.id);
     if (!existsSync(join(dir, ".git"))) continue;
-    await ensureProjectInfo(dir, renderDefaultInfo(row.name)).catch((err: unknown) =>
-      app.log.warn({ err, projectId: row.id }, "could not write .ucch/INFO.md"),
+    await ensureProjectInfo(dir, (description) => renderDefaultInfo(row.name, description)).catch((err: unknown) =>
+      app.log.warn({ err, projectId: row.id }, "could not write .agent/index.md"),
     );
   }
-})().catch((err: unknown) => app.log.warn({ err }, ".ucch backfill failed"));
+})().catch((err: unknown) => app.log.warn({ err }, ".agent backfill failed"));
 app.log.info(
   {
     rootDomain: config.ROOT_DOMAIN,

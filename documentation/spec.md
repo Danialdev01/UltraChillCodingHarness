@@ -176,7 +176,9 @@ A waiting call shows a prompt above the composer: allow, deny, or "allow all for
 
 There is deliberately no push tool: agents may commit, only people push.
 
-**Project knowledge.** Files under the project's `.ucch/` (and AGENTS.md / CLAUDE.md, up to 16 KB) are given to every agent as context, as `context.injected` events.
+**Project knowledge.** Files under the project's `.agent/` (and AGENTS.md / CLAUDE.md, up to 16 KB) are given to every agent as context, as `context.injected` events. `.agent/index.md` describes the application and lists the folder; the harness detects the description once, from `package.json` or the README, and afterwards only refreshes the list.
+
+**Environment variables.** Kept in `.agent/env.val`, committed with the project. Values are encrypted under a key derived from the project key, which is optional, set up in the new project dialog or under Manage, and never stored. The section is enabled once a key exists, and a value is only shown to someone who enters the key in the app. Names, tags and urls stay readable in the file, so anyone who can read the repository can read them. A public site never serves the file.
 
 **Quota rail.** The sidebar shows a bar each for Claude Code, Codex and OpenRouter: percent used and when it resets, read from the vendors, cached for a minute (`GET /api/account/quotas`, `/api/account/openrouter/quota`).
 
@@ -279,7 +281,7 @@ All of these need `OMP_ENABLED`, the pinned `omp` binary (in the image) and an O
 
 The server caches reads per working tree (`git-cache.ts`) and invalidates them on `file.changed` and git actions. Every git write is announced so all tabs refresh, and is written to the activity log. Pushing and pulling authenticate with the account's GitHub token through a credential helper, and the token never goes on a command line. Commits use the account's name and email.
 
-**Settings → API Management** (`/setting/api`): a GitHub personal token (when not signed in with GitHub), an OpenRouter key and a Resend key, each encrypted (`PUT /api/settings/{github,openrouter,resend}`).
+**Settings → API keys** (`/setting/api`): a GitHub personal token (when not signed in with GitHub), an OpenRouter key and a Resend key, each encrypted and checked live against the provider before saving (`PUT /api/account/keys/:provider`). A stored key can be revealed or copied for 30 seconds after a password step-up (`POST /api/account/reauth`, then `POST /api/account/keys/:provider/reveal`); every reveal and copy is recorded in Activity.
 
 ---
 
@@ -334,7 +336,7 @@ The dialog shows "Listening" / "Nothing on port" live.
 **UI.** Documentation → Diagrams: one tab per kind: Database, Architecture, System Flow and User Flow (`?diagram=`), with Mermaid source in a code editor and a live preview. "Generate" asks an agent to draw the diagram from the codebase.
 
 **Flow.**
-- Diagrams are files at `.ucch/diagrams/*.mmd` in the project, versioned with the code and read by every agent as project knowledge.
+- Diagrams are files at `.agent/diagrams/*.mmd` in the project, versioned with the code and read by every agent as project knowledge.
 - `POST /api/projects/:hash/diagrams/:kind/generate` runs a native-loop job (counted against `AGENT_MAX_NATIVE_TOTAL`), and `GET` reports its state.
 - The output goes through `mermaid-repair.ts`, so model-written labels parse.
 - The preview renders Mermaid in `strict` security mode and keeps the last good drawing while the source is invalid.
@@ -411,7 +413,7 @@ The dialog shows "Listening" / "Nothing on port" live.
 | Page | Holds |
 |---|---|
 | `account` | name, email, password, avatar (§1) |
-| `api` (API Management) | GitHub token, OpenRouter key, Resend key (§12) |
+| `api` (API keys) | GitHub token, OpenRouter key, Resend key (§12) |
 | `providers` (Agent Providers) | Claude Code, Codex and Custom cards: install state, sign-in, token, sign-out (§5) |
 | `usage` | the person's tokens and cost, and storage per project |
 | `activity` | the account's own activity feed (§20) |

@@ -68,7 +68,7 @@ function fish_prompt --description 'Write out the prompt'
     echo -n -s (prompt_login) "$where" (fish_vcs_prompt) "$normal" " "$prompt_status "> "
 end
 
-# `claude` and `codex` started here are told about the project's `.ucch/`
+# `claude` and `codex` started here are told about the project's `.agent/`
 # knowledge, as every agent the harness runs is; see ucch-knowledge.sh.
 # Subcommands that start no session (`claude auth`, `claude mcp`, ...) are
 # passed through untouched.
@@ -81,7 +81,7 @@ end
 # one per line. Without the file, nothing is added.
 set -g __ucch_knowledge (path dirname -- (status filename))/ucch-knowledge.sh
 
-function claude --wraps claude --description "claude, told about the project's .ucch/ folder"
+function claude --wraps claude --description "claude, told about the project's .agent/ folder"
     switch "$argv[1]"
         case agents attach auth auto-mode config doctor gateway import install logs mcp migrate-installer plugin plugins purge respawn rm setup-token stop kill ultrareview update upgrade
             command claude $argv
@@ -99,7 +99,7 @@ function claude --wraps claude --description "claude, told about the project's .
     end
 end
 
-function codex --wraps codex --description "codex, told about the project's .ucch/ folder"
+function codex --wraps codex --description "codex, told about the project's .agent/ folder"
     set -l bridge
     if set -q UCCH_OMP_MCP; and test -f "$UCCH_OMP_MCP"
         set -l args (string replace -r '\.mcp\.json$' '' -- $UCCH_OMP_MCP).codex

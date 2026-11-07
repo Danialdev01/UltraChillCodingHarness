@@ -15,7 +15,10 @@ import {
   SunIcon,
 } from "lucide-react"
 
+import { InlineError } from "@/components/layout/inline-error"
+import { SettingsRow, SettingsSection } from "@/components/layout/settings-section"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import { useTheme } from "@/components/theme-provider"
 import { HUE_EXCLUSION, oklchToHex, SEMANTIC_HUES } from "@/lib/color-engine"
@@ -85,145 +88,201 @@ export function ThemeSettings() {
   const hue = Math.round(accentOf(source).hue)
 
   return (
-    <section className="rounded-lg border p-6" aria-labelledby="theme-heading">
-      <h2 id="theme-heading" className="flex items-center gap-2 text-sm font-medium">
-        <PaletteIcon className="text-muted-foreground size-4" aria-hidden />
-        Theme
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Pick a mode and an accent hue. Text, surfaces, borders and charts are generated from the
-        hue and checked for WCAG AA contrast, in light and dark. Status colours stay fixed: red
-        always means a problem. Saved in this browser.
-      </p>
+    <>
+      <SettingsSection
+        title="Color scheme"
+        description={
+          settings.mode === "system"
+            ? `Following your system, which is ${resolvedMode} right now. Saved in this browser.`
+            : "Saved in this browser."
+        }
+      >
+        <div role="radiogroup" aria-label="Colour scheme" className="grid grid-cols-3 gap-3 p-3">
+          {MODES.map(({ value, label }) => {
+            const checked = settings.mode === value
+            return (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={checked}
+                onClick={() => setMode(value)}
+                className={cn(
+                  "group/mode flex flex-col gap-2 rounded-lg border p-2 text-left transition-colors outline-none",
+                  "focus-visible:ring-ring focus-visible:ring-2",
+                  checked ? "border-primary ring-primary/30 ring-2" : "hover:border-border-strong",
+                )}
+              >
+                <SchemeThumb mode={value} />
+                <span className={cn("text-center text-xs", checked ? "font-medium" : "text-muted-foreground")}>
+                  {label}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </SettingsSection>
 
-      {/* Mode */}
-      <div role="radiogroup" aria-label="Colour mode" className="mt-5 inline-flex rounded-lg border p-0.5">
-        {MODES.map(({ value, label, icon: Icon }) => {
-          const checked = settings.mode === value
-          return (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={checked}
-              onClick={() => setMode(value)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm",
-                checked ? "bg-accent-soft text-foreground font-medium" : "text-muted-foreground hover:bg-muted",
-              )}
+      <SettingsSection
+        icon={PaletteIcon}
+        title="Accent"
+        description="Pick an accent hue. Text, surfaces, borders and charts are generated from it and checked for WCAG AA contrast, in light and dark. Status colours stay fixed: red always means a problem."
+        action={
+          <>
+            <Button size="sm" onClick={shuffle} disabled={settings.locked} aria-disabled={settings.locked}>
+              <ShuffleIcon aria-hidden />
+              Shuffle
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setLocked(!settings.locked)}
+              aria-pressed={settings.locked}
             >
-              <Icon className="size-4" aria-hidden />
-              {label}
-            </button>
-          )
-        })}
-      </div>
-      {settings.mode === "system" && (
-        <p className="text-muted-foreground mt-2 text-xs">Following your system, which is {resolvedMode} right now.</p>
-      )}
+              {settings.locked ? <LockIcon aria-hidden /> : <LockOpenIcon aria-hidden />}
+              {settings.locked ? "Locked" : "Lock"}
+            </Button>
+          </>
+        }
+        bare
+      >
+        <Preview tokens={tokens} />
 
-      <Preview tokens={tokens} />
-
-      {/* Hue */}
-      <div className="mt-5 max-w-xl">
-        <div className="flex items-center justify-between gap-3">
-          <label htmlFor="theme-hue" className="text-sm font-medium">
-            Accent hue
-          </label>
-          <span className="text-muted-foreground font-mono text-xs" aria-hidden>
-            {hue}°
-          </span>
-        </div>
-        <div className="relative mt-2 h-6">
-          <div className="absolute inset-x-0 top-1/2 h-3 -translate-y-1/2 rounded-full" style={{ background: HUE_TRACK }} aria-hidden />
-          {EXCLUDED_BANDS.map((band) => (
-            <div
-              key={band.left}
-              aria-hidden
-              title="Reserved for status colours"
-              className="bg-background/80 border-border-strong absolute top-1/2 h-3 -translate-y-1/2 border-x border-dashed"
-              style={{ left: `${band.left}%`, width: `${band.width}%` }}
+        {/* Hue */}
+        <div className="mt-5 max-w-xl">
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="theme-hue" className="text-sm font-medium">
+              Accent hue
+            </label>
+            <span className="text-muted-foreground bg-muted rounded-md px-1.5 py-0.5 font-mono text-xs" aria-hidden>
+              {hue}°
+            </span>
+          </div>
+          <div className="relative mt-2 h-6">
+            <div className="absolute inset-x-0 top-1/2 h-3 -translate-y-1/2 rounded-full" style={{ background: HUE_TRACK }} aria-hidden />
+            {EXCLUDED_BANDS.map((band) => (
+              <div
+                key={band.left}
+                aria-hidden
+                title="Reserved for status colours"
+                className="bg-background/80 border-border-strong absolute top-1/2 h-3 -translate-y-1/2 border-x border-dashed"
+                style={{ left: `${band.left}%`, width: `${band.width}%` }}
+              />
+            ))}
+            <input
+              id="theme-hue"
+              type="range"
+              min={0}
+              max={359}
+              step={1}
+              value={hue}
+              onChange={(e) => setHue(Number(e.target.value))}
+              aria-valuetext={`${hue} degrees`}
+              aria-describedby="theme-hue-hint"
+              className="ucch-hue-range absolute inset-0 w-full"
             />
-          ))}
-          <input
-            id="theme-hue"
-            type="range"
-            min={0}
-            max={359}
-            step={1}
-            value={hue}
-            onChange={(e) => setHue(Number(e.target.value))}
-            aria-valuetext={`${hue} degrees`}
-            aria-describedby="theme-hue-hint"
-            className="ucch-hue-range absolute inset-0 w-full"
-          />
+          </div>
+          <p id="theme-hue-hint" className="text-muted-foreground mt-1 text-xs">
+            The dashed bands are reserved for error red and success green; the slider skips them.
+          </p>
         </div>
-        <p id="theme-hue-hint" className="text-muted-foreground mt-1 text-xs">
-          The dashed bands are reserved for error red and success green; the slider skips them.
-        </p>
-      </div>
 
-      <div className="mt-5 flex flex-wrap items-center gap-2">
-        <Button onClick={shuffle} disabled={settings.locked} aria-disabled={settings.locked}>
-          <ShuffleIcon aria-hidden />
-          Shuffle
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => setLocked(!settings.locked)}
-          aria-pressed={settings.locked}
-        >
-          {settings.locked ? <LockIcon aria-hidden /> : <LockOpenIcon aria-hidden />}
-          {settings.locked ? "Locked" : "Lock"}
-        </Button>
-        <Button variant="ghost" onClick={resetTheme} disabled={!customised} aria-disabled={!customised}>
-          <RotateCcwIcon aria-hidden />
-          Reset
-        </Button>
-      </div>
-      <p className="text-muted-foreground mt-2 text-xs">
-        {source.kind === "seed"
-          ? `Seed ${source.seed}${source.hue !== undefined ? `, hue ${Math.round(source.hue)}°` : ""}. ${
-              settings.locked ? "Locked: Shuffle is off until you unlock." : "Lock it to keep this palette."
-            }`
-          : source.kind === "custom"
-            ? "Using custom colours."
-            : "Using the default palette."}
-      </p>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-muted-foreground text-xs">
+            {source.kind === "seed"
+              ? `Seed ${source.seed}${source.hue !== undefined ? `, hue ${Math.round(source.hue)}°` : ""}. ${
+                  settings.locked ? "Locked: Shuffle is off until you unlock." : "Lock it to keep this palette."
+                }`
+              : source.kind === "custom"
+                ? "Using custom colours."
+                : "Using the default palette."}
+          </p>
+          <Button size="sm" variant="ghost" onClick={resetTheme} disabled={!customised} aria-disabled={!customised}>
+            <RotateCcwIcon aria-hidden />
+            Reset to default
+          </Button>
+        </div>
 
-      <label className="mt-5 flex max-w-xl cursor-pointer items-start gap-3">
-        <input
-          type="checkbox"
-          checked={settings.highContrast}
-          onChange={(e) => setHighContrast(e.target.checked)}
-          className="accent-primary mt-0.5 size-4"
+        {fellBack && (
+          <InlineError tone="warning" className="mt-4 max-w-xl">
+            This palette could not reach readable contrast in {resolvedMode} mode, so the default is showing
+            instead.
+          </InlineError>
+        )}
+
+        <CustomColours
+          initial={source.kind === "custom" ? source : DEFAULT_THEME}
+          active={source.kind === "custom"}
+          highContrast={settings.highContrast}
+          onChange={setCustom}
         />
-        <span>
-          <span className="flex items-center gap-1.5 text-sm font-medium">
-            <ContrastIcon className="size-4" aria-hidden />
-            High contrast
-          </span>
-          <span className="text-muted-foreground block text-xs">
-            Raises all text to 7:1 (WCAG AAA) and makes dividers visible.
-          </span>
-        </span>
-      </label>
+      </SettingsSection>
 
-      {fellBack && (
-        <p role="status" className="bg-warning-soft text-warning mt-4 flex max-w-xl items-start gap-2 rounded-md px-3 py-2 text-sm">
-          <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-          This palette could not reach readable contrast in {resolvedMode} mode, so the default is showing
-          instead.
-        </p>
-      )}
+      <SettingsSection title="Interface">
+        <SettingsRow
+          htmlFor="theme-high-contrast"
+          label={
+            <span className="flex items-center gap-1.5">
+              <ContrastIcon className="size-4" aria-hidden />
+              High contrast
+            </span>
+          }
+          description="Raises all text to 7:1 (WCAG AAA) and makes dividers visible."
+        >
+          <Switch
+            id="theme-high-contrast"
+            checked={settings.highContrast}
+            onCheckedChange={setHighContrast}
+          />
+        </SettingsRow>
+      </SettingsSection>
+    </>
+  )
+}
 
-      <CustomColours
-        initial={source.kind === "custom" ? source : DEFAULT_THEME}
-        active={source.kind === "custom"}
-        highContrast={settings.highContrast}
-        onChange={setCustom}
-      />
-    </section>
+/**
+ * A miniature of the app in one colour scheme: sidebar, a message, the
+ * composer. Drawn with the live tokens under a forced `color-scheme`, so
+ * it shows the palette you have picked -- System is half of each.
+ */
+function SchemeThumb({ mode }: { mode: ThemeMode }) {
+  if (mode === "system") {
+    return (
+      <div className="relative aspect-[16/10] overflow-hidden rounded-md border" aria-hidden>
+        <div className="absolute inset-0" style={{ clipPath: "inset(0 50% 0 0)" }}>
+          <MiniApp scheme="light" />
+        </div>
+        <div className="absolute inset-0" style={{ clipPath: "inset(0 0 0 50%)" }}>
+          <MiniApp scheme="dark" />
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="aspect-[16/10] overflow-hidden rounded-md border" aria-hidden>
+      <MiniApp scheme={mode} />
+    </div>
+  )
+}
+
+function MiniApp({ scheme }: { scheme: "light" | "dark" }) {
+  return (
+    <div className="flex size-full" style={{ colorScheme: scheme }}>
+      <div className="bg-sidebar flex w-1/4 flex-col gap-1 border-r p-1.5">
+        <span className="bg-muted h-1.5 w-full rounded-full" />
+        <span className="bg-ucch-active-bg h-1.5 w-4/5 rounded-full" />
+        <span className="bg-muted h-1.5 w-3/5 rounded-full" />
+      </div>
+      <div className="bg-background flex flex-1 flex-col gap-1 p-1.5">
+        <span className="bg-muted ml-auto h-2 w-2/5 rounded-full" />
+        <span className="bg-muted-foreground/30 h-1 w-4/5 rounded-full" />
+        <span className="bg-muted-foreground/30 h-1 w-3/5 rounded-full" />
+        <div className="bg-card mt-auto flex items-center justify-between rounded border px-1 py-0.5">
+          <span className="bg-muted h-1 w-1/2 rounded-full" />
+          <span className="bg-primary size-1.5 rounded-full" />
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -231,7 +290,7 @@ export function ThemeSettings() {
 function Preview({ tokens }: { tokens: Record<string, string> }) {
   return (
     <div
-      className="mt-5 grid max-w-xl grid-cols-[1fr_2fr] overflow-hidden rounded-md border"
+      className="grid max-w-xl grid-cols-[1fr_2fr] overflow-hidden rounded-md border"
       style={{ borderColor: tokens.border }}
       aria-hidden
     >
@@ -247,7 +306,7 @@ function Preview({ tokens }: { tokens: Record<string, string> }) {
         <span className="text-xs" style={{ color: tokens["muted-foreground"] }}>
           Secondary text on the page
         </span>
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <div className="flex flex-wrap items-center gap-1.5 text-2xs">
           <span className="rounded px-2 py-1 font-medium" style={{ background: tokens.primary, color: tokens["primary-foreground"] }}>
             Primary
           </span>
@@ -305,7 +364,7 @@ function CustomColours({
   }
 
   return (
-    <details className="mt-6 max-w-xl rounded-md border" open={active || undefined}>
+    <details className="mt-5 max-w-xl rounded-md border" open={active || undefined}>
       <summary className="cursor-pointer px-3 py-2 text-sm font-medium">Advanced: custom colours</summary>
       <div className="flex flex-col gap-4 border-t p-3">
         <p className="text-muted-foreground text-xs">
@@ -381,11 +440,10 @@ function CustomColours({
           </tbody>
         </table>
         {report.fellBack && (
-          <p role="status" className="bg-warning-soft text-warning flex items-start gap-2 rounded-md px-3 py-2 text-xs">
-            <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          <InlineError tone="warning">
             Text can&apos;t be made readable on this page colour, so the default palette is showing. Try a
             lighter or darker page.
-          </p>
+          </InlineError>
         )}
       </div>
     </details>

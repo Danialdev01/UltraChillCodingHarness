@@ -1,7 +1,10 @@
 "use client"
 
 import * as React from "react"
-import { CoinsIcon, DatabaseIcon, FolderIcon, HashIcon, SendIcon, type LucideIcon } from "lucide-react"
+import { EmptyState } from "@/components/layout/empty-state"
+import { SettingsSection } from "@/components/layout/settings-section"
+import { InlineError } from "@/components/layout/inline-error"
+import { ChartColumnIcon, CoinsIcon, DatabaseIcon, FolderIcon, HashIcon, SendIcon, type LucideIcon } from "lucide-react"
 
 import { useModels } from "@/components/model-picker"
 import { compactNumber, formatBytes, formatUsd } from "@/lib/stats-format"
@@ -41,26 +44,14 @@ export function UsageSettings({
   storage: WorkspaceStorage | null
 }) {
   return (
-    <div className="flex flex-col gap-6">
-      <Section title="Spend" hint="What this workspace's agents have cost, by model.">
+    <div className="flex flex-col gap-8">
+      <SettingsSection plain icon={CoinsIcon} title="Spend" description="What this workspace's agents have cost, by model.">
         <SpendCards usage={usage} />
-      </Section>
-      <Section title="Storage" hint="What the workspace occupies on disk and in the database.">
+      </SettingsSection>
+      <SettingsSection plain icon={DatabaseIcon} title="Storage" description="What the workspace occupies on disk and in the database.">
         <StorageCards storage={storage} />
-      </Section>
+      </SettingsSection>
     </div>
-  )
-}
-
-function Section({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
-  return (
-    <section className="flex flex-col gap-3">
-      <div>
-        <h2 className="text-sm font-medium">{title}</h2>
-        <p className="text-muted-foreground text-xs">{hint}</p>
-      </div>
-      {children}
-    </section>
   )
 }
 
@@ -74,22 +65,13 @@ function SpendCards({ usage }: { usage: WorkspaceUsage | null }) {
 
   if (!usage) {
     return (
-      <div className="rounded-lg border p-6">
-        <p className="text-muted-foreground text-sm">
-          Could not load this workspace&apos;s usage.
-        </p>
-      </div>
+      <InlineError>Could not load this workspace&apos;s usage.</InlineError>
     )
   }
 
   if (usage.totals.requests === 0) {
     return (
-      <div className="rounded-lg border p-6">
-        <p className="text-sm">No usage yet.</p>
-        <p className="text-muted-foreground mt-1 text-sm">
-          Figures appear here once an agent has run a turn in this workspace.
-        </p>
-      </div>
+      <EmptyState framed icon={ChartColumnIcon} title="No usage yet" description="Figures appear here once an agent has run a turn in this workspace." />
     )
   }
 
@@ -140,11 +122,7 @@ function SpendCards({ usage }: { usage: WorkspaceUsage | null }) {
 function StorageCards({ storage }: { storage: WorkspaceStorage | null }) {
   if (!storage) {
     return (
-      <div className="rounded-lg border p-6">
-        <p className="text-muted-foreground text-sm">
-          Could not load this workspace&apos;s storage.
-        </p>
-      </div>
+      <InlineError>Could not load this workspace&apos;s storage.</InlineError>
     )
   }
 

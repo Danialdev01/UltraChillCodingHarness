@@ -109,7 +109,7 @@ async function script(
 /** Writes text into the doc cache by content hash, so a script can be handed a file. */
 async function stage(ctx: ToolContext, content: string, extension: string): Promise<string> {
   const hash = createHash("sha256").update(content).digest("hex").slice(0, 16);
-  const path = `.ucch/doc-cache/sources/${hash}.${extension}`;
+  const path = `.agent/doc-cache/sources/${hash}.${extension}`;
   await ctx.executor.writeFile(path, content);
   return path;
 }

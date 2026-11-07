@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { ActivityFeed } from "@/components/activity/activity-feed"
 import { GitRemoteSettings } from "@/components/git/remote-settings"
+import { ProjectKeySettings } from "@/components/project-key-settings"
 import { ProjectPreferences } from "@/components/project-preferences"
 import { Tabs, TabsIndicator, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
 import { MANAGE_TABS, manageTabOf, type ManageTab } from "@/lib/manage-tabs"
@@ -46,6 +47,10 @@ export function ManageTabs({ project, initialTab }: { project: Project; initialT
         <div className="flex max-h-[70vh] min-h-80 flex-col overflow-hidden rounded-lg border">
           <ActivityFeed source={{ kind: "project", project }} />
         </div>
+      </TabsPanel>
+
+      <TabsPanel value="project-key">
+        <ProjectKeySettings project={project} />
       </TabsPanel>
 
       <TabsPanel value="preferences">

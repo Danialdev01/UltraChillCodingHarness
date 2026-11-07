@@ -1,19 +1,19 @@
 /**
  * The diagrams on a project's documentation page, and how the agent draws them.
  *
- * A diagram is a Mermaid file in the project's `.ucch/diagrams/`, so it is
+ * A diagram is a Mermaid file in the project's `.agent/diagrams/`, so it is
  * versioned with the code it describes, readable in any Markdown viewer, and
- * listed to every agent alongside the rest of the project's `.ucch` knowledge.
+ * listed to every agent alongside the rest of the project's `.agent` knowledge.
  */
 
 import { repairMermaid } from "./mermaid-repair.js";
 
 /** Where each kind of diagram lives in the project's checkout. */
 export const DIAGRAM_FILES = {
-  database: ".ucch/diagrams/database.mmd",
-  architecture: ".ucch/diagrams/architecture.mmd",
-  "system-flow": ".ucch/diagrams/system-flow.mmd",
-  "user-flow": ".ucch/diagrams/user-flow.mmd",
+  database: ".agent/diagrams/database.mmd",
+  architecture: ".agent/diagrams/architecture.mmd",
+  "system-flow": ".agent/diagrams/system-flow.mmd",
+  "user-flow": ".agent/diagrams/user-flow.mmd",
 } as const;
 
 export type DiagramKind = keyof typeof DIAGRAM_FILES;
@@ -101,7 +101,7 @@ export function diagramAsk(kind: DiagramKind): string {
   return [
     spec.task,
     "",
-    `Explore the repository with your tools. ${spec.explore} \`.ucch/INFO.md\` describes the project and may help you orient, but the source code is the truth: the rest of \`.ucch/\` holds notes and earlier drawings, not the system. Do not change any files.`,
+    `Explore the repository with your tools. ${spec.explore} \`.agent/index.md\` describes the project and may help you orient, but the source code is the truth: the rest of \`.agent/\` holds notes and earlier drawings, not the system. Do not change any files.`,
     "",
     "Reply with exactly one fenced code block tagged `mermaid` and nothing else. Inside it:",
     ...(kind === "database" ? ["- The first line is `erDiagram`."] : []),

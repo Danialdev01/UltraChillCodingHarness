@@ -10,10 +10,10 @@ import { saveFile } from "./files-api";
 
 /** Where each diagram lives in the project's checkout. Mirrors the server's `DIAGRAM_FILES`. */
 export const DIAGRAM_FILES = {
-  database: ".ucch/diagrams/database.mmd",
-  architecture: ".ucch/diagrams/architecture.mmd",
-  "system-flow": ".ucch/diagrams/system-flow.mmd",
-  "user-flow": ".ucch/diagrams/user-flow.mmd",
+  database: ".agent/diagrams/database.mmd",
+  architecture: ".agent/diagrams/architecture.mmd",
+  "system-flow": ".agent/diagrams/system-flow.mmd",
+  "user-flow": ".agent/diagrams/user-flow.mmd",
 } as const;
 
 export type BuiltDiagramKind = keyof typeof DIAGRAM_FILES;

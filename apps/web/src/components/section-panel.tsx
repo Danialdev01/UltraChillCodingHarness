@@ -1,21 +1,14 @@
 "use client"
 
 import * as React from "react"
-import { usePathname } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
 import {
-  ChevronRightIcon,
   LayersIcon,
   PlusIcon,
 } from "lucide-react"
 
 import { ConnectionsPanel } from "@/components/database/connections-panel"
-import { SessionList } from "@/components/session-list"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
+import { SessionSidebar } from "@/components/session-sidebar/session-sidebar"
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -24,23 +17,11 @@ import {
   SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
 import {
   HOME,
-  SIDEBAR_PROJECT_PAGES,
   SETTINGS,
-  SETTINGS_PAGES,
   WORKSPACE_SETTINGS,
-  WORKSPACE_SETTINGS_PAGES,
-  workspaceSettingsPageFromPath,
-  workspaceSettingsPageHref,
-  projectPageFromPath,
-  projectPageHref,
-  settingsPageFromPath,
-  settingsPageHref,
   type Section,
 } from "@/lib/sections"
 import { prefetchProject } from "@/lib/preload"
@@ -48,11 +29,11 @@ import { useAgentActivity } from "@/lib/realtime"
 import type { Project, Workspace } from "@/lib/session"
 import { countLabel } from "@/lib/workspace-api"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
-import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
-import { useProjectHref, useWorkspaceHash } from "@/lib/workspace-context"
+import { TransitionLink } from "@/lib/view-transitions"
+import { useProjectHref } from "@/lib/workspace-context"
 import { NewSessionDialog } from "@/components/on-demand"
-import { ProjectSessionRows } from "@/components/project-sessions-nav"
 import { ProjectStackIcon } from "@/components/project-stack-icon"
+import { SettingsNav } from "@/components/settings-nav"
 
 /**
  * The contents of the sidebar's second column, for the section the current
@@ -107,43 +88,25 @@ export function SectionPanel({
   /** Called when a row is followed, so a flyout can close itself. */
   onNavigate?: () => void
 }) {
-  const router = useTransitionRouter()
   const queryClient = useQueryClient()
   const agentStatusOf = useAgentActivity()
-  const pathname = usePathname()
-  const ws = useWorkspaceHash()
   const hrefOf = useProjectHref()
-  const activePage = projectPageFromPath(pathname)
-  const activeSettingsPage = settingsPageFromPath(pathname)
-  const activeWorkspaceSettingsPage = workspaceSettingsPageFromPath(pathname)
-
-  /**
-   * The one project whose pages are unfolded beneath it, if any.
-   *
-   * One at a time, like an accordion: clicking a project opens it and
-   * unfolds it, folding whichever was open before, so the list never grows
-   * three rows per project you have visited. The chevron folds and unfolds
-   * without leaving the page. The project you are on is unfolded to begin
-   * with, and stays so until you fold it or open another.
-   */
-  const [unfolded, setUnfolded] = React.useState<string | null>(activeProjectHash ?? null)
-  React.useEffect(() => {
-    if (activeProjectHash) setUnfolded(activeProjectHash)
-  }, [activeProjectHash])
-
-  function setFolded(hash: string, open: boolean) {
-    setUnfolded((current) => (open ? hash : current === hash ? null : current))
-  }
 
   // The project a session is being started in. One dialog for the whole
   // list rather than one per row: only ever one is open.
   const [newSessionFor, setNewSessionFor] = React.useState<Project | null>(null)
 
-  if (LISTS_PROJECTS.has(section.id) && sessionWorkspace && !compact) {
+  // The full panel lists sessions, by themselves or under their projects
+  // (`SessionSidebar`). The collapsed rail's flyout keeps the plain project
+  // list below: it is for going somewhere, not for managing sessions.
+  const activeWorkspace = workspaces.find((w) => w.id === workspaceId)
+  if (LISTS_PROJECTS.has(section.id) && !compact && activeWorkspace) {
     return (
-      <SessionList
-        sessions={projects}
+      <SessionSidebar
+        workspace={activeWorkspace}
+        projects={projects}
         activeProjectHash={activeProjectHash}
+        onNavigate={onNavigate}
       />
     )
   }
@@ -155,32 +118,24 @@ export function SectionPanel({
         <SidebarGroupContent>
           {projects.length === 0 ? (
             <p className="text-muted-foreground px-4 py-2 text-sm">
-              No projects in this workspace yet. Clone a repository to start.
+              No projects in this workspace yet. Use the New project button above to clone a repository or start
+              an empty one.
             </p>
           ) : (
             // The row rhythm is the menu's gap rather than padding on each
             // item, so the row box and its button stay the same height --
             // which is what keeps the absolutely positioned action centred.
-            <SidebarMenu className="gap-[5px] px-2">
+            <SidebarMenu className="gap-0.5 px-2">
               {projects.map((project) => {
                 const isActive = project.hash === activeProjectHash
-                // The flyout is a list of places to go, not a tree: its rows
-                // stay flat.
-                const open = !compact && unfolded === project.hash
                 const agent = agentStatusOf(project)
                 return (
-                  <Collapsible
-                    key={project.id}
-                    open={open}
-                    onOpenChange={(next) => setFolded(project.hash, next)}
-                    render={<SidebarMenuItem />}
-                  >
+                  <SidebarMenuItem key={project.id}>
                     <SidebarMenuButton
-                      isActive={isActive && activePage === null}
-                      onClick={() => {
-                        setFolded(project.hash, true)
-                        onNavigate?.()
-                      }}
+                      // Room for the action at the right edge.
+                      className={compact ? undefined : "pr-8"}
+                      isActive={isActive}
+                      onClick={() => onNavigate?.()}
                       // Only the first few projects' lists are loaded at
                       // boot; the rest are fetched on the way to a click.
                       // A session workspace's rows have no lists.
@@ -206,52 +161,15 @@ export function SectionPanel({
                       )}
                     </SidebarMenuButton>
                     {!compact && (
-                      <>
-                        {/* Two actions at the row's right edge: the chevron in
-                            the usual slot, always shown so the row reads as
-                            openable, and New session one slot in from it,
-                            on hover. */}
-                        <CollapsibleTrigger
-                          render={
-                            <SidebarMenuAction className="aria-expanded:rotate-90" />
-                          }
-                        >
-                          <ChevronRightIcon />
-                          <span className="sr-only">Toggle {project.name}&apos;s pages</span>
-                        </CollapsibleTrigger>
-                        <SidebarMenuAction
-                          showOnHover
-                          className="right-6"
-                          onClick={() => setNewSessionFor(project)}
-                        >
-                          <PlusIcon />
-                          <span className="sr-only">New session in {project.name}</span>
-                        </SidebarMenuAction>
-                        <CollapsibleContent>
-                          {/* Its sessions -- each its own conversation on its
-                              own branch -- then the project's own pages. */}
-                          <SidebarMenuSub>
-                            <ProjectSessionRows project={project} onNavigate={onNavigate} />
-                          </SidebarMenuSub>
-                          <SidebarMenuSub>
-                            {SIDEBAR_PROJECT_PAGES.map((page) => (
-                              <SidebarMenuSubItem key={page.id}>
-                                <SidebarMenuSubButton
-                                  isActive={isActive && activePage === page.id}
-                                  render={
-                                    <TransitionLink href={projectPageHref(ws, project.hash, page.id)} />
-                                  }
-                                >
-                                  <page.icon />
-                                  <span>{page.title}</span>
-                                </SidebarMenuSubButton>
-                              </SidebarMenuSubItem>
-                            ))}
-                          </SidebarMenuSub>
-                        </CollapsibleContent>
-                      </>
+                      <SidebarMenuAction
+                        title={`New session in ${project.name}`}
+                        onClick={() => setNewSessionFor(project)}
+                      >
+                        <PlusIcon />
+                        <span className="sr-only">New session in {project.name}</span>
+                      </SidebarMenuAction>
                     )}
-                  </Collapsible>
+                  </SidebarMenuItem>
                 )
               })}
             </SidebarMenu>
@@ -278,17 +196,16 @@ export function SectionPanel({
           {live.length === 0 ? (
             <p className="text-muted-foreground px-4 py-2 text-sm">{section.blurb}</p>
           ) : (
-            <SidebarMenu className="gap-[5px] px-2">
+            <SidebarMenu className="gap-0.5 px-2">
               {live.map((workspace) => (
                 <SidebarMenuItem key={workspace.id}>
                   <SidebarMenuButton
                     size="lg"
                     isActive={workspace.id === workspaceId}
-                    onClick={() => {
-                      // The shell follows the address to the workspace.
-                      router.push(`/${workspace.hash}`)
-                      onNavigate?.()
-                    }}
+                    onClick={onNavigate}
+                    // A link, so a workspace can be opened in a new tab like
+                    // every other row; the shell follows the address to it.
+                    render={<TransitionLink href={`/${workspace.hash}`} />}
                   >
                     {workspace.logo ? (
                       // eslint-disable-next-line @next/next/no-img-element -- a data: URL
@@ -323,52 +240,8 @@ export function SectionPanel({
     )
   }
 
-  if (section.id === WORKSPACE_SETTINGS.id) {
-    return (
-      <SidebarGroup className="px-0">
-        {!compact && <SidebarGroupLabel className="px-4">{section.title}</SidebarGroupLabel>}
-        <SidebarGroupContent>
-          <SidebarMenu className="gap-[5px] px-2">
-            {WORKSPACE_SETTINGS_PAGES.map((page) => (
-              <SidebarMenuItem key={page.id}>
-                <SidebarMenuButton
-                  isActive={activeWorkspaceSettingsPage === page.id}
-                  onClick={onNavigate}
-                  render={<TransitionLink href={workspaceSettingsPageHref(ws, page.id)} />}
-                >
-                  <page.icon />
-                  <span className="truncate">{page.title}</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarGroupContent>
-      </SidebarGroup>
-    )
-  }
-
-  if (section.id === SETTINGS.id) {
-    return (
-      <SidebarGroup className="px-0">
-        {!compact && <SidebarGroupLabel className="px-4">{section.title}</SidebarGroupLabel>}
-        <SidebarGroupContent>
-          <SidebarMenu className="gap-[5px] px-2">
-            {SETTINGS_PAGES.map((page) => (
-              <SidebarMenuItem key={page.id}>
-                <SidebarMenuButton
-                  isActive={activeSettingsPage === page.id}
-                  onClick={onNavigate}
-                  render={<TransitionLink href={settingsPageHref(page.id)} />}
-                >
-                  <page.icon />
-                  <span className="truncate">{page.title}</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarGroupContent>
-      </SidebarGroup>
-    )
+  if (section.id === WORKSPACE_SETTINGS.id || section.id === SETTINGS.id) {
+    return <SettingsNav onNavigate={onNavigate} compact={compact} />
   }
 
   return (

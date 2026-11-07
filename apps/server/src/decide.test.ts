@@ -350,6 +350,27 @@ describe("thread.send", () => {
   });
 });
 
+describe("thread.update", () => {
+  it("records only the fields given", () => {
+    const d = run({ project: project(), thread: thread() }, { type: "thread.update", threadId: THREAD, pinned: true });
+    expect(d).toEqual({ ok: true, events: [{ type: "thread.updated", threadId: THREAD, pinned: true }] });
+    const r = run({ project: project(), thread: thread({ status: "running" }) }, {
+      type: "thread.update",
+      threadId: THREAD,
+      title: "Fix the build",
+      archived: false,
+    });
+    expect(r).toEqual({ ok: true, events: [{ type: "thread.updated", threadId: THREAD, title: "Fix the build", archived: false }] });
+  });
+
+  it("refuses an update that changes nothing", () => {
+    expect(run({ project: project(), thread: thread() }, { type: "thread.update", threadId: THREAD })).toMatchObject({
+      ok: false,
+      error: { code: "invalid" },
+    });
+  });
+});
+
 describe("thread.cancel", () => {
   it("records the request while the turn is running", () => {
     const d = run({ project: project(), thread: thread({ status: "running" }) }, {

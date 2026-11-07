@@ -138,9 +138,10 @@ describe("turn.started", () => {
     // the same statement that inserts.
     expect(inserted[0]!.values.seq).toBeTruthy();
 
-    // The message claims the thread; the turn moves it on.
+    // The message claims the thread (and names it); the turn moves it on.
     expect(statements.filter((s) => s.table === "threads")).toEqual([
-      { op: "update", table: "threads", values: { status: "queued" } },
+      { op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything() } },
+      { op: "update", table: "threads", values: { title: "Hello" } },
       { op: "update", table: "threads", values: { status: "running" } },
     ]);
   });
@@ -187,10 +188,29 @@ describe("turn.started", () => {
 describe("thread status", () => {
   it("is claimed by a message, only from idle or error", async () => {
     const statements = await apply([{ type: "user.message", threadId: THREAD, text: "hello" }]);
-    expect(statements).toEqual([{ op: "update", table: "threads", values: { status: "queued" } }]);
+    expect(statements[0]).toEqual({ op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything() } });
     const where = rendered(wheres.get(statements[0]!));
     expect(where.sql).toMatch(/"threads"\."id" = \$1 and "threads"\."status" in \(\$2, \$3\)/);
     expect(where.params).toEqual([THREAD, "idle", "error"]);
+  });
+
+  it("names a placeholder-titled session from its first message, and never a named one", async () => {
+    const statements = await apply([{ type: "user.message", threadId: THREAD, text: "identify project purpose\nmore" }]);
+    const title = statements.find((s) => s.table === "threads" && "title" in s.values)!;
+    expect(title.values).toEqual({ title: "Identify project purpose" });
+    expect(rendered(wheres.get(title)!).params).toEqual([THREAD, "Untitled", "New session"]);
+    // A session workspace's card is named with it.
+    expect(statements.find((s) => s.table === "other")?.values).toEqual({ name: "Identify project purpose" });
+    // Nothing to name it by: no title written.
+    const quiet = await apply([{ type: "user.message", threadId: THREAD, text: "```\ncode\n```" }]);
+    expect(quiet.filter((s) => "title" in s.values)).toEqual([]);
+  });
+
+  it("records a hand-made rename, pin and archive", async () => {
+    const [update] = await apply([{ type: "thread.updated", threadId: THREAD, title: "Mine", pinned: true, archived: true }]);
+    expect(update!.values).toEqual({ title: "Mine", pinned: true, archivedAt: expect.any(Date) });
+    const [restored] = await apply([{ type: "thread.updated", threadId: THREAD, archived: false }]);
+    expect(restored!.values).toEqual({ archivedAt: null });
   });
 
   it("refuses a message when another one claimed the thread first", async () => {
@@ -307,7 +327,7 @@ describe("thread status", () => {
     // next message is accepted rather than blocked behind an error state.
     expect(statements.filter((s) => s.table !== "project_stats")).toEqual([
       { op: "update", table: "turns", values: expect.objectContaining({ stopReason: "cancelled" }) },
-      { op: "update", table: "threads", values: { status: "idle" } },
+      { op: "update", table: "threads", values: { status: "idle", lastActivityAt: expect.anything() } },
     ]);
   });
 
@@ -348,7 +368,7 @@ describe("thread status", () => {
     expect(statements.filter((s) => s.table !== "project_stats").at(-1)).toEqual({
       op: "update",
       table: "threads",
-      values: { status: "error" },
+      values: { status: "error", lastActivityAt: expect.anything() },
     });
   });
 });

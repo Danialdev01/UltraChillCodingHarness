@@ -70,6 +70,11 @@ ENV NEXT_PUBLIC_PWA=$NEXT_PUBLIC_PWA
 ENV NEXT_TELEMETRY_DISABLED=1
 # public/ exists either way, so the stages below can copy it.
 RUN cd apps/web && mkdir -p public && pnpm exec next build
+# The file-tree icons are read off disk at run time, so the standalone trace
+# only has them through next.config.ts's outputFileTracingIncludes; without
+# them every icon request is a 500. Fail the build rather than ship that.
+RUN test -f apps/web/.next/standalone/apps/web/node_modules/material-icon-theme/dist/material-icons.json \
+  && test -f apps/web/.next/standalone/apps/web/node_modules/material-icon-theme/icons/folder.svg
 
 # --- server build ------------------------------------------------------------
 

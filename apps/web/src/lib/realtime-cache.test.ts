@@ -33,6 +33,11 @@ describe("cacheEffect", () => {
     expect(cacheEffect(ev({ type: "git.committed", projectId: P })).invalidate).toEqual([["git"]])
     expect(cacheEffect(ev({ type: "git.pushed", projectId: P })).invalidate).toEqual([["git"]])
     expect(cacheEffect(ev({ type: "thread.created", projectId: P })).invalidate).toEqual([["sessions"]])
+    // A session titled by its first message: every sidebar list at once.
+    expect(cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "sessions" }))).toEqual({
+      invalidate: [["sessions"]],
+      deferred: [["bootstrap", null]],
+    })
     expect(cacheEffect(ev({ type: "resource.changed", projectId: null, resource: "workspace_members" })).invalidate).toContainEqual(["members"])
   })
 

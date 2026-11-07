@@ -132,6 +132,18 @@ const ThreadWorktreeFailed = z.object({
 });
 
 /**
+ * A session renamed, pinned or archived by hand. Only the fields present
+ * changed. `archived` true sets the archive time to the event's own.
+ */
+const ThreadUpdated = z.object({
+  type: z.literal("thread.updated"),
+  threadId: z.string().uuid(),
+  title: z.string().optional(),
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
+});
+
+/**
  * A project session is gone: settled, or removed for having nothing in it.
  * Its thread, worktree and local branch are deleted; `pushedBranch` names
  * the branch its work was pushed to first, when it had any. Project-scoped,
@@ -824,9 +836,10 @@ const PresenceChanged = z.object({
  * own events (`project-activity.ts`).
  *
  * `failed` is a turn that failed or was cut off by a limit; `idle` one that
- * was stopped, or a message that never became a turn.
+ * was stopped, or a message that never became a turn. `waiting` is a running
+ * turn held on a permission prompt; `running` follows once it is answered.
  */
-export const ProjectActivityState = z.enum(["queued", "running", "done", "failed", "idle"]);
+export const ProjectActivityState = z.enum(["queued", "running", "waiting", "done", "failed", "idle"]);
 export type ProjectActivityState = z.infer<typeof ProjectActivityState>;
 
 const ProjectActivity = z.object({
@@ -856,6 +869,11 @@ export const LiveResource = z.enum([
    * absent for the project's checkout.
    */
   "files",
+  /**
+   * A session was renamed, pinned or archived. Published to the workspace's
+   * topic, so every sidebar listing the workspace's sessions refetches.
+   */
+  "sessions",
 ]);
 export type LiveResource = z.infer<typeof LiveResource>;
 
@@ -1052,6 +1070,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ThreadWorktreeReady,
   ThreadWorktreeFailed,
   ThreadRemoved,
+  ThreadUpdated,
   UserMessage,
   ThreadCancelRequested,
   ThreadCompactionRequested,

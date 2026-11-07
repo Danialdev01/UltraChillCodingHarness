@@ -28,6 +28,8 @@ export const qk = {
   sessions: {
     all: ["sessions"] as const,
     list: (projectHash: string) => ["sessions", "list", projectHash] as const,
+    /** Every session in a workspace, for the sidebar; `sessions.all` reaches it too. */
+    workspace: (workspaceId: string, archived = false) => ["sessions", "workspace", workspaceId, archived] as const,
   },
   tasks: {
     all: ["tasks"] as const,
@@ -44,7 +46,8 @@ export const qk = {
   },
   keys: {
     all: ["keys"] as const,
-    list: (projectHash: string) => ["keys", "list", projectHash] as const,
+    // "env": the list is `{ configured, vars }` now, not the array cached as "list" before.
+    list: (projectHash: string) => ["keys", "env", projectHash] as const,
   },
   activity: { all: ["activity"] as const },
   members: {

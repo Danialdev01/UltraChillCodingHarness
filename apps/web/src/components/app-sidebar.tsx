@@ -22,7 +22,7 @@ import {
   SidebarMenu,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { SECTIONS, WORKSPACE_SETTINGS, projectHashFromPath, sectionForPath, type Section } from "@/lib/sections"
+import { SECTIONS, SETTINGS, WORKSPACE_SETTINGS, projectHashFromPath, sectionForPath, type Section } from "@/lib/sections"
 import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { useTransitionRouter } from "@/lib/view-transitions"
@@ -96,7 +96,9 @@ export function AppSidebar({
       <RailItem
         key={section.id}
         section={section}
-        isActive={active.id === section.id}
+        // Account and workspace settings share one nav, so the gear stays lit
+        // on either tree's pages.
+        isActive={active.id === section.id || (section.id === WORKSPACE_SETTINGS.id && active.id === SETTINGS.id)}
         projects={projects}
         connections={connections}
         activeProjectHash={activeProjectHash}

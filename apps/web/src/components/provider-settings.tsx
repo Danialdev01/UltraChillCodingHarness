@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { InlineError } from "@/components/layout/inline-error"
 import dynamic from "next/dynamic"
 import {
   AlertTriangleIcon,
@@ -34,10 +35,15 @@ import {
 } from "@/lib/providers-api"
 import { formatBytes } from "@/lib/attachments"
 import { cn } from "@/lib/utils"
+import { SettingsSection } from "@/components/layout/settings-section"
 
-// xterm comes with the sign-in terminal, which most visits to settings never open.
+// xterm comes with the sign-in dialogs, which most visits to settings never open.
 const LoginTerminalDialog = dynamic(
   () => import("@/components/login-terminal-dialog").then((m) => m.LoginTerminalDialog),
+  { ssr: false },
+)
+const ClaudeLoginDialog = dynamic(
+  () => import("@/components/claude-login-dialog").then((m) => m.ClaudeLoginDialog),
   { ssr: false },
 )
 
@@ -97,9 +103,7 @@ export function ProviderSettings({
 
   if (loadError && !data) {
     return (
-      <section className="rounded-lg border p-6">
-        <p className="text-destructive text-sm">{loadError}</p>
-      </section>
+      <InlineError>{loadError}</InlineError>
     )
   }
 
@@ -184,9 +188,23 @@ export function ProviderSettings({
         )}
       </div>
 
-      {login && projectId && (
+      {login === "claude-login" && projectId && (
+        <ClaudeLoginDialog
+          projectId={projectId}
+          credentialWorkspaceId={workspaceId}
+          encryptionAvailable={data?.encryptionAvailable ?? true}
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              setLogin(null)
+              void load(true)
+            }
+          }}
+          onSignedIn={() => void load(true)}
+        />
+      )}
+      {login === "codex-login" && projectId && (
         <LoginTerminalDialog
-          program={login}
           projectId={projectId}
           credentialWorkspaceId={workspaceId}
           open
@@ -245,7 +263,7 @@ function CardShell({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-lg border p-6">
+    <section className="bg-card rounded-lg border p-4">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="flex items-center gap-2 text-sm font-medium">
           <Icon className="text-muted-foreground size-4" />
@@ -290,15 +308,8 @@ function DefaultProviderCard({
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <BotIcon className="text-muted-foreground size-4" />
-        Default provider
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Which backend a new thread starts on when the composer does not say. A thread stays on the
-        provider its first message ran under; switching means a new thread.
-      </p>
+    <SettingsSection icon={BotIcon} title="Default provider" description={<>Which backend a new thread starts on when the composer does not say. A thread stays on the
+        provider its first message ran under; switching means a new thread.</>} bare>
       <div className="mt-4 flex flex-wrap gap-2">
         {(["native", "claude", "codex"] as const).map((id) =>
           // Before the cards arrive the pick is a guess; bars, not a wrong highlight.
@@ -318,7 +329,7 @@ function DefaultProviderCard({
         )}
       </div>
       {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -328,7 +339,7 @@ function NativeCard({ card }: { card: ProviderCard | null }) {
       <p className="text-muted-foreground mt-2 max-w-prose text-sm">
         The harness's own agent, billed to your OpenRouter key from the{" "}
         <a href="#api" className="text-ucch-active underline underline-offset-2">
-          API Management
+          API keys
         </a>{" "}
         tab. Any model in the catalogue; usage and cost are recorded per turn.
       </p>
@@ -397,7 +408,7 @@ function ClaudeCard({
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Button onClick={onLogin} disabled={!usable || !canLogin || busy !== null}>
           <LogInIcon />
-          Sign in (terminal)
+          Sign in
         </Button>
         {card?.authenticated && !readOnly && (
           <Button
@@ -628,7 +639,7 @@ function MemoryCard({
   const current = stats?.projectId === projectId ? stats.value : null
 
   return (
-    <section className="rounded-lg border p-6">
+    <section className="bg-card rounded-lg border p-4">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="flex items-center gap-2 text-sm font-medium">
           <BrainIcon className="text-muted-foreground size-4" />

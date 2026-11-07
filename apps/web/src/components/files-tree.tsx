@@ -145,7 +145,7 @@ export function FilesTree() {
           // the sidebar's full width. Inset focus ring: the scroller would clip
           // one drawn outside a full-width row.
           "[&_[data-sidebar=menu-button]]:pr-(--tree-pad-x) [&_[data-sidebar=menu-button]]:pl-[calc(var(--tree-pad-x)+var(--tree-indent)*var(--ucch-tree-depth,0))] [&_[data-sidebar=menu-button]]:focus-visible:ring-inset",
-          "[&_[data-sidebar=menu-button]_img]:size-(--tree-icon-size) [&_[data-sidebar=menu-button]_img]:mr-(--tree-gap-label) [&_[data-tree-chevron]_svg]:size-(--tree-chevron-glyph)",
+          "[&_[data-sidebar=menu-button]_[data-file-icon]]:size-(--tree-icon-size) [&_[data-sidebar=menu-button]_[data-file-icon]]:mr-(--tree-gap-label) [&_[data-tree-chevron]_svg]:size-(--tree-chevron-glyph)",
           // A folder's children keep a faint guide line, under the folder's
           // chevron, now that the list itself is no longer indented.
           "[&_[data-sidebar=menu-sub]]:relative [&_[data-sidebar=menu-sub]]:m-0 [&_[data-sidebar=menu-sub]]:translate-x-0 [&_[data-sidebar=menu-sub]]:gap-0 [&_[data-sidebar=menu-sub]]:border-0 [&_[data-sidebar=menu-sub]]:p-0",

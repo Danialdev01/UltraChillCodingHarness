@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 
+import { PageContainer } from "@/components/layout/page-container";
 import { SettingsPage } from "@/components/settings-page";
 import { isSettingsPageId, workspaceSettingsPageHref } from "@/lib/sections";
 import {
@@ -41,15 +42,13 @@ export default async function Page({ params }: { params: Promise<{ page: string 
   return (
     // Bounded so the forms inside do not stretch to the width of a large
     // monitor -- a label and a field a metre apart is not a form.
-    <div className="flex flex-1 flex-col gap-4 overflow-auto p-4">
-      <div className="w-full max-w-3xl">
-        <SettingsPage
-          page={page}
-          usage={usage}
-          storage={storage}
-          projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-        />
-      </div>
-    </div>
+    <PageContainer width="prose">
+      <SettingsPage
+        page={page}
+        usage={usage}
+        storage={storage}
+        projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+      />
+    </PageContainer>
   );
 }

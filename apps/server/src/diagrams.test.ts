@@ -41,20 +41,20 @@ describe("diagramAsk", () => {
     expect(diagramAsk("user-flow")).toContain("`flowchart TD`");
   });
 
-  it("points every kind at .ucch/INFO.md and forbids changes", () => {
+  it("points every kind at .agent/index.md and forbids changes", () => {
     for (const kind of Object.keys(DIAGRAM_FILES) as (keyof typeof DIAGRAM_FILES)[]) {
-      expect(diagramAsk(kind)).toContain(".ucch/INFO.md");
+      expect(diagramAsk(kind)).toContain(".agent/index.md");
       expect(diagramAsk(kind)).toContain("Do not change any files.");
     }
   });
 });
 
 describe("isDiagramKind", () => {
-  it("knows every kind on the page, all kept in .ucch/diagrams/", () => {
+  it("knows every kind on the page, all kept in .agent/diagrams/", () => {
     for (const kind of ["database", "architecture", "system-flow", "user-flow"]) {
       expect(isDiagramKind(kind)).toBe(true);
     }
-    expect(Object.values(DIAGRAM_FILES).every((path) => path.startsWith(".ucch/diagrams/"))).toBe(true);
+    expect(Object.values(DIAGRAM_FILES).every((path) => path.startsWith(".agent/diagrams/"))).toBe(true);
     expect(isDiagramKind("toString")).toBe(false);
     expect(isDiagramKind("sequence")).toBe(false);
   });

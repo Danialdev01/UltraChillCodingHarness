@@ -3,7 +3,7 @@
     doc_diagram.py <lang> <source-file> --out <path.svg|png> [--workspace .]
 
 lang is mermaid (mmdc, headless Chromium) or dot/graphviz. Renders are
-cached by content hash under .ucch/doc-cache/diagrams, so re-rendering a
+cached by content hash under .agent/doc-cache/diagrams, so re-rendering a
 document does not re-launch a browser for every unchanged diagram. On a
 syntax error the engine's own stderr is returned: it names the line, and the
 model fixes the source from it.

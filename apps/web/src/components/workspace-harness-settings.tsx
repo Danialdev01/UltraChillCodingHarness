@@ -8,6 +8,7 @@ import { ProviderSettings } from "@/components/provider-settings"
 import { Outcome, useOutcome } from "@/components/settings-outcome"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { NativeSelect } from "@/components/ui/native-select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { readCredentialChoice, storeCredentialChoice } from "@/lib/credential-choice"
@@ -20,6 +21,7 @@ import {
   type WorkspaceHarnessSettings as HarnessSettings,
 } from "@/lib/workspace-api"
 import { cn } from "@/lib/utils"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 const POLICIES: { id: CredentialPolicy; title: string; blurb: string }[] = [
   {
@@ -112,14 +114,7 @@ function PolicySection({
 }) {
   const { busy, error, done, run } = useOutcome()
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <BotIcon className="text-muted-foreground size-4" />
-        Harness subscription
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Which Claude Code, Codex or OpenRouter account pays for this workspace&apos;s agent turns.
-      </p>
+    <SettingsSection icon={BotIcon} title="Harness subscription" description={<>Which Claude Code, Codex or OpenRouter account pays for this workspace&apos;s agent turns.</>} bare>
       {loadError && <p className="text-destructive mt-4 text-sm">{loadError}</p>}
       {!settings && !loadError && (
         <div className="mt-4 flex flex-col gap-2">
@@ -162,7 +157,7 @@ function PolicySection({
         <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>
       )}
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -182,15 +177,8 @@ function OpenRouterSection({
   const configured = settings.credentials.openrouter
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <KeyRoundIcon className="text-muted-foreground size-4" />
-        Workspace OpenRouter key
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Used by the built-in loop for turns on the workspace&apos;s subscription. Stored encrypted and
-        never shown again. {configured ? "A key is stored." : "No key is stored."}
-      </p>
+    <SettingsSection icon={KeyRoundIcon} title="Workspace OpenRouter key" description={<>Used by the built-in loop for turns on the workspace&apos;s subscription. Stored encrypted and
+        never shown again. {configured ? "A key is stored." : "No key is stored."}</>} bare>
       {manages && (
         <form
           className="mt-4 flex max-w-xl flex-wrap items-center gap-2"
@@ -236,7 +224,7 @@ function OpenRouterSection({
         </form>
       )}
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -272,23 +260,15 @@ function AutoHandoffSection({
     })
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <ArrowRightLeftIcon className="text-muted-foreground size-4" />
-        Hand off on a usage limit
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        When a Claude Code or Codex turn stops because its plan&apos;s usage limit is reached, carry the work on in a
+    <SettingsSection icon={ArrowRightLeftIcon} title="Hand off on a usage limit" description={<>When a Claude Code or Codex turn stops because its plan&apos;s usage limit is reached, carry the work on in a
         new thread on another agent, in the same files, with the message that was stopped. A brief of the thread is
-        written first, on the OpenRouter key. A thread hands off at most once this way.
-      </p>
+        written first, on the OpenRouter key. A thread hands off at most once this way.</>} bare>
       <div className="mt-4 flex max-w-xl flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
+          <Switch
             checked={enabled}
             disabled={!manages || busy || (!enabled && !fallbackProvider)}
-            onChange={(e) => save({ enabled: e.target.checked, fallbackProvider })}
+            onCheckedChange={(checked) => save({ enabled: checked, fallbackProvider })}
             aria-label="Hand off on a usage limit"
           />
           On
@@ -314,7 +294,7 @@ function AutoHandoffSection({
       </div>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -343,29 +323,21 @@ function IsolatedFanOutSection({
     })
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <GitForkIcon className="text-muted-foreground size-4" />
-        Isolated parallel edits
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Lets a Custom turn give each of its parallel workers its own copy of the files to edit. When a worker
+    <SettingsSection icon={GitForkIcon} title="Isolated parallel edits" description={<>Lets a Custom turn give each of its parallel workers its own copy of the files to edit. When a worker
         finishes, its changes are applied back to the thread&apos;s files as a patch. A worker whose changes clash
-        with another&apos;s shows as failed, with its changes left out.
-      </p>
+        with another&apos;s shows as failed, with its changes left out.</>} bare>
       <label className="mt-4 flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
+        <Switch
           checked={enabled}
           disabled={!manages || busy}
-          onChange={(e) => save(e.target.checked)}
+          onCheckedChange={(checked) => save(checked)}
           aria-label="Isolated parallel edits"
         />
         On
       </label>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -394,29 +366,21 @@ function OmpVerifySection({
     })
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <ListChecksIcon className="text-muted-foreground size-4" />
-        Verify tasks with Custom
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        A task&apos;s check runs on Custom, whichever agent did the work. Custom compares the result with the task&apos;s
+    <SettingsSection icon={ListChecksIcon} title="Verify tasks with Custom" description={<>A task&apos;s check runs on Custom, whichever agent did the work. Custom compares the result with the task&apos;s
         acceptance criteria, and names the file and line of anything that is not met. The check is billed to this
-        workspace&apos;s OpenRouter key. When this is off, the agent that did the work checks it.
-      </p>
+        workspace&apos;s OpenRouter key. When this is off, the agent that did the work checks it.</>} bare>
       <label className="mt-4 flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
+        <Switch
           checked={enabled}
           disabled={!manages || busy}
-          onChange={(e) => save(e.target.checked)}
+          onCheckedChange={(checked) => save(checked)}
           aria-label="Verify tasks with Custom"
         />
         On
       </label>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -446,26 +410,18 @@ function MemorySection({
     })
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <BrainIcon className="text-muted-foreground size-4" />
-        Project memory
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Lets Custom turns remember what they learn about a project, such as its conventions, decisions and pitfalls,
+    <SettingsSection icon={BrainIcon} title="Project memory" description={<>Lets Custom turns remember what they learn about a project, such as its conventions, decisions and pitfalls,
         and recall it in later threads of the same project. Each project has its own memory, kept privately on the
-        server rather than in the repository. Where it disagrees with the files or the request, those win.
-      </p>
+        server rather than in the repository. Where it disagrees with the files or the request, those win.</>} bare>
       <p className="text-warning mt-2 max-w-prose text-sm">
         Never ask an agent to remember secrets: memory is stored as plain text and recalled into later turns.
       </p>
       <div className="mt-4 flex max-w-xl flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
+          <Switch
             checked={memory.enabled}
             disabled={!manages || busy}
-            onChange={(e) => save({ ...memory, enabled: e.target.checked })}
+            onCheckedChange={(checked) => save({ ...memory, enabled: checked })}
             aria-label="Project memory"
           />
           On
@@ -483,12 +439,11 @@ function MemorySection({
         </div>
       </div>
       <label className="mt-3 flex max-w-prose items-start gap-2 text-sm">
-        <input
-          type="checkbox"
-          className="mt-1"
+        <Switch
+          className="mt-0.5"
           checked={memory.retainCliTurns}
           disabled={!manages || busy || !memory.enabled}
-          onChange={(e) => save({ ...memory, retainCliTurns: e.target.checked })}
+          onCheckedChange={(checked) => save({ ...memory, retainCliTurns: checked })}
           aria-label="Remember from Claude Code and Codex turns"
         />
         <span>
@@ -499,7 +454,7 @@ function MemorySection({
       </label>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -528,31 +483,23 @@ function OmpBridgeSection({
     })
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <PlugIcon className="text-muted-foreground size-4" />
-        OMP tools for Claude Code &amp; Codex
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Gives Claude Code and Codex turns the Custom agent&apos;s tools: subagents that explore and report back, symbol-aware
+    <SettingsSection icon={PlugIcon} title={<>OMP tools for Claude Code &amp; Codex</>} description={<>Gives Claude Code and Codex turns the Custom agent&apos;s tools: subagents that explore and report back, symbol-aware
         navigation and renames, codemods across many files, and a second-opinion review. Each call is billed to the
         OpenRouter key Custom turns use; with no key, turns run without these tools. In Claude Code under Normal
         permissions the read-only tools run unasked and the rest ask first. Codex runs them without asking, as it
-        runs its own commands.
-      </p>
+        runs its own commands.</>} bare>
       <label className="mt-4 flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
+        <Switch
           checked={enabled}
           disabled={!manages || busy}
-          onChange={(e) => save(e.target.checked)}
+          onCheckedChange={(checked) => save(checked)}
           aria-label="OMP tools for Claude Code and Codex"
         />
         On
       </label>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -562,7 +509,7 @@ function MyChoice({ workspaceId }: { workspaceId: string }) {
   React.useEffect(() => setChoice(readCredentialChoice(workspaceId) ?? "member"), [workspaceId])
 
   return (
-    <section className="rounded-lg border p-6">
+    <section className="bg-card rounded-lg border p-4">
       <h2 className="text-sm font-medium">Your new sessions</h2>
       <p className="text-muted-foreground mt-2 max-w-prose text-sm">
         Which subscription the sessions you start in this workspace run on. Each one keeps the

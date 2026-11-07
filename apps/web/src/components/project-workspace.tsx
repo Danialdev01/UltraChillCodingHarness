@@ -5,9 +5,10 @@ import dynamic from "next/dynamic"
 
 import { ChatDock, ChatPortal } from "@/components/chat-dock"
 import { CodeEditor } from "@/components/code-editor"
-import { useCurrentProject, useFilesPanel } from "@/components/files-panel"
+import { useCurrentProject, useFilesPanel, type ViewMode } from "@/components/files-panel"
 import { NotesWorkspace, type DocLocation } from "@/components/notes/notes-workspace"
 import { ProjectChat } from "@/components/project-chat"
+import { SessionContextCard } from "@/components/session-context-card"
 import { useProject } from "@/lib/queries/project"
 import type { Project, ProjectSession } from "@/lib/session"
 
@@ -43,7 +44,8 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
   const sessionHash = session?.branch ? (session.treeHash ?? session.hash) : null
   const project = React.useMemo(() => ({ ...base, sessionHash }), [base, sessionHash])
   useCurrentProject(project)
-  const { mode, sidebar } = useFilesPanel()
+  const { mode, sidebar, setMode } = useFilesPanel()
+  useViewInUrl(mode, setMode, `${project.id}:${sessionHash ?? ""}`)
 
   // ProjectChat holds its thread's subscription, so it stays mounted and
   // hidden rather than unmounting: switching to files and back would
@@ -69,7 +71,11 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
         <ProjectChat project={project} session={session} />
       </ChatPortal>
       {!docked && (
-        <ChatDock className={mode === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"} />
+        // Relative, for the details card that floats at its top right.
+        <div className={mode === "chat" ? "@container/session relative flex min-h-0 flex-1 flex-col" : "hidden"}>
+          <ChatDock className="flex min-h-0 flex-1 flex-col" />
+          {mode === "chat" && <SessionContextCard project={project} session={session} />}
+        </div>
       )}
       {mode === "file" && <CodeEditor />}
 
@@ -93,4 +99,36 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
       {mode === "git" && <GitView project={project} session={session ?? null} />}
     </>
   )
+}
+
+/** The views worth a link: a file view needs a file open, so it is not one. */
+const LINKED_VIEWS: ReadonlySet<ViewMode> = new Set(["docs", "terminal", "git"])
+
+/**
+ * Keeps the view in the URL's `?view=` so a reload or a shared link opens
+ * on it. Read once when the session's page opens (after `useCurrentProject`
+ * has reset it to the chat), and written with `replaceState` as it changes
+ * -- a view is not somewhere the back button should step through.
+ */
+function useViewInUrl(mode: ViewMode, setMode: (mode: ViewMode) => void, identity: string) {
+  const restored = React.useRef<string | null>(null)
+  React.useEffect(() => {
+    if (restored.current === identity) return
+    restored.current = identity
+    const wanted = new URL(window.location.href).searchParams.get("view") as ViewMode | null
+    if (wanted && LINKED_VIEWS.has(wanted)) setMode(wanted)
+    // Once per session page; `setMode` is stable in what it does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity])
+
+  React.useEffect(() => {
+    if (restored.current !== identity) return
+    const url = new URL(window.location.href)
+    const current = url.searchParams.get("view")
+    const next = LINKED_VIEWS.has(mode) ? mode : null
+    if (current === next) return
+    if (next) url.searchParams.set("view", next)
+    else url.searchParams.delete("view")
+    window.history.replaceState(window.history.state, "", url)
+  }, [mode, identity])
 }

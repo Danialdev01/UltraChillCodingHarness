@@ -2,6 +2,8 @@
 
 import * as React from "react"
 import { BotIcon, Loader2Icon, SaveIcon } from "lucide-react"
+
+import { Switch } from "@/components/ui/switch"
 import { TASK_AUTO_RUN_USAGE_LIMIT } from "@ucch/protocol/plain"
 import type { TaskSettings } from "@ucch/protocol"
 
@@ -14,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { ProviderId } from "@/lib/providers-api"
 import { fetchTaskSettings, saveTaskSettings } from "@/lib/tasks-api"
 import { cn } from "@/lib/utils"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
@@ -90,7 +93,7 @@ export function TaskAutomationSettings({ hash }: { hash: string }) {
   const cliModels = provider === "native" ? [] : (card?.models ?? [])
 
   const save = async () => {
-    if (enabled && days.length === 0) return setError("Pick at least one day for Auto Run.")
+    if (enabled && days.length === 0) return setError("Pick at least one day for Auto-run.")
     setPending(true)
     setError(null)
     setNotice(null)
@@ -110,15 +113,8 @@ export function TaskAutomationSettings({ hash }: { hash: string }) {
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <BotIcon className="text-muted-foreground size-4" />
-        Tasks automation
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        The AI agent that carries cards on the Tasks board through Research, Ongoing and Verification, and
-        whether Idea cards start on their own.
-      </p>
+    <SettingsSection icon={BotIcon} title="Tasks automation" description={<>The AI agent that carries cards on the Tasks board through Research, Ongoing and Verification, and
+        whether Idea cards start on their own.</>} bare>
 
       {!saved && !error && <Skeleton className="mt-4 h-24 w-full max-w-xl" />}
       {saved && (
@@ -172,14 +168,12 @@ export function TaskAutomationSettings({ hash }: { hash: string }) {
 
           <Field>
             <label className="flex items-center gap-2 text-sm font-medium">
-              <input
-                type="checkbox"
+              <Switch
                 checked={enabled}
                 disabled={pending}
-                onChange={(e) => setEnabled(e.target.checked)}
-                className="size-4"
+                onCheckedChange={(checked) => setEnabled(checked)}
               />
-              Auto Run Tasks
+              Auto-run tasks
             </label>
             <FieldDescription>
               {enabled
@@ -273,6 +267,6 @@ export function TaskAutomationSettings({ hash }: { hash: string }) {
           {error}
         </p>
       )}
-    </section>
+    </SettingsSection>
   )
 }

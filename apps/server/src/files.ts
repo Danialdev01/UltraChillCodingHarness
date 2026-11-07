@@ -314,7 +314,7 @@ export class PathError extends Error {}
  * is the only grant, and a database password is not part of what was shared.
  * Matched on the last segment, so it holds in any folder.
  */
-const SECRET_FILE = /^(\.env(\..*)?|\.npmrc|\.pypirc|\.netrc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx))$/i;
+const SECRET_FILE = /^(\.env(\..*)?|env\.val|\.npmrc|\.pypirc|\.netrc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx))$/i;
 
 export function isSecretPath(path: string): boolean {
   const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? "";

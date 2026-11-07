@@ -54,7 +54,7 @@ const IGNORE = [
   "**/vendor/**",
   "**/.next/**",
   "**/dist/**",
-  "**/.ucch/cache/**",
+  "**/.agent/cache/**",
 ];
 
 /** Inside `.git`: what changes all the time and says nothing about the repository's state. */

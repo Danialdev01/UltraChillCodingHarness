@@ -105,7 +105,7 @@ type SaveState = "saved" | "saving" | "unsaved" | { error: string }
  * the right (below it on a narrow screen), and a bar above both to redraw
  * it from the codebase.
  *
- * The source is the kind's file in `.ucch/diagrams/` in the project's
+ * The source is the kind's file in `.agent/diagrams/` in the project's
  * repository. Once the file exists it is shared live, like any open file
  * (`code-editor.tsx`): everyone with it open types into one document, which
  * the collab service writes back. Before that -- or without the service --

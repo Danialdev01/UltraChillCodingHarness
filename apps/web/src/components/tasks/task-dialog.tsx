@@ -166,7 +166,7 @@ export function TaskDialog({
       description={
         editing
           ? "Change what the AI is working from."
-          : "Lands in Idea. Move it to Research, or let Auto Run do it, and the AI takes it from there."
+          : "Lands in Idea. Move it to Research, or let Auto-run do it, and the AI takes it from there."
       }
       onSubmit={submit}
       footer={

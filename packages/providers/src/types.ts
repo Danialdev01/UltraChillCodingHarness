@@ -72,7 +72,7 @@ export interface ProviderRunInput {
   /** How much the CLI may do unasked. A provider that cannot ask ignores it. */
   permissionMode?: AgentPermissionMode;
   /**
-   * The project's `.ucch/` knowledge, as the native loop is given it. Each
+   * The project's `.agent/` knowledge, as the native loop is given it. Each
    * provider hands it to its model the way its CLI allows: Claude Code as an
    * appended system prompt, Codex ahead of a new session's first message.
    */

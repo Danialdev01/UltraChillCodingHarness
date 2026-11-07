@@ -91,7 +91,9 @@ export function ViewModeToggle({ session = false }: { session?: boolean }) {
     <div className="flex items-center gap-1">
       <ViewModeSelect modes={modes} mode={mode} onChange={setMode} />
 
-      <div className="bg-muted/40 hidden items-center gap-0.5 rounded-lg border p-0.5 md:flex">
+      {/* Drawn like `ui/segmented` -- the one look for "one of these" -- but
+          kept a tablist: these switch what the page shows, not a value. */}
+      <div className="bg-muted/60 hidden items-center gap-0.5 rounded-lg border p-0.5 md:flex">
         <div role="tablist" aria-label="Project view" className="flex items-center gap-0.5">
           {modes.map(({ id, label, icon: Icon }) => (
             <button
@@ -102,10 +104,10 @@ export function ViewModeToggle({ session = false }: { session?: boolean }) {
               title={label}
               onClick={() => setMode(id)}
               className={cn(
-                "flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors",
+                "flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors",
                 mode === id
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
+                  ? "bg-background text-foreground border-border shadow-xs"
+                  : "text-muted-foreground hover:text-foreground border-transparent",
               )}
             >
               <Icon className="size-3.5" />
@@ -123,15 +125,16 @@ export function ViewModeToggle({ session = false }: { session?: boolean }) {
           and this throws things away. Only once there are enough tabs that
           closing them singly is a chore. */}
       {sweep && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="icon-sm"
           title={sweep.label}
           onClick={sweep.run}
-          className="text-muted-foreground hover:text-destructive flex size-7 items-center justify-center rounded-md transition-colors"
+          className="text-muted-foreground hover:text-destructive"
         >
-          <Trash2Icon className="size-3.5" />
+          <Trash2Icon />
           <span className="sr-only">{sweep.label}</span>
-        </button>
+        </Button>
       )}
     </div>
   )

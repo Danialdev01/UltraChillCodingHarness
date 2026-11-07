@@ -40,9 +40,12 @@ Every `/api` route except `auth/*`, `public/*` (rate-limited per address), `inte
 | PUT | `/api/settings/claude-token` | paste a Claude Code OAuth token | `index.ts:3609` |
 | PUT | `/api/settings/default-model` | default model | `index.ts:3549` |
 | PUT | `/api/settings/default-provider` | default provider | `index.ts:3662` |
-| PUT | `/api/settings/github` | GitHub personal token | `index.ts:3531` |
-| PUT | `/api/settings/openrouter` | OpenRouter key | `index.ts:3510` |
-| PUT | `/api/settings/resend` | Resend key | `index.ts:3521` |
+| PUT | `/api/settings/{openrouter,resend,github}` | older key route for scripts: stores without the live check | `account-keys-routes.ts` |
+| GET | `/api/account/keys` | key metadata (prefix, last four, dates, scopes), never a value | `account-keys-routes.ts` |
+| PUT | `/api/account/keys/:provider` | format check, live check against the provider, store | `account-keys-routes.ts` |
+| DELETE | `/api/account/keys/:provider` | remove a stored key | `account-keys-routes.ts` |
+| POST | `/api/account/reauth` | password step-up for this session, five minutes; 5 tries / 10 min | `account-keys-routes.ts` |
+| POST | `/api/account/keys/:provider/reveal` | one key in the clear after a step-up; logged to Activity; 10 / 10 min | `account-keys-routes.ts` |
 | POST | `/api/ws-ticket` | single-use ticket for the `/ws` upgrade | `index.ts:1230` |
 
 ### Workspaces and members
@@ -247,12 +250,12 @@ Every `/api` route except `auth/*`, `public/*` (rate-limited per address), `inte
 | `/[ws]/code` | projects table |
 | `/[ws]/p/[project]` | project chat (first session) |
 | `/[ws]/p/[project]/[sessionHash]` | a session |
-| `/[ws]/p/[project]/documentation[/[noteId]]` | notes, diagrams, references, keys (`?view=`) |
+| `/[ws]/p/[project]/documentation[/[noteId]]` | notes, diagrams, references, environment variables (`?view=`) |
 | `/[ws]/p/[project]/tasks` | Tasks board |
 | `/[ws]/p/[project]/timeline` | Gantt timeline |
 | `/[ws]/p/[project]/keys` | project keys |
 | `/[ws]/p/[project]/activity` | project activity |
-| `/[ws]/p/[project]/manage` | figures, git, activity, preferences (`?tab=`) |
+| `/[ws]/p/[project]/manage` | figures, git, activity, project key, preferences (`?tab=`) |
 | `/[ws]/s/[sessionHash]` | a session in a session workspace |
 | `/[ws]/database[/[connectionId][/[db][/[table]]]]` | database manager |
 | `/[ws]/workspace-settings[/[page]]` | `general`, `members`, `sharing`, `harness` |
@@ -423,7 +426,7 @@ Defined in `packages/protocol/src/rpc.ts`, served by `apps/server/src/ws.ts`. Ge
 | `task-scheduler.ts` | **`TaskScheduler`**, `isDue`, `localClock`, `usageBlock` | Auto Run |
 | `timeline.ts`, `timeline-routes.ts` | **`TimelineService`**, `wouldCycle`, `registerTimelineRoutes` | Gantt |
 | `field-guard.ts` | `staleFields` | per-field conflicts |
-| `keys.ts`, `keys-routes.ts` | **`ProjectKeyService`**, `registerKeyRoutes` | project keys |
+| `env-vars.ts`, `env-vault.ts`, `env-routes.ts` | **`EnvVarService`**, `readVault`, `registerEnvRoutes` | environment variables and the project key |
 | `public-routes.ts` | `registerPublicRoutes`, `publicUrl`, `rewriteUploadUrls` | public sites |
 | `database-connections.ts`, `database-routes.ts`, `database-probe.ts` | **`DatabaseConnectionService`**, `registerDatabaseRoutes`, `probe` | saved servers |
 | `db-manager/*` | `adapterFor`, **`MysqlAdapter`**, **`PostgresAdapter`**, `withMysql`, `withPostgres`, `splitStatements`, `quoteIdent`, `quoteLiteral`, `columnDdl`, `parseCsv`, `serializeCell`, errors (`DbConnectError`, `DbQueryError`, `RowConflictError`, `DbRefusal`) | database manager |

@@ -138,7 +138,7 @@ export const SECTIONS = [
  * rail: they follow the person across every workspace.
  */
 export const SETTINGS = {
-  ...section("setting", "Account Setting", UserRoundIcon, "Your account, keys, providers, usage and theme."),
+  ...section("setting", "Settings", UserRoundIcon, "Your account, keys, providers, usage and appearance."),
   scope: "global",
   // `/setting` redirects to its first page; links go there directly.
   entry: "/setting/account",
@@ -152,7 +152,7 @@ export const SETTINGS = {
 export const WORKSPACE_SETTINGS = {
   ...section(
     "workspace-settings",
-    "Workspace Settings",
+    "Settings",
     SettingsIcon,
     "Defaults, members and roles, sharing, and the harness subscription for this workspace.",
   ),
@@ -195,11 +195,11 @@ function settingsPage<Id extends string>(id: Id, title: string, icon: LucideIcon
 /** The pages of Settings, in the order the sidebar lists them. */
 export const SETTINGS_PAGES = [
   settingsPage("account", "Account", UserRoundIcon),
-  settingsPage("api", "API Management", KeyRoundIcon),
-  settingsPage("providers", "Agent Providers", BotIcon),
+  settingsPage("api", "API keys", KeyRoundIcon),
+  settingsPage("providers", "Providers", BotIcon),
   settingsPage("usage", "Usage", ChartColumnIcon),
   settingsPage("activity", "Activity", ActivityIcon),
-  settingsPage("theme", "Theme", PaletteIcon),
+  settingsPage("theme", "Appearance", PaletteIcon),
 ] as const satisfies readonly SettingsPage[];
 
 export type SettingsPageId = (typeof SETTINGS_PAGES)[number]["id"];
@@ -227,9 +227,9 @@ export function settingsPageFromPath(pathname: string): SettingsPageId | null {
 /** The pages of Workspace Settings, at `/{ws}/workspace-settings/{id}`, in sidebar order. */
 export const WORKSPACE_SETTINGS_PAGES = [
   settingsPage("general", "General", SlidersHorizontalIcon),
-  settingsPage("members", "Members & Roles", UsersRoundIcon),
+  settingsPage("members", "Members & roles", UsersRoundIcon),
   settingsPage("sharing", "Sharing", Share2Icon),
-  settingsPage("harness", "Harness Subscription", BotIcon),
+  settingsPage("harness", "Harness subscription", BotIcon),
 ] as const satisfies readonly SettingsPage[];
 
 export type WorkspaceSettingsPageId = (typeof WORKSPACE_SETTINGS_PAGES)[number]["id"];
@@ -363,7 +363,7 @@ export function projectSessionHashFromPath(pathname: string): string | null {
 /**
  * A page that belongs to one project, at `/{ws}/p/{projectHash}/{id}`.
  *
- * Listed under the project in the sidebar. The shape mirrors `Section`, and
+ * Linked from the session card beside the chat. The shape mirrors `Section`, and
  * for the same reason: the row, the page and the breadcrumb all read the one
  * record, so none of them can name it differently.
  */
@@ -378,7 +378,7 @@ function projectPage<Id extends string>(id: Id, title: string, icon: LucideIcon,
   return { id, title, icon, blurb } satisfies ProjectPage;
 }
 
-/** The pages under a project, in the order the sidebar lists them. */
+/** The pages under a project. Tasks and Timeline are linked from the session card beside the chat; Manage from the settings button beside the search. */
 export const PROJECT_PAGES = [
   projectPage(
     "tasks",
@@ -395,7 +395,7 @@ export const PROJECT_PAGES = [
   ),
   projectPage(
     "timeline",
-    "Project Timeline",
+    "Timeline",
     HistoryIcon,
     "The project's plan as a Gantt chart: what has to happen, from when to when, and what comes after what.",
   ),
@@ -408,13 +408,6 @@ export const PROJECT_PAGES = [
 ] as const satisfies readonly ProjectPage[];
 
 export type ProjectPageId = (typeof PROJECT_PAGES)[number]["id"];
-
-/**
- * The pages listed under a project in the sidebar. Documentation is a tab of
- * the project's own view, and Manage the settings button beside its search,
- * so neither needs a row; both keep their routes.
- */
-export const SIDEBAR_PROJECT_PAGES = PROJECT_PAGES.filter((p) => p.id !== "documentation" && p.id !== "manage");
 
 export function projectPageById(id: ProjectPageId): ProjectPage {
   return PROJECT_PAGES.find((p) => p.id === id)!;
@@ -447,7 +440,7 @@ export const DOC_VIEWS = [
   { id: "notes", label: "Notes" },
   { id: "diagrams", label: "Diagrams" },
   { id: "references", label: "References" },
-  { id: "keys", label: "Keys" },
+  { id: "env", label: "Environment Variables" },
 ] as const;
 
 export type DocView = (typeof DOC_VIEWS)[number]["id"];
@@ -457,6 +450,8 @@ export type DocView = (typeof DOC_VIEWS)[number]["id"];
  * unknown, so every existing notes link keeps landing on the notes.
  */
 export function docViewFromParam(value: string | null): DocView {
+  // What Environment Variables was called before, so old links still land.
+  if (value === "keys") return "env"
   return DOC_VIEWS.find((v) => v.id === value)?.id ?? "notes";
 }
 

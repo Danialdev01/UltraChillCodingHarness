@@ -38,7 +38,7 @@ __ucch_branch() {
 }
 PS1='\u@\h$(__ucch_where)$(__ucch_branch)> '
 
-# `claude` and `codex` started here are told about the project's `.ucch/`
+# `claude` and `codex` started here are told about the project's `.agent/`
 # knowledge, and given the OMP bridge when the workspace has it on; see
 # ucch.fish, ucch-knowledge.sh and terminal-bridge.ts.
 __ucch_knowledge=$(dirname -- "${BASH_SOURCE[0]}")/ucch-knowledge.sh

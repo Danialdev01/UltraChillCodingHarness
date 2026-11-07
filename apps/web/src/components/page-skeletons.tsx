@@ -17,6 +17,19 @@ import { Skeleton } from "@/components/ui/skeleton"
  * way.
  */
 
+/** `PageHeading`: an h1-sized title, a line of description, an action. */
+export function PageHeadingSkeleton({ action = true }: { action?: boolean }) {
+  return (
+    <div className="flex items-end justify-between gap-4" aria-hidden>
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="h-3.5 w-72 max-w-full opacity-70" />
+      </div>
+      {action && <Skeleton className="h-7 w-28 shrink-0" />}
+    </div>
+  )
+}
+
 /** The projects table: a header row, then a handful of rows. */
 export function ProjectsTableSkeleton({ rows = 4 }: { rows?: number }) {
   return (
@@ -78,21 +91,63 @@ export function DashboardSkeleton() {
   )
 }
 
-/** Settings: a form's worth of fields. The pages themselves are sidebar rows. */
+/**
+ * Settings: sections of rows, as `SettingsSection` draws them -- a heading
+ * above a card, label and description on the left of each row, the control
+ * on the right. Same frame as `PageContainer width="prose"`.
+ */
 export function SettingsSkeleton() {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto p-4">
-      <div className="w-full max-w-3xl">
-        <div className="flex flex-col gap-6">
-          {Array.from({ length: 3 }, (_, i) => (
-            <div key={i} className="flex flex-col gap-2">
-              <Skeleton className="h-3.5 w-24" />
-              <Skeleton className="h-9 w-full max-w-md" />
-              <Skeleton className="h-3 w-56 opacity-70" />
+    <div className="flex flex-1 flex-col p-4 sm:p-6" aria-hidden>
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-8">
+        {[2, 3].map((rows, i) => (
+          <div key={i} className="flex flex-col gap-2.5">
+            <div className="flex flex-col gap-1.5 px-1">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-3 w-72 max-w-full opacity-70" />
             </div>
-          ))}
-        </div>
+            <div className="bg-card divide-y rounded-lg border">
+              {Array.from({ length: rows }, (_, j) => (
+                <div key={j} className="flex items-center justify-between gap-6 px-4 py-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Skeleton className="h-3.5 w-36" />
+                    <Skeleton className="h-3 w-56 max-w-full opacity-70" />
+                  </div>
+                  <Skeleton className="h-7 w-28 shrink-0" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
+    </div>
+  )
+}
+
+/**
+ * The API keys page's cards, drawn at their real size: an icon tile and a
+ * title, the 40px key row, and the footer strip.
+ */
+export function ApiKeysSkeleton() {
+  return (
+    <div className="flex flex-col gap-4" aria-hidden>
+      {Array.from({ length: 3 }, (_, i) => (
+        <div key={i} className="bg-card overflow-hidden rounded-lg border">
+          <div className="flex flex-col gap-4 p-4">
+            <div className="flex items-start gap-3">
+              <Skeleton className="size-8 rounded-md" />
+              <div className="flex flex-col gap-2">
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="h-3.5 w-64 max-w-full opacity-70" />
+              </div>
+            </div>
+            <Skeleton className="h-8 w-full" />
+          </div>
+          <div className="bg-muted/40 border-t px-4 py-3">
+            <Skeleton className="h-3 w-72 max-w-full opacity-70" />
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

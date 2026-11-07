@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import {
   DatabaseIcon,
   FolderGitIcon,
@@ -16,7 +17,7 @@ import type { Project, Workspace } from "@/lib/session";
 import { createTask, type TaskInput } from "@/lib/tasks-api";
 import { useNewSession } from "@/lib/use-new-session";
 import { cn } from "@/lib/utils";
-import { projectPageHref } from "@/lib/sections";
+import { projectHashFromPath, projectPageHref } from "@/lib/sections";
 import { useTransitionRouter } from "@/lib/view-transitions";
 import { useWorkspaceHash } from "@/lib/workspace-context";
 
@@ -53,6 +54,7 @@ export function QuickActions({
   const [saving, setSaving] = useState(false);
   const router = useTransitionRouter();
   const ws = useWorkspaceHash();
+  const openProjectHash = projectHashFromPath(usePathname());
 
   async function saveTodo(input: TaskInput, projectHash: string) {
     setSaving(true);
@@ -105,8 +107,15 @@ export function QuickActions({
         />
         <Action
           icon={StickyNoteIcon}
-          label="New note"
-          unavailable="Notes arrive with the agent core"
+          label="Project notes"
+          onClick={() => openProjectHash && router.push(projectPageHref(ws, openProjectHash, "documentation"))}
+          unavailable={
+            sessionWorkspace
+              ? "Notes belong to a project"
+              : openProjectHash
+                ? undefined
+                : "Open a project to see its notes"
+          }
         />
       </div>
 
@@ -148,7 +157,7 @@ function Action({
             disabled={disabled}
             aria-label={label}
             className={cn(
-              "text-muted-foreground focus-visible:ring-ring flex h-8 items-center justify-center rounded-md border transition-colors focus-visible:ring-2 focus-visible:outline-none",
+              "text-muted-foreground focus-visible:ring-ring flex h-8 items-center justify-center rounded-lg border transition-colors focus-visible:ring-2 focus-visible:outline-none",
               disabled
                 ? "cursor-not-allowed opacity-40"
                 : "hover:bg-accent hover:text-accent-foreground",

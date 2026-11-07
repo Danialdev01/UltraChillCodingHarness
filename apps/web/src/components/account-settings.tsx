@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { InlineError } from "@/components/layout/inline-error"
 import {
   KeyRoundIcon,
   Loader2Icon,
@@ -26,6 +27,7 @@ import { Outcome, useOutcome } from "@/components/settings-outcome"
 import { fileToAvatar } from "@/lib/avatar-image"
 import { qk } from "@/lib/query-keys"
 import { useInvalidate } from "@/lib/use-invalidate"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 /**
  * The account tab: who you are, how you sign in, and what you look like.
@@ -55,9 +57,7 @@ export function AccountSettings() {
 
   if (loadError) {
     return (
-      <section className="rounded-lg border p-6">
-        <p className="text-destructive text-sm">{loadError}</p>
-      </section>
+      <InlineError>{loadError}</InlineError>
     )
   }
   if (!account) return <AccountSkeleton />
@@ -79,7 +79,7 @@ export function AccountSettings() {
 function AccountSkeleton() {
   return (
     <>
-      <section className="rounded-lg border p-6">
+      <section className="bg-card rounded-lg border p-4">
         <Skeleton className="h-4 w-32" />
         <Skeleton className="mt-3 h-3.5 w-3/4 max-w-prose" />
         <div className="mt-4 flex items-center gap-4">
@@ -88,7 +88,7 @@ function AccountSkeleton() {
         </div>
       </section>
       {[0, 1, 2].map((i) => (
-        <section key={i} className="rounded-lg border p-6">
+        <section key={i} className="bg-card rounded-lg border p-4">
           <Skeleton className="h-4" style={{ width: `${20 + i * 6}%` }} />
           <Skeleton className="mt-3 h-3.5 w-2/3 max-w-prose" />
           <Skeleton className="mt-4 h-9 w-full max-w-md" />
@@ -113,15 +113,8 @@ function ProfilePicture({ account, onSaved }: { account: Account; onSaved: () =>
   const picker = React.useRef<HTMLInputElement>(null)
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <UserRoundIcon className="text-muted-foreground size-4" />
-        Profile picture
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Shown beside your name in the sidebar. Cropped to a square and shrunk to{" "}
-        {256}px before it is saved, so a photograph straight from a phone is fine.
-      </p>
+    <SettingsSection icon={UserRoundIcon} title="Profile picture" description={<>Shown beside your name in the sidebar. Cropped to a square and shrunk to{" "}
+        {256}px before it is saved, so a photograph straight from a phone is fine.</>} bare>
 
       <div className="mt-4 flex flex-wrap items-center gap-4">
         <Avatar className="size-16">
@@ -173,7 +166,7 @@ function ProfilePicture({ account, onSaved }: { account: Account; onSaved: () =>
       </div>
 
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -188,15 +181,8 @@ function UsernameSection({ account, onSaved }: { account: Account; onSaved: () =
   const changed = name.trim() !== (account.name ?? "")
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <UserRoundIcon className="text-muted-foreground size-4" />
-        Username
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        What you are called in the sidebar and on anything you own. It is not
-        how you sign in, so changing it costs nothing and needs no password.
-      </p>
+    <SettingsSection icon={UserRoundIcon} title="Username" description={<>What you are called in the sidebar and on anything you own. It is not
+        how you sign in, so changing it costs nothing and needs no password.</>} bare>
 
       <form
         className="mt-4 flex max-w-xl flex-col gap-3"
@@ -238,7 +224,7 @@ function UsernameSection({ account, onSaved }: { account: Account; onSaved: () =
       </form>
 
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -251,16 +237,9 @@ function EmailSection({ account, onSaved }: { account: Account; onSaved: () => v
   const changed = email.trim() !== (account.email ?? "")
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <MailIcon className="text-muted-foreground size-4" />
-        Email
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        {account.hasPassword
+    <SettingsSection icon={MailIcon} title="Email" description={<>{account.hasPassword
           ? "The address you sign in with. Changing it needs your current password."
-          : "Your address. This account signs in through GitHub, so no password is needed to change it."}
-      </p>
+          : "Your address. This account signs in through GitHub, so no password is needed to change it."}</>} bare>
 
       <form
         className="mt-4 flex max-w-xl flex-col gap-3"
@@ -313,7 +292,7 @@ function EmailSection({ account, onSaved }: { account: Account; onSaved: () => v
       </form>
 
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -330,16 +309,9 @@ function PasswordSection({ account, onSaved }: { account: Account; onSaved: () =
   const tooShort = next.length > 0 && next.length < 8
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <KeyRoundIcon className="text-muted-foreground size-4" />
-        {account.hasPassword ? "Password" : "Set a password"}
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        {account.hasPassword
+    <SettingsSection icon={KeyRoundIcon} title={<>{account.hasPassword ? "Password" : "Set a password"}</>} description={<>{account.hasPassword
           ? "Changing your password signs out every other device. This one stays signed in."
-          : "This account signs in through GitHub. Setting a password adds a second way in; it does not remove the first."}
-      </p>
+          : "This account signs in through GitHub. Setting a password adds a second way in; it does not remove the first."}</>} bare>
 
       <form
         className="mt-4 flex max-w-xl flex-col gap-3"
@@ -419,6 +391,6 @@ function PasswordSection({ account, onSaved }: { account: Account; onSaved: () =
       </form>
 
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }

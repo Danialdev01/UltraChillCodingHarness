@@ -87,6 +87,19 @@ describe("ProjectActivityPublisher", () => {
     ]);
   });
 
+  it("says a message that can title its session changes the workspace's session list", async () => {
+    const { heard, publish } = setup(async () => WORKSPACE);
+    publish({ type: "user.message", threadId: THREAD, text: "identify project purpose" });
+    // Nothing a title could be made of: the activity edge alone.
+    publish({ type: "user.message", threadId: THREAD, text: "```\nonly code\n```" });
+    await flush();
+    expect(heard.filter((h) => h.topic === "workspace").map((h) => h.event)).toEqual([
+      { type: "project.activity", projectId: PROJECT, threadId: THREAD, state: "queued" },
+      { type: "resource.changed", projectId: PROJECT, resource: "sessions" },
+      { type: "project.activity", projectId: PROJECT, threadId: THREAD, state: "queued" },
+    ]);
+  });
+
   it("stays quiet for other events, and asks again after a miss", async () => {
     const answers: Array<string | null | Error> = [new Error("db down"), null, WORKSPACE];
     let lookups = 0;

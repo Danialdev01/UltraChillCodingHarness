@@ -67,6 +67,14 @@ export const SELF_AUDITED = new Set([
   "DELETE /api/projects/:hash/tasks/:taskId",
   // Logged only when a session was actually removed: `?ifEmpty=1` often keeps it.
   "DELETE /api/projects/:hash/sessions/:sessionHash",
+  // The account's API keys: `api_key.created` / `.replaced` / `.removed` /
+  // `.revealed` / `.copied`, exactly one each (account-keys-routes.ts).
+  "PUT /api/account/keys/:provider",
+  "DELETE /api/account/keys/:provider",
+  "POST /api/account/keys/:provider/reveal",
+  "PUT /api/settings/openrouter",
+  "PUT /api/settings/resend",
+  "PUT /api/settings/github",
 ]);
 
 /** Writes that change nothing anyone would call a change. */
@@ -77,6 +85,11 @@ const IGNORED = new Set([
   "POST /api/internal/collab/files/read",
   "POST /api/auth/login",
   "POST /api/auth/logout",
+  // Confirming a password changes nothing; the reveal it unlocks is logged.
+  "POST /api/account/reauth",
+  // Checking a project key, or reading one value with it, changes nothing.
+  "POST /api/projects/:hash/env/unlock",
+  "POST /api/projects/:hash/env/vars/:varId/reveal",
   // Staging an attachment or an image is part of the message or page it is
   // for, which is what gets logged.
   "POST /api/projects/:hash/uploads",
@@ -87,26 +100,44 @@ const IGNORED = new Set([
 ]);
 
 const TABLE: Record<string, Describe> = {
-  // -- Keys ------------------------------------------------------------------
-  "POST /api/projects/:hash/keys": (_p, b) => ({
-    action: "key.create",
-    targetType: "key",
-    summary: `Saved key ${quoted(b?.name, "")}`.trim(),
+  // -- Environment variables --------------------------------------------------
+  "POST /api/projects/:hash/env/project-key": () => ({
+    action: "project_key.setup",
+    targetType: "project",
+    summary: "Set up the project key",
     resource: "keys",
   }),
-  "PATCH /api/projects/:hash/keys/:keyId": (p, b) => ({
-    action: "key.update",
-    targetType: "key",
-    targetId: p.keyId,
-    summary: `Changed key ${quoted(b?.name, "")}`.trim(),
-    details: { fields: Object.keys(b ?? {}).filter((k) => k !== "value" && k !== "secret") },
+  "PUT /api/projects/:hash/env/project-key": () => ({
+    action: "project_key.change",
+    targetType: "project",
+    summary: "Changed the project key",
     resource: "keys",
   }),
-  "DELETE /api/projects/:hash/keys/:keyId": (p) => ({
-    action: "key.delete",
-    targetType: "key",
-    targetId: p.keyId,
-    summary: "Deleted a key",
+  "DELETE /api/projects/:hash/env/project-key": () => ({
+    action: "project_key.reset",
+    targetType: "project",
+    summary: "Reset the project key, removing every environment variable",
+    resource: "keys",
+  }),
+  "POST /api/projects/:hash/env/vars": (_p, b) => ({
+    action: "env_var.create",
+    targetType: "env_var",
+    summary: `Saved environment variable ${quoted(b?.name, "")}`.trim(),
+    resource: "keys",
+  }),
+  "PATCH /api/projects/:hash/env/vars/:varId": (p, b) => ({
+    action: "env_var.update",
+    targetType: "env_var",
+    targetId: p.varId,
+    summary: `Changed environment variable ${quoted(b?.name, "")}`.trim(),
+    details: { fields: Object.keys(b ?? {}).filter((k) => k !== "value" && k !== "secret" && k !== "projectKey") },
+    resource: "keys",
+  }),
+  "DELETE /api/projects/:hash/env/vars/:varId": (p) => ({
+    action: "env_var.delete",
+    targetType: "env_var",
+    targetId: p.varId,
+    summary: "Deleted an environment variable",
     resource: "keys",
   }),
 
@@ -305,9 +336,6 @@ const TABLE: Record<string, Describe> = {
   "PUT /api/account/password": () => account("account.password", "Changed the password"),
   "PUT /api/account/avatar": () => account("account.avatar", "Changed the avatar"),
   "PUT /api/settings/agent-permission-mode": () => account("settings.permissions", "Changed the agent permission mode"),
-  "PUT /api/settings/openrouter": () => account("settings.openrouter", "Changed the OpenRouter key"),
-  "PUT /api/settings/resend": () => account("settings.resend", "Changed the Resend key"),
-  "PUT /api/settings/github": () => account("settings.github", "Changed the GitHub token"),
   "PUT /api/settings/default-model": () => account("settings.model", "Changed the default model"),
   "PUT /api/settings/claude-token": () => account("settings.claude", "Changed the Claude token"),
   "PUT /api/settings/default-provider": () => account("settings.provider", "Changed the default provider"),

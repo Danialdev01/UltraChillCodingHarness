@@ -38,7 +38,7 @@ export function documentationPrompt(text: string, docs: DocumentsBackends): stri
     `- edit a .docx/.pdf keeping its styles: \`${script("doc_edit.py")} <file> --ops '<json>' [--out <file>]\` (ops: see docx-edit)\n` +
     `- render Markdown to PDF/DOCX/HTML: \`${script("doc_render.py")} <file.md> --format pdf --workspace .\` (mermaid, dot and vega-lite fences become figures)\n` +
     `- check a PDF: \`${script("doc_check.py")} <file.pdf> --source <file.md> [--budget N]\`\n` +
-    `- page images to look at: \`pdftoppm -png -r 80 -f 1 -l 3 <file.pdf> .ucch/doc-cache/pages/p\`, then view the PNGs\n\n` +
+    `- page images to look at: \`pdftoppm -png -r 80 -f 1 -l 3 <file.pdf> .agent/doc-cache/pages/p\`, then view the PNGs\n\n` +
     "For a new document: plan (type, audience, page budget, outline, sourced facts), write the " +
     "Markdown, render, check, look at the pages against the layout-qa rubric, patch the source " +
     "and re-render -- at most two review rounds -- then say where the file is. A PDF's text " +

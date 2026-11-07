@@ -14,6 +14,7 @@ import {
 } from "@/lib/syntax-theme"
 import type { SelectionColors } from "@/lib/selection-color"
 import { contrast, isValidHex, normalizeHex } from "@/lib/theme"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 /**
  * A sample of code, one span per token, coloured by the same variables the
@@ -87,15 +88,8 @@ export function SyntaxSettings() {
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <CodeIcon className="text-muted-foreground size-4" />
-        Code colours
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        The syntax highlighting in the file view, one colour per kind of token. Edits apply to
-        the sample below and to any open file at once. Saved in this browser.
-      </p>
+    <SettingsSection icon={CodeIcon} title="Code colours" description={<>The syntax highlighting in the file view, one colour per kind of token. Edits apply to
+        the sample below and to any open file at once. Saved in this browser.</>} bare>
 
       <pre
         aria-label="Sample code"
@@ -173,7 +167,7 @@ export function SyntaxSettings() {
             : `Using the default ${dark ? "dark" : "light"} colours, which follow the palette.`}
         </span>
       </div>
-    </section>
+    </SettingsSection>
   )
 }
 

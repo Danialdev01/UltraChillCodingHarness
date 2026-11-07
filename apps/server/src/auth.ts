@@ -258,7 +258,12 @@ export class AuthService {
 
     await this.db
       .update(users)
-      .set({ passwordHash: await hashPassword(newPassword) })
+      .set({
+        passwordHash: await hashPassword(newPassword),
+        // A first password needed nothing but this session to add; stored
+        // keys stay locked to it for an hour (see `passwordAddedAt`).
+        ...(row.passwordHash ? {} : { passwordAddedAt: new Date() }),
+      })
       .where(eq(users.id, userId));
 
     await this.db
@@ -283,6 +288,38 @@ export class AuthService {
     if (dataUrl !== null && !isAvatarDataUrl(dataUrl)) return false;
     await this.db.update(users).set({ avatarUrl: dataUrl }).where(eq(users.id, userId));
     return true;
+  }
+
+  /**
+   * Checks the signed-in account's own password: the step-up before a stored
+   * key is shown. `none` for an account with no password to check.
+   */
+  async checkPassword(userId: string, password: string): Promise<"ok" | "wrong" | "none"> {
+    const [row] = await this.db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!row?.passwordHash) return "none";
+    return (await verifyPassword(password, row.passwordHash)) ? "ok" : "wrong";
+  }
+
+  /**
+   * Whether the account has a password, and when a GitHub-only account added
+   * its first one (null for any other account). Adding a first password
+   * proves nothing beyond holding a session, so a fresh one cannot yet be
+   * used to reveal keys.
+   */
+  async passwordState(userId: string): Promise<{ hasPassword: boolean; addedAt: Date | null }> {
+    const [row] = await this.db
+      .select({
+        hasPassword: sql<boolean>`coalesce(${users.passwordHash}, '') <> ''`,
+        addedAt: users.passwordAddedAt,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return { hasPassword: Boolean(row?.hasPassword), addedAt: row?.addedAt ?? null };
   }
 
     async verifyCredentials(email: string, password: string): Promise<string | null> {

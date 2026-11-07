@@ -635,8 +635,8 @@ describe("an OMP turn", () => {
 
   it("logs the exact prompt it appends, the knowledge inside it, and no AGENTS.md", async () => {
     const workspace = join(root, "workspaces", PROJECT);
-    await mkdir(join(workspace, ".ucch"), { recursive: true });
-    await writeFile(join(workspace, ".ucch", "INFO.md"), "# Info\nUses pnpm.\n");
+    await mkdir(join(workspace, ".agent"), { recursive: true });
+    await writeFile(join(workspace, ".agent", "index.md"), "# Info\nUses pnpm.\n");
     await writeFile(join(workspace, "AGENTS.md"), "Agents file.\n");
     const { agent, appended } = ompReactor(thread, keyed);
     agent.react(omp, [message]);

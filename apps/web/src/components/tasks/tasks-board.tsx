@@ -46,7 +46,7 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 /**
  * A project's Tasks board: five columns, Idea to Done.
  *
- * A person writes todos into Idea and drags them to Research -- or Auto Run
+ * A person writes todos into Idea and drags them to Research -- or Auto-run
  * does it on a schedule. From there the server's pipeline moves the card
  * itself, and this board follows along through `task.changed`.
  */
@@ -210,8 +210,8 @@ export function TasksBoard({ project: seed, projects }: { project: Project; proj
           className="text-muted-foreground hover:text-foreground hidden text-xs sm:inline"
         >
           {autoRun?.enabled
-            ? `Auto Run: ${autoRun.days.map((d) => WEEKDAYS[d]).join(", ")} at ${autoRun.time}`
-            : "Auto Run: off"}
+            ? `Auto-run: ${autoRun.days.map((d) => WEEKDAYS[d]).join(", ")} at ${autoRun.time}`
+            : "Auto-run: off"}
         </TransitionLink>
         <Button size="sm" onClick={() => setDialog({ mode: "create" })}>
           <PlusIcon /> New Todo

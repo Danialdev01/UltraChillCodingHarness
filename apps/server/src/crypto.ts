@@ -13,7 +13,18 @@ const IV_BYTES = 12;
 export function encryptSecret(plaintext: string, keyHex: string): string {
   const key = Buffer.from(keyHex, "hex");
   if (key.length !== 32) throw new Error("SECRET_KEY must be 32 bytes of hex (64 characters)");
+  return encryptWithKey(plaintext, key);
+}
 
+export function decryptSecret(encoded: string, keyHex: string): string {
+  const key = Buffer.from(keyHex, "hex");
+  if (key.length !== 32) throw new Error("SECRET_KEY must be 32 bytes of hex (64 characters)");
+  return decryptWithKey(encoded, key);
+}
+
+/** `encryptSecret` under a raw 32-byte key, e.g. one derived from a project key. */
+export function encryptWithKey(plaintext: string, key: Buffer): string {
+  if (key.length !== 32) throw new Error("the key must be 32 bytes");
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
@@ -22,10 +33,9 @@ export function encryptSecret(plaintext: string, keyHex: string): string {
   return [iv.toString("base64url"), tag.toString("base64url"), ciphertext.toString("base64url")].join(".");
 }
 
-export function decryptSecret(encoded: string, keyHex: string): string {
-  const key = Buffer.from(keyHex, "hex");
-  if (key.length !== 32) throw new Error("SECRET_KEY must be 32 bytes of hex (64 characters)");
-
+/** `decryptSecret` under a raw 32-byte key. Throws on a wrong key or a tampered value. */
+export function decryptWithKey(encoded: string, key: Buffer): string {
+  if (key.length !== 32) throw new Error("the key must be 32 bytes");
   const parts = encoded.split(".");
   if (parts.length !== 3) throw new Error("malformed ciphertext");
 

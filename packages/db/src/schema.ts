@@ -9,6 +9,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
@@ -46,6 +47,13 @@ export const users = pgTable("users", {
   email: text("email").unique(),
   /** scrypt, encoded as `scrypt$N$r$p$salt$hash`. Never returned to clients. */
   passwordHash: text("password_hash"),
+  /**
+   * When a GitHub-only account added its first password. Adding one needs
+   * nothing but a session, so for an hour afterwards that password cannot
+   * unlock a stored key (`account-keys-routes.ts`): a stolen session must not
+   * be able to mint its own step-up. Null for every other account.
+   */
+  passwordAddedAt: timestamp("password_added_at", { withTimezone: true }),
   githubId: text("github_id").unique(),
   login: text("login").notNull(),
   name: text("name"),
@@ -112,6 +120,12 @@ export const users = pgTable("users", {
    */
   claudeOauthTokenEncrypted: text("claude_oauth_token_encrypted"),
   claudeTokenIssuedAt: timestamp("claude_token_issued_at", { withTimezone: true }),
+  /**
+   * `sessions` or `projects`: how the sidebar lists a project workspace's
+   * sessions. Null is `projects`. Mirrored in the browser's localStorage so
+   * the first paint does not wait on it.
+   */
+  sidebarMode: text("sidebar_mode"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -372,12 +386,23 @@ export const threads = pgTable(
     treeHash: text("tree_hash"),
     /** Set on the thread a handoff started: the one whose work it carries on. */
     handoffFromThreadId: uuid("handoff_from_thread_id"),
+    /** Pinned to the top of the sidebar's session list, for everyone in the workspace. */
+    pinned: boolean("pinned").notNull().default(false),
+    /** Set while archived: left out of the sidebar unless its filter asks for them. */
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    /**
+     * The last message sent or turn ended, for the sidebar's newest-first
+     * order. Moved by the engine's projections, never by a client.
+     */
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("threads_project_idx").on(t.projectId),
     // The sidebar's thread list: one project's, newest first.
     index("threads_project_created_idx").on(t.projectId, t.createdAt),
+    // The sidebar's session list: newest activity first.
+    index("threads_last_activity_idx").on(t.projectId, t.lastActivityAt),
     // `listProjects`' "is anything running" -- an EXISTS that touches only
     // the few running threads rather than every thread of the project.
     index("threads_running_idx")
@@ -739,12 +764,12 @@ export const projectTasks = pgTable(
 );
 
 /**
- * A project's saved keys: API keys, tokens and passwords that a provider
- * shows once and cannot show again, kept here so they can be handed back.
+ * Legacy: a project's saved keys from before environment variables moved
+ * into `.agent/env.val` under a project key (`apps/server/src/env-vars.ts`).
  *
- * Unlike `secrets` these are for the person, not the runtime: nothing is
- * injected anywhere. The value is AES-256-GCM under `SECRET_KEY`, left out
- * of every list, and decrypted only when someone asks to see or copy it.
+ * Nothing writes here any more. Rows are read once, when the project key is
+ * first set up, re-encrypted into the file and deleted. The value is
+ * AES-256-GCM under `SECRET_KEY`. Drop the table once no rows remain.
  */
 export const projectKeys = pgTable(
   "project_keys",
@@ -764,6 +789,43 @@ export const projectKeys = pgTable(
   (t) => [index("project_keys_project_idx").on(t.projectId, t.createdAt)],
 );
 
+/**
+ * What can be said about an account key without decrypting it.
+ *
+ * The keys themselves stay where they always were -- `users.openrouter_key_
+ * encrypted` and its neighbours -- and this table holds what the API keys
+ * page shows beside them: the non-secret prefix and the last four
+ * characters (so the masked key is drawn without a decryption), when it was
+ * added, last used for a provider call, and last revealed.
+ *
+ * One row per stored key; removing the key removes the row. Rows for keys
+ * stored before this table existed are written once at boot
+ * (`backfillAccountKeyMetadata`), with `created_at` left null because nobody
+ * recorded it.
+ */
+export const accountKeys = pgTable(
+  "account_keys",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** `openrouter`, `resend` or `github`. */
+    provider: text("provider").notNull(),
+    /** `sk-or-v1-`, `re_`, `ghp_`, `github_pat_`, or "" when there is none. */
+    prefix: text("prefix").notNull(),
+    last4: text("last4").notNull(),
+    /** GitHub only: the classic token's `X-OAuth-Scopes`, or `fine-grained`. */
+    scopes: text("scopes"),
+    createdAt: timestamp("created_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    lastRevealedAt: timestamp("last_revealed_at", { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.provider] })],
+);
+
+export type AccountKey = typeof accountKeys.$inferSelect;
+
 /** Server-side sessions for the web UI; WebSocket tickets are derived from these. */
 export const sessions = pgTable(
   "sessions",
@@ -774,6 +836,13 @@ export const sessions = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     scopes: jsonb("scopes").$type<string[]>().notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /**
+     * The last time this session re-entered its password (`POST
+     * /api/account/reauth`). Revealing a stored key needs one within five
+     * minutes. Per session, so confirming in one browser unlocks nothing in
+     * another.
+     */
+    stepUpAt: timestamp("step_up_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

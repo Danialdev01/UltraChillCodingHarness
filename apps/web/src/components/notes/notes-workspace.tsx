@@ -39,9 +39,9 @@ import { useWorkspaceHash } from "@/lib/workspace-context"
 import type { Project } from "@/lib/session"
 import { useTransitionRouter } from "@/lib/view-transitions"
 
-// The diagram editor (collab, yjs) and the keys table load only when their view is opened.
+// The diagram editor (collab, yjs) and the environment variables table load only when their view is opened.
 const DiagramsView = dynamic(() => import("@/components/diagrams/diagrams-view").then((m) => m.DiagramsView))
-const KeysWorkspace = dynamic(() => import("@/components/keys/keys-workspace").then((m) => m.KeysWorkspace))
+const EnvWorkspace = dynamic(() => import("@/components/env/env-workspace").then((m) => m.EnvWorkspace))
 
 /** Which page of the notes is open (null for the root), and which view. */
 export interface DocLocation {
@@ -339,8 +339,8 @@ export function NotesWorkspace({
         <DiagramsView project={project} />
       ) : view === "references" ? (
         <ReferencesPlaceholder />
-      ) : view === "keys" ? (
-        <KeysWorkspace project={project} />
+      ) : view === "env" ? (
+        <EnvWorkspace project={project} />
       ) : (
         notesView
       )}

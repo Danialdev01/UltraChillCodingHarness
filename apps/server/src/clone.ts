@@ -142,7 +142,9 @@ export class CloneReactor {
     let settled = false;
     const settle = async (stack: string) => {
       databaseError = event.database ? await this.#database(event, dest, server) : undefined;
-      await ensureProjectInfo(dest, renderContext({ event, stack, ...(server ? { server } : {}) }));
+      await ensureProjectInfo(dest, (description) =>
+        renderContext({ event, stack, ...(server ? { server } : {}), ...(description ? { description } : {}) }),
+      );
       settled = true;
     };
 

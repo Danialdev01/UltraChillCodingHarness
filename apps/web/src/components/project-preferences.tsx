@@ -14,6 +14,7 @@ import { fetchOmpTrust, setOmpTrust, type OmpTrustState } from "@/lib/omp-trust-
 import { fetchPublicSite, setPublicSite, type PublicSiteState } from "@/lib/public-api"
 import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 /**
  * The project's own settings, on the manage page's Preferences tab: which
@@ -75,15 +76,8 @@ function PreviewPortSetting({ project }: { project: Project }) {
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <MonitorPlayIcon className="text-muted-foreground size-4" />
-        Live preview
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        The port your dev server listens on inside the project. The preview address serves whatever is
-        running there.
-      </p>
+    <SettingsSection icon={MonitorPlayIcon} title="Live preview" description={<>The port your dev server listens on inside the project. The preview address serves whatever is
+        running there.</>} bare>
       <form
         className="mt-4 max-w-xl"
         onSubmit={(e) => {
@@ -123,7 +117,7 @@ function PreviewPortSetting({ project }: { project: Project }) {
           )}
         </Field>
       </form>
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -150,15 +144,8 @@ function PublicSiteSetting({ hash }: { hash: string }) {
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <GlobeIcon className="text-muted-foreground size-4" />
-        Public site
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        A read-only site for this project: visitors can read its notes, timeline and documents, see the
-        commit history and browse files, and change nothing.
-      </p>
+    <SettingsSection icon={GlobeIcon} title="Public site" description={<>A read-only site for this project: visitors can read its notes, timeline and documents, see the
+        commit history and browse files, and change nothing.</>} bare>
       <div className="mt-4 max-w-xl">
         {!state && !error && <Skeleton className="h-8 w-72" />}
         {state && (
@@ -199,7 +186,7 @@ function PublicSiteSetting({ hash }: { hash: string }) {
           </p>
         )}
       </div>
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -232,17 +219,10 @@ function OmpTrustSetting({ hash }: { hash: string }) {
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <ShieldCheckIcon className="text-muted-foreground size-4" />
-        Trusted repository
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        A trusted project gives the Custom agent and the OMP tools language servers and a debugger, and
+    <SettingsSection icon={ShieldCheckIcon} title="Trusted repository" description={<>A trusted project gives the Custom agent and the OMP tools language servers and a debugger, and
         lets the repository&apos;s own <span className="font-mono">lsp.json</span> and{" "}
         <span className="font-mono">dap.json</span> choose them. Those files name programs that run on
-        this server, so only trust a repository whose files you have read.
-      </p>
+        this server, so only trust a repository whose files you have read.</>} bare>
       <div className="mt-4 max-w-xl">
         {!state && !error && <Skeleton className="h-8 w-72" />}
         {state && (
@@ -271,7 +251,7 @@ function OmpTrustSetting({ hash }: { hash: string }) {
           </p>
         )}
       </div>
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -290,14 +270,7 @@ function DocWidthSetting() {
   }, [])
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <RulerIcon className="text-muted-foreground size-4" />
-        Documentation width
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        How wide a page of the documentation reads. Applies to this browser only.
-      </p>
+    <SettingsSection icon={RulerIcon} title="Documentation width" description="How wide a page of the documentation reads. Applies to this browser only." bare>
       <div
         role="radiogroup"
         aria-label="Documentation width"
@@ -334,6 +307,6 @@ function DocWidthSetting() {
           <div className="bg-muted-foreground/25 h-1.5 w-3/5 rounded-full" />
         </div>
       </div>
-    </section>
+    </SettingsSection>
   )
 }

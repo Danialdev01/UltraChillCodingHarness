@@ -96,9 +96,9 @@ describe("claudeArgv", () => {
   });
 
   it("appends the project's knowledge to the system prompt, resumed turns included", () => {
-    const argv = claudeArgv({ bin: "claude", caps, resumeToken: "abc", appendSystemPrompt: "--- .ucch/INFO.md ---" });
+    const argv = claudeArgv({ bin: "claude", caps, resumeToken: "abc", appendSystemPrompt: "--- .agent/index.md ---" });
     const at = argv.indexOf("--append-system-prompt");
-    expect(argv[at + 1]).toBe("--- .ucch/INFO.md ---");
+    expect(argv[at + 1]).toBe("--- .agent/index.md ---");
     expect(claudeArgv({ bin: "claude", caps })).not.toContain("--append-system-prompt");
   });
 

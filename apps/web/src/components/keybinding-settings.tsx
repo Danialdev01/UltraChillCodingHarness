@@ -11,6 +11,7 @@ import {
   type EditorKeybindings,
 } from "@/lib/editor-keybindings"
 import { cn } from "@/lib/utils"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 const CHOICES: { id: EditorKeybindings; label: string; hint: string }[] = [
   {
@@ -52,15 +53,8 @@ export function KeybindingSettings() {
   const current = CHOICES.find((c) => c.id === choice)
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <KeyboardIcon className="text-muted-foreground size-4" />
-        Editor keybindings
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Whether the code editor in a project&apos;s file view runs its modal keybindings.
-        Ctrl-S saves either way. Applies to this browser only.
-      </p>
+    <SettingsSection icon={KeyboardIcon} title="Editor keybindings" description={<>Whether the code editor in a project&apos;s file view runs its modal keybindings.
+        Ctrl-S saves either way. Applies to this browser only.</>} bare>
 
       <div
         role="radiogroup"
@@ -87,6 +81,6 @@ export function KeybindingSettings() {
       </div>
 
       <p className="text-muted-foreground mt-3 text-sm">{current?.hint}</p>
-    </section>
+    </SettingsSection>
   )
 }

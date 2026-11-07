@@ -2,7 +2,7 @@ import type { QueryKey } from "@tanstack/react-query"
 import type { TaskSettings } from "@ucch/protocol"
 
 import { fetchTree } from "../files-api"
-import { listProjectKeys } from "../keys-api"
+import { listEnvVars } from "../env-api"
 import { listNotes } from "../notes-api"
 import type { ProjectTarget } from "../project-target"
 import { qk } from "../query-keys"
@@ -54,6 +54,7 @@ export const projectQueries = {
     queryFn: () => listTimelineTasks(hash),
     persist: true,
   }),
-  keys: (hash: string) => ({ queryKey: qk.keys.list(hash), queryFn: () => listProjectKeys(hash), persist: true }),
+  // Names, tags and links only: values never reach the cache.
+  env: (hash: string) => ({ queryKey: qk.keys.list(hash), queryFn: () => listEnvVars(hash), persist: true }),
   filesTree: (target: ProjectTarget) => ({ queryKey: treeKey(target), queryFn: () => fetchTree(target), persist: true }),
 } satisfies Record<string, (arg: never) => ProjectQuery<unknown>>

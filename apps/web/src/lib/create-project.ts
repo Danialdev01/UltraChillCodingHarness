@@ -91,22 +91,6 @@ function waitForClone(client: UcchClient, projectId: string, timeoutMs = 180_000
 /** What a session is called until its first message names it. */
 export const NEW_SESSION_NAME = "New session";
 
-/**
- * A session's title from the first message sent in it: the first line,
- * cut at a word boundary to fit a sidebar card.
- */
-export function sessionTitleFrom(message: string, max = 60): string | null {
-  const line = message
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  if (!line) return null;
-  if (line.length <= max) return line;
-  const cut = line.slice(0, max);
-  const space = cut.lastIndexOf(" ");
-  return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
-}
-
 /** Renames a project -- for a session, its title. */
 export async function renameProject(hash: string, name: string): Promise<void> {
   const response = await fetch(`/api/projects/${hash}`, {

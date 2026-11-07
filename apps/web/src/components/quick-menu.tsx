@@ -7,6 +7,7 @@ import { NewDatabaseDialog, NewProjectDialog, NewWorkspaceDialog, QuickMenuPalet
 import type { Project } from "@/lib/session";
 import type { Workspace } from "@/components/workspace-switcher";
 import { useNewSession } from "@/lib/use-new-session";
+import { SETTINGS, workspaceSettingsPageHref } from "@/lib/sections";
 import { useTransitionRouter } from "@/lib/view-transitions";
 
 /**
@@ -44,6 +45,28 @@ export function QuickMenu({
 
   // The conventional palette shortcut. Registered on the window so it works
   // wherever focus happens to be, except inside a text field.
+  //
+  // Beside it, the app's other global shortcuts: ⌘, opens Settings, and
+  // ⇧⌘O starts a new session in a session workspace. (⌘B, the sidebar, is
+  // the sidebar's own.)
+  const ws = activeWorkspace?.hash ?? "";
+  const sessionWorkspace = activeWorkspace?.kind === "session";
+  const startSession = session.start;
+  useEffect(() => {
+    function onShortcut(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (event.key === "," && !event.shiftKey) {
+        event.preventDefault();
+        router.push(ws ? workspaceSettingsPageHref(ws, "general") : SETTINGS.entry);
+      } else if (event.shiftKey && event.key.toLowerCase() === "o" && sessionWorkspace && canStartSession) {
+        event.preventDefault();
+        startSession();
+      }
+    }
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [router, ws, sessionWorkspace, canStartSession, startSession]);
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "k" || !(event.metaKey || event.ctrlKey)) return;
@@ -70,11 +93,11 @@ export function QuickMenu({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="border-input bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring flex h-8 w-full items-center gap-2 rounded-md border px-2.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
+        className="border-input bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring flex h-8 w-full items-center gap-2 rounded-lg border px-2.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none dark:bg-input/30"
       >
         <SearchIcon className="size-4 shrink-0" />
         <span className="flex-1 text-left">Search…</span>
-        <kbd className="bg-muted text-muted-foreground pointer-events-none hidden rounded border px-1.5 font-mono text-[10px] sm:inline-block">
+        <kbd className="bg-muted text-muted-foreground pointer-events-none hidden rounded border px-1.5 font-mono text-2xs sm:inline-block">
           ⌘K
         </kbd>
       </button>

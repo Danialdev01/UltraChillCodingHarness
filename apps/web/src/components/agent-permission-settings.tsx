@@ -5,9 +5,11 @@ import { CheckIcon, Loader2Icon, ShieldCheckIcon } from "lucide-react"
 import type { AgentPermissionMode } from "@ucch/protocol"
 
 import { Skeleton } from "@/components/ui/skeleton"
-import { cn } from "@/lib/utils"
+import { Segmented } from "@/components/ui/segmented"
+import { InlineError } from "@/components/layout/inline-error"
+import { SettingsSection } from "@/components/layout/settings-section"
 
-const CHOICES: { id: AgentPermissionMode; label: string; hint: string }[] = [
+export const PERMISSION_CHOICES: { id: AgentPermissionMode; label: string; hint: string }[] = [
   {
     id: "strict",
     label: "Strict",
@@ -79,51 +81,27 @@ export function AgentPermissionSettings() {
     }
   }
 
-  const current = CHOICES.find((c) => c.id === mode)
+  const current = PERMISSION_CHOICES.find((c) => c.id === mode)
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <ShieldCheckIcon className="text-muted-foreground size-4" />
-        Agent permission
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        What the agent may do before it stops and asks you in the chat. Applies to the built-in
+    <SettingsSection icon={ShieldCheckIcon} title="Agent permission" description={<>What the agent may do before it stops and asks you in the chat. Applies to the built-in
         agent and Claude Code, from the next action on. Codex runs in its workspace sandbox and
-        does not ask.
-      </p>
+        does not ask.</>} bare>
 
       <div className="mt-4 flex items-center gap-2">
-        <div
-          role="radiogroup"
+        <Segmented
           aria-label="Agent permission"
-          className="bg-muted/40 inline-flex items-center gap-0.5 rounded-lg border p-0.5"
-        >
-          {CHOICES.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              role="radio"
-              aria-checked={mode === id}
-              disabled={mode === null || busy}
-              onClick={() => void choose(id)}
-              className={cn(
-                "h-7 rounded-md px-3 text-xs transition-colors disabled:cursor-default",
-                mode === id
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+          options={PERMISSION_CHOICES.map(({ id, label }) => ({ value: id, label }))}
+          value={mode ?? "normal"}
+          disabled={mode === null || busy}
+          onChange={(id) => void choose(id)}
+        />
         {busy && <Loader2Icon className="text-muted-foreground size-4 animate-spin" />}
         {saved && !busy && <CheckIcon className="text-ucch-active size-4" aria-label="Saved" />}
       </div>
 
       {error ? (
-        <p className="text-destructive mt-3 text-sm">{error}</p>
+        <InlineError className="mt-3">{error}</InlineError>
       ) : current ? (
         <p className="text-muted-foreground mt-3 max-w-prose text-sm">{current.hint}</p>
       ) : (
@@ -132,6 +110,6 @@ export function AgentPermissionSettings() {
           <Skeleton className="h-3.5 w-2/3" />
         </div>
       )}
-    </section>
+    </SettingsSection>
   )
 }

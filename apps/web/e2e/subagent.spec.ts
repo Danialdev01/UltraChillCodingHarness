@@ -26,10 +26,10 @@ test("a subagent is a card with its answer", async ({ page, context, baseURL }) 
   await expect(page.locator("textarea[role=combobox]")).toBeEnabled({ timeout: 30_000 });
   await dispatch(origin, "subagent-spec-send", { type: "thread.send", threadId, text: "What does src export?", provider: "native" });
 
-  // The turn's work is folded into one line; the card is inside it.
-  const work = page.locator("details.group\\/work").first();
-  await expect(work).toBeVisible({ timeout: 60_000 });
-  await work.locator(":scope > summary").click();
+  // Subagents sit on the page under a "N subagents" line, not folded
+  // into the turn's work.
+  await expect(page.getByTestId("subagent-group")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("subagent-group")).toContainText("1 subagent");
 
   const card = page.getByTestId("subagent-card");
   await expect(card).toHaveCount(1);
@@ -46,9 +46,7 @@ test("a subagent is a card with its answer", async ({ page, context, baseURL }) 
 
   // And it is drawn the same from the log.
   await page.reload();
-  const reloaded = page.locator("details.group\\/work").first();
-  await expect(reloaded).toBeVisible({ timeout: 30_000 });
-  await reloaded.locator(":scope > summary").click();
+  await expect(page.getByTestId("subagent-group")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("subagent-card")).toHaveAttribute("data-status", "done");
   await page.getByTestId("subagent-card").locator(":scope > summary").click();
   await expect(page.getByTestId("subagent-result")).toContainText("src/a.ts exports");

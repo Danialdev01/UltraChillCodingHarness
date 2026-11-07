@@ -26,10 +26,10 @@ export interface PromptInput {
 /** Files listed in the tree. Enough to orient; not enough to dominate. */
 const MAX_TREE_ENTRIES = 200;
 
-/** Bytes of AGENTS.md, CLAUDE.md or `.ucch/INFO.md` that make it into the prompt. */
+/** Bytes of AGENTS.md, CLAUDE.md or `.agent/index.md` that make it into the prompt. */
 export const MAX_INSTRUCTIONS_BYTES = 16_000;
 
-/** Files under `.ucch/` named in the prompt beside `INFO.md`. */
+/** Files under `.agent/` named in the prompt beside `index.md`. */
 export const MAX_KNOWLEDGE_ENTRIES = 200;
 
 /**
@@ -76,7 +76,7 @@ Then write the answer. Cite the URL beside every claim it supports. Keep what th
  * Assembles the system prompt, stable first and volatile last.
  *
  * The design (`documentation/solutions.md` §7) puts the fixed rules ahead of the detected stack, ahead of
- * the project's `.ucch/` knowledge and its own instructions, ahead of the
+ * the project's `.agent/` knowledge and its own instructions, ahead of the
  * file tree -- because caching is a prefix match, so anything that changes
  * between turns must sit after everything that does not. A tree that gained a file then costs the tree,
  * rather than the whole prompt.
@@ -154,7 +154,7 @@ function segmentsFor(parts: readonly PromptPart[]): TextPart[] {
  *
  * Both names are checked because both conventions are in use, and a
  * repository that has one usually does not have the other. The harness's
- * own file, `.ucch/INFO.md`, is `readKnowledge`'s.
+ * own file, `.agent/index.md`, is `readKnowledge`'s.
  */
 async function readInstructions(executor: Executor): Promise<string | null> {
   const found: string[] = [];
@@ -170,39 +170,39 @@ async function readInstructions(executor: Executor): Promise<string | null> {
 }
 
 /**
- * `.ucch/` in the words every harness hands its model: `INFO.md` in full,
+ * `.agent/` in the words every harness hands its model: `index.md` in full,
  * then the path of everything else in the folder.
  *
  * Pure, and exported, so a CLI provider's turn is told exactly what a native
  * one is -- the server gathers the same two inputs from disk and calls this.
  */
 export function renderKnowledge(info: string | null, files: readonly string[]): string | null {
-  const others = files.filter((path) => path !== ".ucch/INFO.md").sort();
+  const others = files.filter((path) => path !== ".agent/index.md").sort();
   if (!info?.trim() && others.length === 0) return null;
 
   const shown = others.slice(0, MAX_KNOWLEDGE_ENTRIES);
   const lines = [
-    "This project keeps its knowledge for agents in `.ucch/`: what the project is, how it is set up, its diagrams, and whatever else has been recorded there. Read the files relevant to the task with read_file before working, refer to them, and keep them current when the project changes. `.ucch/` is a hidden folder, so glob, list_dir and the file list do not show it; use the paths below.",
+    "This project keeps its knowledge for agents in `.agent/`: what the project is, how it is set up, its diagrams, and whatever else has been recorded there. Read the files relevant to the task with read_file before working, refer to them, and keep them current when the project changes. `.agent/` is a hidden folder, so glob, list_dir and the file list do not show it; use the paths below.",
   ];
-  if (info?.trim()) lines.push("", `--- .ucch/INFO.md ---\n${info.trim()}`);
+  if (info?.trim()) lines.push("", `--- .agent/index.md ---\n${info.trim()}`);
   if (shown.length > 0) {
-    lines.push("", `Other files in .ucch/:\n${shown.join("\n")}`);
+    lines.push("", `Other files in .agent/:\n${shown.join("\n")}`);
     if (others.length > shown.length) lines.push(`(${others.length - shown.length} more)`);
   }
   return lines.join("\n");
 }
 
 /**
- * `.ucch/` as `renderKnowledge` wants it, through the executor.
+ * `.agent/` as `renderKnowledge` wants it, through the executor.
  *
- * `INFO.md` falls back to `context.md`, its name before the server promotes
- * it, so a turn that races the promotion still sees the settings. The listing
+ * `index.md` falls back to `INFO.md` and `context.md`, its older names, before
+ * the server promotes them, so a turn that races the promotion still sees the settings. The listing
  * is `--hidden --no-ignore`: the folder is a dot-directory, and a project
  * that ignores parts of it still means its agent to read them.
  */
 async function readKnowledge(executor: Executor, signal: AbortSignal): Promise<string | null> {
   let info: string | null = null;
-  for (const name of [".ucch/INFO.md", ".ucch/context.md"]) {
+  for (const name of [".agent/index.md", ".agent/INFO.md", ".agent/context.md"]) {
     try {
       info = await executor.readFile(name, { maxBytes: MAX_INSTRUCTIONS_BYTES });
       break;
@@ -215,7 +215,7 @@ async function readKnowledge(executor: Executor, signal: AbortSignal): Promise<s
   const root = executor.root();
   try {
     const result = await executor.exec(
-      ["rg", "--no-config", "--files", "--hidden", "--no-ignore", "--", `${root}/.ucch`],
+      ["rg", "--no-config", "--files", "--hidden", "--no-ignore", "--", `${root}/.agent`],
       { timeoutMs: 15_000, signal },
     );
     if (result.exitCode <= 1) {
@@ -226,7 +226,7 @@ async function readKnowledge(executor: Executor, signal: AbortSignal): Promise<s
         .map((path) => (path.startsWith(prefix) ? path.slice(prefix.length) : path));
     }
   } catch {
-    // No ripgrep or no folder: INFO.md alone still says what matters.
+    // No ripgrep or no folder: index.md alone still says what matters.
   }
 
   return renderKnowledge(info, files);

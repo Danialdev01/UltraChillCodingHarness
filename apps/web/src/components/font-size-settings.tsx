@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { EDITOR_FONT_SIZE } from "@/lib/editor-font-size"
 import type { FontSizePreference } from "@/lib/font-size-preference"
 import { TREE_FONT_SIZE, treeMetrics } from "@/lib/tree-font-size"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 /**
  * One font-size preference as a settings section.
@@ -63,14 +64,7 @@ function FontSizeSection({
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <Icon className="text-muted-foreground size-4" />
-        {title}
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        {description} Between {preference.min} and {preference.max}. Applies to this browser only.
-      </p>
+    <SettingsSection icon={Icon} title={<>{title}</>} description={<>{description} Between {preference.min} and {preference.max}. Applies to this browser only.</>} bare>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <div className="bg-muted/40 inline-flex items-center rounded-lg border p-0.5">
@@ -117,7 +111,7 @@ function FontSizeSection({
       </div>
 
       {preview(size)}
-    </section>
+    </SettingsSection>
   )
 }
 

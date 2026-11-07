@@ -77,11 +77,11 @@ export function RightSidebar() {
                 <span className="font-medium">Chat</span>
                 <Button
                   variant="ghost"
-                  size="icon"
-                  className="ml-auto size-6 shrink-0"
+                  size="icon-sm"
+                  className="text-muted-foreground ml-auto shrink-0"
                   onClick={closeChatSidebar}
                 >
-                  <XIcon className="size-4" />
+                  <XIcon />
                   <span className="sr-only">Close chat</span>
                 </Button>
               </div>

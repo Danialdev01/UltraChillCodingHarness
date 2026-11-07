@@ -50,6 +50,8 @@ export function reduceActivity(state: ActivityState, event: DomainEvent, at: num
     case "queued":
       if (listed) return state;
       return { ...state, [projectId]: { running, doneUntil: null, failed: current.failed } };
+    // Held on a permission prompt: still a turn in flight.
+    case "waiting":
     case "running":
       if (listed && !current.failed && current.doneUntil === null) return state;
       return { ...state, [projectId]: { running, doneUntil: null, failed: false } };

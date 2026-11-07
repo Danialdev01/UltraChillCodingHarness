@@ -2,6 +2,7 @@
 export const MANAGE_TABS = [
   { id: "git", label: "Git" },
   { id: "activity", label: "Activity" },
+  { id: "project-key", label: "Project key" },
   { id: "preferences", label: "Preferences" },
 ] as const;
 

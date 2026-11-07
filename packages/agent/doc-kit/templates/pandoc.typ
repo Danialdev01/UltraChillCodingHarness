@@ -1,4 +1,4 @@
-#import "/.ucch/doc-cache/templates/base.typ": conf, callout, horizontalrule
+#import "/.agent/doc-cache/templates/base.typ": conf, callout, horizontalrule
 
 $if(smart)$
 $else$

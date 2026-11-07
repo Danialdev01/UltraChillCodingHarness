@@ -20,6 +20,7 @@ import {
   revokeInvite,
   type WorkspaceInvite,
 } from "@/lib/workspace-api"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 const EXPIRY_DAYS = [1, 7, 30] as const
 
@@ -49,17 +50,9 @@ export function WorkspaceSharingSettings({ workspace }: { workspace: Workspace }
 
   if (!manages) {
     return (
-      <section className="rounded-lg border p-6">
-        <h2 className="flex items-center gap-2 text-sm font-medium">
-          <Share2Icon className="text-muted-foreground size-4" />
-          Sharing
-        </h2>
-        <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-          {workspace.shared
+      <SettingsSection icon={Share2Icon} title="Sharing" description={<>{workspace.shared
             ? `${workspace.ownerName} shared this workspace with you as ${ROLE_LABELS[workspace.role].toLowerCase()}. Only an owner or admin can invite others.`
-            : "Only an owner or admin can invite others."}
-        </p>
-      </section>
+            : "Only an owner or admin can invite others."}</>} />
     )
   }
 
@@ -75,12 +68,7 @@ export function WorkspaceSharingSettings({ workspace }: { workspace: Workspace }
 
       {fresh && <FreshLink url={fresh} />}
 
-      <section className="rounded-lg border p-6">
-        <h2 className="flex items-center gap-2 text-sm font-medium">
-          <LinkIcon className="text-muted-foreground size-4" />
-          Active invite links
-        </h2>
-        {loadError && <p className="text-destructive mt-4 text-sm">{loadError}</p>}
+      <SettingsSection icon={LinkIcon} title="Active invite links" bare>{loadError && <p className="text-destructive mt-4 text-sm">{loadError}</p>}
         {!invites && !loadError && <ListRowsSkeleton rows={2} className="mt-4 flex flex-col gap-2" />}
         {invites && invites.length === 0 && (
           <p className="text-muted-foreground mt-2 text-sm">No links are active.</p>
@@ -92,7 +80,7 @@ export function WorkspaceSharingSettings({ workspace }: { workspace: Workspace }
             ))}
           </ul>
         )}
-      </section>
+      </SettingsSection>
     </div>
   )
 }
@@ -112,15 +100,8 @@ function CreateInvite({
   const { busy, error, done, run } = useOutcome()
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <Share2Icon className="text-muted-foreground size-4" />
-        Share {workspace.name}
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Anyone who opens the link while signed in joins with the role you pick. Copy it now: it is
-        only shown once.
-      </p>
+    <SettingsSection icon={Share2Icon} title={<>Share {workspace.name}</>} description={<>Anyone who opens the link while signed in joins with the role you pick. Copy it now: it is
+        only shown once.</>} bare>
       <form
         className="mt-4 grid max-w-xl gap-3 sm:grid-cols-3 sm:items-end"
         onSubmit={(e) => {
@@ -173,14 +154,14 @@ function CreateInvite({
         </Button>
       </form>
       <Outcome error={error} done={done} />
-    </section>
+    </SettingsSection>
   )
 }
 
 function FreshLink({ url }: { url: string }) {
   const [copied, setCopied] = React.useState(false)
   return (
-    <section className="border-ucch-active/40 rounded-lg border p-6">
+    <section className="border-ucch-active/40 bg-card rounded-lg border p-4">
       <h2 className="text-sm font-medium">Your new invite link</h2>
       <div className="mt-3 flex max-w-xl gap-2">
         <Input readOnly value={url} className="font-mono text-xs" onFocus={(e) => e.currentTarget.select()} />

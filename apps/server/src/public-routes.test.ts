@@ -24,7 +24,7 @@ describe("rewriteUploadUrls", () => {
 
 describe("secret files on the public site", () => {
   it("refuses credentials in any folder", () => {
-    for (const path of [".env", "apps/web/.env.local", "id_rsa", "certs/server.key", "tls.PEM", ".npmrc"]) {
+    for (const path of [".env", "apps/web/.env.local", "id_rsa", "certs/server.key", "tls.PEM", ".npmrc", ".agent/env.val"]) {
       expect(isSecretPath(path), path).toBe(true);
     }
   });

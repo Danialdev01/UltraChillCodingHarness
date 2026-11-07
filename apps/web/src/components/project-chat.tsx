@@ -12,6 +12,9 @@ import {
   BlocksIcon,
   BotIcon,
   BrainIcon,
+  BugIcon,
+  CompassIcon,
+  ListChecksIcon,
   CheckIcon,
   CodeIcon,
   ChevronDownIcon,
@@ -73,11 +76,14 @@ import {
   type PreviewableAttachment,
 } from "@/components/attachment-preview";
 import { discardUpload, stageUpload, uploadContentUrl } from "@/lib/uploads-api";
+import { AccessSelect } from "@/components/access-select";
 import { ContextMeter } from "@/components/context-meter";
+import { InlineError } from "@/components/layout/inline-error";
 import { Markdown, StreamingMarkdown } from "@/components/markdown";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
-import { SubagentCard } from "@/components/subagent-card";
+import { SubagentCard, SubagentGroup } from "@/components/subagent-card";
+import { lineageOf, publishLineage } from "@/lib/subagent-lineage";
 import { UcchClient, type ClientEvent } from "@/lib/client";
 import { ThreadStore, type LiveTurn } from "@/lib/thread-store";
 import {
@@ -129,7 +135,6 @@ import { ServerError } from "@/lib/client";
 import { createComposerSync, type ComposerSync } from "@/lib/composer-sync";
 import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents, useRealtime } from "@/lib/realtime";
 import { isTaskThreadTitle } from "@/lib/tasks-api";
-import { NEW_SESSION_NAME, renameProject, sessionTitleFrom } from "@/lib/create-project";
 import { keepSession, removeWhenLeft, startProjectSession } from "@/lib/project-sessions";
 import { projectHref } from "@/lib/sections";
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions";
@@ -736,6 +741,12 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   // composer offers Stop, and the server refuses a second message either way.
   const running = turnRunning || queuedAhead !== null;
 
+  // The thread's subagents, for the session card's lineage beside the chat.
+  useEffect(() => {
+    publishLineage(lineageOf(messages));
+  }, [messages]);
+  useEffect(() => () => publishLineage([]), []);
+
   /**
    * frame-to-paint (lib/vitals.ts): a streamed delta's arrival to the paint
    * of the commit that shows it. One delta at a time -- the oldest still
@@ -923,30 +934,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     [cli, cliModel, effortLevels, model, mode, provider, scrollToEnd, sentEffort, threadId],
   );
 
-  /**
-   * A session is called "New session" until its first message, and then
-   * after that message -- the way a thread list titles a conversation. Once
-   * per mount: the prop keeps the old name until the project's query is
-   * read again, and a second message in that window must not rename it again.
-   */
   const invalidate = useInvalidate();
-  const sessionNamed = useRef(false);
-  const nameSession = useCallback(
-    (message: string) => {
-      if (sessionNamed.current || project.name !== NEW_SESSION_NAME) return;
-      const title = sessionTitleFrom(message);
-      if (!title) return;
-      sessionNamed.current = true;
-      void renameProject(project.hash, title)
-        .then(() => invalidate(qk.bootstrap(), qk.sessions.list(project.hash), qk.project(project.hash)))
-        // A failed title is cosmetic: the session still works, and the next
-        // message gets another go.
-        .catch(() => {
-          sessionNamed.current = false;
-        });
-    },
-    [project.hash, project.name, invalidate],
-  );
 
   const send = useCallback(async () => {
     // Attachments alone are a message: "here, look at this" is a real thing
@@ -975,8 +963,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     // A sent prompt is history now, not a position in it.
     history.current = idleCursor;
     try {
+      // The server titles the session from this message (engine.ts).
       await dispatchMessage(text, images);
-      nameSession(sent.draft);
     } catch (e) {
       // Put the composer back as it was rather than losing it to a failed
       // send -- including the files, which the user would otherwise have to
@@ -988,7 +976,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     } finally {
       setSending(false);
     }
-  }, [attachments, dispatchMessage, draft, nameSession, reference, sending, threadId, vision, worktreeBlocked]);
+  }, [attachments, dispatchMessage, draft, reference, sending, threadId, vision, worktreeBlocked]);
 
   /**
    * `:chat` from the editor: the lines it was typed over become a chip on the
@@ -1547,15 +1535,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           empty && "@2xl:mb-auto @2xl:border-t-0 @2xl:pb-[12vh]",
         )}
       >
-        {/* A fifth wider than the thread it sits under: the composer is one
-            box you work inside -- text, files and the controls that act on
-            them -- and it needs the room the reading column does not. */}
-        <div
-          className={cn(
-            "mx-auto flex w-full max-w-[57.6rem] flex-col gap-2",
-            empty && "@2xl:max-w-3xl",
-          )}
-        >
+        {/* As wide as the thread above it: one reading column, prose and
+            composer on the same edges, so the eye never re-finds the margin. */}
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
           {/* Above the box rather than inside it: it is about the turn, not
               about what is being typed, and it must not move the composer
               when it appears and goes. */}
@@ -1568,7 +1550,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
               onReply={replyPermission}
             />
           )}
-          {active && !prompts.length && <TurnProgress active={active} />}
+          {active && !prompts.length && (
+            <TurnProgress active={active} onStop={() => void cancel()} stopping={cancelling} />
+          )}
           {compacting && (
             <p className="text-muted-foreground flex items-center gap-2 px-1 text-xs" data-testid="compacting">
               <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
@@ -1582,25 +1566,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
             </p>
           )}
           {compactionError && (
-            <p
-              role="alert"
-              className="border-destructive/40 bg-destructive/5 text-destructive flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
-            >
-              <AlertCircleIcon className="size-3.5 shrink-0" />
-              {compactionError}
-            </p>
+            <InlineError className="text-xs">{compactionError}</InlineError>
           )}
           {/* Same place as the progress line, same reason: it is about what
               the send would do, and it goes away when the cause does --
               another model picked, or the picture removed. */}
           {vision && (
-            <p
-              role="alert"
-              className="border-destructive/40 bg-destructive/5 text-destructive flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
-            >
-              <AlertCircleIcon className="size-3.5 shrink-0" />
-              {vision}
-            </p>
+            <InlineError className="text-xs">{vision}</InlineError>
           )}
           {/* The whole box is the input, not just the textarea: the border
               and focus ring live out here so the send button reads as being
@@ -1717,7 +1689,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
 
             {/* One line to start, growing as it fills; send stays at the
                 right end of the last line. */}
-            <div className="flex items-end gap-2 py-2 pr-2 pl-4">
+            <div className="flex items-end gap-2 px-4 pt-3 pb-1">
               <textarea
                 ref={draftRef}
                 value={draft}
@@ -1776,7 +1748,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   // needs the mouse to send is a chat composer nobody uses.
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    void send();
+                    if (!running) void send();
                   }
                   // What the progress line above says it does.
                   if (e.key === "Escape" && running) {
@@ -1800,22 +1772,24 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   }
                 }}
                 rows={MIN_COMPOSER_LINES}
-                disabled={!threadId || sending || running}
+                // Open while the agent works, so the next message can be
+                // drafted; Enter only sends once the turn is over.
+                disabled={!threadId || sending}
                 placeholder={
                   threadId
                     ? running
                       ? queuedAhead !== null
-                        ? `Queued — ${queuedAhead} ahead`
+                        ? `Queued — ${queuedAhead} ahead. Draft your next message…`
                         : research
-                          ? "Researching…"
+                          ? "Researching… Draft your next message"
                           : documentation
-                            ? "Documenting…"
-                            : "The agent is working…"
+                            ? "Documenting… Draft your next message"
+                            : "The agent is working… Draft your next message"
                       : research
                         ? "What should the agent find out?"
                         : documentation
                           ? "What document should the agent write, edit or read?"
-                          : "Ask Anything, @tag files/folders, $use skills, or / for commands"
+                          : "Ask anything, @ files, $ skills, / commands"
                     : "Opening the thread…"
                 }
                 className={cn(
@@ -1824,166 +1798,193 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   empty && "@2xl:min-h-16",
                 )}
                 />
-              {running ? (
-                // The same button position, so the reader does not have to
-                // look for it: while a turn runs, Send is Stop. The server
-                // refuses a second message on a running thread anyway.
-                <Button
+            </div>
+            {/* Under what you type, inside the same box: add on the left,
+                then the model -- the setting that matters most -- with its
+                effort and the agent's access; the harness, the context and
+                Send on the right. One line at any width: on a phone the names
+                truncate rather than wrap. */}
+            <div className="flex min-w-0 items-center gap-x-0.5 px-2 pb-2">
+              <AttachMenu
+                disabled={!threadId || sending || running}
+                onAddFiles={() => fileRef.current?.click()}
+                mode={mode}
+                onMode={toggleMode}
+                researchNote={
+                  cli
+                    ? `Researches on OpenRouter first, then hands ${provider} the brief with your message`
+                    : "Find live information with Perplexity Sonar, read the pages with Crawl4AI, and send a browser agent where the crawler cannot go"
+                }
+                documentationNote={
+                  cli
+                    ? `Hands ${provider} the document rules, templates and scripts with your message`
+                    : "Create, edit and read PDF, DOCX and DOC files: fixed templates, diagrams and charts, then a layout check of every page"
+                }
+              />
+              {/* The mode, shown where it was switched on. A toggle buried
+                  in a menu needs something visible saying it is still on,
+                  and this is also the fastest way to turn it off. */}
+              {mode && (
+                <button
                   type="button"
-                  size="icon"
-                  variant="secondary"
-                  className="size-8 shrink-0 rounded-lg"
-                  onClick={() => void cancel()}
-                  disabled={cancelling}
-                  title="Stop the agent"
-                >
-                  {cancelling ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
-                  <span className="sr-only">Stop</span>
-                </Button>
-              ) : (
-                <Button
-                  type="submit"
-                  size="icon"
-                  // On the opening screen it appears once there is something
-                  // to send, rather than sitting greyed out in an empty box.
-                  className={cn(
-                    "size-8 shrink-0 rounded-lg",
-                    empty && !draft.trim() && attachments.length === 0 && "@2xl:hidden",
-                  )}
-                  // Files on their own are a message too, so an empty
-                  // draft with something attached still sends -- but not
-                  // while one is still uploading, which would reach the
-                  // model as an id it cannot use.
-                  disabled={
-                    (!draft.trim() && attachments.length === 0) ||
-                    // A reference needs an instruction to go with it.
-                    (reference !== null && !draft.trim()) ||
-                    attachments.some((a) => a.status === "uploading") ||
-                    !threadId ||
-                    sending ||
-                    // The warning above says why; sending anyway would
-                    // fail the turn and hand the message back.
-                    vision !== null ||
-                    // So does the worktree notice.
-                    worktreeBlocked
+                  onClick={() => setMode(null)}
+                  disabled={sending || running}
+                  title={
+                    research
+                      ? cli
+                        ? `Research mode: researched on OpenRouter first, then handed to ${provider}. Click to turn off.`
+                        : "Research mode: search, read, then browse. Click to turn off."
+                      : cli
+                        ? `Documentation mode: ${provider} is handed the document rules and scripts. Click to turn off.`
+                        : "Documentation mode: plan, write, render, then check the layout. Click to turn off."
                   }
+                  className="bg-ucch-active-bg text-foreground hover:text-muted-foreground flex h-7 items-center gap-1 rounded-full py-1 pr-1.5 pl-2 text-xs transition-colors disabled:opacity-60"
                 >
-                  {sending ? <Loader2Icon className="animate-spin" /> : <ArrowUpIcon />}
-                  <span className="sr-only">Send</span>
-                </Button>
+                  {(() => {
+                    const ModeIcon = MODE_ICON[mode];
+                    return <ModeIcon className="size-3.5" />;
+                  })()}
+                  {MODE_LABEL[mode]}
+                  <XIcon className="size-3 opacity-70" />
+                  <span className="sr-only">Turn {MODE_LABEL[mode].toLowerCase()} off</span>
+                </button>
               )}
+              {/* Hidden, and clicked by the menu item: the native control is
+                  the only way to open the file manager, and its own chrome
+                  has no place in a composer. */}
+              <input
+                ref={fileRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  void addFiles(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+
+              <ComposerDivider />
+              <ModelSelect
+                models={catalogue}
+                value={activeModel}
+                onChange={chooseModel}
+                look="inline"
+                disabled={sending || running}
+              />
+              {/* Only where it means something: a model that takes effort,
+                  under a harness that passes it on. */}
+              {effortLevels && <ComposerDivider />}
+              {effortLevels && (
+                <EffortSelect
+                  value={sentEffort}
+                  levels={effortLevels}
+                  offMeansDefault={cli}
+                  onChange={setEffort}
+                  look="inline"
+                  disabled={sending}
+                />
+              )}
+              {/* What the agent may do before it asks: the account's setting,
+                  changeable here where it matters. */}
+              <ComposerDivider />
+              <AccessSelect disabled={sending} />
+              <div className="ml-auto flex min-w-0 shrink items-center gap-0.5">
+                <ProviderSelect
+                  providers={providers}
+                  value={provider}
+                  locked={boundProvider}
+                  onChange={chooseProvider}
+                  look="inline"
+                  disabled={sending || running}
+                />
+                <ContextMeter
+                  tokens={measuredContext?.usedTokens ?? contextTokens}
+                  limit={
+                    measuredContext?.windowTokens ?? models.find((m) => m.id === model)?.contextLength ?? null
+                  }
+                  threshold={measuredContext?.thresholdTokens ?? null}
+                  live={measuredContext !== null}
+                  onClear={() => void clearContext()}
+                  clearing={clearing}
+                  // Mid-turn the history is still being written; clearing under
+                  // the running loop would leave it appending to a thread nobody
+                  // is watching.
+                  disabled={running || sending || !threadId}
+                />
+                {running ? (
+                  // The same button position, so the reader does not have to
+                  // look for it: while a turn runs, Send is Stop. The server
+                  // refuses a second message on a running thread anyway.
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="secondary"
+                    className="size-8 shrink-0 rounded-full"
+                    onClick={() => void cancel()}
+                    disabled={cancelling}
+                    title="Stop the agent"
+                  >
+                    {cancelling ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
+                    <span className="sr-only">Stop</span>
+                  </Button>
+                ) : (
+                  <Button
+                    type="submit"
+                    size="icon"
+                    // On the opening screen it appears once there is something
+                    // to send, rather than sitting greyed out in an empty box.
+                    className={cn(
+                      "size-8 shrink-0 rounded-full",
+                      empty && !draft.trim() && attachments.length === 0 && "@2xl:hidden",
+                    )}
+                    // Files on their own are a message too, so an empty
+                    // draft with something attached still sends -- but not
+                    // while one is still uploading, which would reach the
+                    // model as an id it cannot use.
+                    disabled={
+                      (!draft.trim() && attachments.length === 0) ||
+                      // A reference needs an instruction to go with it.
+                      (reference !== null && !draft.trim()) ||
+                      attachments.some((a) => a.status === "uploading") ||
+                      !threadId ||
+                      sending ||
+                      // The warning above says why; sending anyway would
+                      // fail the turn and hand the message back.
+                      vision !== null ||
+                      // So does the worktree notice.
+                      worktreeBlocked
+                    }
+                  >
+                    {sending ? <Loader2Icon className="animate-spin" /> : <ArrowUpIcon />}
+                    <span className="sr-only">Send</span>
+                  </Button>
+                )}
+              </div>
             </div>
           </form>
 
-          {/* Below the box, plain text rather than more boxes: what you
-              type is what the eye goes to, and the settings that qualify it
-              sit quietly under it. Add on the left, then the model -- the
-              darkest, as the setting that matters most -- with its effort
-              beside it; the harness and the context on the right. One line at
-              any width: on a phone the names truncate rather than wrap. */}
-          <div className="flex min-w-0 items-center gap-x-0.5 px-1">
-            <AttachMenu
-              disabled={!threadId || sending || running}
-              onAddFiles={() => fileRef.current?.click()}
-              mode={mode}
-              onMode={toggleMode}
-              researchNote={
-                cli
-                  ? `Researches on OpenRouter first, then hands ${provider} the brief with your message`
-                  : "Find live information with Perplexity Sonar, read the pages with Crawl4AI, and send a browser agent where the crawler cannot go"
-              }
-              documentationNote={
-                cli
-                  ? `Hands ${provider} the document rules, templates and scripts with your message`
-                  : "Create, edit and read PDF, DOCX and DOC files: fixed templates, diagrams and charts, then a layout check of every page"
-              }
-            />
-            {/* The mode, shown where it was switched on. A toggle buried
-                in a menu needs something visible saying it is still on,
-                and this is also the fastest way to turn it off. */}
-            {mode && (
-              <button
-                type="button"
-                onClick={() => setMode(null)}
-                disabled={sending || running}
-                title={
-                  research
-                    ? cli
-                      ? `Research mode: researched on OpenRouter first, then handed to ${provider}. Click to turn off.`
-                      : "Research mode: search, read, then browse. Click to turn off."
-                    : cli
-                      ? `Documentation mode: ${provider} is handed the document rules and scripts. Click to turn off.`
-                      : "Documentation mode: plan, write, render, then check the layout. Click to turn off."
-                }
-                className="bg-ucch-active-bg text-foreground hover:text-muted-foreground flex h-7 items-center gap-1 rounded-full py-1 pr-1.5 pl-2 text-xs transition-colors disabled:opacity-60"
-              >
-                {(() => {
-                  const ModeIcon = MODE_ICON[mode];
-                  return <ModeIcon className="size-3.5" />;
-                })()}
-                {MODE_LABEL[mode]}
-                <XIcon className="size-3 opacity-70" />
-                <span className="sr-only">Turn {MODE_LABEL[mode].toLowerCase()} off</span>
-              </button>
-            )}
-            {/* Hidden, and clicked by the menu item: the native control is
-                the only way to open the file manager, and its own chrome
-                has no place in a composer. */}
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                void addFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-
-            <ModelSelect
-              models={catalogue}
-              value={activeModel}
-              onChange={chooseModel}
-              look="inline"
-              disabled={sending || running}
-            />
-            {/* Only where it means something: a model that takes effort,
-                under a harness that passes it on. */}
-            {effortLevels && (
-              <EffortSelect
-                value={sentEffort}
-                levels={effortLevels}
-                offMeansDefault={cli}
-                onChange={setEffort}
-                look="inline"
-                disabled={sending}
-              />
-            )}
-            <div className="ml-auto flex min-w-0 shrink items-center gap-0.5">
-              <ProviderSelect
-                providers={providers}
-                value={provider}
-                locked={boundProvider}
-                onChange={chooseProvider}
-                look="inline"
-                disabled={sending || running}
-              />
-              <ContextMeter
-                tokens={measuredContext?.usedTokens ?? contextTokens}
-                limit={
-                  measuredContext?.windowTokens ?? models.find((m) => m.id === model)?.contextLength ?? null
-                }
-                threshold={measuredContext?.thresholdTokens ?? null}
-                live={measuredContext !== null}
-                onClear={() => void clearContext()}
-                clearing={clearing}
-                // Mid-turn the history is still being written; clearing under
-                // the running loop would leave it appending to a thread nobody
-                // is watching.
-                disabled={running || sending || !threadId}
-              />
+          {/* A first thread: three ways in, each filling the draft -- never
+              sending -- so the reader can still edit it before it goes. */}
+          {empty && !draft.trim() && (
+            <div className="flex flex-wrap justify-center gap-1.5 pt-1" data-testid="composer-suggestions">
+              {SUGGESTIONS.map(({ icon: Icon, label, prompt }) => (
+                <button
+                  key={label}
+                  type="button"
+                  disabled={!threadId || sending}
+                  onClick={() => {
+                    setDraft(prompt);
+                    requestAnimationFrame(() => draftRef.current?.focus());
+                  }}
+                  className="text-muted-foreground hover:text-foreground hover:bg-muted bg-background flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors disabled:opacity-50"
+                >
+                  <Icon className="size-3.5" />
+                  {label}
+                </button>
+              ))}
             </div>
-          </div>
+          )}
+
           {worktree && worktree.state !== "ready" && (
             <span
               className={cn(
@@ -2027,6 +2028,30 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
  * server's clock and timezone are not the reader's, and rendering one there
  * would greet them with the wrong part of the day and a hydration mismatch.
  */
+/** The empty thread's starting points: each fills the draft, none sends. */
+const SUGGESTIONS = [
+  {
+    icon: CompassIcon,
+    label: "Explain this project",
+    prompt: "Give me a tour of this project: what it does, how it is laid out, and where to change things.",
+  },
+  {
+    icon: BugIcon,
+    label: "Find bugs",
+    prompt: "Review the code for likely bugs and list the most important ones with file and line.",
+  },
+  {
+    icon: ListChecksIcon,
+    label: "Plan a feature",
+    prompt: "Help me plan a new feature. Ask me what it should do, then propose the steps.",
+  },
+] as const;
+
+/** The hairline between the composer's pickers, as in a toolbar. */
+function ComposerDivider() {
+  return <span aria-hidden className="bg-border mx-1 hidden h-4 w-px shrink-0 @md:block" />;
+}
+
 function Greeting() {
   const name = useViewerFirstName();
   const [part, setPart] = useState<string | null>(null);
@@ -2316,9 +2341,14 @@ const Message = memo(function Message({
     | { kind: "compaction"; key: string; part: CompactionPart }
   )[] = [];
   if (message.reasoning) work.push({ kind: "think", key: "reasoning", text: message.reasoning });
+  // Subagents are drawn on the page, not folded into the work: they are
+  // the turn's delegated work, and a reader wants to see who is on what
+  // without opening anything.
+  const delegated: ToolPart[] = [];
   message.parts.forEach((part, i) => {
     if (part.kind === "tool") {
-      work.push({ kind: "tool", key: part.id, call: part });
+      if (isSubagentCall(part.name) || part.subagents) delegated.push(part);
+      else work.push({ kind: "tool", key: part.id, call: part });
       return;
     }
     if (part.kind === "compaction") {
@@ -2341,11 +2371,12 @@ const Message = memo(function Message({
   // or a tool runs.
   const lastIsAnswer =
     message.parts.at(-1)?.kind === "text" && answers.length > 0 && answers.at(-1)!.streaming;
-  const working = message.streaming && !lastIsAnswer && work.length > 0;
+  const working = message.streaming && !lastIsAnswer && (work.length > 0 || delegated.length > 0);
 
   return (
     <div ref={ref} className="flex flex-col gap-2">
       {work.length > 0 && <WorkDropdown items={work} working={working} message={message} />}
+      {delegated.length > 0 && <SubagentGroup calls={delegated} />}
 
       {flow.map((item) => {
         if (item.kind === "compaction") return <CompactionDivider key={item.key} part={item.part} />;
@@ -2365,7 +2396,7 @@ const Message = memo(function Message({
       })}
 
       {/* A turn that has produced nothing yet still shows it is alive. */}
-      {message.streaming && work.length === 0 && flow.length === 0 && (
+      {message.streaming && work.length === 0 && delegated.length === 0 && flow.length === 0 && (
         <p className="text-sm">
           <Caret />
         </p>
@@ -2482,13 +2513,6 @@ function WorkDropdown({
   ]
     .filter(Boolean)
     .join(", ");
-  // While it works, the newest subagent still running says what it is on:
-  // the dropdown is closed by default, and the card inside it with it.
-  const subagent = working
-    ? items
-        .flatMap((i) => (i.kind === "tool" ? (i.call.subagents ?? []) : []))
-        .findLast((run) => run.status === "running")
-    : undefined;
   const elapsed =
     !working && message.startedAt !== null && message.completedAt !== null
       ? formatCookTime(message.completedAt - message.startedAt)
@@ -2498,7 +2522,7 @@ function WorkDropdown({
     // Named groups: this element and each ToolRow inside it are both
     // <details>, and an unnamed `group-open` on the rows would turn every
     // row's chevron the moment this one opened.
-    <details className="group/work text-muted-foreground rounded-md border text-xs">
+    <details className="group/work text-muted-foreground bg-card/40 rounded-lg border text-xs">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 select-none [&::-webkit-details-marker]:hidden">
         <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-open/work:rotate-90" />
         {working ? (
@@ -2508,11 +2532,6 @@ function WorkDropdown({
         )}
         <span className="text-foreground font-medium">{working ? "Working" : "Thought"}</span>
         <span className="truncate">{what}</span>
-        {subagent?.summary && (
-          <span className="truncate" data-testid="work-subagent">
-            · {subagent.agent}: {subagent.summary}
-          </span>
-        )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {failed && <span className="text-destructive">a call failed</span>}
           {elapsed && <span className="tabular-nums">{elapsed}</span>}

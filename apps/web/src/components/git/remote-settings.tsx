@@ -19,6 +19,7 @@ import {
   GitApiError,
 } from "@/lib/git-api"
 import { looksLikeRepoUrl } from "@/lib/repo-url"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 type Load =
   | { state: "loading" }
@@ -77,14 +78,7 @@ export function GitRemoteSettings({ hash }: { hash: string }) {
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <GitBranchIcon className="text-muted-foreground size-4" />
-        Git remote
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Where pull and push go. The account&apos;s GitHub token is used for github.com remotes.
-      </p>
+    <SettingsSection icon={GitBranchIcon} title="Git remote" description={<>Where pull and push go. The account&apos;s GitHub token is used for github.com remotes.</>} bare>
 
       <div className="mt-4 max-w-xl">
         {load.state === "loading" && <Skeleton className="h-9 w-full" />}
@@ -173,7 +167,7 @@ export function GitRemoteSettings({ hash }: { hash: string }) {
           show(await gitRemoveRemote(hash))
         }}
       />
-    </section>
+    </SettingsSection>
   )
 }
 

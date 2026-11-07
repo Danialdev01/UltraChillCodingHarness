@@ -127,7 +127,7 @@ export function NavUser({
                   in the status bar like any other. */}
               <DropdownMenuItem render={<TransitionLink href={SETTINGS.entry} />}>
                 <UserRoundCogIcon />
-                Account Setting
+                Settings
               </DropdownMenuItem>
               {installable && (
                 <DropdownMenuItem onClick={() => void promptInstall()}>

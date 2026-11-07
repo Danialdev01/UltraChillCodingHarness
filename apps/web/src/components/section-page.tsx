@@ -1,3 +1,5 @@
+import { ComingSoon } from "@/components/layout/empty-state";
+import { PageContainer, PageHeading } from "@/components/layout/page-container";
 import { sectionById, type SectionId } from "@/lib/sections";
 
 /**
@@ -15,14 +17,14 @@ export function SectionPage({ section: id }: { section: SectionId }) {
   const section = sectionById(id);
 
   return (
-    <div className="flex flex-1 flex-col gap-4 p-4">
-      <div className="rounded-lg border p-6">
-        <h2 className="flex items-center gap-2 text-sm font-medium">
-          <section.icon className="text-muted-foreground size-4" />
-          {section.title}
-        </h2>
-        <p className="text-muted-foreground mt-2 max-w-prose text-sm">{section.blurb}</p>
-      </div>
-    </div>
+    <PageContainer width="wide">
+      <PageHeading icon={section.icon} title={section.title} description={section.blurb} />
+      <ComingSoon
+        icon={section.icon}
+        title={`${section.title} is on its way`}
+        description="This section has a home already, so links to it keep working when it lands."
+        className="min-h-64"
+      />
+    </PageContainer>
   );
 }

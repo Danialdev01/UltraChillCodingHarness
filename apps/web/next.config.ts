@@ -26,6 +26,17 @@ const config: NextConfig = {
   // the repo root so workspace packages are included. No effect on `next dev`.
   output: "standalone",
   outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
+  // The `/file-icons` routes read `material-icon-theme` off disk at run time
+  // (lib/file-icons-server.ts) rather than importing it, so the trace cannot
+  // see it: without this the image has no icons, every icon request is a
+  // 500, and the tree and project list show empty boxes.
+  outputFileTracingIncludes: {
+    "/file-icons/**": [
+      "./node_modules/material-icon-theme/package.json",
+      "./node_modules/material-icon-theme/dist/material-icons.json",
+      "./node_modules/material-icon-theme/icons/**",
+    ],
+  },
   env: { NEXT_PUBLIC_WS_ORIGIN: WS_ORIGIN },
   // The protocol package is shipped as TypeScript source and compiled by the
   // Next build rather than pre-built, so client and server can never drift

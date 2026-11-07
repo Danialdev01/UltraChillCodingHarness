@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { useTheme } from "@/components/theme-provider"
 import { defaultSyntaxTheme, type ThemePreset } from "@/lib/syntax-theme"
 import { DEFAULT_SETTINGS, resolveTokens, type Mode } from "@/lib/theme"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 /**
  * Saved looks: the palette and the code colours together, under a name.
@@ -29,16 +30,9 @@ export function ThemePresets() {
   }
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <BookmarkIcon className="text-muted-foreground size-4" />
-        Presets
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Keep the palette and code colours that are on screen under a name, and switch between
+    <SettingsSection icon={BookmarkIcon} title="Presets" description={<>Keep the palette and code colours that are on screen under a name, and switch between
         saved ones with a click. Saving under an existing name replaces it. Saved in this
-        browser.
-      </p>
+        browser.</>} bare>
 
       <form
         className="mt-5 flex max-w-xl flex-wrap items-center gap-2"
@@ -99,7 +93,7 @@ export function ThemePresets() {
           ))}
         </ul>
       )}
-    </section>
+    </SettingsSection>
   )
 }
 

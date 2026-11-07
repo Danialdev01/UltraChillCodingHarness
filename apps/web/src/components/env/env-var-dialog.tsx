@@ -15,30 +15,30 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { parseTags, type ProjectKey, type ProjectKeyInput } from "@/lib/keys-api"
+import { parseTags, type EnvVar, type EnvVarInput } from "@/lib/env-api"
 
-/** What the dialog is open for: a new key, or one already saved. */
-export type KeyDialogState = { mode: "create" } | { mode: "edit"; key: ProjectKey } | null
+/** What the dialog is open for: a new variable, or one already saved. */
+export type EnvVarDialogState = { mode: "create" } | { mode: "edit"; variable: EnvVar } | null
 
 /**
  * The form behind a row: name, value, tags and URL.
  *
  * Editing never shows the stored value -- the field starts empty and a blank
- * one keeps the key as it is, so opening the dialog to fix a tag cannot
+ * one keeps the value as it is, so opening the dialog to fix a tag cannot
  * put the secret on screen or overwrite it by accident.
  */
-export function KeyDialog({
+export function EnvVarDialog({
   state,
   busy,
   onClose,
   onSave,
 }: {
-  state: KeyDialogState
+  state: EnvVarDialogState
   busy: boolean
   onClose: () => void
-  onSave: (input: Partial<ProjectKeyInput>) => Promise<void>
+  onSave: (input: Partial<EnvVarInput>) => Promise<void>
 }) {
-  const editing = state?.mode === "edit" ? state.key : null
+  const editing = state?.mode === "edit" ? state.variable : null
 
   const [name, setName] = React.useState("")
   const [value, setValue] = React.useState("")
@@ -60,8 +60,8 @@ export function KeyDialog({
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     const trimmed = name.trim()
-    if (!trimmed) return setError("Give the key a name.")
-    if (!editing && !value) return setError("Paste the key's value.")
+    if (!trimmed) return setError("Give the variable a name.")
+    if (!editing && !value) return setError("Paste the value.")
     const link = url.trim()
     if (link && !/^https?:\/\//i.test(link)) return setError("The URL must start with http:// or https://.")
     setError(null)
@@ -82,18 +82,18 @@ export function KeyDialog({
       <DialogContent>
         <form onSubmit={submit} className="grid gap-4" autoComplete="off">
           <DialogHeader>
-            <DialogTitle>{editing ? "Edit key" : "New key"}</DialogTitle>
+            <DialogTitle>{editing ? "Edit variable" : "New environment variable"}</DialogTitle>
             <DialogDescription>
               {editing
                 ? "Leave the value empty to keep the one already saved."
-                : "Stored encrypted. Only shown again when you ask for it."}
+                : "Encrypted with the project key in .agent/env.val. Only shown again when you ask for it."}
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-2">
-            <Label htmlFor="key-name">Name</Label>
+            <Label htmlFor="env-name">Name</Label>
             <Input
-              id="key-name"
+              id="env-name"
               autoFocus
               value={name}
               maxLength={KEY_NAME_MAX}
@@ -103,10 +103,10 @@ export function KeyDialog({
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="key-value">{editing ? "New value" : "Value"}</Label>
+            <Label htmlFor="env-value">{editing ? "New value" : "Value"}</Label>
             <div className="relative">
               <Input
-                id="key-value"
+                id="env-value"
                 type={showValue ? "text" : "password"}
                 value={value}
                 maxLength={KEY_VALUE_MAX}
@@ -131,11 +131,11 @@ export function KeyDialog({
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="key-tags">
+            <Label htmlFor="env-tags">
               Tags <span className="text-muted-foreground font-normal">· comma separated</span>
             </Label>
             <Input
-              id="key-tags"
+              id="env-tags"
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               placeholder="openai, production"
@@ -143,9 +143,9 @@ export function KeyDialog({
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="key-url">URL</Label>
+            <Label htmlFor="env-url">URL</Label>
             <Input
-              id="key-url"
+              id="env-url"
               type="url"
               value={url}
               maxLength={KEY_URL_MAX}
@@ -165,7 +165,7 @@ export function KeyDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={busy}>
-              {editing ? "Save" : "Add key"}
+              {editing ? "Save" : "Add variable"}
             </Button>
           </DialogFooter>
         </form>

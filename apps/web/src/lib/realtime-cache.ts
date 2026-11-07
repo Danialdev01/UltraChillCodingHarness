@@ -48,6 +48,9 @@ const RESOURCES: Record<LiveResource, CacheEffect> = {
   // Too many files changed to name: every tree read again. The git status
   // follows from the server's own `git` notice.
   files: { invalidate: [qk.files.all] },
+  // A session renamed (by hand, or by its first message), pinned, archived
+  // or moved. In a session workspace the project carries the title too.
+  sessions: { invalidate: [qk.sessions.all], deferred: [qk.bootstrap()] },
 }
 
 const NONE: CacheEffect = { invalidate: [] }
@@ -94,7 +97,7 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
     // the sidebar's counts and dots. A project open here hears the turn's
     // own events too; the sink folds the two into one refetch.
     case "project.activity":
-      if (event.state === "queued" || event.state === "running") return NONE
+      if (event.state === "queued" || event.state === "running" || event.state === "waiting") return NONE
       return { invalidate: [qk.sessions.all], deferred: [qk.bootstrap()] }
     // A message that never became a turn: the session's status is idle again.
     case "turn.dequeued":

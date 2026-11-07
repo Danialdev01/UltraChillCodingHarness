@@ -19,61 +19,56 @@ export type LoginProgram = "claude-login" | "codex-login"
 /** Chunks kept per session; the pane's own scrollback is the real buffer. */
 const MAX_CHUNKS = 2_000
 
-const TITLES: Record<LoginProgram, { title: string; description: string }> = {
-  "claude-login": {
-    title: "Sign in to Claude Code",
-    description:
-      "This runs `claude auth login` on the server, in your own credential directory. Open the link it prints in your browser, approve, and paste the code back here.",
-  },
-  "codex-login": {
-    title: "Sign in to Codex",
-    description:
-      "This runs `codex login --device-auth` on the server, in your own credential directory. Open the link it prints, enter the code, and approve.",
-  },
-}
+export type LoginTerminalStatus = "connecting" | "running" | "exited" | "error"
 
 /**
- * A terminal in a dialog, running one provider's sign-in flow.
+ * One run of a provider's sign-in CLI on the server, in a PTY.
  *
  * The server cannot open your browser and your browser cannot reach a
  * callback on the server, so the CLIs fall back to the code-paste flow they
- * ship for exactly this case -- and a terminal is the honest way to show it.
- * The credential lands in a directory only the server user can read; this
- * page sees the prompt and your keystrokes, never the token.
+ * ship for exactly this case. The credential lands in a directory only the
+ * server user can read; this page sees the prompt and your keystrokes, never
+ * the token.
  *
  * Terminals are project-scoped on the wire, so a project id is needed even
  * though the login runs nowhere near a workspace. Any project you own will
  * do; it is the topic the output is published on and nothing more.
+ *
+ * The process lives while `active` is true. Bumping `generation` ends it and
+ * starts a fresh one -- a new sign-in, with a new address.
  */
-export function LoginTerminalDialog({
+export function useLoginTerminal({
   program,
   projectId,
   credentialWorkspaceId,
-  open,
-  onOpenChange,
+  active,
+  generation = 0,
+  onData,
   onExited,
 }: {
   program: LoginProgram
   projectId: string
   /** Sign in this workspace's dedicated subscription instead of your own. */
   credentialWorkspaceId?: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  /** The CLI has exited: time to look at the provider card again. */
+  active: boolean
+  generation?: number
+  /** Every chunk of output, as it arrives, unbatched. */
+  onData?: (data: string) => void
+  /** The CLI has exited. */
   onExited?: () => void
 }) {
   const [output, setOutput] = React.useState<TerminalOutput>(EMPTY_OUTPUT)
-  const [status, setStatus] = React.useState<"connecting" | "running" | "exited" | "error">(
-    "connecting",
-  )
+  const [status, setStatus] = React.useState<LoginTerminalStatus>("connecting")
   const [error, setError] = React.useState<string | null>(null)
   const clientRef = React.useRef<UcchClient | null>(null)
   const terminalRef = React.useRef<string | null>(null)
+  const handlers = React.useRef({ onData, onExited })
+  handlers.current = { onData, onExited }
 
   // The tab's one socket (lib/realtime.tsx).
   const { client: shared } = useRealtime()
   React.useEffect(() => {
-    if (!open || !shared) return
+    if (!active || !shared) return
 
     const client = shared
     clientRef.current = client
@@ -92,23 +87,26 @@ export function LoginTerminalDialog({
     const offEvents = client.onEvent(({ event }) => {
       if (event.type !== "terminal.output" || event.terminalId !== id) return
       batch.push(event.data)
+      handlers.current.onData?.(event.data)
       // The reactor prints this line itself when the process ends; there
       // is no other signal on the wire that a terminal has closed.
       if (!exited && /\[exited with /.test(event.data)) {
         exited = true
         setStatus("exited")
-        onExited?.()
+        handlers.current.onExited?.()
       }
     })
-    const unsubscribe = () => {
-      offEvents()
-      batch.cancel()
-    }
 
+    // Set by the cleanup. The create below is async; a cleanup that runs
+    // before it is sent (React's dev double-mount, a quick close) would
+    // otherwise close nothing and leave the process that follows orphaned.
+    let cancelled = false
     void (async () => {
       await client.whenReady()
+      if (cancelled) return
       // Subscribed before the program starts, or its first prompt is lost.
       await client.subscribe({ name: "terminal", terminalId: id })
+      if (cancelled) return
       await client.dispatch({
         type: "terminal.create",
         projectId,
@@ -118,14 +116,22 @@ export function LoginTerminalDialog({
         program,
         ...(credentialWorkspaceId ? { credentialWorkspaceId } : {}),
       })
-      setStatus("running")
+      if (cancelled) {
+        // Cleaned up while the create was in flight: close it now it exists.
+        void client.dispatch({ type: "terminal.close", terminalId: id }).catch(() => {})
+        return
+      }
+      if (!exited) setStatus("running")
     })().catch((e) => {
+      if (cancelled) return
       setStatus("error")
       setError(e instanceof Error ? e.message : String(e))
     })
 
     return () => {
-      unsubscribe()
+      cancelled = true
+      offEvents()
+      batch.cancel()
       // Closing the dialog ends the flow: a half-finished login left running
       // on the server is a prompt nobody will ever answer.
       void client.dispatch({ type: "terminal.close", terminalId: id }).catch(() => {})
@@ -133,28 +139,66 @@ export function LoginTerminalDialog({
       clientRef.current = null
       terminalRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, program, projectId, credentialWorkspaceId, shared])
+  }, [active, generation, program, projectId, credentialWorkspaceId, shared])
 
-  const send = (data: string) => {
+  const send = React.useCallback((data: string) => {
     const id = terminalRef.current
     if (!id) return
     clientRef.current?.terminalInput(id, data)
-  }
-  const resize = (cols: number, rows: number) => {
+  }, [])
+  const resize = React.useCallback((cols: number, rows: number) => {
     const id = terminalRef.current
     if (!id) return
     clientRef.current?.terminalResize(id, cols, rows)
-  }
+  }, [])
+  /** Ends the process now, without waiting for the dialog to close. */
+  const kill = React.useCallback(() => {
+    const id = terminalRef.current
+    if (!id) return
+    void clientRef.current?.dispatch({ type: "terminal.close", terminalId: id }).catch(() => {})
+  }, [])
 
-  const copy = TITLES[program]
+  return { output, status, error, send, resize, kill }
+}
+
+/**
+ * A terminal in a dialog, running a provider's sign-in flow as it is.
+ *
+ * Codex's device-code flow needs nothing typed back, so the terminal is the
+ * whole interface. Claude's paste-a-code flow has its own guided dialog
+ * (`claude-login-dialog.tsx`) built on the same `useLoginTerminal`.
+ */
+export function LoginTerminalDialog({
+  projectId,
+  credentialWorkspaceId,
+  open,
+  onOpenChange,
+  onExited,
+}: {
+  projectId: string
+  credentialWorkspaceId?: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** The CLI has exited: time to look at the provider card again. */
+  onExited?: () => void
+}) {
+  const { output, status, error, send, resize } = useLoginTerminal({
+    program: "codex-login",
+    projectId,
+    credentialWorkspaceId,
+    active: open,
+    onExited,
+  })
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>{copy.title}</DialogTitle>
-          <DialogDescription>{copy.description}</DialogDescription>
+          <DialogTitle>Sign in to Codex</DialogTitle>
+          <DialogDescription>
+            This runs <code className="font-mono">codex login --device-auth</code> on the server, in your own
+            credential directory. Open the link it prints, enter the code, and approve.
+          </DialogDescription>
         </DialogHeader>
         <div className="bg-background h-[24rem] overflow-hidden rounded-md border">
           {status === "connecting" && (

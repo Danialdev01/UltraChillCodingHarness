@@ -1,11 +1,13 @@
 "use client"
 
 import * as React from "react"
+import { InlineError } from "@/components/layout/inline-error"
 import { CheckIcon, Loader2Icon, RotateCcwIcon, SparklesIcon } from "lucide-react"
 
 import { ModelSelect, useModels } from "@/components/model-picker"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { SettingsSection } from "@/components/layout/settings-section"
 
 interface DefaultSettings {
   /** The model in force: the choice below, or the server's when there is none. */
@@ -73,9 +75,7 @@ export function DefaultSettings() {
 
   if (loadError) {
     return (
-      <section className="rounded-lg border p-6">
-        <p className="text-destructive text-sm">{loadError}</p>
-      </section>
+      <InlineError>{loadError}</InlineError>
     )
   }
 
@@ -86,16 +86,9 @@ export function DefaultSettings() {
   const named = models.find((model) => model.id === value)
 
   return (
-    <section className="rounded-lg border p-6">
-      <h2 className="flex items-center gap-2 text-sm font-medium">
-        <SparklesIcon className="text-muted-foreground size-4" />
-        Default model
-      </h2>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Which model a new conversation starts on, and which one answers a turn that does not name
+    <SettingsSection icon={SparklesIcon} title="Default model" description={<>Which model a new conversation starts on, and which one answers a turn that does not name
         one. You can still change the model per message in the composer, and each project keeps
-        the last one you used there.
-      </p>
+        the last one you used there.</>} bare>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <ModelSelect
@@ -137,6 +130,6 @@ export function DefaultSettings() {
           <Skeleton className="my-0.5 h-3.5 w-2/3" />
         )}
       </div>
-    </section>
+    </SettingsSection>
   )
 }

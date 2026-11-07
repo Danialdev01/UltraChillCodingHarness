@@ -146,7 +146,7 @@ def content_hash(*parts: str | bytes) -> str:
 
 
 def cache_dir(workspace: Path) -> Path:
-    d = workspace / ".ucch" / "doc-cache"
+    d = workspace / ".agent" / "doc-cache"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
