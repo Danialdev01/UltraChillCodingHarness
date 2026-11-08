@@ -241,10 +241,15 @@ export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   "thread.revert": "write",
   "thread.fork": "write",
   // Both run the model on the thread's session, billed as a turn is.
+  "thread.clear_context": "write",
   "thread.compact": "exec",
   "thread.handoff": "exec",
   // Writes the brief on OMP, then starts a turn on the new thread.
   "thread.handoff_to": "exec",
+  // Writes the brief on OMP, then (with a message) starts a turn.
+  "thread.switch_harness": "exec",
+  // Answers a card; what it picks may start a turn.
+  "thread.choice_reply": "exec",
   "terminal.create": "exec",
   "terminal.input": "exec",
   "terminal.resize": "exec",

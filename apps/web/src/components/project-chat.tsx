@@ -31,6 +31,7 @@ import {
   Loader2Icon,
   PaperclipIcon,
   PlusIcon,
+  RotateCcwIcon,
   SparklesIcon,
   SquareIcon,
   TelescopeIcon,
@@ -82,8 +83,17 @@ import { InlineError } from "@/components/layout/inline-error";
 import { Markdown, StreamingMarkdown } from "@/components/markdown";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
-import { SubagentCard, SubagentGroup } from "@/components/subagent-card";
-import { lineageOf, publishLineage } from "@/lib/subagent-lineage";
+import { SubagentCard, SubagentDetail, SubagentGroup } from "@/components/subagent-card";
+import { TranscriptTurn } from "@/components/chat-transcript";
+import { useChatViewMode, type ChatViewMode } from "@/lib/chat-view-mode";
+import {
+  lineageKey,
+  lineageOf,
+  publishLineage,
+  publishShellCalls,
+  shellCallsOf,
+  toolAnchor,
+} from "@/lib/subagent-lineage";
 import { UcchClient, type ClientEvent } from "@/lib/client";
 import { ThreadStore, type LiveTurn } from "@/lib/thread-store";
 import {
@@ -93,6 +103,8 @@ import {
   rememberLastProvider,
 } from "@/lib/model-preference";
 import { ProviderSelect, useProviders } from "@/components/provider-picker";
+import { ChoicePromptCard } from "@/components/choice-prompt";
+import { useProjectSessions } from "@/lib/project-sessions";
 import { billingLabel, providerBlocker, type ProviderId } from "@/lib/providers-api";
 import { readCredentialChoice } from "@/lib/credential-choice";
 import { composerMaxLines, MIN_COMPOSER_LINES } from "@/lib/composer-size";
@@ -117,6 +129,7 @@ import {
   toMessages,
   type ChatMessage,
   type CompactionPart,
+  type HarnessSwitch,
   type ToolPart,
 } from "@/lib/chat-messages";
 import { readRatings, writeRating, type Rating } from "@/lib/chat-feedback";
@@ -135,9 +148,10 @@ import { ServerError } from "@/lib/client";
 import { createComposerSync, type ComposerSync } from "@/lib/composer-sync";
 import { isOwnChange, othersAt, usePresence, usePresenceLocation, useProjectEvents, useRealtime } from "@/lib/realtime";
 import { isTaskThreadTitle } from "@/lib/tasks-api";
-import { keepSession, removeWhenLeft, startProjectSession } from "@/lib/project-sessions";
+import { keepSession, removeWhenLeft } from "@/lib/project-sessions";
 import { projectHref } from "@/lib/sections";
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions";
+import { usePathname, useSearchParams } from "next/navigation";
 import { qk } from "@/lib/query-keys";
 import { useInvalidate } from "@/lib/use-invalidate";
 import { afterNextPaint, reportVital } from "@/lib/vitals";
@@ -498,13 +512,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
         });
         const listed = response.ok
           ? ((await response.json()) as {
-              threads: Array<{ id: string; title?: string; provider?: string | null }>
+              threads: Array<{ id: string; title?: string; provider?: string | null; parentThreadId?: string | null }>
             }).threads
           : [];
         // The newest conversation, passing over the Tasks board's own
-        // threads: those are the pipeline's work, not where the person
-        // left off.
-        opened = listed.find((t) => !isTaskThreadTitle(t.title));
+        // threads and subagents' sessions: those are the agents' work, not
+        // where the person left off.
+        opened = listed.find((t) => !isTaskThreadTitle(t.title) && !t.parentThreadId);
       }
 
       if (cancelled) return;
@@ -539,8 +553,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   }, [sharedClient, project.id, project.hash, sessionId]);
 
   /**
-   * "Clear context" in another window starts a new thread; this one follows
-   * it when it was showing the newest conversation -- the one the other
+   * A new thread started in another window (a fork, a handoff): this one
+   * follows it when it was showing the newest conversation -- the one the other
    * window just moved on from. A window deliberately left on an older thread
    * stays there. A project session's page does not follow: it is the
    * conversation its address names, and a new one has an address of its own.
@@ -654,6 +668,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     if (followRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [durableEvents, liveTurns]);
 
+  /** Default or CLI-style transcript, from Workspace Settings → Chat view. */
+  const viewMode = useChatViewMode();
+
   /** Scrolls a message to the top of the view, for the prompt arrows. */
   const jumpTo = useCallback((index: number) => {
     blockRefs.current.get(index)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -736,16 +753,55 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     handingOff,
     continuedIn,
     continuedFrom,
+    switching,
+    choices,
   } = useMemo(() => overlayLive(settled, liveTurns), [settled, liveTurns]);
+  // A subagent's session links back to the one that started it.
+  const { sessions: projectSessions } = useProjectSessions(session?.parentThreadId ? project : null);
+  const parentSession = session?.parentThreadId ? projectSessions?.find((s) => s.id === session.parentThreadId) : undefined;
+  // A switch rebinds the session: the next message goes to the new harness.
+  const switchedTo = useMemo(() => messages.findLast((m) => m.switched)?.switched?.to ?? null, [messages]);
+  useEffect(() => {
+    if (switchedTo) setBoundProvider(switchedTo);
+  }, [switchedTo]);
   // A turn waiting for a slot is the agent's as much as one running: the
   // composer offers Stop, and the server refuses a second message either way.
   const running = turnRunning || queuedAhead !== null;
 
-  // The thread's subagents, for the session card's lineage beside the chat.
+  // A CLI's built-in subagent, opened from the session card: its own view
+  // over this thread (`?agent=`), as it has no session of its own.
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
+  const agentParam = searchParams?.get("agent") ?? null;
+  const detail = useMemo(
+    () => (agentParam ? (lineageOf(messages).find((entry) => lineageKey(entry) === agentParam) ?? null) : null),
+    [agentParam, messages],
+  );
+  const closeDetail = useCallback(() => transitionRouter.replace(pathname ?? "."), [pathname, transitionRouter]);
+  // The view reads from its top: the prompt first, not the chat's floor.
+  const detailKey = detail ? lineageKey(detail) : null;
+  useEffect(() => {
+    if (detailKey) listRef.current?.scrollTo({ top: 0 });
+  }, [detailKey]);
+
+  // A subagent's session: its task, as the server first sent it, for Rerun.
+  const subagentTask = useMemo(
+    () => (session?.parentThreadId ? (messages.find((m) => m.role === "user" && m.subagentTask)?.raw ?? null) : null),
+    [messages, session?.parentThreadId],
+  );
+
+  // The thread's subagents and shell calls, for the session card beside the chat.
   useEffect(() => {
     publishLineage(lineageOf(messages));
+    publishShellCalls(shellCallsOf(messages));
   }, [messages]);
-  useEffect(() => () => publishLineage([]), []);
+  useEffect(
+    () => () => {
+      publishLineage([]);
+      publishShellCalls([]);
+    },
+    [],
+  );
 
   /**
    * frame-to-paint (lib/vitals.ts): a streamed delta's arrival to the paint
@@ -978,6 +1034,20 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     }
   }, [attachments, dispatchMessage, draft, reference, sending, threadId, vision, worktreeBlocked]);
 
+  /** A subagent's session: its task again, as a new turn here. */
+  const rerun = useCallback(async () => {
+    if (!subagentTask || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      await dispatchMessage(subagentTask);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  }, [dispatchMessage, sending, subagentTask]);
+
   /**
    * `:chat` from the editor: the lines it was typed over become a chip on the
    * composer, and the composer takes focus for the instruction.
@@ -1140,6 +1210,37 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     },
     [threadId],
   );
+  /**
+   * Moves this session to `target` (`thread.switch_harness`): the same
+   * session, its next turn on the new harness, starting from a brief of the
+   * work so far. A request, as a handoff is: the transcript shows the switch
+   * when `thread.harness_switched` lands.
+   */
+  const switchHarness = useCallback(
+    async (target: ProviderId) => {
+      const client = clientRef.current;
+      if (!client || !threadId) return;
+      setError(null);
+      try {
+        await client.dispatch({ type: "thread.switch_harness", threadId, targetProvider: target, reason: "manual" });
+        rememberLastProvider(project.id, target);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [threadId, project.id],
+  );
+
+  /** Answers a choice card (`thread.choice_reply`); the card goes when `agent.choice_resolved` lands. */
+  const replyChoice = useCallback(
+    async (requestId: string, optionId: string, model?: string) => {
+      const client = clientRef.current;
+      if (!client || !threadId) throw new Error("not connected");
+      await client.dispatch({ type: "thread.choice_reply", threadId, requestId, optionId, ...(model ? { model } : {}) });
+    },
+    [threadId],
+  );
+
   // The new thread is in the project's sessions now.
   const continuedInId = continuedIn?.threadId ?? null;
   useEffect(() => {
@@ -1181,41 +1282,27 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   );
 
   /**
-   * Empties the context window.
+   * Empties the context window, in place.
    *
-   * A new thread rather than a deletion: the model's context *is* the
-   * thread's history, so the only honest way to start from nothing is to
-   * start somewhere else. The old conversation stays in the log -- it is
-   * what the turns and checkpoints hang off -- and simply stops being the
-   * one this view is subscribed to.
-   *
-   * In a project session the new thread is a new session, at an address of
-   * its own: forked from this session's branch, so the work on disk carries
-   * over while the conversation starts again.
+   * The same thread -- the same session, branch and worktree -- but the
+   * agent's next turn starts from nothing: the server drops the provider's
+   * session, and the native loop replays only what follows the clear. The
+   * conversation before it stays in the log and on screen, above a divider.
    */
   const clearContext = useCallback(async () => {
     const client = clientRef.current;
-    if (!client || clearing || running) return;
+    if (!client || !threadId || clearing || running) return;
 
     setClearing(true);
     setError(null);
     try {
-      if (session && project.workspaceHash) {
-        const next = await startProjectSession(client, project, { baseBranch: session.branch });
-        transitionRouter.push(projectHref(project.workspaceHash, "project", project.hash, next.hash));
-        return;
-      }
-      const id = await createThread(client, project);
-      if (!id) throw new Error("could not start a new conversation");
-      await openThread(client, id);
-      // A fresh thread is bound to nothing yet, so the picker opens again.
-      setBoundProvider(null);
+      await client.dispatch({ type: "thread.clear_context", threadId });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setClearing(false);
     }
-  }, [clearing, openThread, project, running, session, transitionRouter]);
+  }, [clearing, running, threadId]);
 
   /**
    * What the open menu lists, each row with what picking it does.
@@ -1274,12 +1361,15 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
             case "attach":
               return { row: { ...row, icon: icon(PaperclipIcon) }, pick: () => (done(), fileRef.current?.click()) };
             case "harness":
-              return boundProvider
+              return boundProvider && running
                 ? {
-                    row: { ...row, icon: icon(BotIcon), disabled: true, detail: "Locked to this thread — /clear to switch" },
+                    row: { ...row, icon: icon(BotIcon), disabled: true, detail: "Wait for the agent to finish" },
                     pick: () => {},
                   }
-                : { row: { ...row, icon: icon(BotIcon) }, pick: step };
+                : {
+                    row: { ...row, icon: icon(BotIcon), ...(boundProvider ? { detail: "Switch this session, with a brief of the work so far" } : {}) },
+                    pick: step,
+                  };
             case "effort":
               return { row: { ...row, icon: icon(GaugeIcon) }, pick: step };
             case "compact":
@@ -1364,22 +1454,25 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           };
         });
       case "harness":
-        if (boundProvider) return [];
+        if (boundProvider && running) return [];
         return matchOptions(Object.values(providers.cards ?? {}), slash.arg, (card) => card.label).map((card) => {
           const blocker = providerBlocker(card);
+          // On a session that has run, picking another switches it.
+          const switches = boundProvider !== null && card.id !== boundProvider;
           return {
             row: {
               key: card.id,
               icon: icon(BotIcon),
-              label: card.label,
-              detail: blocker ?? undefined,
+              label: switches ? `Switch to ${card.label}` : card.label,
+              detail: blocker ?? (switches ? "Same session, from a brief of the work so far" : undefined),
               disabled: blocker !== null,
               current: card.id === provider,
             },
             pick: () => {
               if (blocker) return;
               done();
-              chooseProvider(card.id);
+              if (switches) void switchHarness(card.id);
+              else if (!boundProvider) chooseProvider(card.id);
             },
           };
         });
@@ -1455,7 +1548,33 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                 label={continuedFrom.limit ? "Continued from a thread that hit its usage limit" : "Continued from an earlier thread"}
               />
             )}
-            {!historyLoaded && messages.length === 0 ? (
+            {session?.parentThreadId && !detail && (
+              <>
+                <HandoffRow
+                  direction="from"
+                  href={parentSession ? threadHref(parentSession.hash) : null}
+                  label="A subagent's session: its final answer went back to the session that started it"
+                />
+                {subagentTask && (
+                  <div className="flex justify-center" data-testid="subagent-session-actions">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={running || sending || !threadId}
+                      onClick={() => void rerun()}
+                      title="Send this subagent its task again. The new answer stays in this session; it does not go back to the parent."
+                    >
+                      <RotateCcwIcon />
+                      Rerun the task
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+            {detail ? (
+              <SubagentDetail entry={detail} onBack={closeDetail} renderWork={renderSubagentWork} />
+            ) : !historyLoaded && messages.length === 0 ? (
               <ConversationSkeleton />
             ) : messages.length === 0 ? (
               <>
@@ -1480,6 +1599,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   onRate={rate}
                   neighbours={neighbours.get(i)}
                   onJump={jumpTo}
+                  viewMode={viewMode}
                 />
               ))
             )}
@@ -1528,6 +1648,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       {/* The safe-area inset is what keeps the composer clear of a phone's
           home indicator, which otherwise sits on top of the send button. */}
       <div
+        hidden={Boolean(detail)}
         className={cn(
           "shrink-0 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] @md:p-4 @md:pb-[max(1rem,env(safe-area-inset-bottom))]",
           // Lifted a little above true centre, where a centred block reads as
@@ -1564,6 +1685,16 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
               <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
               Writing a brief of the work so far for {providerLabel(handingOff)}…
             </p>
+          )}
+          {switching && (
+            <p className="text-muted-foreground flex items-center gap-2 px-1 text-xs" data-testid="switching-harness">
+              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+              Switching to {providerLabel(switching)}: writing a brief of the work so far…
+            </p>
+          )}
+          {/* A limit's question: the thread's own, or one of its subagents'. */}
+          {choices[0] && !prompts[0] && (
+            <ChoicePromptCard key={choices[0].requestId} choice={choices[0]} onReply={replyChoice} />
           )}
           {compactionError && (
             <InlineError className="text-xs">{compactionError}</InlineError>
@@ -1789,7 +1920,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                         ? "What should the agent find out?"
                         : documentation
                           ? "What document should the agent write, edit or read?"
-                          : "Ask anything, @ files, $ skills, / commands"
+                          : session?.parentThreadId
+                            ? "Ask this subagent…"
+                            : "Ask anything, @ files, $ skills, / commands"
                     : "Opening the thread…"
                 }
                 className={cn(
@@ -1894,6 +2027,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   value={provider}
                   locked={boundProvider}
                   onChange={chooseProvider}
+                  onSwitch={(id) => void switchHarness(id)}
                   look="inline"
                   disabled={sending || running}
                 />
@@ -2188,6 +2322,7 @@ const Message = memo(function Message({
   onRate,
   neighbours,
   onJump,
+  viewMode,
 }: {
   ref: Ref<HTMLDivElement>;
   message: ChatMessage;
@@ -2198,7 +2333,11 @@ const Message = memo(function Message({
   /** The prompts before and after this one; only set on a user message. */
   neighbours: PromptNeighbours | undefined;
   onJump: (index: number) => void;
+  /** "transcript": every step inline, CLI-style (Workspace Settings → Chat view). */
+  viewMode: ChatViewMode;
 }) {
+  if (message.switched) return <HarnessSwitchRow ref={ref} change={message.switched} />;
+  if (message.cleared) return <ContextClearedRow ref={ref} />;
   if (message.role === "user") {
     const sent = describeSent(message.startedAt);
     // Clear of the top of the scroll box when jumped to, so the bubble does
@@ -2234,11 +2373,27 @@ const Message = memo(function Message({
             </div>
           </details>
         )}
-        {message.text && (
-          <p className="bg-ucch-active-bg text-foreground max-w-[92%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap @md:max-w-[85%]">
-            {message.text}
-          </p>
+        {/* A subagent's task: the prompt it was started with, which nobody
+            here typed, labelled as such. The server's preamble stays out. */}
+        {message.subagentTask && (
+          <span className="text-muted-foreground flex items-center gap-1 text-[0.7rem] tracking-wide uppercase">
+            <BotIcon className="size-3" />
+            Prompt from the parent agent
+          </span>
         )}
+        {message.text &&
+          (message.subagentTask ? (
+            <div
+              className="bg-ucch-active-bg text-foreground max-w-[92%] rounded-lg px-3 py-2 text-sm @md:max-w-[85%]"
+              data-testid="subagent-task"
+            >
+              <Markdown>{message.text}</Markdown>
+            </div>
+          ) : (
+            <p className="bg-ucch-active-bg text-foreground max-w-[92%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap @md:max-w-[85%]">
+              {message.text}
+            </p>
+          ))}
 
         {/* One tag per file, under the message it came with. What the model
             was told -- ids, staging, any inlined contents -- stays in the
@@ -2373,12 +2528,26 @@ const Message = memo(function Message({
     message.parts.at(-1)?.kind === "text" && answers.length > 0 && answers.at(-1)!.streaming;
   const working = message.streaming && !lastIsAnswer && (work.length > 0 || delegated.length > 0);
 
+  const transcript = viewMode === "transcript";
+
   return (
     <div ref={ref} className="flex flex-col gap-2">
-      {work.length > 0 && <WorkDropdown items={work} working={working} message={message} />}
-      {delegated.length > 0 && <SubagentGroup calls={delegated} />}
+      {transcript && (
+        <TranscriptTurn
+          message={message}
+          renderOther={(call) => <ToolRow key={call.id} call={call} />}
+          renderCompaction={(part, key) => <CompactionDivider key={key} part={part} />}
+          caret={
+            <p className="text-sm">
+              <Caret />
+            </p>
+          }
+        />
+      )}
+      {!transcript && work.length > 0 && <WorkDropdown items={work} working={working} message={message} />}
+      {!transcript && delegated.length > 0 && <SubagentGroup calls={delegated} harness={message.provider} />}
 
-      {flow.map((item) => {
+      {!transcript && flow.map((item) => {
         if (item.kind === "compaction") return <CompactionDivider key={item.key} part={item.part} />;
         const answer = item;
         const caret = message.streaming && lastIsAnswer && answer.key === answers.at(-1)?.key;
@@ -2396,7 +2565,7 @@ const Message = memo(function Message({
       })}
 
       {/* A turn that has produced nothing yet still shows it is alive. */}
-      {message.streaming && work.length === 0 && delegated.length === 0 && flow.length === 0 && (
+      {!transcript && message.streaming && work.length === 0 && delegated.length === 0 && flow.length === 0 && (
         <p className="text-sm">
           <Caret />
         </p>
@@ -2463,6 +2632,69 @@ function HandoffRow({ direction, href, label }: { direction: "in" | "from"; href
     </div>
   );
 }
+
+/**
+ * Where the session moved to another harness: a rule saying from what to
+ * what, and the brief the new harness started from a click away.
+ */
+function HarnessSwitchRow({ ref, change }: { ref: Ref<HTMLDivElement>; change: HarnessSwitch }) {
+  const label = `${change.limit ? "Usage limit reached. " : ""}Switched from ${HARNESS_NAMES[change.from] ?? change.from} to ${
+    HARNESS_NAMES[change.to] ?? change.to
+  }${change.model ? ` · ${change.model}` : ""}`;
+  return (
+    <div ref={ref}>
+      <details className="group/switch text-muted-foreground text-xs" data-testid="harness-switched">
+        <summary className="flex cursor-pointer list-none items-center gap-2 py-1 select-none [&::-webkit-details-marker]:hidden">
+          <span className="bg-border h-px flex-1" />
+          <ArrowRightLeftIcon className="size-3.5 shrink-0" />
+          <span>{label}</span>
+          <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-open/switch:rotate-90" />
+          <span className="bg-border h-px flex-1" />
+        </summary>
+        <p className="mt-1 rounded-md border px-3 py-2 whitespace-pre-wrap">{change.brief.trim()}</p>
+      </details>
+    </div>
+  );
+}
+
+/**
+ * A built-in subagent's steps on its page, drawn as the chat's transcript
+ * view draws a turn: its thinking, its prose, and each call with its result.
+ */
+function renderSubagentWork(message: ChatMessage) {
+  return (
+    <TranscriptTurn
+      message={message}
+      renderOther={(call) => <ToolRow key={call.id} call={call} />}
+      renderCompaction={(part, key) => <CompactionDivider key={key} part={part} />}
+      caret={
+        <p className="text-sm">
+          <Caret />
+        </p>
+      }
+    />
+  );
+}
+
+/** Where the context was cleared: the agent sees nothing above this rule. */
+function ContextClearedRow({ ref }: { ref: Ref<HTMLDivElement> }) {
+  return (
+    <div ref={ref} className="text-muted-foreground flex items-center gap-2 py-1 text-xs" data-testid="context-cleared">
+      <span className="bg-border h-px flex-1" />
+      <EraserIcon className="size-3.5 shrink-0" />
+      <span>Context cleared</span>
+      <span className="bg-border h-px flex-1" />
+    </div>
+  );
+}
+
+/** Harnesses by provider id, as the transcript names them. */
+const HARNESS_NAMES: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  omp: "Custom",
+  native: "Custom",
+};
 
 /**
  * Where the context was compacted: a rule with what happened on it, and the
@@ -2692,6 +2924,7 @@ function ToolRow({ call }: { call: ToolPart }) {
 
   return (
     <details
+      id={toolAnchor(call.id)}
       className={`group/tool rounded-md border text-xs ${call.isError ? "border-destructive/40" : ""}`}
     >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 select-none [&::-webkit-details-marker]:hidden">

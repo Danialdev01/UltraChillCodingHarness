@@ -404,6 +404,23 @@ describe("thread.cancel", () => {
   });
 });
 
+describe("thread.clear_context", () => {
+  it.each(["claude", "codex", "omp", "native", null] as const)("clears an idle thread on %s", (provider) => {
+    const d = run({ project: project(), thread: thread({ provider }) }, { type: "thread.clear_context", threadId: THREAD });
+    expect(d).toEqual({ ok: true, events: [{ type: "thread.context_cleared", threadId: THREAD }] });
+  });
+
+  it("clears a thread whose last turn failed", () => {
+    const d = run({ project: project(), thread: thread({ provider: "claude", status: "error" }) }, { type: "thread.clear_context", threadId: THREAD });
+    expect(d).toMatchObject({ ok: true });
+  });
+
+  it.each(["queued", "running", "cancelling"] as const)("refuses while the thread is %s", (status) => {
+    const d = run({ project: project(), thread: thread({ provider: "claude", status }) }, { type: "thread.clear_context", threadId: THREAD });
+    expect(d).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("busy") } });
+  });
+});
+
 describe("thread.compact and thread.handoff", () => {
   it.each([
     ["thread.compact", "compact"],
@@ -664,6 +681,31 @@ describe("terminal commands", () => {
     const d = run({ project: project() }, { type: "terminal.input", terminalId: "t1", data: "ls\n" });
     expect(d).toMatchObject({ ok: true, events: [], passthrough: true });
   });
+
+  const create = { type: "terminal.create", projectId: PROJECT, terminalId: "t1", cols: 80, rows: 24 } as const;
+
+  it("accepts a command terminal that names its command", () => {
+    const d = run({ project: project() }, { ...create, program: "command", commandId: "dev" });
+    expect(d).toMatchObject({ ok: true });
+  });
+
+  it("refuses a command terminal without a command", () => {
+    const d = run({ project: project() }, { ...create, program: "command" });
+    expect(d).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
+
+  it.each([undefined, "shell", "claude-login"] as const)("refuses a command id on a %s terminal", (program) => {
+    const d = run({ project: project() }, { ...create, ...(program ? { program } : {}), commandId: "dev" });
+    expect(d).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
+
+  it("refuses a command terminal on the workspace's credentials", () => {
+    const d = run(
+      { project: project() },
+      { ...create, program: "command", commandId: "dev", credentialWorkspaceId: WORKSPACE },
+    );
+    expect(d).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
 });
 
 describe("workspace paths", () => {
@@ -787,5 +829,94 @@ describe("review.run", () => {
   it("is billed, so it needs the exec scope; a ref may not be an option", () => {
     expect(REQUIRED_SCOPE["review.run"]).toBe("exec");
     expect(Command.safeParse({ type: "review.run", projectId: PROJECT, scope: "commit", ref: "--output=/x" }).success).toBe(false);
+  });
+});
+
+describe("thread.switch_harness", () => {
+  const switching = (over: Partial<Extract<Command, { type: "thread.switch_harness" }>> = {}): Command => ({
+    type: "thread.switch_harness",
+    threadId: THREAD,
+    targetProvider: "codex",
+    ...over,
+  });
+
+  it("records the switch of a bound, idle thread, with what is sent after it", () => {
+    const d = run(
+      { project: project(), thread: thread({ provider: "claude" }) },
+      switching({ model: "gpt-6-sol", message: "Add the test", reason: "limit" }),
+    );
+    expect(d).toEqual({
+      ok: true,
+      events: [
+        {
+          type: "thread.harness_switch_requested",
+          threadId: THREAD,
+          fromProvider: "claude",
+          targetProvider: "codex",
+          model: "gpt-6-sol",
+          message: "Add the test",
+          reason: "limit",
+        },
+      ],
+    });
+  });
+
+  it("refuses a thread that has not run, one already on the harness, and a busy one", () => {
+    expect(run({ project: project(), thread: thread() }, switching())).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(run({ project: project(), thread: thread({ provider: "codex" }) }, switching())).toMatchObject({ ok: false });
+    // Custom is one choice, whichever runtime serves it.
+    expect(run({ project: project(), thread: thread({ provider: "omp" }) }, switching({ targetProvider: "native" }))).toMatchObject({
+      ok: false,
+    });
+    expect(run({ project: project(), thread: thread({ provider: "claude", status: "running" }) }, switching())).toMatchObject({
+      ok: false,
+      error: { code: "conflict" },
+    });
+  });
+
+  it("leaves a subagent's session to the server", () => {
+    const child = thread({ provider: "claude", parentThreadId: "99999999-9999-4999-8999-999999999999" });
+    expect(run({ project: project(), thread: child }, switching())).toMatchObject({ ok: false, error: { code: "forbidden" } });
+    const internal = decide({ project: project(), thread: child, workspace: workspace() }, switching(), { ...ctx, internal: true });
+    expect(internal).toMatchObject({ ok: true });
+  });
+});
+
+describe("thread.create for a subagent", () => {
+  const create: Command = { type: "thread.create", projectId: PROJECT, title: "Research", parentThreadId: THREAD };
+
+  it("is the server's alone", () => {
+    expect(run({ project: project(), thread: thread() }, create)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("makes a session in its parent's folder, linked to it", () => {
+    const d = decide(
+      { project: project(), thread: thread({ branch: "ucch/abc", worktreeState: "ready", hash: "parent123456" }), workspace: workspace() },
+      create,
+      { ...ctx, internal: true },
+    );
+    expect(d).toMatchObject({
+      ok: true,
+      events: [
+        {
+          type: "thread.created",
+          threadId: NEW_ID,
+          title: "Research",
+          worktreeOf: THREAD,
+          parentThreadId: THREAD,
+          branch: "ucch/abc",
+          treeHash: "parent123456",
+        },
+      ],
+    });
+  });
+
+  it("refuses a subagent of a subagent", () => {
+    const d = decide(
+      { project: project(), thread: thread({ parentThreadId: "99999999-9999-4999-8999-999999999999" }), workspace: workspace() },
+      create,
+      { ...ctx, internal: true },
+    );
+    expect(d).toMatchObject({ ok: false, error: { code: "invalid" } });
   });
 });

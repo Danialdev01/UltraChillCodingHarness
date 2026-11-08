@@ -54,12 +54,21 @@ export interface ClaudeCapabilities {
 }
 
 /**
- * The bridge's tools that only read (solution §10.3): under Normal they run
- * unasked, as Claude Code's own reads do. The rest -- a rename, a codemod,
- * a debugging session, a memory write, a handoff brief -- ask, as a command
- * does; under Strict everything asks, and after "Allow All" nothing does.
+ * The bridge's tools that run unasked under Normal (solution §10.3): the
+ * ones that only read, as Claude Code's own reads do, and `ucch_agent`,
+ * which starts a subagent as Claude Code's own `Agent` tool does. The rest
+ * -- a rename, a codemod, a debugging session, a memory write, a handoff
+ * brief -- ask, as a command does; under Strict everything asks, and after
+ * "Allow All" nothing does.
  */
-export const OMP_BRIDGE_READ_TOOLS = ["omp_symbols", "omp_recall", "omp_review", "omp_task"] as const;
+export const OMP_BRIDGE_READ_TOOLS = ["omp_symbols", "omp_recall", "omp_review", "omp_task", "ucch_agent"] as const;
+
+/**
+ * How long Claude Code waits on one MCP tool call (`MCP_TOOL_TIMEOUT`, ms):
+ * a `ucch_agent` subagent runs a whole turn on another harness, which can
+ * take far longer than the CLI's default allows.
+ */
+export const MCP_TOOL_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** How Claude Code names an MCP server's tool: `mcp__<server>__<tool>`. */
 export const ompBridgeToolName = (tool: string) => `mcp__omp__${tool}`;
@@ -219,6 +228,26 @@ const SUBAGENT_PROGRESS_MS = 1_000;
 /** The size a subagent's result is held to on its card. */
 const SUBAGENT_RESULT_CHARS = 8_000;
 
+/** A block a subagent wrote, longer than the event allows, ends where it is cut. */
+const SUBAGENT_OUTPUT_CHARS = 20_000;
+
+/** `agent.subagent_output`: one of a subagent's blocks, for its own page. */
+function subagentOutput(
+  ids: { threadId: string; turnId: string },
+  subagentId: string,
+  kind: "text" | "thinking",
+  text: string,
+): DomainEvent {
+  const trimmed = text.trim();
+  return {
+    type: "agent.subagent_output",
+    ...ids,
+    subagentId,
+    kind,
+    text: trimmed.length > SUBAGENT_OUTPUT_CHARS ? `${trimmed.slice(0, SUBAGENT_OUTPUT_CHARS - 14)}\n[… truncated]` : trimmed,
+  };
+}
+
 interface ClaudeSubagent {
   /** Registered in the background: its call's tool_result is only the launch. */
   background: boolean;
@@ -245,6 +274,8 @@ interface Block {
   name?: string;
   input?: unknown;
   text?: string;
+  /** A `thinking` block's text. */
+  thinking?: string;
   tool_use_id?: string;
   content?: unknown;
   is_error?: boolean;
@@ -288,6 +319,8 @@ interface Line {
   terminal_reason?: string;
   total_cost_usd?: number;
   usage?: Record<string, unknown>;
+  /** `system` `background_tasks_changed`: every background task still running. */
+  tasks?: { task_id?: string }[];
 }
 
 /**
@@ -317,6 +350,15 @@ export class ClaudeNormaliser implements Normaliser {
   #subagents = new Map<string, ClaudeSubagent>();
   /** Finished ones, so a late line does not start them again. */
   #finishedSubagents = new Set<string>();
+  /**
+   * Background tasks still running, by task id, as the CLI's
+   * `background_tasks_changed` lists them. While any is, a `result` is not
+   * the end of the turn: the CLI goes on, wakes the model when they finish,
+   * and prints another `result` then.
+   */
+  #backgroundTasks = new Set<string>();
+  /** A `result` held back for the background tasks, with its cost so far. */
+  #heldResult: { costUsd: number } | null = null;
   #usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -377,7 +419,9 @@ export class ClaudeNormaliser implements Normaliser {
   }
 
   push(raw: string): DomainEvent[] {
-    if (!raw.trim().startsWith("{")) return [];
+    // After the turn's end nothing more is the turn's: a stray line must not
+    // end it twice.
+    if (this.#closed || !raw.trim().startsWith("{")) return [];
     let line: Line;
     try {
       line = JSON.parse(raw) as Line;
@@ -389,6 +433,9 @@ export class ClaudeNormaliser implements Normaliser {
     switch (line.type) {
       case "system": {
         if (line.subtype === "init" && line.session_id) {
+          // A model woken by a finished background task starts with another
+          // init for the same session: one session, one announcement.
+          if (this.#sessionId === line.session_id) return [];
           this.#sessionId = line.session_id;
           return [
             {
@@ -403,6 +450,10 @@ export class ClaudeNormaliser implements Normaliser {
         // background, so these, not the call's tool_result, say how it went.
         if (line.subtype === "task_started" || line.subtype === "task_progress" || line.subtype === "task_notification") {
           return this.#taskLine(line);
+        }
+        if (line.subtype === "background_tasks_changed" && Array.isArray(line.tasks)) {
+          this.#backgroundTasks = new Set(line.tasks.map((task) => task.task_id).filter((id): id is string => !!id));
+          return [];
         }
         if (line.subtype === "api_retry") {
           return [
@@ -540,6 +591,17 @@ export class ClaudeNormaliser implements Normaliser {
       }
 
       case "result": {
+        // Background tasks still running: the model ended its reply, not the
+        // turn. Holding stdin open keeps their permission prompts answerable
+        // (closed, every one fails with "Stream closed"), and the turn ends
+        // on the `result` that follows them.
+        if (!line.is_error && !this.#interrupted && this.#backgroundTasks.size > 0) {
+          const events = this.#flushMessage();
+          this.#usage = addUsage(this.#usage, mapUsage(line.usage));
+          this.#heldResult = { costUsd: Math.max(0, line.total_cost_usd ?? 0) };
+          if (line.session_id) this.#sessionId = line.session_id;
+          return events;
+        }
         this.#closed = true;
         const events = this.#flushMessage();
         events.push(...this.#closePrompts());
@@ -548,7 +610,10 @@ export class ClaudeNormaliser implements Normaliser {
         // after a result; closing it is what lets the process exit.
         this.#io?.endStdin();
         if (line.session_id) this.#sessionId = line.session_id;
-        this.#usage = mapUsage(line.usage);
+        // A turn that waited on background tasks spans several results; the
+        // CLI's cost is already a running total, its usage is per result.
+        this.#usage = this.#heldResult ? addUsage(this.#usage, mapUsage(line.usage)) : mapUsage(line.usage);
+        this.#heldResult = null;
         // SIGINT gets a result line too, marked as an error with
         // `terminal_reason: "aborted_streaming"`. That is the stop button
         // working, not a failure, and the thread must come back idle.
@@ -595,6 +660,19 @@ export class ClaudeNormaliser implements Normaliser {
     const ids = { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
     const events = this.#flushMessage();
     events.push(...this.#closePrompts());
+    // It answered, then waited on background tasks and exited cleanly
+    // without a second result: the answer stands.
+    if (this.#heldResult && !exit.interrupted && exit.code === 0) {
+      events.push(...this.#closeSubagents("aborted"));
+      events.push({
+        type: "agent.turn_completed",
+        ...ids,
+        stopReason: "end_turn",
+        usage: this.#usage,
+        costUsd: this.#heldResult.costUsd,
+      });
+      return events;
+    }
     events.push(...this.#closeSubagents(exit.interrupted ? "aborted" : "failed"));
     if (exit.interrupted && (exitedBySignal(exit) || exit.code === 0)) {
       events.push({
@@ -650,10 +728,20 @@ export class ClaudeNormaliser implements Normaliser {
     for (const block of blocks) {
       if (block.type === "text" && block.text?.trim()) {
         if (subagent) subagent.lastText = block.text.trim();
+        events.push(subagentOutput(ids, parent, "text", block.text));
         events.push(...this.#subagentProgress(parent, block.text));
+      } else if (block.type === "thinking" && block.thinking?.trim()) {
+        events.push(subagentOutput(ids, parent, "thinking", block.thinking));
       } else if (block.type === "tool_use" && block.id) {
         this.#pending.set(block.id, { startedAt: this.#now(), name: block.name ?? "tool", path: this.#pathOf(block) });
-        events.push({ type: "agent.tool_use", ...ids, toolUseId: block.id, name: block.name ?? "tool", input: block.input ?? null });
+        events.push({
+          type: "agent.tool_use",
+          ...ids,
+          toolUseId: block.id,
+          name: block.name ?? "tool",
+          input: block.input ?? null,
+          subagentId: parent,
+        });
         if (subagent) subagent.toolCalls += 1;
         events.push(...this.#subagentProgress(parent, block.name ?? "tool"));
       }
@@ -871,6 +959,15 @@ export function mapUsage(usage: Record<string, unknown> | undefined): TokenUsage
   };
 }
 
+function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+    cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
+  };
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly id = "claude" as const;
   readonly label = "Claude Code";
@@ -897,7 +994,9 @@ export class ClaudeProvider implements AgentProvider {
     });
     return runCli({
       provider: "claude",
-      ctx: input.ctx,
+      ctx: input.mcpConfigPath
+        ? { ...input.ctx, env: { ...input.ctx.env, MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS) } }
+        : input.ctx,
       spec: {
         argv: claudeArgv({
           bin: this.bin,

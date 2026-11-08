@@ -35,7 +35,7 @@ count=$(printf '%s' "$others" | grep -c .)
 [ -n "$info" ] || [ "$count" -gt 0 ] || exit 0
 
 render() {
-  printf '%s' "This project keeps its knowledge for agents in \`.agent/\`: what the project is, how it is set up, its diagrams, and whatever else has been recorded there. Read the files relevant to the task with read_file before working, refer to them, and keep them current when the project changes. \`.agent/\` is a hidden folder, so glob, list_dir and the file list do not show it; use the paths below."
+  printf '%s' "This project keeps its knowledge for agents in \`.agent/\`: what the project is, how it is set up, its planned work (\`todo.md\`), its notes (\`notes/\`), its diagrams, its command buttons (\`commands.json\`), and whatever else has been recorded there. It is your reference for this project: before planning or editing, read the index below and the other files relevant to the task with read_file, follow them, and keep \`index.md\` current when the project changes. \`todo.md\`, \`notes/\` and \`references/todo/\` are generated from the app's Tasks board and Knowledge notes: read them, but do not edit them, as changes there are overwritten. \`.agent/\` is a hidden folder, so glob, list_dir and the file list do not show it; use the paths below."
   if [ -n "$info" ]; then
     printf '\n\n--- .agent/index.md ---\n%s' "$info"
   fi

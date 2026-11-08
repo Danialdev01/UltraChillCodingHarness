@@ -97,6 +97,14 @@ export interface FilesPanelContextValue {
    */
   terminals: { count: number; closeAll: () => void }
   registerTerminals: (terminals: { count: number; closeAll: () => void }) => void
+  /**
+   * A command button the header asked to run, for the terminal view to open
+   * a tab for. A token rather than a flag: clicking the same button twice
+   * runs it twice.
+   */
+  commandRun: { projectId: string; commandId: string; label: string; token: number } | null
+  /** Switches to the terminal view and runs one of the project's command buttons there. */
+  runCommand: (projectId: string, commandId: string, label: string) => void
 
   /**
    * The element the chat renders into, wherever on the page it is shown.
@@ -322,6 +330,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     closeAll: () => {},
   })
   const [codeChat, setCodeChat] = React.useState<FilesPanelContextValue["codeChat"]>(null)
+  const [commandRun, setCommandRun] = React.useState<FilesPanelContextValue["commandRun"]>(null)
   // In an effect rather than a state initialiser: there is no `document` on
   // the server, and the first client render has to match what it produced.
   const [chatDock, setChatDock] = React.useState<HTMLDivElement | null>(null)
@@ -569,6 +578,12 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       },
       terminals,
       registerTerminals: setTerminals,
+      commandRun,
+      runCommand: (projectId, commandId, label) => {
+        setMode("terminal")
+        setSidebar((current) => (current === "files" ? null : current))
+        setCommandRun((current) => ({ projectId, commandId, label, token: (current?.token ?? 0) + 1 }))
+      },
       chatDock,
       codeChat,
       openCodeChat: (path, from, to, initial = "") => {
@@ -839,6 +854,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
     dropTarget,
     dragging,
     terminals,
+    commandRun,
     chatDock,
     codeChat,
     target,

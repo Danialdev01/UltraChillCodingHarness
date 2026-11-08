@@ -261,3 +261,44 @@ describe("a compaction checkpoint", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
   });
 });
+
+describe("a context clear", () => {
+  const cleared: DomainEvent = { type: "thread.context_cleared", threadId: THREAD };
+
+  it("drops everything before it, with no summary in its place", () => {
+    const messages = rebuild([
+      userMessage("remember banana"),
+      assistant([{ type: "text", text: "ok" }]),
+      cleared,
+      userMessage("what word?"),
+    ]);
+    expect(messages).toEqual([{ role: "user", content: "what word?" }]);
+  });
+
+  it("empties the context outright when nothing follows it", () => {
+    expect(rebuild([userMessage("first"), cleared])).toEqual([]);
+  });
+
+  it("gives way to a compaction after it", () => {
+    const messages = rebuild([
+      userMessage("first"),
+      cleared,
+      userMessage("second"),
+      { type: "context.injected", threadId: THREAD, source: "compaction", content: "Said second." },
+      userMessage("third"),
+    ]);
+    expect(messages).toHaveLength(2);
+    expect(String(messages[0]!.content)).toContain("Said second.");
+    expect(messages[1]).toEqual({ role: "user", content: "third" });
+  });
+
+  it("drops a harness switch's brief from before it", () => {
+    const messages = rebuild([
+      { type: "thread.harness_switched", threadId: THREAD, fromProvider: "claude", toProvider: "native", brief: "Did A." },
+      userMessage("second"),
+      cleared,
+      userMessage("third"),
+    ]);
+    expect(messages).toEqual([{ role: "user", content: "third" }]);
+  });
+});

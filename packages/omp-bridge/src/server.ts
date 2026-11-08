@@ -4,6 +4,7 @@ import type { ProcessHost } from "@ucch/providers";
 import { failure } from "./call.js";
 import { ompEnv, refuseForeignCredentials, type BridgeConfig } from "./config.js";
 import { callGate } from "./lease.js";
+import { ucchAgent } from "./tools/agent.js";
 import { BRIDGE_TOOLS } from "./tools/index.js";
 
 /**
@@ -18,7 +19,11 @@ import { BRIDGE_TOOLS } from "./tools/index.js";
 export function createBridgeServer(config: BridgeConfig, host: ProcessHost, parentEnv: NodeJS.ProcessEnv = process.env): McpServer {
   const server = new McpServer({ name: "omp", version: "0.0.0" });
 
-  server.registerTool(
+  // OMP's tools only where the workspace turned the bridge on; `ucch_agent`
+  // only where the turn may start subagents. Either can be the only one.
+  const tools = [...(config.ompTools ? BRIDGE_TOOLS : []), ...(config.subagents ? [ucchAgent] : [])];
+
+  if (config.ompTools) server.registerTool(
     "omp_ping",
     {
       description: "Checks that the OMP bridge can start OMP: answers with the installed omp version.",
@@ -43,7 +48,7 @@ export function createBridgeServer(config: BridgeConfig, host: ProcessHost, pare
 
   // One gate per bridge, which is one per CLI turn: the turn's budget.
   const ctx = { config, host, parentEnv, gate: callGate(config) };
-  for (const definition of BRIDGE_TOOLS) {
+  for (const definition of tools) {
     server.registerTool(
       definition.name,
       { description: definition.description, inputSchema: definition.inputSchema, annotations: definition.annotations },

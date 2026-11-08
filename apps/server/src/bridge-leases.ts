@@ -18,6 +18,16 @@ import type { TurnScheduler } from "./turn-scheduler.js";
  *          or {"type":"busy"}\n         no slot within the wait (30 s)
  *          or {"type":"refused","reason":"…"}\n
  *
+ * The same socket starts `ucch_agent` subagents (`omp-bridge/src/spawn.ts`):
+ *
+ *   bridge -> {"type":"spawn","token":"…","description":"…","task":"…","model":"…"}\n
+ *   server -> {"type":"result","text":"…"}\n   once the subagent's session is done
+ *          or {"type":"error","reason":"…"}\n
+ *          or {"type":"refused","reason":"…"}\n
+ *
+ * and the connection is the subagent's life as it is a slot's: closing it
+ * stops the subagent.
+ *
  * The connection is the lease, so a bridge that crashes, or a CLI killed
  * with its children, can never keep a slot: the socket closes and the slot
  * comes back.
@@ -31,13 +41,22 @@ import type { TurnScheduler } from "./turn-scheduler.js";
 /** How long a bridge call waits for a slot before it is told "busy". */
 export const LEASE_WAIT_MS = 30_000;
 
-/** A request line is a token and a type; anything longer is not one. */
-const MAX_REQUEST_BYTES = 4096;
+/** A lease line is a token and a type; a spawn line carries a task, held to this. */
+const MAX_REQUEST_BYTES = 128 * 1024;
 
-interface Holder {
+export interface Holder {
   ownerId: string;
   threadId: string;
 }
+
+export interface SpawnFrame {
+  description: string;
+  task: string;
+  model?: string;
+}
+
+/** Runs one `ucch_agent` subagent for the turn `holder` names: its answer, or why not. */
+export type Spawner = (holder: Holder, frame: SpawnFrame, signal: AbortSignal) => Promise<{ text: string } | { error: string }>;
 
 export interface BridgeLeaseOptions {
   waitMs?: number;
@@ -49,6 +68,7 @@ export class BridgeLeases {
   readonly #tokens = new Map<string, Holder>();
   readonly #sockets = new Set<Socket>();
   #server: Server | null = null;
+  #spawner: Spawner | null = null;
 
   constructor(scheduler: TurnScheduler, options: BridgeLeaseOptions = {}) {
     this.#scheduler = scheduler;
@@ -65,6 +85,11 @@ export class BridgeLeases {
     const token = randomBytes(24).toString("base64url");
     this.#tokens.set(token, holder);
     return { token, revoke: () => void this.#tokens.delete(token) };
+  }
+
+  /** Where spawn frames go: bound late, as the subagent service is built after the leases. */
+  setSpawner(spawner: Spawner): void {
+    this.#spawner = spawner;
   }
 
   /** Listens on `path`, owner-only. A socket file left by an earlier run is replaced. */
@@ -112,15 +137,32 @@ export class BridgeLeases {
       const end = buffer.indexOf("\n");
       if (end < 0) return;
       asked = true;
-      let request: { type?: unknown; token?: unknown };
+      let request: { type?: unknown; token?: unknown; description?: unknown; task?: unknown; model?: unknown };
       try {
         request = JSON.parse(buffer.slice(0, end)) as typeof request;
       } catch {
         return refuse("not a lease request");
       }
-      if (request.type !== "lease") return refuse("not a lease request");
+      if (request.type !== "lease" && request.type !== "spawn") return refuse("not a lease request");
       const holder = typeof request.token === "string" ? this.#tokens.get(request.token) : undefined;
       if (!holder) return refuse("no turn holds this token: the bridge belongs to a turn that is over");
+      if (request.type === "spawn") {
+        const spawner = this.#spawner;
+        if (!spawner) return refuse("this server does not run subagents");
+        if (typeof request.task !== "string" || !request.task.trim()) return refuse("a subagent needs a task");
+        const frame: SpawnFrame = {
+          description: typeof request.description === "string" && request.description.trim() ? request.description.trim().slice(0, 200) : "Subagent",
+          task: request.task,
+          ...(typeof request.model === "string" && request.model.trim() ? { model: request.model.trim().slice(0, 200) } : {}),
+        };
+        void spawner(holder, frame, gone.signal)
+          .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }))
+          .then((outcome) => {
+            reply("text" in outcome ? { type: "result", text: outcome.text } : { type: "error", reason: outcome.error });
+            socket.end();
+          });
+        return;
+      }
       void this.#scheduler
         .lease({ ...holder, waitMs: this.#waitMs, signal: gone.signal })
         .then((granted) => {

@@ -89,7 +89,10 @@ import { LOG_REDACT } from "./log-redact.js";
 import { EnvVarService } from "./env-vars.js";
 import { TimelineService } from "./timeline.js";
 import { TasksService } from "./tasks.js";
+import { TodoMirror } from "./agent-todo.js";
+import { NotesMirror, type MirroredNote } from "./agent-notes.js";
 import { registerTaskRoutes } from "./tasks-routes.js";
+import { registerCommandRoutes } from "./commands-routes.js";
 import { TaskPipeline } from "./task-pipeline.js";
 import { TaskScheduler } from "./task-scheduler.js";
 import { registerDatabaseRoutes } from "./database-routes.js";
@@ -304,9 +307,13 @@ const agentTurns = new AgentTurnReactor(
     },
     // Bound late: the engine is built from these reactors.
     dispatch: (principal, command) => engine.dispatch(principal, command),
+    // For following a `ucch_agent` subagent's session to its end.
+    bus,
   },
   (error) => app.log.error({ err: error }, "agent turn failed"),
 );
+// A bridge's `ucch_agent` call arrives on the scheduler socket.
+bridgeLeases.setSpawner((holder, frame, signal) => agentTurns.spawnSubagent(holder, frame, signal));
 
 /**
  * What a project's owner brings to git: who to commit as, and what to
@@ -633,6 +640,9 @@ async function auditCommand(
     case "thread.fork":
       entry = thread("chat.fork", "Forked the conversation");
       break;
+    case "thread.clear_context":
+      entry = thread("chat.clear", "Cleared the conversation's context");
+      break;
     case "thread.compact":
       entry = thread("chat.compact", "Compacted the conversation", command.focus ? { focus: command.focus } : undefined);
       break;
@@ -643,6 +653,19 @@ async function auditCommand(
       entry = thread("chat.handoff_to", `Handed the conversation on to ${command.targetProvider}`, {
         targetProvider: command.targetProvider,
         ...(command.focus ? { focus: command.focus } : {}),
+      });
+      break;
+    case "thread.switch_harness":
+      entry = thread("chat.switch_harness", `Switched the session to ${command.targetProvider}`, {
+        targetProvider: command.targetProvider,
+        ...(command.model ? { model: command.model } : {}),
+        ...(command.reason ? { reason: command.reason } : {}),
+      });
+      break;
+    case "thread.choice_reply":
+      entry = thread("chat.choice", "Answered a question from the agent", {
+        requestId: command.requestId,
+        optionId: command.optionId,
       });
       break;
     case "terminal.create":
@@ -2200,6 +2223,28 @@ setInterval(() => {
 }, 5 * 60_000).unref();
 const notesService = new NotesService(db);
 
+/** `.agent/notes/`: the Knowledge notes as Markdown, rewritten after every save (live edits too). */
+const notesMirror = new NotesMirror({
+  uploads,
+  rootOf: (projectId) => projectRoot(config.WORKSPACE_ROOT, projectId),
+  notes: async (projectId): Promise<MirroredNote[]> => {
+    const rows = await db
+      .select({
+        id: notes.id,
+        parentId: notes.parentId,
+        title: notes.title,
+        icon: notes.icon,
+        position: notes.position,
+        content: notes.content,
+        updatedAt: notes.updatedAt,
+      })
+      .from(notes)
+      .where(eq(notes.projectId, projectId));
+    return rows.map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() }));
+  },
+  onError: (err, projectId) => app.log.warn({ err, projectId }, "could not write .agent/notes"),
+});
+
 const collabSecretValue = collabSecret();
 const collab = collabSecretValue
   ? new CollabLink({ upstream: config.COLLAB_UPSTREAM, secret: collabSecretValue, log: app.log })
@@ -2300,6 +2345,7 @@ app.post("/api/internal/collab/saved", async (request, reply) => {
     .where(and(eq(notes.id, noteId), eq(notes.projectId, projectId)))
     .limit(1);
   if (!note) return reply.code(404).send({ error: "not found" });
+  notesMirror.schedule(projectId);
   await store
     .append({ projectId, threadId: null }, [
       // No body: the open editors have it already, through the document.
@@ -2412,6 +2458,7 @@ registerNoteRoutes(app, {
   uploads,
   maxImageBytes: config.UPLOAD_MAX_BYTES,
   announce: async (event) => {
+    notesMirror.schedule(event.projectId);
     await store
       .append({ projectId: event.projectId, threadId: null }, [event])
       .catch((error) => app.log.error({ err: error }, "could not announce a note change"));
@@ -2440,7 +2487,16 @@ const tasksService = new TasksService(db);
 const interruptedTasks = await tasksService.recoverInterrupted();
 if (interruptedTasks > 0) app.log.info({ count: interruptedTasks }, "marked interrupted tasks as failed");
 
+/** `.agent/todo.md` and `.agent/references/todo/`: the board as a file, rewritten after every card change. */
+const todoMirror = new TodoMirror({
+  tasks: tasksService,
+  uploads,
+  rootOf: (projectId) => projectRoot(config.WORKSPACE_ROOT, projectId),
+  onError: (err, projectId) => app.log.warn({ err, projectId }, "could not write .agent/todo.md"),
+});
+
 const announceTask = async (projectId: string, task: ProjectTask) => {
+  todoMirror.schedule(projectId);
   await store
     .append({ projectId, threadId: null }, [
       { type: "task.changed", projectId, taskId: task.id, change: "updated", updatedAt: task.updatedAt, task },
@@ -2475,6 +2531,18 @@ const taskPipeline = new TaskPipeline({
   onError: (error, context) => app.log.error({ err: error }, context),
 });
 
+registerCommandRoutes(app, {
+  projectFor,
+  rootOf: (projectId) => projectRoot(config.WORKSPACE_ROOT, projectId),
+  changed: (projectId) =>
+    bus.publish({
+      seq: null,
+      projectId,
+      threadId: null,
+      event: { type: "resource.changed", projectId, resource: "commands" },
+    }),
+});
+
 registerTaskRoutes(app, {
   projectFor,
   originOf,
@@ -2483,6 +2551,7 @@ registerTaskRoutes(app, {
   pipeline: taskPipeline,
   uploads,
   announce: async (event) => {
+    todoMirror.schedule(event.projectId);
     await store
       .append({ projectId: event.projectId, threadId: null }, [event])
       .catch((error) => app.log.error({ err: error }, "could not announce a task change"));
@@ -3831,6 +3900,9 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
       worktreeError: threads.worktreeError,
       treeHash: threads.treeHash,
       handoffFromThreadId: threads.handoffFromThreadId,
+      // A subagent's session: listed so its page can open by hash, and left
+      // out of every list a person picks sessions from.
+      parentThreadId: threads.parentThreadId,
       pinned: threads.pinned,
       archivedAt: threads.archivedAt,
       lastActivityAt: threads.lastActivityAt,
@@ -4184,6 +4256,9 @@ void (async () => {
     await ensureProjectInfo(dir, (description) => renderDefaultInfo(row.name, description)).catch((err: unknown) =>
       app.log.warn({ err, projectId: row.id }, "could not write .agent/index.md"),
     );
+    // What the app holds that predates the mirrors, or changed while the server was down.
+    await todoMirror.flush(row.id);
+    await notesMirror.flush(row.id);
   }
 })().catch((err: unknown) => app.log.warn({ err }, ".agent backfill failed"));
 app.log.info(

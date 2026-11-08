@@ -146,15 +146,16 @@ describe("claudeArgv", () => {
       const at = normal.indexOf("--mcp-config");
       expect(normal.slice(at, at + 3)).toEqual(["--mcp-config", "/c/run/t.mcp.json", "--strict-mcp-config"]);
       const allowed = normal.indexOf("--allowedTools");
-      expect(normal.slice(allowed + 1, allowed + 5)).toEqual([
+      expect(normal.slice(allowed + 1, allowed + 6)).toEqual([
         "mcp__omp__omp_symbols",
         "mcp__omp__omp_recall",
         "mcp__omp__omp_review",
         "mcp__omp__omp_task",
+        "mcp__omp__ucch_agent",
       ]);
       // `--allowedTools` takes every word up to the next flag: whatever follows it is one.
       const resumed = claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", model: "opus", resumeToken: "s1" });
-      expect(resumed[resumed.indexOf("--allowedTools") + 5]).toMatch(/^--/);
+      expect(resumed[resumed.indexOf("--allowedTools") + 6]).toMatch(/^--/);
       expect(claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", permissionMode: "normal" })).toEqual(
         claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x" }),
       );
@@ -287,6 +288,29 @@ describe("ClaudeNormaliser on a turn that runs a subagent (OM5.2)", () => {
     expect(events.some((e) => e.type === "agent.tool_result" && e.toolUseId === "toolu_read_1")).toBe(true);
   });
 
+  it("marks the subagent's tool calls as its own", () => {
+    const events = run();
+    expect(events.find((e) => e.type === "agent.tool_use" && e.toolUseId === "toolu_read_1")).toMatchObject({ subagentId: "toolu_task_1" });
+    // The turn's own call, the one that spawned it, is not.
+    expect(events.find((e) => e.type === "agent.tool_use" && e.toolUseId === "toolu_task_1")).not.toHaveProperty("subagentId");
+  });
+
+  it("records each of the subagent's blocks, prose and thinking, for its page", () => {
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const events = [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_fg", name: "Task", input: { description: "Look" } }] } },
+      { type: "assistant", parent_tool_use_id: "toolu_fg", message: { content: [{ type: "thinking", thinking: "Where is the cache?" }] } },
+      { type: "assistant", parent_tool_use_id: "toolu_fg", message: { content: [{ type: "text", text: "Looking in src." }] } },
+      { type: "assistant", parent_tool_use_id: "toolu_fg", message: { content: [{ type: "text", text: "   " }] } },
+    ].flatMap((line) => normaliser.push(JSON.stringify(line)));
+    expect(events.filter((e) => e.type === "agent.subagent_output")).toEqual([
+      { type: "agent.subagent_output", ...{ threadId: ids.threadId, turnId: ids.turnId }, subagentId: "toolu_fg", kind: "thinking", text: "Where is the cache?" },
+      { type: "agent.subagent_output", ...{ threadId: ids.threadId, turnId: ids.turnId }, subagentId: "toolu_fg", kind: "text", text: "Looking in src." },
+    ]);
+    // Never the turn's own thinking.
+    expect(events.some((e) => e.type === "agent.thinking_delta")).toBe(false);
+  });
+
   it("holds progress to one line a second", () => {
     const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE, now: () => 0 });
     const events = feed(normaliser, fixture("task"));
@@ -309,6 +333,87 @@ describe("ClaudeNormaliser on a turn that runs a subagent (OM5.2)", () => {
     normaliser.push(JSON.stringify({ type: "assistant", parent_tool_use_id: "toolu_x", message: { content: [{ type: "text", text: "Working." }] } }));
     const events = normaliser.finish({ code: 143, signal: null, interrupted: true, stderrTail: "" });
     expect(events.find((e) => e.type === "agent.subagent_finished")).toMatchObject({ subagentId: "toolu_x", status: "aborted", result: "Working." });
+  });
+});
+
+describe("ClaudeNormaliser on a turn that waits on a background subagent", () => {
+  // The line order Claude Code 2.1.319 prints: a `result` right after the
+  // launch, the task running on, then a second init and `result` once the
+  // model is woken by the task's notification.
+  const SESSION = "a9f0b91a-e546-4c04-907b-42d82fb47712";
+  const usage = (output: number) => ({ input_tokens: 2, output_tokens: output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  const lines = [
+    { type: "system", subtype: "init", session_id: SESSION },
+    { type: "assistant", message: { id: "m1", content: [{ type: "tool_use", id: "toolu_bg", name: "Agent", input: { description: "Research", subagent_type: "general-purpose", run_in_background: true } }] } },
+    { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a3c8" }] },
+    { type: "system", subtype: "task_started", task_id: "a3c8", tool_use_id: "toolu_bg", description: "Research", subagent_type: "general-purpose", is_backgrounded: true, task_type: "local_agent" },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Async agent launched successfully." }] } },
+    { type: "assistant", message: { id: "m2", content: [{ type: "text", text: "launched" }] } },
+    { type: "result", subtype: "success", is_error: false, result: "launched", total_cost_usd: 0.01, usage: usage(10) },
+    { type: "control_request", request_id: "req_1", request: { subtype: "can_use_tool", tool_name: "WebSearch", input: { query: "q" }, tool_use_id: "toolu_ws" } },
+    { type: "assistant", parent_tool_use_id: "toolu_bg", message: { id: "s1", content: [{ type: "text", text: "Found it." }] } },
+    { type: "system", subtype: "task_notification", task_id: "a3c8", tool_use_id: "toolu_bg", status: "completed", summary: "Done", usage: { tool_uses: 1, duration_ms: 9000 } },
+    { type: "system", subtype: "background_tasks_changed", tasks: [] },
+    { type: "system", subtype: "init", session_id: SESSION },
+    { type: "assistant", message: { id: "m3", content: [{ type: "text", text: "It found it." }] } },
+    { type: "result", subtype: "success", is_error: false, result: "It found it.", total_cost_usd: 0.03, usage: usage(5) },
+  ];
+
+  function run() {
+    const writes: string[] = [];
+    let ended = 0;
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    normaliser.bind({ write: (line) => writes.push(line), endStdin: () => (ended += 1) });
+    const events: DomainEvent[] = [];
+    const endedAt: number[] = [];
+    for (const line of lines) {
+      events.push(...normaliser.push(JSON.stringify(line)));
+      endedAt.push(ended);
+    }
+    return { normaliser, events, writes, endedAt };
+  }
+
+  it("ends the turn once, on the result after the task, not the first", () => {
+    const { events, endedAt } = run();
+    const ends = events.filter((e) => e.type === "agent.turn_completed" || e.type === "agent.turn_failed");
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ type: "agent.turn_completed", stopReason: "end_turn", costUsd: 0.03 });
+    expect((ends[0] as Extract<DomainEvent, { type: "agent.turn_completed" }>).usage.outputTokens).toBe(15);
+    // stdin stays open through the first result and closes on the last.
+    expect(endedAt.at(-2)).toBe(0);
+    expect(endedAt.at(-1)).toBe(1);
+    expect(events.filter((e) => e.type === "agent.session_started")).toHaveLength(1);
+  });
+
+  it("keeps the subagent running past the first result and finishes it from its notification", () => {
+    const finished = run().events.filter((e) => e.type === "agent.subagent_finished");
+    expect(finished).toEqual([expect.objectContaining({ subagentId: "toolu_bg", status: "completed", result: "Found it." })]);
+  });
+
+  it("can still answer the subagent's permission prompt after the first result", () => {
+    const { normaliser, events, writes } = run();
+    expect(events.some((e) => e.type === "agent.permission_requested")).toBe(true);
+    // The prompt was answered by the turn's end (nobody answered it here).
+    expect(events.find((e) => e.type === "agent.permission_resolved")).toMatchObject({ requestId: "req_1", behavior: "deny" });
+    expect(normaliser.answerPermission("req_1", { behavior: "allow" })).toEqual([]);
+    expect(writes).toEqual([]);
+  });
+
+  it("answers a prompt raised while waiting", () => {
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const writes: string[] = [];
+    normaliser.bind({ write: (line) => writes.push(line), endStdin: () => {} });
+    for (const line of lines.slice(0, 8)) normaliser.push(JSON.stringify(line));
+    expect(normaliser.answerPermission("req_1", { behavior: "allow" })).toHaveLength(1);
+    expect(JSON.parse(writes[0]!)).toMatchObject({ type: "control_response", response: { request_id: "req_1", response: { behavior: "allow" } } });
+  });
+
+  it("completes with the held answer when the CLI exits without a second result", () => {
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    for (const line of lines.slice(0, 7)) normaliser.push(JSON.stringify(line));
+    const events = normaliser.finish({ code: 0, signal: null, interrupted: false, stderrTail: "" });
+    expect(events.find((e) => e.type === "agent.turn_completed")).toMatchObject({ stopReason: "end_turn", costUsd: 0.01 });
+    expect(events.some((e) => e.type === "agent.turn_failed")).toBe(false);
   });
 });
 

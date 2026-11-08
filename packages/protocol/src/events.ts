@@ -116,6 +116,8 @@ const ThreadCreated = z.object({
    */
   worktreeOf: z.string().uuid().optional(),
   treeHash: ThreadHash.optional(),
+  /** A subagent's session (`thread.create` with `parentThreadId`): the thread whose agent started it. */
+  parentThreadId: z.string().uuid().optional(),
 });
 
 /** The session's worktree exists and is checked out on its branch. */
@@ -223,6 +225,16 @@ const ThreadCancelRequested = z.object({
  * session emits once OMP has answered (solution §5.3). No turn opens; what
  * it produced is a `context.injected` (`compaction`) with no turn.
  */
+/**
+ * The thread's context was emptied (`thread.clear_context`): the agent sees
+ * nothing logged before this. Its provider's session is gone -- the next
+ * turn opens a fresh one -- and the native loop replays only what follows.
+ */
+const ThreadContextCleared = z.object({
+  type: z.literal("thread.context_cleared"),
+  threadId: z.string().uuid(),
+});
+
 const ThreadCompactionRequested = z.object({
   type: z.literal("thread.compaction_requested"),
   threadId: z.string().uuid(),
@@ -371,6 +383,44 @@ const ThreadHandoffFailed = z.object({
   error: z.string().max(2_000),
 });
 
+/**
+ * `thread.switch_harness` was accepted: the thread is busy while its brief
+ * is written, until `thread.harness_switched` or `thread.harness_switch_failed`.
+ */
+const ThreadHarnessSwitchRequested = z.object({
+  type: z.literal("thread.harness_switch_requested"),
+  threadId: z.string().uuid(),
+  fromProvider: ProviderId,
+  targetProvider: ProviderId,
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  focus: z.string().max(2_000).optional(),
+  /** Sent once the switch is made: the message a limit stopped. */
+  message: z.string().optional(),
+  reason: z.enum(["limit", "manual"]).optional(),
+});
+
+/**
+ * The thread runs on `toProvider` from now on, in the same session (one
+ * transcript). Its provider's session is gone with the switch: the next
+ * turn opens a fresh one, and is handed `brief` ahead of its message.
+ */
+const ThreadHarnessSwitched = z.object({
+  type: z.literal("thread.harness_switched"),
+  threadId: z.string().uuid(),
+  fromProvider: ProviderId,
+  toProvider: ProviderId,
+  model: z.string().optional(),
+  brief: z.string(),
+  reason: z.enum(["limit", "manual"]).optional(),
+});
+
+const ThreadHarnessSwitchFailed = z.object({
+  type: z.literal("thread.harness_switch_failed"),
+  threadId: z.string().uuid(),
+  error: z.string().max(2_000),
+});
+
 /** The providers that keep a session of their own to resume. */
 export const CliProviderId = z.enum(["claude", "codex", "omp"]);
 export type CliProviderId = z.infer<typeof CliProviderId>;
@@ -474,6 +524,11 @@ const AgentToolUse = z.object({
   toolUseId: z.string(),
   name: z.string(),
   input: z.unknown(),
+  /**
+   * Made by one of the turn's subagents (a CLI's built-in one, whose calls
+   * act on the turn's worktree): its card, not the turn, shows the call.
+   */
+  subagentId: z.string().optional(),
 });
 
 /**
@@ -496,6 +551,51 @@ const AgentPermissionRequested = z.object({
   input: z.unknown(),
   /** The CLI's one-line gloss of the call, when it offers one. */
   description: z.string().nullable(),
+});
+
+/**
+ * A question for the person with a fixed set of answers, as a card above
+ * the composer. Today: which harness to carry on with when a usage limit
+ * stopped the thread's turn (`harness_limit`), or one of its subagents
+ * (`subagent_limit`, naming the subagent's session). Durable, so a reload
+ * still shows it; `agent.choice_resolved` closes it.
+ */
+export const ChoiceOption = z.object({
+  id: z.string().min(1).max(100),
+  label: z.string(),
+  detail: z.string().optional(),
+  provider: ProviderId.optional(),
+  model: z.string().optional(),
+  /** Picking it asks for an OpenRouter model first. */
+  pickModel: z.boolean().optional(),
+  /** Why it cannot be picked now: not signed in, no key, … */
+  blocker: z.string().optional(),
+});
+export type ChoiceOption = z.infer<typeof ChoiceOption>;
+
+const AgentChoiceRequested = z.object({
+  type: z.literal("agent.choice_requested"),
+  threadId: z.string().uuid(),
+  requestId: z.string().min(1).max(100),
+  kind: z.enum(["harness_limit", "subagent_limit"]),
+  title: z.string(),
+  detail: z.string().optional(),
+  options: z.array(ChoiceOption).max(12),
+  /** `subagent_limit`: the subagent's session and its id in this thread. */
+  childThreadId: z.string().uuid().optional(),
+  subagentId: z.string().optional(),
+  /** `harness_limit`: the provider that hit its limit, and the message it stopped. */
+  provider: ProviderId.optional(),
+  message: z.string().optional(),
+});
+
+const AgentChoiceResolved = z.object({
+  type: z.literal("agent.choice_resolved"),
+  threadId: z.string().uuid(),
+  requestId: z.string().min(1).max(100),
+  /** null: dismissed, or overtaken (a new turn, a stop). */
+  optionId: z.string().nullable(),
+  model: z.string().optional(),
 });
 
 const AgentPermissionResolved = z.object({
@@ -573,7 +673,9 @@ const AgentTurnFailed = z.object({
    * The provider refused for a usage limit or quota -- the subscription's,
    * not the request's -- so it will not work again until the limit resets,
    * and another provider can carry the work on (solution §5.4). Set by the
-   * Claude Code and Codex normalisers; absent on every other failure.
+   * Claude Code and Codex normalisers, and for an OpenRouter key that is
+   * out of credits or over its limit (OMP, native); absent on every other
+   * failure.
    */
   limit: z.literal(true).optional(),
 });
@@ -597,6 +699,16 @@ const AgentSubagentStarted = z.object({
   /** What it was asked to do. */
   description: z.string().nullable(),
   model: z.string().nullable(),
+  /**
+   * A `ucch_agent` subagent: the harness it runs on and its own (hidden)
+   * session, which has the full transcript. Absent for a CLI's built-in
+   * subagent, which runs inside the parent's process.
+   */
+  provider: ProviderId.optional(),
+  childThreadId: z.string().uuid().optional(),
+  childHash: ThreadHash.optional(),
+  /** How its harness was chosen: "claude-opus-5-5 on Claude Code", … */
+  routing: z.string().optional(),
 });
 
 /** How a running subagent is getting on. Transient, like `agent.text_delta`. */
@@ -607,11 +719,31 @@ const AgentSubagentProgress = z.object({
   subagentId: z.string(),
   /** Its latest output or tool call, one line. */
   summary: z.string(),
+  /**
+   * What it did lately, where the provider only reports a rolling window
+   * (OMP): its last few tool calls and output lines, newest last.
+   */
+  recentTools: z.array(z.string()).max(20).optional(),
+  recentOutput: z.array(z.string()).max(20).optional(),
   toolCalls: z.number().int().nonnegative().optional(),
   /** Once known: OMP resolves a worker's model after it starts. */
   model: z.string().optional(),
   durationMs: z.number().int().nonnegative().optional(),
   costUsd: z.number().nonnegative().optional(),
+});
+
+/**
+ * A block a CLI's built-in subagent wrote -- prose, or its thinking -- for
+ * its own page: what it is working through, as it goes. Durable, so the
+ * page reads the same after a reload; whole blocks, not deltas.
+ */
+const AgentSubagentOutput = z.object({
+  type: z.literal("agent.subagent_output"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  subagentId: z.string(),
+  kind: z.enum(["text", "thinking"]),
+  text: z.string().max(20_000),
 });
 
 const AgentSubagentFinished = z.object({
@@ -874,6 +1006,8 @@ export const LiveResource = z.enum([
    * topic, so every sidebar listing the workspace's sessions refetches.
    */
   "sessions",
+  /** The project's command buttons (`.agent/commands.json`) were saved from the app. */
+  "commands",
 ]);
 export type LiveResource = z.infer<typeof LiveResource>;
 
@@ -1073,11 +1207,15 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ThreadUpdated,
   UserMessage,
   ThreadCancelRequested,
+  ThreadContextCleared,
   ThreadCompactionRequested,
   ThreadCompactionFinished,
   ThreadHandoffRequested,
   ThreadHandedOff,
   ThreadHandoffFailed,
+  ThreadHarnessSwitchRequested,
+  ThreadHarnessSwitched,
+  ThreadHarnessSwitchFailed,
   TurnDequeued,
   AgentQueued,
   ContextInjected,
@@ -1090,12 +1228,15 @@ export const DomainEvent = z.discriminatedUnion("type", [
   AgentToolUse,
   AgentPermissionRequested,
   AgentPermissionResolved,
+  AgentChoiceRequested,
+  AgentChoiceResolved,
   AgentToolResult,
   AgentMessage,
   AgentTurnCompleted,
   AgentTurnFailed,
   AgentSubagentStarted,
   AgentSubagentProgress,
+  AgentSubagentOutput,
   AgentSubagentFinished,
   CheckpointCaptured,
   CheckpointReverted,

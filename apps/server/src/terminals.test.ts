@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -725,4 +725,52 @@ describe("the OMP bridge in a project terminal (OM6.7)", () => {
     expect(plain.calls[0]!.env.UCCH_OMP_MCP).toBeUndefined();
     void none.closeAll();
   });
+});
+
+describe("a command button's terminal", () => {
+  const writeCommands = async (commands: unknown[]) => {
+    await mkdir(join(root, PROJECT, ".agent"), { recursive: true });
+    await writeFile(join(root, PROJECT, ".agent", "commands.json"), JSON.stringify({ commands }));
+  };
+  const run = (commandId: string) =>
+    reactor.react(
+      {
+        type: "terminal.create",
+        projectId: PROJECT,
+        terminalId: TERMINAL,
+        cols: 80,
+        rows: 24,
+        program: "command",
+        commandId,
+      },
+      USER,
+    );
+
+  it("types the command from .agent/commands.json and keeps the shell", async () => {
+    await mkdir(join(root, PROJECT, "web"), { recursive: true });
+    await writeCommands([{ id: "where", label: "Where", command: "echo ran=$PWD=end", cwd: "web" }]);
+    run("where");
+    await until(/ran=\/.*=end/);
+    expect(printed()).toContain(`ran=${join(root, PROJECT, "web")}=end`);
+
+    // Still a shell afterwards.
+    type("echo again=ok\n");
+    await until(/again=ok\r?\n/);
+  }, 20_000);
+
+  it("refuses an id the file does not have, and runs nothing", async () => {
+    await writeCommands([{ id: "dev", label: "Dev", command: "echo nope" }]);
+    run("missing");
+    await until(/not in \.agent\/commands\.json/);
+    expect(printed()).not.toContain("nope");
+  }, 20_000);
+
+  it("refuses a working directory that leaves the project", async () => {
+    await mkdir(join(root, PROJECT), { recursive: true });
+    await symlink(tmpdir(), join(root, PROJECT, "out"));
+    await writeCommands([{ id: "dev", label: "Dev", command: "echo escaped", cwd: "out" }]);
+    run("dev");
+    await until(/outside the project/);
+    expect(printed()).not.toContain("escaped");
+  }, 20_000);
 });

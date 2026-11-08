@@ -1,4 +1,5 @@
 import type { DomainEvent, LiveResource } from "@ucch/protocol"
+import { PROJECT_COMMANDS_FILE } from "@ucch/protocol/plain"
 import type { QueryKey } from "@tanstack/react-query"
 
 import { removeRow, upsertRow } from "./field-edit"
@@ -51,6 +52,7 @@ const RESOURCES: Record<LiveResource, CacheEffect> = {
   // A session renamed (by hand, or by its first message), pinned, archived
   // or moved. In a session workspace the project carries the title too.
   sessions: { invalidate: [qk.sessions.all], deferred: [qk.bootstrap()] },
+  commands: { invalidate: [qk.commands.all] },
 }
 
 const NONE: CacheEffect = { invalidate: [] }
@@ -75,6 +77,10 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
     // The git status follows from the server's own `resource.changed{git}`,
     // once per burst rather than once per file.
     case "file.changed":
+      // The command buttons are a file an agent or a person may edit by hand.
+      if (event.path === PROJECT_COMMANDS_FILE && !event.worktreeId) {
+        return { invalidate: [qk.files.all, qk.commands.all] }
+      }
       return { invalidate: [qk.files.all] }
     case "git.committed":
     case "git.pushed":

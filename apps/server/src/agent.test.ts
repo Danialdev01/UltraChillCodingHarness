@@ -25,6 +25,7 @@ import {
   resolveModel,
   resolveProvider,
   shouldRecheckStack,
+  sinceCleared,
   turnKindOf,
   type AgentOptions,
 } from "./agent.js";
@@ -1335,7 +1336,7 @@ describe("an OMP turn", () => {
   });
 });
 
-describe("automatic handoff on a usage limit (OM4.6)", () => {
+describe("automatic switch on a usage limit (OM4.6)", () => {
   const principal = { userId: USER, sessionId: "s", scopes: ["read", "write", "exec"] as ("read" | "write" | "exec")[] };
   const FIXTURES = join(import.meta.dirname, "../../../packages/providers/src/fixtures");
   let root: string;
@@ -1368,10 +1369,15 @@ describe("automatic handoff on a usage limit (OM4.6)", () => {
    * asked: the workspace's agent settings for the handoff's read, otherwise
    * the turn's own rows in order.
    */
-  function limitReactor(agentSettings: unknown, log: DomainEvent[] = []) {
-    const rows: unknown[][] = [[{ ...thread, provider: "claude", providerSessionId: "s1" }], [{ stack: null }], [owner], [person]];
+  function limitReactor(agentSettings: unknown, log: DomainEvent[] = [], later: unknown[][] = [], cards?: unknown) {
+    const rows: unknown[][] = [[{ ...thread, provider: "claude", providerSessionId: "s1" }], [{ stack: null }], [owner], [person], ...later];
     const select = (fields?: Record<string, unknown>) => {
-      const next = () => Promise.resolve(fields && "agent" in fields ? [{ agent: agentSettings }] : (rows.shift() ?? []));
+      const next = () =>
+        Promise.resolve(
+          fields && "agent" in fields
+            ? [{ agent: agentSettings, projectId: PROJECT, parentThreadId: null, createdByUserId: USER, credentialSource: null }]
+            : (rows.shift() ?? []),
+        );
       const chain: Record<string, unknown> = {};
       for (const step of ["from", "innerJoin", "where", "orderBy"]) chain[step] = () => chain;
       chain.limit = next;
@@ -1390,6 +1396,7 @@ describe("automatic handoff on a usage limit (OM4.6)", () => {
     const errors: unknown[] = [];
     const providers = {
       resolve: async () => ({ provider: limitedClaude, ctx: (cwd: string) => ({ cwd, env: {}, host: new HostProcessHost() }) }),
+      health: async () => cards,
     } as unknown as ProviderService;
     const agent = new AgentTurnReactor(
       { select } as unknown as Database,
@@ -1425,9 +1432,88 @@ describe("automatic handoff on a usage limit (OM4.6)", () => {
     await settled(run);
     expect(run.appended.flat().find((e) => e.type === "agent.turn_failed")).toMatchObject({ limit: true });
     expect(run.dispatched).toEqual([
-      { type: "thread.handoff_to", threadId: THREAD, targetProvider: "codex", message: "Add the retry test", reason: "limit" },
+      // The same session, switched: not a new thread.
+      { type: "thread.switch_harness", threadId: THREAD, targetProvider: "codex", message: "Add the retry test", reason: "limit" },
     ]);
     expect(run.errors).toEqual([]);
+  });
+
+  it("asks in the chat which harness carries on when nothing is automatic, and switches to the answer", async () => {
+    const card = (id: string, label: string, signedIn: boolean) => ({
+      id,
+      label,
+      installed: true,
+      authenticated: signedIn,
+      authMode: signedIn ? "subscription" : "none",
+      enabled: true,
+      models: [],
+    });
+    const cards = {
+      claude: card("claude", "Claude Code", true),
+      codex: card("codex", "Codex", false),
+      native: { ...card("native", "Custom (legacy)", true), authMode: "api-key" },
+      omp: card("omp", "Custom", false),
+    };
+    const log: DomainEvent[] = [];
+    const run = limitReactor({}, log, [[owner], [person]], cards);
+    run.agent.react(ask, [asked], principal);
+    await settled(run);
+    const asking = run.appended.flat().find((e) => e.type === "agent.choice_requested");
+    expect(asking).toMatchObject({ kind: "harness_limit", provider: "claude", message: "Add the retry test" });
+    if (asking?.type !== "agent.choice_requested") throw new Error("no card");
+    // Every harness but the limited one, saying why one cannot be picked.
+    expect(asking.options).toEqual([
+      { id: "codex", label: "Continue on Codex", provider: "codex", blocker: "Sign in to Codex in Settings" },
+      { id: "custom", label: "Continue on an OpenRouter model", provider: "native", pickModel: true, detail: "Billed to the OpenRouter key" },
+    ]);
+    expect(run.dispatched).toEqual([]);
+
+    log.push(asking);
+    run.agent.react(
+      { type: "thread.choice_reply", threadId: THREAD, requestId: asking.requestId, optionId: "custom", model: "moonshotai/kimi-k2" },
+      [],
+      principal,
+    );
+    await settle();
+    expect(run.appended.flat()).toContainEqual({
+      type: "agent.choice_resolved",
+      threadId: THREAD,
+      requestId: asking.requestId,
+      optionId: "custom",
+      model: "moonshotai/kimi-k2",
+    });
+    expect(run.dispatched).toEqual([
+      {
+        type: "thread.switch_harness",
+        threadId: THREAD,
+        targetProvider: "native",
+        model: "moonshotai/kimi-k2",
+        message: "Add the retry test",
+        reason: "limit",
+      },
+    ]);
+
+    // A card a later turn overtook is left alone.
+    log.push({ type: "turn.started", threadId: THREAD, turnId: "55555555-5555-4555-8555-555555555555" });
+    const before = run.dispatched.length;
+    run.agent.react({ type: "thread.choice_reply", threadId: THREAD, requestId: asking.requestId, optionId: "codex" }, [], principal);
+    await settle();
+    expect(run.dispatched).toHaveLength(before);
+  });
+
+  it("does not switch back on its own to a harness a limit switched away from", async () => {
+    const back = {
+      type: "thread.harness_switched",
+      threadId: THREAD,
+      fromProvider: "codex",
+      toProvider: "claude",
+      brief: "b",
+      reason: "limit",
+    } as const;
+    const run = limitReactor(on, [back]);
+    run.agent.react(ask, [asked], principal);
+    await settled(run);
+    expect(run.dispatched).toEqual([]);
   });
 
   it("does not loop: a thread a limit handoff started, or one that made one, fails as it would", async () => {
@@ -1797,5 +1883,17 @@ describe("claudePromptNeedsPerson for the OMP bridge's tools", () => {
     expect(claudePromptNeedsPerson("normal", "Bash", { command: "rm -rf /" })).toBe(true);
     expect(claudePromptNeedsPerson("normal", "Edit", {})).toBe(true);
     expect(claudePromptNeedsPerson("normal", "WebFetch", {})).toBe(false);
+  });
+});
+
+describe("sinceCleared", () => {
+  const ev = (type: string) => ({ type });
+  it("is everything when the thread was never cleared", () => {
+    expect(sinceCleared([ev("user.message"), ev("agent.message")])).toEqual([ev("user.message"), ev("agent.message")]);
+  });
+  it("is what follows the last clear", () => {
+    expect(
+      sinceCleared([ev("user.message"), ev("thread.context_cleared"), ev("agent.message"), ev("thread.context_cleared"), ev("user.message")]),
+    ).toEqual([ev("user.message")]);
   });
 });

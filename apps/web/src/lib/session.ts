@@ -408,6 +408,8 @@ export interface ProjectSession {
   treeHash?: string | null;
   /** Set on a session a handoff started: the one it carries on. */
   handoffFromThreadId?: string | null;
+  /** A subagent's session: the session whose agent started it. Never one a person picks from a list. */
+  parentThreadId?: string | null;
   createdAt: string;
 }
 

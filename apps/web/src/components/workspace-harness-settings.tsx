@@ -236,9 +236,11 @@ const FALLBACKS: { id: ProviderId; label: string }[] = [
 ]
 
 /**
- * Automatic handoff on a usage limit (solution §5.4): a Claude Code or Codex
- * turn stopped by its plan's limit goes on in a new thread on the fallback,
- * in the same files, asked the same message. Once per thread.
+ * Automatic switch on a usage limit (solution §5.4): a turn stopped by its
+ * harness's limit -- a Claude Code or Codex plan's, or the OpenRouter key's
+ * -- goes on in the same session on the fallback, asked the same message.
+ * Without it the session asks which harness to carry on with. Once per
+ * chain: a fallback limited too asks rather than switching back.
  */
 function AutoHandoffSection({
   workspaceId,
@@ -260,9 +262,10 @@ function AutoHandoffSection({
     })
 
   return (
-    <SettingsSection icon={ArrowRightLeftIcon} title="Hand off on a usage limit" description={<>When a Claude Code or Codex turn stops because its plan&apos;s usage limit is reached, carry the work on in a
-        new thread on another agent, in the same files, with the message that was stopped. A brief of the thread is
-        written first, on the OpenRouter key. A thread hands off at most once this way.</>} bare>
+    <SettingsSection icon={ArrowRightLeftIcon} title="Hand off on a usage limit" description={<>When a turn stops because its harness&apos;s usage limit is reached, switch the session to another agent
+        without asking, in the same session and files, and send the message that was stopped again. A brief of the
+        work so far is written first, on the OpenRouter key. With this off, the session asks which agent to carry on
+        with instead.</>} bare>
       <div className="mt-4 flex max-w-xl flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm">
           <Switch

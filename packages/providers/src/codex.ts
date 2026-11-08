@@ -25,6 +25,11 @@ import { forbiddenEnvPresent } from "./types.js";
  * work. `codexArgv` has a test for it.
  */
 
+/**
+ * The models the composer offers for Codex. Not a whitelist: `--model`
+ * takes any id the account's plan has, and a subagent asked for by name
+ * ("gpt6 sol") is passed through as `parseModelRequest` spelled it.
+ */
 export const CODEX_MODELS = [
   { id: "gpt-5-codex", name: "GPT-5 Codex" },
   { id: "gpt-5", name: "GPT-5" },

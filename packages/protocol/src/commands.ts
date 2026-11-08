@@ -70,6 +70,13 @@ const ThreadCreate = z.object({
    * carries on where it is. Excludes `baseBranch`.
    */
   worktreeOf: z.string().uuid().optional(),
+  /**
+   * A subagent's session: a hidden child of this thread, started by the
+   * server when the parent's agent calls `ucch_agent`. It works in the
+   * parent's folder (as `worktreeOf`) and is left out of the sessions list.
+   * Only the server may set it; a client's command naming it is refused.
+   */
+  parentThreadId: z.string().uuid().optional(),
 });
 
 /**
@@ -179,6 +186,17 @@ const ThreadFork = z.object({
 });
 
 /**
+ * Empties an idle thread's context in place: the same session, branch and
+ * transcript, but the agent's next turn starts from nothing -- a fresh CLI
+ * session, or for the native loop a replay that begins after this point.
+ * Any provider; the turns before it stay in the log and on screen.
+ */
+const ThreadClearContext = z.object({
+  type: z.literal("thread.clear_context"),
+  threadId: z.string().uuid(),
+});
+
+/**
  * Folds an idle OMP thread's older turns into a summary now, rather than
  * waiting for its context to fill (solution §5.3). `focus` is what the
  * summary should keep, handed to OMP as its `customInstructions`.
@@ -220,6 +238,40 @@ const ThreadHandoffTo = z.object({
   reason: z.literal("limit").optional(),
 });
 
+/**
+ * Moves an idle thread onto another harness without leaving it: a brief of
+ * the work so far is written from its log, the thread's provider becomes
+ * `targetProvider`, and its next turn starts a fresh session there with the
+ * brief ahead of the message. The same session, one transcript -- unlike
+ * `thread.handoff_to`, which carries the work on in a new thread.
+ *
+ * `message`: sent as soon as the switch is made, on `model` -- the message a
+ * usage limit stopped, when the switch answers one (`reason: "limit"`).
+ */
+const ThreadSwitchHarness = z.object({
+  type: z.literal("thread.switch_harness"),
+  threadId: z.string().uuid(),
+  targetProvider: ProviderId,
+  model: z.string().min(1).max(200).optional(),
+  effort: ReasoningEffort.optional(),
+  focus: z.string().trim().max(2_000).optional(),
+  message: z.string().min(1).optional(),
+  reason: z.enum(["limit", "manual"]).optional(),
+});
+
+/**
+ * The person's answer to an `agent.choice_requested` card: one of its
+ * options by id, or `dismiss`. `model` is the OpenRouter model picked for
+ * an option that takes one (`allowCustomModel`).
+ */
+const ThreadChoiceReply = z.object({
+  type: z.literal("thread.choice_reply"),
+  threadId: z.string().uuid(),
+  requestId: z.string().min(1).max(100),
+  optionId: z.string().min(1).max(100),
+  model: z.string().min(1).max(200).optional(),
+});
+
 const TerminalCreate = z.object({
   type: z.literal("terminal.create"),
   projectId: z.string().uuid(),
@@ -241,7 +293,13 @@ const TerminalCreate = z.object({
    * for a machine whose browser is somewhere else. A fixed list, never a
    * command string: the client picks a program, the server knows the argv.
    */
-  program: z.enum(["shell", "claude-login", "codex-login"]).optional(),
+  program: z.enum(["shell", "claude-login", "codex-login", "command"]).optional(),
+  /**
+   * `command` only: which of the project's command buttons to run, by its id
+   * in `.agent/commands.json`. The server reads the command line from that
+   * file, so this is still a choice from a list, not a string to execute.
+   */
+  commandId: z.string().min(1).max(40).optional(),
   /**
    * A login program only: sign in the workspace's dedicated subscription
    * rather than the caller's own. Must be the project's workspace, and the
@@ -338,9 +396,12 @@ export const Command = z.discriminatedUnion("type", [
   ThreadPermissionReply,
   ThreadRevert,
   ThreadFork,
+  ThreadClearContext,
   ThreadCompact,
   ThreadHandoff,
   ThreadHandoffTo,
+  ThreadSwitchHarness,
+  ThreadChoiceReply,
   TerminalCreate,
   TerminalInput,
   TerminalResize,

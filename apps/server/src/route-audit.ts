@@ -160,6 +160,12 @@ const TABLE: Record<string, Describe> = {
     summary: b?.trusted === true ? "Marked the project trusted for OMP" : "Marked the project untrusted for OMP",
     resource: "project_settings",
   }),
+  "PUT /api/projects/:hash/commands": (_p, b) => ({
+    action: "commands.save",
+    targetType: "project",
+    summary: `Saved the command buttons (${Array.isArray(b?.commands) ? b.commands.length : 0})`,
+    resource: "commands",
+  }),
   "PUT /api/projects/:hash/task-settings": (_p, b) => {
     const autoRun = b?.autoRun as { enabled?: unknown; time?: unknown; timezone?: unknown } | undefined;
     return {

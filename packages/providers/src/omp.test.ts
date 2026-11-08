@@ -331,6 +331,25 @@ describe("OmpNormaliser", () => {
     expect(events.filter((e) => e.type === "agent.turn_completed")).toHaveLength(1);
   });
 
+  it("carries a running subagent's recent tools and output, for its page", () => {
+    const normaliser = new OmpNormaliser({ ...ids, workspace: WORKSPACE });
+    normaliser.push({ type: "subagent_lifecycle", payload: { id: "W", agent: "task", status: "started", index: 0 } });
+    const events = normaliser.push({
+      type: "subagent_progress",
+      payload: {
+        index: 0,
+        agent: "task",
+        task: "t",
+        progress: { id: "W", status: "running", recentOutput: ["reading", "found it"], recentTools: [{ tool: "read" }, "grep"], toolCount: 2 },
+      },
+    });
+    expect(events.find((e) => e.type === "agent.subagent_progress")).toMatchObject({
+      summary: "found it",
+      recentTools: ["read", "grep"],
+      recentOutput: ["reading", "found it"],
+    });
+  });
+
   it("finishes a subagent the turn outlived, keeping the status it ended with", () => {
     const normaliser = new OmpNormaliser({ ...ids, workspace: WORKSPACE });
     const lifecycle = (status: string) => ({ type: "subagent_lifecycle", payload: { id: "W", agent: "task", status, index: 0 } });

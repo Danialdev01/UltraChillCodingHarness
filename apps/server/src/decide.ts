@@ -58,6 +58,8 @@ export interface ThreadSnapshot {
   baseBranch?: string | null;
   /** Set when it works in another thread's worktree: the hash naming that folder. */
   treeHash?: string | null;
+  /** A subagent's session: the thread whose agent started it. */
+  parentThreadId?: string | null;
 }
 
 export interface TurnSnapshot {
@@ -78,6 +80,11 @@ export interface DecisionState {
 /** Non-deterministic inputs, injected so decisions stay pure. */
 export interface DecisionContext {
   userId: string;
+  /**
+   * The server acting for `userId` on its own account -- a subagent's
+   * session, a switch a usage limit started -- rather than a client.
+   */
+  internal?: boolean;
   now: Date;
   newId: () => string;
   newHash: () => string;
@@ -188,6 +195,40 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if ("error" in project) return project.decision;
 
       const hash = ctx.newHash();
+      if (command.parentThreadId) {
+        // A subagent's session (`ucch_agent`): only the server starts one,
+        // in its parent's folder, and a subagent does not start its own.
+        if (!ctx.internal) return fail("forbidden", "only the server starts a subagent's session");
+        if (command.baseBranch || (command.worktreeOf && command.worktreeOf !== command.parentThreadId)) {
+          return fail("invalid", "a subagent's session works in its parent's folder");
+        }
+        const parent = requireThread(state, ctx, "session.create");
+        if ("error" in parent) return parent.decision;
+        if (parent.value.parentThreadId) return fail("invalid", "a subagent cannot start subagents of its own");
+        const refused = worktreeRefusal(parent.value);
+        if (refused) return refused;
+        const tree = parent.value.branch && parent.value.worktreeState === "ready";
+        return ok([
+          {
+            type: "thread.created",
+            threadId: ctx.newId(),
+            projectId: project.value.id,
+            title: command.title?.trim() || "Subagent",
+            createdByUserId: ctx.userId,
+            credentialSource: resolveCredentialSource(state.workspace!.credentialPolicy, parent.value.credentialSource),
+            hash,
+            worktreeOf: parent.value.id,
+            parentThreadId: parent.value.id,
+            ...(tree
+              ? {
+                  ...(parent.value.baseBranch ? { baseBranch: parent.value.baseBranch } : {}),
+                  branch: parent.value.branch!,
+                  treeHash: parent.value.treeHash ?? parent.value.hash!,
+                }
+              : {}),
+          },
+        ]);
+      }
       if (command.worktreeOf) {
         // In another thread's folder (solution §5.4): the engine loaded it
         // as the command's thread, and it has to be this project's.
@@ -390,6 +431,17 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       ]);
     }
 
+    case "thread.clear_context": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      // Clearing under a running turn would leave it writing a session the
+      // next turn no longer resumes.
+      if (thread.value.status !== "idle" && thread.value.status !== "error") {
+        return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
+      }
+      return ok([{ type: "thread.context_cleared", threadId: thread.value.id }]);
+    }
+
     case "thread.compact":
     case "thread.handoff": {
       const thread = requireThread(state, ctx, "project.write");
@@ -425,6 +477,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       // A new session, and a turn on it: both of what that takes.
       const thread = requireThread(state, ctx, "session.create");
       if ("error" in thread) return thread.decision;
+      if (thread.value.parentThreadId) return fail("invalid", "a subagent's work goes back to its parent, not to a new session");
       const writable = requireThread(state, ctx, "project.write");
       if ("error" in writable) return writable.decision;
       if (!thread.value.provider) return fail("conflict", "this thread has no conversation to hand off yet");
@@ -447,6 +500,51 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       ]);
     }
 
+    case "thread.switch_harness": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      // A subagent's harness is its parent's agent's choice, or the
+      // person's answer to its limit card -- both the server's to make.
+      if (thread.value.parentThreadId && !ctx.internal) {
+        return fail("forbidden", "a subagent's harness is switched from its parent's session");
+      }
+      const from = thread.value.provider;
+      if (!from) return fail("conflict", "this thread has not run yet; pick its harness in the composer instead");
+      // Custom is one choice whichever runtime serves it (see `thread.send`).
+      const custom = (p: ProviderId) => (p === "native" ? "omp" : p);
+      if (custom(command.targetProvider) === custom(from)) {
+        return fail("conflict", `this thread already runs on ${from}`);
+      }
+      // The brief is of the work so far, as a handoff's is.
+      if (thread.value.status !== "idle" && thread.value.status !== "error") {
+        return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
+      }
+      const unready = worktreeRefusal(thread.value);
+      if (unready) return unready;
+      return ok([
+        {
+          type: "thread.harness_switch_requested",
+          threadId: thread.value.id,
+          fromProvider: from,
+          targetProvider: command.targetProvider,
+          ...(command.model ? { model: command.model } : {}),
+          ...(command.effort ? { effort: command.effort } : {}),
+          ...(command.focus ? { focus: command.focus } : {}),
+          ...(command.message ? { message: command.message } : {}),
+          ...(command.reason ? { reason: command.reason } : {}),
+        },
+      ]);
+    }
+
+    case "thread.choice_reply": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      // Whether the card is still open is the reactor's to know: it holds
+      // the open ones (a subagent's) or reads them from the log. What the
+      // answer picks is recorded there, once it is acted on.
+      return ok([]);
+    }
+
     // -- Terminals -----------------------------------------------------------
     //
     // Terminal traffic is a stream, not a fact worth persisting. These are
@@ -460,10 +558,13 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       // else.
       const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
+      if ((command.program === "command") !== (command.commandId !== undefined)) {
+        return fail("invalid", "a command terminal names one command, and only a command terminal does");
+      }
       if (command.credentialWorkspaceId) {
         // Signing in the workspace's own subscription writes the login every
         // member's turns may run on, so it is an admin's to do.
-        if (command.program === "shell" || !command.program) {
+        if (command.program === "shell" || command.program === "command" || !command.program) {
           return fail("invalid", "only a sign-in terminal can target workspace credentials");
         }
         if (command.credentialWorkspaceId !== project.value.workspaceId) {

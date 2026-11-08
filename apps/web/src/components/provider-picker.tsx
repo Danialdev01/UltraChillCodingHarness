@@ -47,15 +47,18 @@ const ORDER: ProviderId[] = ["native", "claude", "codex"]
  * The same popover as the model and effort pickers beside it, so the row
  * reads as one set of controls. No search box: there are three entries, and
  * the interesting part is which ones are greyed out and why -- each row says.
- * Once a thread has run it is bound to its provider and the trigger locks,
- * because the server would refuse a switch and a control that looks live but
- * is not is worse than one that says so.
+ * Once a thread has run it is bound to its provider. With `onSwitch` the
+ * picker stays open on a bound thread and picking another harness switches
+ * the session to it (`thread.switch_harness`: same session, a brief of the
+ * work so far); without it the trigger locks, because the server would
+ * refuse a plain send to another provider.
  */
 export function ProviderSelect({
   providers,
   value,
   locked,
   onChange,
+  onSwitch,
   disabled,
   look = "field",
 }: {
@@ -64,6 +67,8 @@ export function ProviderSelect({
   /** The thread's binding, when it has one. */
   locked: ProviderId | null
   onChange: (id: ProviderId) => void
+  /** Picking another harness on a bound thread switches the session to it. */
+  onSwitch?: (id: ProviderId) => void
   disabled?: boolean
   look?: PickerLook
 }) {
@@ -81,10 +86,12 @@ export function ProviderSelect({
             role="combobox"
             aria-expanded={open}
             aria-label="Harness"
-            disabled={disabled || locked !== null}
+            disabled={disabled || (locked !== null && !onSwitch)}
             title={
               locked
-                ? `This thread runs on ${cards?.[locked]?.label ?? locked}. Clear the context to switch.`
+                ? onSwitch
+                  ? `This session runs on ${cards?.[locked]?.label ?? locked}. Pick another harness to switch it, with a brief of the work so far.`
+                  : `This thread runs on ${cards?.[locked]?.label ?? locked}. Clear the context to switch.`
                 : (blocker ?? `Harness: ${current?.label ?? value}`)
             }
           />
@@ -112,7 +119,7 @@ export function ProviderSelect({
       <PopoverContent className="w-72 p-0">
         <Command>
           <CommandList>
-            <CommandGroup heading="Harness">
+            <CommandGroup heading={locked && onSwitch ? "Switch this session to" : "Harness"}>
               {ORDER.map((id) => {
                 const card = cards?.[id]
                 const why = card ? providerBlocker(card) : id === "native" ? null : "Checking…"
@@ -126,7 +133,9 @@ export function ProviderSelect({
                     disabled={why !== null && id !== value}
                     title={why ?? undefined}
                     onSelect={() => {
-                      onChange(id)
+                      if (locked && onSwitch) {
+                        if (id !== locked) onSwitch(id)
+                      } else onChange(id)
                       setOpen(false)
                     }}
                   >

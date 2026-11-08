@@ -20,7 +20,7 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "clear", description: "Start a fresh conversation" },
+  { name: "clear", description: "Clear the agent's context (keeps this session)" },
   { name: "model", description: "Choose the model", takesArg: "model" },
   { name: "effort", description: "Choose how hard the model thinks", takesArg: "effort" },
   { name: "harness", description: "Choose what runs the agent", takesArg: "harness" },

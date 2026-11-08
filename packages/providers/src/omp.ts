@@ -1,4 +1,5 @@
 import type { AgentPermissionMode, DomainEvent, ReasoningEffort, TokenUsage } from "@ucch/protocol";
+import { isOpenRouterLimit } from "@ucch/protocol";
 import { workspaceRelative } from "./claude.js";
 import type {
   OmpAgentEnd,
@@ -574,7 +575,7 @@ export class OmpNormaliser {
     if (this.#interrupted || this.#stopReason === "aborted") {
       events.push({ type: "agent.turn_completed", ...ids, stopReason: "cancelled", ...cost(stats) });
     } else if (failure) {
-      events.push({ type: "agent.turn_failed", ...ids, error: failure });
+      events.push({ type: "agent.turn_failed", ...ids, error: failure, ...(isOpenRouterLimit(failure) ? { limit: true as const } : {}) });
     } else {
       events.push({ type: "agent.turn_completed", ...ids, stopReason: stopReasonOf(this.#stopReason), ...cost(stats) });
     }
@@ -595,7 +596,7 @@ export class OmpNormaliser {
     const why =
       exit.error ??
       (exit.stderrTail.trim() || this.#lastError || (exit.signal ? `omp exited on ${exit.signal}` : `omp exited with code ${String(exit.code)}`));
-    events.push({ type: "agent.turn_failed", ...ids, error: why });
+    events.push({ type: "agent.turn_failed", ...ids, error: why, ...(isOpenRouterLimit(why) ? { limit: true as const } : {}) });
     return events;
   }
 
@@ -724,7 +725,9 @@ export class OmpNormaliser {
     if (typeof progress.cost === "number" && Number.isFinite(progress.cost) && progress.cost >= 0) subagent.costUsd = progress.cost;
     if (typeof progress.resolvedModel === "string" && progress.resolvedModel) subagent.model = progress.resolvedModel;
     const summary = (output.at(-1) ?? tools.at(-1) ?? (typeof progress.status === "string" ? progress.status : "")).split("\n")[0]!.slice(0, 300);
-    const key = `${summary}|${subagent.toolCalls}|${subagent.model ?? ""}|${subagent.costUsd ?? ""}`;
+    const recentTools = tools.slice(-20);
+    const recentOutput = output.slice(-20).map((line) => line.slice(0, 500));
+    const key = `${summary}|${subagent.toolCalls}|${subagent.model ?? ""}|${subagent.costUsd ?? ""}|${recentTools.join("\u0000")}|${recentOutput.join("\u0000")}`;
     if (key === subagent.summary || subagent.ended) return events;
     subagent.summary = key;
     events.push({
@@ -734,6 +737,8 @@ export class OmpNormaliser {
       summary,
       toolCalls: subagent.toolCalls,
       durationMs: subagent.durationMs,
+      ...(recentTools.length ? { recentTools } : {}),
+      ...(recentOutput.length ? { recentOutput } : {}),
       ...(subagent.model ? { model: subagent.model } : {}),
       ...(subagent.costUsd !== undefined ? { costUsd: subagent.costUsd } : {}),
     });

@@ -7,8 +7,10 @@ import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 
 import { FileTypeIcon } from "@/components/file-type-icon"
+import { HtmlRenderBlock } from "@/components/html-render-block"
 import { copyText } from "@/lib/clipboard"
 import { nodeLanguage, nodeText, type SyntaxNode } from "@/lib/code-text"
+import { isHtmlRenderLanguage } from "@/lib/html-render"
 import { streamingCut } from "@/lib/streaming-markdown"
 
 /**
@@ -114,9 +116,13 @@ const COMPONENTS: Components = {
     return <code className="font-mono text-xs">{children}</code>
   },
 
-  pre: ({ children, node }) => (
-    <CodeBlock node={node as SyntaxNode | undefined}>{children}</CodeBlock>
-  ),
+  pre: ({ children, node }) => {
+    const syntax = node as SyntaxNode | undefined
+    if (isHtmlRenderLanguage(nodeLanguage(syntax))) {
+      return <HtmlRenderFence node={syntax}>{children}</HtmlRenderFence>
+    }
+    return <CodeBlock node={syntax}>{children}</CodeBlock>
+  },
 
   // GFM tables. The wrapper is what scrolls, so a wide table stays inside the
   // message rather than widening the column it sits in.
@@ -145,6 +151,19 @@ const COMPONENTS: Components = {
     // from model output, which next/image would try to proxy and optimise.
     <img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} className="my-2 max-w-full rounded" />
   ),
+}
+
+/**
+ * True inside the part of an answer still being written. A ```html-render
+ * fence there may be half a page -- running it would flash broken output and
+ * re-run the script on every token -- so it shows as code until it settles.
+ */
+const StreamingTail = React.createContext(false)
+
+function HtmlRenderFence({ children, node }: { children: React.ReactNode; node?: SyntaxNode }) {
+  const streaming = React.useContext(StreamingTail)
+  if (streaming) return <CodeBlock node={node}>{children}</CodeBlock>
+  return <HtmlRenderBlock source={nodeText(node)} />
 }
 
 /**
@@ -248,7 +267,9 @@ export function StreamingMarkdown({ children, className }: { children: string; c
   return (
     <div>
       <Markdown>{children.slice(0, cut)}</Markdown>
-      <Markdown className={className}>{children.slice(cut)}</Markdown>
+      <StreamingTail.Provider value={true}>
+        <Markdown className={className}>{children.slice(cut)}</Markdown>
+      </StreamingTail.Provider>
     </div>
   )
 }

@@ -18,6 +18,8 @@ describe("readBridgeConfig", () => {
           UCCH_SCHEDULER_SOCK: "/creds/omp-scheduler.sock",
           UCCH_BRIDGE_TOKEN: "tok",
           UCCH_BRIDGE_MAX_CALLS: "3",
+          UCCH_BRIDGE_OMP_TOOLS: "0",
+          UCCH_BRIDGE_SUBAGENTS: "1",
         },
         "/elsewhere",
       ),
@@ -34,6 +36,8 @@ describe("readBridgeConfig", () => {
       schedulerSock: "/creds/omp-scheduler.sock",
       leaseToken: "tok",
       maxCalls: 3,
+      ompTools: false,
+      subagents: true,
     });
   });
 
@@ -51,6 +55,8 @@ describe("readBridgeConfig", () => {
       schedulerSock: null,
       leaseToken: null,
       maxCalls: 12,
+      ompTools: true,
+      subagents: false,
     });
   });
 });

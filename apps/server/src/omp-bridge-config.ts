@@ -26,11 +26,15 @@ export interface BridgeServerInput {
   bridgeBin: string;
   /** `OMP_BIN`. */
   ompBin: string;
-  /** The subject's `omp/agent` (`PI_CODING_AGENT_DIR`). */
-  agentDir: string;
-  /** This turn's bridge overlay (`writeOmpOverlay`). */
-  overlay: string;
-  openrouterKey: string;
+  /**
+   * OMP's own tools, and what they need: the subject's `omp/agent`
+   * (`PI_CODING_AGENT_DIR`), this turn's bridge overlay (`writeOmpOverlay`)
+   * and the OpenRouter key the calls bill. Null: the workspace has the OMP
+   * bridge off, and the bridge offers `ucch_agent` alone.
+   */
+  omp: { agentDir: string; overlay: string; openrouterKey: string } | null;
+  /** `ucch_agent` is offered: subagents on any harness (never to a subagent). */
+  subagents: boolean;
   /** The worktree the CLI works in; every call runs there. */
   worktree: string;
   /** The server's scheduler socket and this turn's token for it (`BridgeLeases`). */
@@ -50,9 +54,14 @@ export function bridgeServer(input: BridgeServerInput): BridgeServer {
     args: [input.bridgeBin],
     env: {
       UCCH_OMP_BIN: input.ompBin,
-      UCCH_OMP_AGENT_DIR: input.agentDir,
-      UCCH_OMP_OVERLAY: input.overlay,
-      OPENROUTER_API_KEY: input.openrouterKey,
+      ...(input.omp
+        ? {
+            UCCH_OMP_AGENT_DIR: input.omp.agentDir,
+            UCCH_OMP_OVERLAY: input.omp.overlay,
+            OPENROUTER_API_KEY: input.omp.openrouterKey,
+          }
+        : { UCCH_BRIDGE_OMP_TOOLS: "0" }),
+      ...(input.subagents ? { UCCH_BRIDGE_SUBAGENTS: "1" } : {}),
       UCCH_WORKTREE: input.worktree,
       UCCH_SCHEDULER_SOCK: input.schedulerSock,
       UCCH_BRIDGE_TOKEN: input.token,
@@ -70,6 +79,9 @@ export function bridgeServer(input: BridgeServerInput): BridgeServer {
  */
 export const BRIDGE_CALL_OVERHEAD_SEC = 70;
 
+/** How long a CLI waits on one `ucch_agent` call: the bridge's own hour (`SPAWN_WAIT_MS`). */
+export const SUBAGENT_WAIT_SEC = 60 * 60;
+
 /**
  * The bridge for one Codex turn. Codex takes its MCP servers as
  * `-c mcp_servers.omp.*` -- its own argv, which every user on the host can
@@ -83,6 +95,8 @@ export async function writeCodexBridge(
   turnId: string,
   server: BridgeServer,
   maxSeconds: number,
+  /** A `ucch_agent` subagent runs a whole turn: Codex waits for it as long as Claude Code does. */
+  subagents = false,
 ): Promise<{ mcp: CodexMcpServer; dispose(): Promise<void> }> {
   if (!/^[A-Za-z0-9-]+$/.test(turnId)) throw new Error(`not a turn id: ${turnId}`);
   const path = join(runDir, `${turnId}.bridge.json`);
@@ -92,7 +106,7 @@ export async function writeCodexBridge(
       command: server.command,
       args: server.args,
       env: { UCCH_BRIDGE_ENV_FILE: path },
-      toolTimeoutSec: maxSeconds + BRIDGE_CALL_OVERHEAD_SEC,
+      toolTimeoutSec: subagents ? Math.max(SUBAGENT_WAIT_SEC, maxSeconds + BRIDGE_CALL_OVERHEAD_SEC) : maxSeconds + BRIDGE_CALL_OVERHEAD_SEC,
       // `codex exec` asks no one: unapproved, every tool not marked
       // read-only is refused. Codex already acts unasked in its sandbox
       // (UCCH's permission modes do not reach it), and so do these.

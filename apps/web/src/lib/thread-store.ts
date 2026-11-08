@@ -91,8 +91,14 @@ export class ThreadStore {
   push(row: ClientEvent): void {
     const event = row.event;
     if (!("threadId" in event) || event.threadId !== this.threadId) return;
-    if (row.seq !== null) this.#pushDurable(row, row.seq);
-    else if (event.type === "agent.queued") {
+    if (row.seq !== null) {
+      // The provider's last measure was of the context a clear just emptied.
+      if (event.type === "thread.context_cleared" && this.#contextUsage) {
+        this.#contextUsage = null;
+        this.#changed("live");
+      }
+      this.#pushDurable(row, row.seq);
+    } else if (event.type === "agent.queued") {
       if (this.#queued === event.ahead) return;
       this.#queued = event.ahead;
       this.#changed("live");

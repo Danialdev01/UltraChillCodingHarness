@@ -9,6 +9,7 @@ import { ConnectionSettingsDialog, PreviewDialog } from "@/components/on-demand"
 import { HarnessIcon } from "@/components/harness-icon"
 import { ProjectStackIcon } from "@/components/project-stack-icon"
 import { ViewModeToggle } from "@/components/view-mode-toggle"
+import { CommandButtons } from "@/components/commands/command-buttons"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -252,6 +253,8 @@ export function AppHeader({
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {/* Suspense because the button reads the search params, which
               Next wants fenced off from any static parent. */}
+          {/* The project's own command buttons, from `.agent/commands.json`. */}
+          {project && <CommandButtons project={project} />}
           {project && (
             <Suspense>
               <PreviewButton project={project} />

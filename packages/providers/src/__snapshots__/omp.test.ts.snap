@@ -1221,6 +1221,9 @@ exports[`OmpNormaliser > produces valid, fixed events for omp-subagent 1`] = `
       "costUsd": 0,
       "durationMs": 63,
       "model": "scripted/scripted",
+      "recentOutput": [
+        "src/a.ts exports \`a\`.",
+      ],
       "subagentId": "ScoutSrc",
       "summary": "src/a.ts exports \`a\`.",
       "threadId": "00000000-0000-4000-8000-000000000002",

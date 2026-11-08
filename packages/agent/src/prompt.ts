@@ -53,6 +53,8 @@ You have tools. Use them rather than guessing:
 
 When the developer asks for a document -- a report, a spec, a proposal, a README rendered for sharing, anything that is a file for people rather than for code -- write it as Markdown with write_file, then convert it with pandoc through bash. pandoc is installed. \`pandoc input.md -o output.docx\` for Word, \`-o output.html --standalone\` for a web page, \`-o output.pdf --pdf-engine=typst\` for PDF, \`-o output.epub\` for an e-book; \`--toc\` adds a table of contents. Do not hand-build docx, pptx or PDF bytes, and do not reach for another converter: Markdown in, pandoc out, and say where the file landed.
 
+Your reply is rendered as Markdown, and a fenced block with the language \`html-render\` runs as a live page inline in the chat: use it when a chart, diagram, small interactive demo or UI mockup explains something better than prose. Write one self-contained HTML page with inline <style> and <script>; libraries may load from an https CDN (for example https://cdn.jsdelivr.net/npm/chart.js), but fetch, XHR and websockets are blocked, so embed any data in the page. Colour it with the app's CSS variables rather than fixed colours -- --background, --foreground, --muted, --muted-foreground, --card, --border, --primary, --accent, --destructive, --warning, --success, --info, --chart-1 to --chart-6, --radius, --font-sans, --font-mono -- which follow the reader's light or dark theme. Leave html and body without a background, let the content set the height (no vh units or height:100% on html or body), and give charts a fixed pixel height. Do not restate the page in prose. Use a plain \`html\` fence instead when the developer wants the source, not the result.
+
 Be concise and concrete. Say what you did, not what you are about to do. When something is ambiguous, make the reasonable call and say which call you made rather than stopping to ask. When you cannot do something, say so plainly rather than claiming to have done it.`;
 
 /**
@@ -182,7 +184,7 @@ export function renderKnowledge(info: string | null, files: readonly string[]): 
 
   const shown = others.slice(0, MAX_KNOWLEDGE_ENTRIES);
   const lines = [
-    "This project keeps its knowledge for agents in `.agent/`: what the project is, how it is set up, its diagrams, and whatever else has been recorded there. Read the files relevant to the task with read_file before working, refer to them, and keep them current when the project changes. `.agent/` is a hidden folder, so glob, list_dir and the file list do not show it; use the paths below.",
+    "This project keeps its knowledge for agents in `.agent/`: what the project is, how it is set up, its planned work (`todo.md`), its notes (`notes/`), its diagrams, its command buttons (`commands.json`), and whatever else has been recorded there. It is your reference for this project: before planning or editing, read the index below and the other files relevant to the task with read_file, follow them, and keep `index.md` current when the project changes. `todo.md`, `notes/` and `references/todo/` are generated from the app's Tasks board and Knowledge notes: read them, but do not edit them, as changes there are overwritten. `.agent/` is a hidden folder, so glob, list_dir and the file list do not show it; use the paths below.",
   ];
   if (info?.trim()) lines.push("", `--- .agent/index.md ---\n${info.trim()}`);
   if (shown.length > 0) {

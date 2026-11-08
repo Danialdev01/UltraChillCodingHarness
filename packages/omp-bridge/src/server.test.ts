@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -64,6 +67,50 @@ describe("the omp bridge", () => {
     });
     const rename = tools.find((tool) => tool.name === "omp_rename")!;
     expect(rename.inputSchema.required).toEqual(["symbol", "file", "newName", "apply"]);
+  });
+
+  it("offers ucch_agent alone when the turn has subagents but not OMP's tools", async () => {
+    const client = await connect({ UCCH_OMP_BIN: FAKE_OMP, UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_BRIDGE_SUBAGENTS: "1" });
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name)).toEqual(["ucch_agent"]);
+    expect(tools[0]!.inputSchema.required).toEqual(["description", "task"]);
+  });
+
+  it("answers ucch_agent with the server's result over the scheduler socket", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ucch-spawn-"));
+    const path = join(dir, "s.sock");
+    const seen: unknown[] = [];
+    const server = createServer((socket) => {
+      socket.setEncoding("utf8");
+      socket.once("data", (line: string) => {
+        seen.push(JSON.parse(line));
+        socket.end(`${JSON.stringify({ type: "result", text: "found it" })}\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    try {
+      const client = await connect({
+        UCCH_BRIDGE_OMP_TOOLS: "0",
+        UCCH_BRIDGE_SUBAGENTS: "1",
+        UCCH_SCHEDULER_SOCK: path,
+        UCCH_BRIDGE_TOKEN: "tok",
+      });
+      const result = await client.callTool({
+        name: "ucch_agent",
+        arguments: { description: "Research", task: "Find the bug.", model: "gpt6 sol" },
+      });
+      expect(result).toEqual({ content: [{ type: "text", text: "found it" }] });
+      expect(seen).toEqual([{ type: "spawn", token: "tok", description: "Research", task: "Find the bug.", model: "gpt6 sol" }]);
+    } finally {
+      server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("says ucch_agent needs the server when it has no socket", async () => {
+    const client = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_BRIDGE_SUBAGENTS: "1" });
+    const result = await client.callTool({ name: "ucch_agent", arguments: { description: "x", task: "y" } });
+    expect(result.isError).toBe(true);
   });
 
   it("answers a tool call over MCP with omp's answer and its cost", async () => {

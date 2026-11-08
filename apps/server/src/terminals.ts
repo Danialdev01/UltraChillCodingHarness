@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as pty from "@lydell/node-pty";
 import type { Command, DomainEvent } from "@ucch/protocol";
 import type { ArgvWrapper } from "./child-priority.js";
+import { commandCwd, findCommand } from "./project-commands.js";
 import { sessionTree } from "./trees.js";
 
 /**
@@ -74,12 +75,14 @@ interface Session {
 }
 
 /** A program a terminal can run other than the shell. */
-export type TerminalProgram = "shell" | "claude-login" | "codex-login";
+export type TerminalProgram = "shell" | "claude-login" | "codex-login" | "command";
 
 export interface LoginLaunch {
   argv: string[];
   cwd: string;
   env: Record<string, string>;
+  /** Typed into the shell once it starts: a command button's command line. */
+  input?: string;
 }
 
 export interface TerminalOptions {
@@ -97,7 +100,7 @@ export interface TerminalOptions {
    * arguments, and the environment that points it at the user's own
    * credential directory. Absent means login terminals are refused.
    */
-  login?: (userId: string, program: Exclude<TerminalProgram, "shell">) => LoginLaunch;
+  login?: (userId: string, program: Exclude<TerminalProgram, "shell" | "command">) => LoginLaunch;
   /** The pty spawner. Injected by tests; the real one otherwise. */
   spawn?: typeof pty.spawn;
   /** Rewrites a shell's argv just before it starts: its priority (child-priority.ts). */
@@ -175,6 +178,7 @@ export class TerminalReactor {
             command.program ?? "shell",
             command.credentialWorkspaceId ? `ws-${command.credentialWorkspaceId}` : userId,
             command.sessionHash,
+            command.commandId,
           );
         } catch (error) {
           this.onError(error);
@@ -313,6 +317,7 @@ export class TerminalReactor {
     program: TerminalProgram,
     credentialSubject: string = userId,
     sessionHash?: string,
+    commandId?: string,
   ): void {
     if (this.#sessions.has(terminalId)) return;
     // An id somebody else is already watching would hand them this shell.
@@ -334,12 +339,18 @@ export class TerminalReactor {
       return;
     }
 
-    const launch = this.#launch(projectId, credentialSubject, program, sessionHash);
+    const launch = this.#launch(projectId, credentialSubject, program, sessionHash, commandId);
     if (!launch) {
-      this.#say(projectId, terminalId, "That sign-in flow is not available on this server.\r\n");
+      this.#say(
+        projectId,
+        terminalId,
+        program === "command"
+          ? "That command is not in .agent/commands.json, or its working directory is outside the project.\r\n"
+          : "That sign-in flow is not available on this server.\r\n",
+      );
       return;
     }
-    const bridged = program === "shell" ? this.options.ompBridge : undefined;
+    const bridged = program === "shell" || program === "command" ? this.options.ompBridge : undefined;
     if (bridged) launch.env.UCCH_OMP_MCP = bridged.path(credentialSubject, terminalId);
 
     const [file, ...args] = this.options.wrapArgv?.(launch.argv, launch.env, launch.cwd) ?? launch.argv;
@@ -386,6 +397,10 @@ export class TerminalReactor {
       this.#say(projectId, terminalId, `\r\n\x1b[2m[exited with ${how}]\x1b[0m\r\n`);
     });
 
+    // A command button's command, typed at the prompt as if by hand: the
+    // shell stays afterwards, to read the output, ctrl-C it, or run it again.
+    if (launch.input) child.write(launch.input);
+
     // What was typed while the shell was starting, at the size the screen
     // had by then.
     if (early && early.userId === userId && Date.now() - early.at <= EARLY_INPUT_TTL_MS) {
@@ -409,10 +424,17 @@ export class TerminalReactor {
     userId: string,
     program: TerminalProgram,
     sessionHash?: string,
+    commandId?: string,
   ): LoginLaunch | null {
-    if (program !== "shell") {
+    if (program !== "shell" && program !== "command") {
       return this.options.login?.(userId, program) ?? null;
     }
+    // The command line comes from the project's own file, read now: the
+    // client named a button, nothing more. Read from the main checkout,
+    // which is where the app's Manage dialog writes it.
+    const command =
+      program === "command" && commandId ? findCommand(join(this.options.workspaceRoot, projectId), commandId) : null;
+    if (program === "command" && !command) return null;
 
     // A session's worktree, when it has one. The path is under this
     // project's own folder of worktrees, so a hash from another project
@@ -430,6 +452,16 @@ export class TerminalReactor {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(terminalEnv())) if (value !== undefined) env[name] = value;
     env.UCCH_ROOT = cwd;
+    if (command) {
+      const at = commandCwd(cwd, command.cwd);
+      if (!at) return null;
+      // The shell's startup file goes to UCCH_ROOT whatever the spawn cwd was,
+      // so a subfolder is a `cd` typed first. `./` keeps it from reading as an
+      // option; single quotes, escaped as every shell here reads them.
+      const sub = relative(realpathSync(cwd), at);
+      const cd = sub ? `cd '${`./${sub}`.replace(/'/g, "'\\''")}' && ` : "";
+      return { argv: shellArgv(loginShell()), cwd: at, env, input: `${cd}${command.command}\r` };
+    }
     return { argv: shellArgv(loginShell()), cwd, env };
   }
 

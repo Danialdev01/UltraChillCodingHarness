@@ -118,7 +118,7 @@ export async function ensureGitignored(dir: string, entry: string): Promise<void
  * repository's author controls: a `.env -> /some/host/file` would otherwise
  * have that file rewritten -- with the shared database password in it.
  */
-async function refuseLink(path: string): Promise<void> {
+export async function refuseLink(path: string): Promise<void> {
   const info = await lstat(path).catch(() => null);
   if (info?.isSymbolicLink()) throw new Error(`${basename(path)} is a symlink; refusing to write through it`);
 }
@@ -203,6 +203,9 @@ const FILES_END = "<!-- agent:files:end -->";
 const COLLAPSED: Record<string, string> = {
   "cache/": "the harness's cache; safe to delete",
   "doc-cache/": "documents converted for reading (PDF pages, sources); safe to delete",
+  "notes/": "the Knowledge section's notes as Markdown, one file per note, nested as in the app; generated -- read, do not edit",
+  "references/notes/": "images placed in the Knowledge notes, one folder per note, linked from `notes/`; generated -- read, do not edit",
+  "references/todo/": "images and files attached to the todos in `todo.md`, one folder per task; generated -- read, do not edit",
 };
 /** One-line purposes for the files the harness knows. */
 const PURPOSES: Record<string, string> = {
@@ -213,6 +216,10 @@ const PURPOSES: Record<string, string> = {
   "diagrams/architecture.mmd": "Mermaid diagram: the architecture",
   "diagrams/system-flow.mmd": "Mermaid diagram: the system flow",
   "diagrams/user-flow.mmd": "Mermaid diagram: the user flow",
+  "todo.md":
+    "the planned work: every task on the app's Tasks board by stage, with its description and attachments; generated -- read, do not edit",
+  "commands.json":
+    "the project's command buttons (label, shell command, working directory), run from the app's header in a terminal tab",
 };
 
 /** What `.agent/` is for, said in the file every agent reads first. */

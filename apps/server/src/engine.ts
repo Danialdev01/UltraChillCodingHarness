@@ -168,6 +168,7 @@ export class OrchestrationEngine {
 
     const ctx: DecisionContext = {
       userId: principal.userId,
+      internal: principal.internal === true,
       now: new Date(),
       newId: () => randomUUID(),
       newHash: () => generateHash(),
@@ -214,7 +215,11 @@ export class OrchestrationEngine {
     // `thread.create` names a thread only when it is made in that one's
     // folder: the thread `decide` copies the worktree from.
     const threadId =
-      "threadId" in command ? command.threadId : command.type === "thread.create" ? command.worktreeOf : undefined;
+      "threadId" in command
+        ? command.threadId
+        : command.type === "thread.create"
+          ? (command.parentThreadId ?? command.worktreeOf)
+          : undefined;
     if (threadId) {
       const [row] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
       if (row) {
@@ -235,6 +240,7 @@ export class OrchestrationEngine {
           branch: row.branch,
           baseBranch: row.baseBranch,
           treeHash: row.treeHash,
+          parentThreadId: row.parentThreadId,
         };
       }
     }
@@ -538,6 +544,37 @@ export async function applyProjection(
           .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["running", "cancelling"])));
         break;
 
+      case "thread.harness_switch_requested": {
+        // Claims the thread while its brief is written, as a handoff does.
+        const claimed = await tx
+          .update(threads)
+          .set({ status: "running" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["idle", "error"])))
+          .returning({ id: threads.id });
+        if (claimed.length === 0) throw new ProjectionConflict("this thread is busy");
+        break;
+      }
+
+      case "thread.context_cleared":
+        // The provider stays bound; its session does not. The next turn
+        // opens a fresh one, with no `--resume`.
+        await tx.update(threads).set({ providerSessionId: null }).where(eq(threads.id, event.threadId));
+        break;
+
+      case "thread.harness_switched":
+        // The one place a bound thread's provider moves. Its old session
+        // belongs to the old provider: the next turn opens a fresh one.
+        await tx
+          .update(threads)
+          .set({ provider: event.toProvider, providerSessionId: null })
+          .where(eq(threads.id, event.threadId));
+        await tx
+          .update(threads)
+          .set({ status: "idle" })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["running", "cancelling"])));
+        break;
+
+      case "thread.harness_switch_failed":
       case "thread.handoff_failed":
         await tx
           .update(threads)
@@ -560,7 +597,10 @@ export async function applyProjection(
           // Made in another thread's worktree: one that is there already.
           worktreeState: event.branch ? (event.worktreeOf ? "ready" : "creating") : null,
           treeHash: event.treeHash ?? null,
+          parentThreadId: event.parentThreadId ?? null,
         });
+        // A subagent's session is not one of the project's sessions.
+        if (event.parentThreadId) break;
         // An upsert, so a project without a row yet still counts.
         await tx
           .insert(projectStats)

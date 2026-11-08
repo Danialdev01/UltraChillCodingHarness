@@ -29,7 +29,7 @@ export const SETTINGS_GROUPS: readonly { label: string | null; entries: readonly
       {
         scope: "workspace",
         id: "general",
-        keywords: "default model permission mode access keybindings shortcuts vim font size editor tree",
+        keywords: "default model permission mode access keybindings shortcuts vim font size editor tree chat view transcript debug diff commands",
       },
       {
         scope: "account",

@@ -10,7 +10,9 @@ import {
   formatDuration,
   isSubagentCall,
   overlayLive,
+  promptOf,
   splitBrief,
+  splitSubagentTask,
   splitThinking,
   summariseInput,
   toMessages as foldAll,
@@ -465,6 +467,14 @@ describe("the context window", () => {
     ).toBeNull();
   });
 
+  it("knows nothing again once the context is cleared", () => {
+    const state = log(completed(12_000, 400), { type: "thread.context_cleared", threadId: THREAD });
+    expect(state.contextTokens).toBeNull();
+    expect(state.messages.at(-1)).toMatchObject({ role: "assistant", cleared: true, streaming: false });
+    // The turn before the clear is still on screen.
+    expect(state.messages.some((m) => m.turnId === TURN)).toBe(true);
+  });
+
   it("is the last turn's prompt plus what the model wrote back", () => {
     expect(log(completed(12_000, 400)).contextTokens).toBe(12_400);
   });
@@ -915,8 +925,8 @@ describe("subagents (OM5.3)", () => {
     const state = log({ type: "turn.started", ...ids }, call("task"), started("a"), started("b"), progress("a", "Reading a.ts"));
     const part = state.messages[0]!.parts[0]!;
     expect(part.kind === "tool" && part.subagents).toEqual([
-      { id: "a", agent: "scout", description: "Look at a", model: "m/cheap", status: "running", summary: "Reading a.ts", toolCalls: 2, durationMs: 900, costUsd: null, result: null },
-      { id: "b", agent: "scout", description: "Look at b", model: null, status: "running", summary: null, toolCalls: null, durationMs: null, costUsd: null, result: null },
+      { id: "a", agent: "scout", description: "Look at a", model: "m/cheap", status: "running", summary: "Reading a.ts", toolCalls: 2, durationMs: 900, costUsd: null, result: null, steps: [] },
+      { id: "b", agent: "scout", description: "Look at b", model: null, status: "running", summary: null, toolCalls: null, durationMs: null, costUsd: null, result: null, steps: [] },
     ]);
   });
 
@@ -959,9 +969,243 @@ describe("subagents (OM5.3)", () => {
     expect(part.kind === "tool" && part.subagents?.[0]?.status).toBe("aborted");
   });
 
+  it("puts a subagent resumed in a later turn back on its first card, not a second one", () => {
+    const later = { threadId: THREAD, turnId: "turn_2" };
+    const usage = { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+    const state = log(
+      { type: "turn.started", ...ids },
+      call("Agent", "call_1"),
+      started("call_1"),
+      finished("call_1", "aborted"),
+      { type: "agent.turn_completed", ...ids, stopReason: "end_turn", usage, costUsd: 0 },
+      { type: "turn.started", ...later },
+      { ...started("call_1"), ...later },
+      { ...finished("call_1"), ...later },
+      { type: "agent.turn_completed", ...later, stopReason: "end_turn", usage, costUsd: 0 },
+    );
+    const cards = state.messages.flatMap((m) => m.parts).filter((p) => p.kind === "tool" && p.id === "call_1");
+    expect(cards).toHaveLength(1);
+    const part = cards[0]!;
+    expect(part.kind === "tool" && part.subagents).toEqual([expect.objectContaining({ id: "call_1", status: "completed", result: "call_1 is fine." })]);
+  });
+
   it("ignores a repeated start", () => {
     const state = log({ type: "turn.started", ...ids }, call("task"), started("a"), started("a"));
     const part = state.messages[0]!.parts[0]!;
     expect(part.kind === "tool" && part.subagents).toHaveLength(1);
+  });
+});
+
+describe("switching harness in the same session", () => {
+  const ev = (event: DomainEvent) => ({ event });
+
+  it("is busy while the brief is written, then draws a row where the switch happened", () => {
+    const requested = toMessages([
+      ev({ type: "user.message", threadId: THREAD, text: "hi" }),
+      ev({ type: "thread.harness_switch_requested", threadId: THREAD, fromProvider: "claude", targetProvider: "codex" }),
+    ]);
+    expect(requested).toMatchObject({ running: true, switching: "codex" });
+
+    const switched = toMessages([
+      ev({ type: "user.message", threadId: THREAD, text: "hi" }),
+      ev({ type: "thread.harness_switch_requested", threadId: THREAD, fromProvider: "claude", targetProvider: "codex" }),
+      ev({
+        type: "thread.harness_switched",
+        threadId: THREAD,
+        fromProvider: "claude",
+        toProvider: "codex",
+        model: "gpt-6-sol",
+        brief: "Did A; next B.",
+        reason: "limit",
+      }),
+    ]);
+    expect(switched.running).toBe(false);
+    expect(switched.switching).toBeNull();
+    expect(switched.messages.at(-1)?.switched).toEqual({
+      from: "claude",
+      to: "codex",
+      model: "gpt-6-sol",
+      brief: "Did A; next B.",
+      limit: true,
+    });
+  });
+
+  it("says why when the switch did not happen", () => {
+    const failed = toMessages([
+      ev({ type: "thread.harness_switch_requested", threadId: THREAD, fromProvider: "claude", targetProvider: "codex" }),
+      ev({ type: "thread.harness_switch_failed", threadId: THREAD, error: "add an OpenRouter key" }),
+    ]);
+    expect(failed).toMatchObject({ running: false, switching: null, compactionError: "The switch did not happen: add an OpenRouter key" });
+  });
+});
+
+describe("choice cards", () => {
+  const ev = (event: DomainEvent) => ({ event });
+  const card: DomainEvent = {
+    type: "agent.choice_requested",
+    threadId: THREAD,
+    requestId: "r1",
+    kind: "harness_limit",
+    title: "Claude Code hit its usage limit",
+    options: [{ id: "codex", label: "Continue on Codex", provider: "codex" }],
+    provider: "claude",
+    message: "Add the test",
+  };
+
+  it("stays open until it is answered", () => {
+    expect(toMessages([ev(card)]).choices).toMatchObject([{ requestId: "r1", kind: "harness_limit" }]);
+    expect(toMessages([ev(card), ev({ type: "agent.choice_resolved", threadId: THREAD, requestId: "r1", optionId: "codex" })]).choices).toEqual([]);
+  });
+
+  it("closes the thread's own card when a new turn overtakes it, but not a subagent's", () => {
+    const subagent: DomainEvent = { ...card, requestId: "r2", kind: "subagent_limit", childThreadId: "66666666-6666-4666-8666-666666666666" } as DomainEvent;
+    const state = toMessages([ev(card), ev(subagent), ev({ type: "turn.started", threadId: THREAD, turnId: TURN })]);
+    expect(state.choices.map((choice) => choice.requestId)).toEqual(["r2"]);
+  });
+});
+
+describe("a subagent on another harness", () => {
+  it("is a subagent call, and its run carries its harness and session", () => {
+    expect(isSubagentCall("mcp__omp__ucch_agent")).toBe(true);
+    expect(isSubagentCall("ucch_agent")).toBe(true);
+    const state = toMessages([
+      { event: { type: "turn.started", threadId: THREAD, turnId: TURN } },
+      {
+        event: {
+          type: "agent.tool_use",
+          threadId: THREAD,
+          turnId: TURN,
+          toolUseId: "toolu_1",
+          name: "mcp__omp__ucch_agent",
+          input: { description: "Research", task: "Look", model: "gpt6 sol" },
+        },
+      },
+      {
+        event: {
+          type: "agent.subagent_started",
+          threadId: THREAD,
+          turnId: TURN,
+          subagentId: "s1",
+          parentToolUseId: "toolu_1",
+          agent: "Codex",
+          description: "Research",
+          model: "gpt-6-sol",
+          provider: "codex",
+          childThreadId: "66666666-6666-4666-8666-666666666666",
+          childHash: "child1234567",
+          routing: "gpt-6-sol on Codex",
+        },
+      },
+    ]);
+    const call = state.messages.at(-1)?.parts.find((part) => part.kind === "tool");
+    expect(call && call.kind === "tool" ? call.subagents?.[0] : null).toMatchObject({
+      provider: "codex",
+      childHash: "child1234567",
+      routing: "gpt-6-sol on Codex",
+      model: "gpt-6-sol",
+    });
+  });
+});
+
+describe("a subagent's own session", () => {
+  const PREAMBLE =
+    "You are a subagent. Another agent started you for one task, and your final reply is all it receives. You cannot see its conversation; everything you need is below. Work in this folder, and finish with a concise report of what you did and found.";
+  const opening = `${PREAMBLE}\n\n<task>\nFind where the cache is cleared.\n\nReport file and line.\n</task>`;
+
+  it("splits the server's preamble off its task", () => {
+    expect(splitSubagentTask(opening)).toEqual({ task: "Find where the cache is cleared.\n\nReport file and line." });
+    expect(splitSubagentTask("Find where the cache is cleared.")).toBeNull();
+    expect(splitSubagentTask("<task>\nNot from the server\n</task>")).toBeNull();
+  });
+
+  it("shows the task, and keeps the message as sent for a rerun", () => {
+    const state = toMessages([{ event: { type: "user.message", threadId: THREAD, text: opening } }]);
+    expect(state.messages[0]).toMatchObject({
+      role: "user",
+      text: "Find where the cache is cleared.\n\nReport file and line.",
+      subagentTask: true,
+      raw: opening,
+    });
+  });
+
+  it("leaves an ordinary message alone", () => {
+    const state = toMessages([{ event: { type: "user.message", threadId: THREAD, text: "hello" } }]);
+    expect(state.messages[0]?.subagentTask).toBeUndefined();
+    expect(state.messages[0]?.raw).toBeUndefined();
+  });
+});
+
+describe("promptOf", () => {
+  it("prefers the full prompt to the one-line description", () => {
+    expect(promptOf({ description: "Find it", prompt: "Find the cache, in detail" })).toBe("Find the cache, in detail");
+    expect(promptOf({ description: "Research", task: "Look" })).toBe("Look");
+    expect(promptOf({ description: "Only this" })).toBe("Only this");
+    expect(promptOf("a bare string")).toBe("a bare string");
+    expect(promptOf(null)).toBeNull();
+  });
+
+  it("picks the matching task of several, with the shared context", () => {
+    const input = {
+      context: "The repo is a monorepo.",
+      tasks: [
+        { id: "a", description: "Look at a", assignment: "Read a.ts" },
+        { id: "b", description: "Look at b", assignment: "Read b.ts" },
+      ],
+    };
+    expect(promptOf(input, { id: "b" })).toBe("The repo is a monorepo.\n\nRead b.ts");
+    expect(promptOf(input, { description: "Look at a" })).toBe("The repo is a monorepo.\n\nRead a.ts");
+    expect(promptOf(input, { id: "zzz" })).toBe("The repo is a monorepo.");
+  });
+});
+
+describe("a built-in subagent's steps", () => {
+  const ids = { threadId: THREAD, turnId: TURN };
+  const steps = (...events: DomainEvent[]) => {
+    const { messages } = toMessages(
+      [
+        { type: "turn.started", ...ids } as DomainEvent,
+        { type: "agent.tool_use", ...ids, toolUseId: "toolu_task", name: "Task", input: { description: "Look" } } as DomainEvent,
+        {
+          type: "agent.subagent_started",
+          ...ids,
+          subagentId: "toolu_task",
+          parentToolUseId: "toolu_task",
+          agent: "Explore",
+          description: "Look",
+          model: null,
+        } as DomainEvent,
+        ...events,
+      ].map((event) => ({ event })),
+    );
+    const turn = messages.at(-1)!;
+    const card = turn.parts.find((part) => part.kind === "tool" && part.id === "toolu_task");
+    return { turn, run: card?.kind === "tool" ? card.subagents?.[0] : undefined };
+  };
+
+  it("files its thinking, prose and calls under the run, in order, and not under the turn", () => {
+    const { turn, run } = steps(
+      { type: "agent.subagent_output", ...ids, subagentId: "toolu_task", kind: "thinking", text: "Where?" },
+      { type: "agent.tool_use", ...ids, toolUseId: "toolu_read", name: "Read", input: { file_path: "a.ts" }, subagentId: "toolu_task" },
+      { type: "agent.tool_result", ...ids, toolUseId: "toolu_read", content: "export const a = 1", isError: false, durationMs: 4 },
+      { type: "agent.subagent_output", ...ids, subagentId: "toolu_task", kind: "text", text: "a.ts exports a." },
+    );
+    expect(run?.steps).toEqual([
+      { kind: "text", text: "<think>Where?</think>", streaming: false },
+      { kind: "tool", id: "toolu_read", name: "Read", input: { file_path: "a.ts" }, result: "export const a = 1", isError: false, durationMs: 4 },
+      { kind: "text", text: "a.ts exports a.", streaming: false },
+    ]);
+    expect(turn.parts.some((part) => part.kind === "tool" && part.id === "toolu_read")).toBe(false);
+  });
+
+  it("keeps OMP's recent window on the run while it runs", () => {
+    const { run } = steps({
+      type: "agent.subagent_progress",
+      ...ids,
+      subagentId: "toolu_task",
+      summary: "found it",
+      recentTools: ["read"],
+      recentOutput: ["found it"],
+    });
+    expect(run).toMatchObject({ steps: [], recentTools: ["read"], recentOutput: ["found it"] });
   });
 });

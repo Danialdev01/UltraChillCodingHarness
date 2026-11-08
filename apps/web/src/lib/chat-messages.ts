@@ -1,4 +1,5 @@
 import type { DomainEvent, MessageMode } from "@ucch/protocol";
+import { isUcchAgentTool } from "@ucch/protocol/plain";
 import { parseAttachments, type MessageAttachment } from "./attachments.js";
 
 /**
@@ -59,13 +60,105 @@ export interface SubagentRun {
   costUsd: number | null;
   /** What it answered, truncated by the server. */
   result: string | null;
+  /**
+   * A `ucch_agent` subagent: the harness it runs on, its own session's
+   * address (the full transcript), and how its harness was chosen. Absent
+   * for a CLI's built-in subagent.
+   */
+  provider?: string;
+  childHash?: string;
+  routing?: string;
+  /**
+   * What a CLI's built-in subagent did, in order (Claude Code's): its prose,
+   * its thinking (as a `<think>` text part), and its tool calls with their
+   * results. Empty where the provider reports none.
+   */
+  steps: MessagePart[];
+  /** OMP's rolling window of what it did lately, newest last. Live only. */
+  recentTools?: string[];
+  recentOutput?: string[];
 }
 
 /** The calls that spawn subagents, and draw as a subagent card. */
-const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(["task", "Task", "Agent", "mcp__omp__omp_task"]);
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set([
+  "task",
+  "Task",
+  "Agent",
+  "mcp__omp__omp_task",
+  // A subagent on any harness, as each harness names the tool.
+  "ucch_agent",
+  "mcp__omp__ucch_agent",
+]);
 
 export function isSubagentCall(name: string): boolean {
-  return SUBAGENT_TOOLS.has(name);
+  return SUBAGENT_TOOLS.has(name) || isUcchAgentTool(name);
+}
+
+/** The agent a subagent call asks for, before any subagent has started. */
+export function agentOf(input: unknown): string | null {
+  if (typeof input !== "object" || input === null) return null;
+  const record = input as Record<string, unknown>;
+  for (const key of ["agent", "subagent_type"]) {
+    const value = record[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return null;
+}
+
+/** What a subagent call asks for, in a line, before any subagent has started. */
+export function descriptionOf(input: unknown): string | null {
+  if (typeof input === "string") return input || null;
+  if (typeof input !== "object" || input === null) return null;
+  const record = input as Record<string, unknown>;
+  for (const key of ["description", "task", "prompt"]) {
+    const value = record[key];
+    if (typeof value === "string" && value) return value;
+  }
+  if (Array.isArray(record.tasks)) return `${record.tasks.length} ${record.tasks.length === 1 ? "task" : "tasks"}`;
+  return null;
+}
+
+/**
+ * The prompt a subagent call gave, in full: the brief the subagent worked
+ * from, not the one-line description. With several tasks in one call, the
+ * one whose description (or id) is `pick`'s; null when none can be told.
+ */
+export function promptOf(input: unknown, pick?: { id?: string | null; description?: string | null }): string | null {
+  if (typeof input === "string") return input || null;
+  if (typeof input !== "object" || input === null) return null;
+  const record = input as Record<string, unknown>;
+  const fromRecord = (r: Record<string, unknown>): string | null => {
+    // `message`: a resumed subagent, sent on by `SendMessage`.
+    for (const key of ["prompt", "task", "assignment", "message", "description"]) {
+      const value = r[key];
+      if (typeof value === "string" && value.trim()) return value;
+    }
+    return null;
+  };
+  if (Array.isArray(record.tasks)) {
+    const tasks = record.tasks.filter((t): t is Record<string, unknown> => typeof t === "object" && t !== null);
+    const match =
+      tasks.length === 1
+        ? tasks[0]
+        : tasks.find(
+            (t) =>
+              (pick?.id && t.id === pick.id) ||
+              (pick?.description && (t.description === pick.description || t.id === pick.description)),
+          );
+    const own = match ? fromRecord(match) : null;
+    // A shared context rides along with every task of the call.
+    const context = typeof record.context === "string" && record.context.trim() ? record.context.trim() : null;
+    if (own) return context ? `${context}\n\n${own}` : own;
+    return context;
+  }
+  return fromRecord(record);
+}
+
+/** The calls that run a shell command, for the session card's terminal list. */
+const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "Bash", "shell", "local_shell", "exec_command"]);
+
+export function isShellCall(name: string): boolean {
+  return SHELL_TOOLS.has(name);
 }
 
 /**
@@ -95,6 +188,19 @@ export interface PermissionPrompt {
 
 type ProviderId = Extract<DomainEvent, { type: "thread.handoff_requested" }>["targetProvider"];
 
+/** A question the server put to the person with fixed answers (`agent.choice_requested`). */
+export type ChoicePrompt = Omit<Extract<DomainEvent, { type: "agent.choice_requested" }>, "type" | "threadId">;
+
+/** The session moved to another harness here (`thread.harness_switched`): a row in the transcript. */
+export interface HarnessSwitch {
+  from: ProviderId;
+  to: ProviderId;
+  model: string | null;
+  brief: string;
+  /** The harness it left had hit its usage limit. */
+  limit: boolean;
+}
+
 /** The other end of a handoff: the thread, and its address. */
 export interface HandoffLink {
   threadId: string;
@@ -112,6 +218,19 @@ const BRIEF = /^<handoff-brief>\n([\s\S]*?)\n<\/handoff-brief>(?:\n\n([\s\S]*))?
 export function splitBrief(text: string): { brief: string; text: string } | null {
   const match = BRIEF.exec(text);
   return match ? { brief: match[1]!.trim(), text: (match[2] ?? "").trim() } : null;
+}
+
+/**
+ * A `ucch_agent` subagent's first message: the server's preamble, then the
+ * task in a `<task>` envelope (apps/server/src/subagents.ts). The task is
+ * what the reader wants to see; the whole text is what a rerun sends again.
+ */
+const SUBAGENT_TASK = /^You are a subagent\.[\s\S]*?\n\n<task>\n([\s\S]*?)\n<\/task>\s*$/;
+
+/** A subagent's opening message as its task, or null for any other message. */
+export function splitSubagentTask(text: string): { task: string } | null {
+  const match = SUBAGENT_TASK.exec(text);
+  return match ? { task: match[1]!.trim() } : null;
 }
 
 export interface ChatMessage {
@@ -133,10 +252,21 @@ export interface ChatMessage {
    * §5.4), split from the request after it, which is `text`.
    */
   brief?: string;
+  /**
+   * A subagent's session opens with its task, wrapped in the server's
+   * preamble: `text` is the task, and `raw` the stored message, which a
+   * rerun sends again as it was.
+   */
+  subagentTask?: true;
+  raw?: string;
   parts: MessagePart[];
   reasoning: string;
   /** True while the turn is open: no `turn_completed` and no `turn_failed`. */
   streaming: boolean;
+  /** Not a turn: the row where the session switched harness. */
+  switched?: HarnessSwitch;
+  /** Not a turn: the row where the session's context was cleared. */
+  cleared?: true;
   /** From `agent.turn_completed`. "cancelled" and "max_iterations" are not failures. */
   stopReason?: string | null;
   error?: string;
@@ -218,6 +348,14 @@ export interface ChatState {
   continuedIn: HandoffLink | null;
   /** Where it came from, when a handoff started this thread. */
   continuedFrom: HandoffLink | null;
+  /** The harness a switch (`thread.switch_harness`) is writing the brief for, while it does. */
+  switching: ProviderId | null;
+  /**
+   * Choice cards still open, oldest first: a limit's "carry on with which
+   * harness?", the thread's own or one of its subagents'. A thread's own
+   * closes when anything else moves the session on.
+   */
+  choices: ChoicePrompt[];
 }
 
 /**
@@ -246,7 +384,13 @@ export function toMessages(
   let handingOff: ProviderId | null = null;
   let continuedIn: HandoffLink | null = null;
   let continuedFrom: HandoffLink | null = null;
+  let switching: ProviderId | null = null;
   const prompts = new Map<string, PermissionPrompt>();
+  const choices = new Map<string, ChoicePrompt>();
+  /** A new turn or switch overtakes the thread's own limit card. */
+  const overtake = () => {
+    for (const [id, choice] of choices) if (choice.kind === "harness_limit") choices.delete(id);
+  };
 
   /**
    * The bubble for a turn, created on demand.
@@ -308,17 +452,22 @@ export function toMessages(
       // leave one spinning.
       if (part.kind === "tool") for (const run of part.subagents ?? []) if (run.status === "running") run.status = "aborted";
     }
+    // A run resumed by this turn hangs from an earlier turn's card.
+    for (const entry of runs.values()) {
+      if (entry.turnId === message.turnId && entry.run.status === "running") entry.run.status = "aborted";
+    }
   };
 
-  /** A subagent of this turn, on whichever call it hangs from. */
-  const subagent = (turnId: string, id: string): SubagentRun | undefined => {
-    for (const part of turn(turnId).parts) {
-      if (part.kind !== "tool") continue;
-      const run = part.subagents?.find((r) => r.id === id);
-      if (run) return run;
-    }
-    return undefined;
-  };
+  /**
+   * Every subagent run in the thread by id, with the call it hangs from. Not
+   * per turn: a subagent resumed in a later turn (`SendMessage` to it) is
+   * started again under that turn, and it is the same run on the same card,
+   * not a second card with the first one's id.
+   */
+  const runs = new Map<string, { run: SubagentRun; call: ToolPart; turnId: string }>();
+  const subagent = (id: string): SubagentRun | undefined => runs.get(id)?.run;
+  /** The calls subagents made, by id: their results land on them, not on the turn. */
+  const subagentCalls = new Map<string, ToolPart>();
 
   for (const row of events) {
     const { event } = row;
@@ -328,11 +477,13 @@ export function toMessages(
         // that was typed, and a tag per file.
         const { text: typed, attachments } = parseAttachments(event.text);
         const handed = splitBrief(typed);
-        const text = handed ? handed.text : typed;
+        const tasked = handed ? null : splitSubagentTask(typed);
+        const text = handed ? handed.text : tasked ? tasked.task : typed;
         messages.push({
           role: "user",
           text,
           ...(handed ? { brief: handed.brief } : {}),
+          ...(tasked ? { subagentTask: true as const, raw: event.text } : {}),
           ...(attachments.length ? { attachments } : {}),
           ...(event.mode ? { mode: event.mode } : {}),
           parts: [],
@@ -352,6 +503,7 @@ export function toMessages(
         running = true;
         activeTurn = event.turnId;
         compactionError = null;
+        overtake();
         activity.set(event.turnId, {
           turnId: event.turnId,
           startedAt: row.receivedAt ?? null,
@@ -403,11 +555,11 @@ export function toMessages(
         break;
       }
 
-      case "agent.tool_use":
+      case "agent.tool_use": {
         // Arguments the model wrote are output too, and a turn that spends a
         // minute writing one large file would otherwise look idle.
         count(event.turnId, JSON.stringify(event.input ?? "").length);
-        turn(event.turnId).parts.push({
+        const call: ToolPart = {
           kind: "tool",
           id: event.toolUseId,
           name: event.name,
@@ -415,14 +567,34 @@ export function toMessages(
           result: null,
           isError: false,
           durationMs: null,
+        };
+        // A subagent's call is on its card and its page, not among the turn's.
+        const owner = event.subagentId ? subagent(event.subagentId) : undefined;
+        if (owner) {
+          owner.steps.push(call);
+          subagentCalls.set(call.id, call);
+        } else turn(event.turnId).parts.push(call);
+        break;
+      }
+
+      case "agent.subagent_output": {
+        const run = subagent(event.subagentId);
+        if (!run) break;
+        run.steps.push({
+          kind: "text",
+          text: event.kind === "thinking" ? `<think>${event.text}</think>` : event.text,
+          streaming: false,
         });
         break;
+      }
 
       case "agent.permission_requested":
         if (event.toolUseId) {
-          const call = turn(event.turnId).parts.find(
-            (part): part is ToolPart => part.kind === "tool" && part.id === event.toolUseId,
-          );
+          const call =
+            subagentCalls.get(event.toolUseId) ??
+            turn(event.turnId).parts.find(
+              (part): part is ToolPart => part.kind === "tool" && part.id === event.toolUseId,
+            );
           if (call) call.awaitingApproval = true;
         }
         prompts.set(event.requestId, {
@@ -449,9 +621,9 @@ export function toMessages(
 
       case "agent.tool_result": {
         const message = turn(event.turnId);
-        const call = message.parts.find(
-          (part): part is ToolPart => part.kind === "tool" && part.id === event.toolUseId,
-        );
+        const call =
+          subagentCalls.get(event.toolUseId) ??
+          message.parts.find((part): part is ToolPart => part.kind === "tool" && part.id === event.toolUseId);
         if (call) {
           call.result = event.content;
           call.isError = event.isError;
@@ -474,7 +646,16 @@ export function toMessages(
 
       case "agent.subagent_started": {
         const message = turn(event.turnId);
-        if (subagent(event.turnId, event.subagentId)) break;
+        const known = subagent(event.subagentId);
+        if (known) {
+          // Resumed after it ended: running again on its own card.
+          if (known.status !== "running") {
+            known.status = "running";
+            known.summary = null;
+          }
+          runs.get(known.id)!.turnId = event.turnId;
+          break;
+        }
         let call = event.parentToolUseId
           ? message.parts.find((part): part is ToolPart => part.kind === "tool" && part.id === event.parentToolUseId)
           : undefined;
@@ -493,7 +674,7 @@ export function toMessages(
           };
           message.parts.push(call);
         }
-        (call.subagents ??= []).push({
+        const run: SubagentRun = {
           id: event.subagentId,
           agent: event.agent,
           description: event.description,
@@ -504,14 +685,22 @@ export function toMessages(
           durationMs: null,
           costUsd: null,
           result: null,
-        });
+          steps: [],
+          ...(event.provider ? { provider: event.provider } : {}),
+          ...(event.childHash ? { childHash: event.childHash } : {}),
+          ...(event.routing ? { routing: event.routing } : {}),
+        };
+        (call.subagents ??= []).push(run);
+        runs.set(run.id, { run, call, turnId: event.turnId });
         break;
       }
 
       case "agent.subagent_progress": {
-        const run = subagent(event.turnId, event.subagentId);
+        const run = subagent(event.subagentId);
         if (!run || run.status !== "running") break;
         run.summary = event.summary;
+        if (event.recentTools) run.recentTools = event.recentTools;
+        if (event.recentOutput) run.recentOutput = event.recentOutput;
         if (event.toolCalls !== undefined) run.toolCalls = event.toolCalls;
         if (event.model) run.model = event.model;
         if (event.durationMs !== undefined) run.durationMs = event.durationMs;
@@ -520,7 +709,7 @@ export function toMessages(
       }
 
       case "agent.subagent_finished": {
-        const run = subagent(event.turnId, event.subagentId);
+        const run = subagent(event.subagentId);
         if (!run) break;
         run.status = event.status;
         run.result = event.result;
@@ -528,9 +717,7 @@ export function toMessages(
         if (event.durationMs !== undefined) run.durationMs = event.durationMs;
         if (event.costUsd !== undefined) run.costUsd = event.costUsd;
         // A card made for a call never seen has no result of its own to wait for.
-        const call = turn(event.turnId).parts.find(
-          (part): part is ToolPart => part.kind === "tool" && !!part.subagents?.includes(run),
-        );
+        const call = runs.get(run.id)?.call;
         if (call?.orphan && call.subagents!.every((r) => r.status !== "running")) {
           call.result = "";
           call.isError = call.subagents!.some((r) => r.status === "failed");
@@ -644,6 +831,66 @@ export function toMessages(
         compactionError = `The handoff did not happen: ${event.error}`;
         break;
 
+      case "thread.harness_switch_requested":
+        switching = event.targetProvider;
+        compactionError = null;
+        running = true;
+        activeTurn = null;
+        overtake();
+        break;
+
+      case "thread.harness_switched":
+        switching = null;
+        running = false;
+        messages.push({
+          role: "assistant",
+          text: "",
+          parts: [],
+          reasoning: "",
+          streaming: false,
+          startedAt: null,
+          completedAt: row.receivedAt ?? null,
+          switched: {
+            from: event.fromProvider,
+            to: event.toProvider,
+            model: event.model ?? null,
+            brief: event.brief,
+            limit: event.reason === "limit",
+          },
+        });
+        break;
+
+      case "thread.context_cleared":
+        // The meter measured the context that is now gone.
+        contextTokens = null;
+        messages.push({
+          role: "assistant",
+          text: "",
+          parts: [],
+          reasoning: "",
+          streaming: false,
+          startedAt: null,
+          completedAt: row.receivedAt ?? null,
+          cleared: true,
+        });
+        break;
+
+      case "thread.harness_switch_failed":
+        switching = null;
+        running = false;
+        compactionError = `The switch did not happen: ${event.error}`;
+        break;
+
+      case "agent.choice_requested": {
+        const { type: _type, threadId: _thread, ...choice } = event;
+        choices.set(event.requestId, choice);
+        break;
+      }
+
+      case "agent.choice_resolved":
+        choices.delete(event.requestId);
+        break;
+
       case "agent.retry": {
         const current = activity.get(event.turnId);
         if (current) current.retry = { attempt: event.attempt, maxRetries: event.maxRetries };
@@ -663,6 +910,8 @@ export function toMessages(
     handingOff,
     continuedIn,
     continuedFrom,
+    switching,
+    choices: [...choices.values()],
   };
 }
 

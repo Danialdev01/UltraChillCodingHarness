@@ -50,7 +50,10 @@ export function TerminalView({ project, active }: { project: Project; active: bo
   // project would otherwise close the tabs it knew at mount -- none.
   const tabsRef = React.useRef(tabs)
   tabsRef.current = tabs
-  const { registerTerminals } = useFilesPanel()
+  const { registerTerminals, commandRun } = useFilesPanel()
+  // The last command button run here, so a re-render does not run it again.
+  // Zero at mount: the click that first opens the view is one to run.
+  const ranRef = React.useRef(0)
   /**
    * keystroke-to-echo (lib/vitals.ts): a printable key sent to a shell, to
    * the paint after the output that follows it. One key at a time; a key
@@ -136,7 +139,7 @@ export function TerminalView({ project, active }: { project: Project; active: bo
     }
   }, [project.id])
 
-  const open = React.useCallback(async () => {
+  const open = React.useCallback(async (command?: { commandId: string; label: string }) => {
     const client = clientRef.current
     if (!client) return
 
@@ -154,8 +157,10 @@ export function TerminalView({ project, active }: { project: Project; active: bo
         rows: 30,
         // A project session's shell opens in its own worktree.
         ...(project.sessionHash ? { sessionHash: project.sessionHash } : {}),
+        // A command button: the server reads its command line from the project's file.
+        ...(command ? { program: "command" as const, commandId: command.commandId } : {}),
       })
-      setTabs((current) => [...current, { id, title: `Terminal ${current.length + 1}` }])
+      setTabs((current) => [...current, { id, title: command?.label ?? `Terminal ${current.length + 1}` }])
       setActiveId(id)
       setOutput((current) => ({ ...current, [id]: EMPTY_OUTPUT }))
     } catch (e) {
@@ -163,11 +168,21 @@ export function TerminalView({ project, active }: { project: Project; active: bo
     }
   }, [project.id])
 
-  // One shell to begin with, so the view is usable the moment it opens.
+  // A command button clicked in the header: a tab of its own, once.
+  const pendingCommand =
+    commandRun && commandRun.projectId === project.id && commandRun.token !== ranRef.current ? commandRun : null
   React.useEffect(() => {
-    if (!active || !ready || tabs.length > 0) return
+    if (!ready || !pendingCommand) return
+    ranRef.current = pendingCommand.token
+    void open({ commandId: pendingCommand.commandId, label: pendingCommand.label })
+  }, [ready, pendingCommand, open])
+
+  // One shell to begin with, so the view is usable the moment it opens --
+  // unless a command button is about to open the first tab itself.
+  React.useEffect(() => {
+    if (!active || !ready || tabs.length > 0 || pendingCommand) return
     void open()
-  }, [active, ready, tabs.length, open])
+  }, [active, ready, tabs.length, open, pendingCommand])
 
   function close(id: string) {
     const client = clientRef.current

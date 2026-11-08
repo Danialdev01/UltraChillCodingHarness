@@ -115,3 +115,39 @@ describe("BridgeLeases", () => {
     expect(await ask(path, JSON.stringify({ type: "lease", token })).answer).toEqual({ type: "granted" });
   });
 });
+
+describe("BridgeLeases spawn frames (ucch_agent)", () => {
+  it("runs the subagent for the token's turn and answers with its result", async () => {
+    const { path, leases } = await serve(1);
+    const seen: unknown[] = [];
+    leases.setSpawner(async (holder, frame) => {
+      seen.push({ holder, frame });
+      return { text: "done" };
+    });
+    const { token } = leases.register({ ownerId: "u1", threadId: "t1" });
+    const call = ask(path, JSON.stringify({ type: "spawn", token, description: "Research", task: "Look", model: "gpt6 sol" }));
+    expect(await call.answer).toEqual({ type: "result", text: "done" });
+    expect(seen).toEqual([{ holder: { ownerId: "u1", threadId: "t1" }, frame: { description: "Research", task: "Look", model: "gpt6 sol" } }]);
+  });
+
+  it("refuses a spawn with no live token, and stops the subagent when the bridge hangs up", async () => {
+    const { path, leases } = await serve(1);
+    let stopped = false;
+    leases.setSpawner(
+      (_holder, _frame, signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener("abort", () => {
+            stopped = true;
+            resolve({ error: "stopped" });
+          });
+        }),
+    );
+    expect(await ask(path, JSON.stringify({ type: "spawn", token: "nope", task: "x" })).answer).toMatchObject({ type: "refused" });
+    const { token } = leases.register({ ownerId: "u1", threadId: "t1" });
+    const call = ask(path, JSON.stringify({ type: "spawn", token, task: "x" }));
+    await settle();
+    call.socket.destroy();
+    await settle();
+    expect(stopped).toBe(true);
+  });
+});

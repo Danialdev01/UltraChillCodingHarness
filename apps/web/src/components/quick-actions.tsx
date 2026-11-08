@@ -7,10 +7,10 @@ import {
   FolderGitIcon,
   ListTodoIcon,
   MessageSquarePlusIcon,
-  StickyNoteIcon,
+  SquarePenIcon,
 } from "lucide-react";
 
-import { NewDatabaseDialog, NewProjectDialog, TaskDialog } from "@/components/on-demand";
+import { NewDatabaseDialog, NewProjectDialog, NewSessionDialog, TaskDialog } from "@/components/on-demand";
 import type { TaskDialogState } from "@/components/tasks/task-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Project, Workspace } from "@/lib/session";
@@ -52,6 +52,7 @@ export function QuickActions({
   const [connecting, setConnecting] = useState(false);
   const [todo, setTodo] = useState<TaskDialogState>(null);
   const [saving, setSaving] = useState(false);
+  const [newSessionFor, setNewSessionFor] = useState<Project | null>(null);
   const router = useTransitionRouter();
   const ws = useWorkspaceHash();
   const openProjectHash = projectHashFromPath(usePathname());
@@ -69,7 +70,7 @@ export function QuickActions({
 
   return (
     <>
-      <div className="grid grid-cols-4 gap-1">
+      <div className={cn("grid gap-1", sessionWorkspace ? "grid-cols-3" : "grid-cols-4")}>
         <Action
           icon={ListTodoIcon}
           label="New todo"
@@ -105,24 +106,36 @@ export function QuickActions({
           onClick={() => setConnecting(true)}
           unavailable={permissions.includes("workspace.manage") ? undefined : "Only an admin can add connections"}
         />
-        <Action
-          icon={StickyNoteIcon}
-          label="Project notes"
-          onClick={() => openProjectHash && router.push(projectPageHref(ws, openProjectHash, "documentation"))}
-          unavailable={
-            sessionWorkspace
-              ? "Notes belong to a project"
-              : openProjectHash
-                ? undefined
-                : "Open a project to see its notes"
-          }
-        />
+        {!sessionWorkspace && (
+          <Action
+            icon={SquarePenIcon}
+            label="New session"
+            onClick={() =>
+              setNewSessionFor(projects.find((p) => p.hash === openProjectHash) ?? projects[0] ?? null)
+            }
+            unavailable={
+              !canStartSession
+                ? "Your role cannot start sessions here"
+                : projects.length > 0
+                  ? undefined
+                  : "Create a project to start a session"
+            }
+          />
+        )}
       </div>
 
       {/* Outside the grid: the dialogs render no element of their own, and a
-          fifth child in a four-column grid is a trap for the next change. */}
+          stray child in the grid is a trap for the next change. */}
       <NewProjectDialog workspaceId={workspaceId} open={creating} onOpenChange={setCreating} />
       <NewDatabaseDialog workspaceId={workspaceId} open={connecting} onOpenChange={setConnecting} />
+      {newSessionFor && (
+        <NewSessionDialog
+          project={newSessionFor}
+          projects={projects}
+          open
+          onOpenChange={(open) => !open && setNewSessionFor(null)}
+        />
+      )}
       <TaskDialog
         state={todo}
         projects={projects}

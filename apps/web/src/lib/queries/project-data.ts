@@ -1,6 +1,7 @@
 import type { QueryKey } from "@tanstack/react-query"
 import type { TaskSettings } from "@ucch/protocol"
 
+import { listCommands } from "../commands-api"
 import { fetchTree } from "../files-api"
 import { listEnvVars } from "../env-api"
 import { listNotes } from "../notes-api"
@@ -28,7 +29,8 @@ export interface ProjectQuery<T> {
 export async function fetchProjectSessions(projectHash: string): Promise<ProjectSession[]> {
   const response = await fetch(`/api/projects/${projectHash}/threads`, { credentials: "include" })
   if (!response.ok) throw new Error("Could not list the project's sessions.")
-  return ((await response.json()) as { threads: ProjectSession[] }).threads
+  // A subagent's session opens from its card, never from a list.
+  return ((await response.json()) as { threads: ProjectSession[] }).threads.filter((session) => !session.parentThreadId)
 }
 
 /** The client-cache key of a project's (or session's) file tree. */
@@ -56,5 +58,6 @@ export const projectQueries = {
   }),
   // Names, tags and links only: values never reach the cache.
   env: (hash: string) => ({ queryKey: qk.keys.list(hash), queryFn: () => listEnvVars(hash), persist: true }),
+  commands: (hash: string) => ({ queryKey: qk.commands.list(hash), queryFn: () => listCommands(hash), persist: true }),
   filesTree: (target: ProjectTarget) => ({ queryKey: treeKey(target), queryFn: () => fetchTree(target), persist: true }),
 } satisfies Record<string, (arg: never) => ProjectQuery<unknown>>

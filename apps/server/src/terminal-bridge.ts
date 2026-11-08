@@ -118,9 +118,9 @@ export class TerminalBridge {
         node: process.execPath,
         bridgeBin: options.bin,
         ompBin: options.ompBin,
-        agentDir: options.agentDir(input.subject),
-        overlay: overlay.path,
-        openrouterKey,
+        omp: { agentDir: options.agentDir(input.subject), overlay: overlay.path, openrouterKey },
+        // A CLI started by hand in a terminal has no session to hang a subagent's card on.
+        subagents: false,
         worktree: input.cwd,
         schedulerSock: options.socket,
         token: lease.token,

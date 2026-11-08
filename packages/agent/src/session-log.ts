@@ -30,23 +30,37 @@ export const INTERRUPTED = "Interrupted before this tool ran.";
  * projection of that log into what the model is shown.
  *
  * The last checkpoint wins, so a thread long enough to compact twice starts
- * from the second summary rather than stacking them.
+ * from the second summary rather than stacking them. A harness switch
+ * (`thread.harness_switched`) is one as well, its brief the summary. So is
+ * `thread.context_cleared`, with no summary at all: the model starts again
+ * from what follows it.
  */
 export function rebuild(
   events: readonly DomainEvent[],
   images: ReadonlyMap<string, string> = new Map(),
 ): ChatMessage[] {
   let checkpoint = -1;
-  let summary = "";
-  events.forEach((event, index) => {
+  let summary: string | null = null;
+  for (const [index, event] of events.entries()) {
     if (event.type === "context.injected" && event.source === "compaction") {
       checkpoint = index;
       summary = event.content;
     }
-  });
+    // A switch onto this loop from another harness is a checkpoint too: what
+    // the other harness did is in its brief, not in messages this loop wrote.
+    if (event.type === "thread.harness_switched") {
+      checkpoint = index;
+      summary = event.brief;
+    }
+    if (event.type === "thread.context_cleared") {
+      checkpoint = index;
+      summary = null;
+    }
+  }
 
   if (checkpoint >= 0) {
-    return [summaryMessage(summary), ...replay(events.slice(checkpoint + 1), images)];
+    const rest = replay(events.slice(checkpoint + 1), images);
+    return summary === null ? rest : [summaryMessage(summary), ...rest];
   }
   return replay(events, images);
 }

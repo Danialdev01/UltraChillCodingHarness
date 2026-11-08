@@ -386,6 +386,12 @@ export const threads = pgTable(
     treeHash: text("tree_hash"),
     /** Set on the thread a handoff started: the one whose work it carries on. */
     handoffFromThreadId: uuid("handoff_from_thread_id"),
+    /**
+     * A subagent's session: the thread whose agent started it with
+     * `ucch_agent`. It works in that thread's folder and is left out of the
+     * sessions list; its page is still reachable by hash, from the card.
+     */
+    parentThreadId: uuid("parent_thread_id"),
     /** Pinned to the top of the sidebar's session list, for everyone in the workspace. */
     pinned: boolean("pinned").notNull().default(false),
     /** Set while archived: left out of the sidebar unless its filter asks for them. */
@@ -403,6 +409,8 @@ export const threads = pgTable(
     index("threads_project_created_idx").on(t.projectId, t.createdAt),
     // The sidebar's session list: newest activity first.
     index("threads_last_activity_idx").on(t.projectId, t.lastActivityAt),
+    // A parent's subagent sessions.
+    index("threads_parent_idx").on(t.parentThreadId),
     // `listProjects`' "is anything running" -- an EXISTS that touches only
     // the few running threads rather than every thread of the project.
     index("threads_running_idx")

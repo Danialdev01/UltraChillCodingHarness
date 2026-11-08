@@ -24,7 +24,13 @@ import {
   effectiveCredentialSource,
   isTransient,
   isRiskyCommand,
+  isOpenRouterLimit,
+  isUcchAgentTool,
   limitFallback,
+  UCCH_AGENT_ARGS,
+  UCCH_AGENT_DESCRIPTION,
+  UCCH_AGENT_GUIDE,
+  UCCH_AGENT_TOOL,
   needsApproval,
   readAgentSettings,
   type CliProviderId,
@@ -71,6 +77,10 @@ import { DEFAULT_OMP_SETTINGS, writeOmpOverlay, type OmpPreset } from "./omp-ove
 import { bridgeServer, writeClaudeMcpConfig, writeCodexBridge } from "./omp-bridge-config.js";
 import type { ArgvWrapper } from "./child-priority.js";
 import { registry as metrics } from "./metrics.js";
+import type { EventBus } from "./bus.js";
+import { catalogue } from "./openrouter.js";
+import { ChoiceWaiters, harnessAvailability, harnessLabel, limitOptions } from "./choices.js";
+import { SubagentRunner, type SubagentCall, type SubagentRequest } from "./subagents.js";
 
 export interface AgentOptions {
   secretKey: string | undefined;
@@ -138,6 +148,11 @@ export interface AgentOptions {
    * when its workspace turns it on (`agent_settings.ompBridge`). Absent: never.
    */
   ompBridge?: OmpBridgeOptions;
+  /**
+   * The bus, for following a subagent's session (`ucch_agent`). Without it
+   * (and `dispatch`), no turn is offered subagents on other harnesses.
+   */
+  bus?: Pick<EventBus, "subscribe">;
 }
 
 /** What the server knows about the OMP bridge: where it is, and where its calls take a slot. */
@@ -194,6 +209,28 @@ export function resolveModel(
   serverDefault: string,
 ): string {
   return requested?.trim() || accountDefault?.trim() || serverDefault;
+}
+
+/** `ucch_agent` as an OMP host tool: the bridge's tool, described the same way. */
+const UCCH_AGENT_HOST_TOOL = {
+  name: UCCH_AGENT_TOOL,
+  label: "Subagent (any harness)",
+  description: UCCH_AGENT_DESCRIPTION,
+  parameters: {
+    type: "object",
+    properties: {
+      description: { type: "string", description: UCCH_AGENT_ARGS.description },
+      task: { type: "string", description: UCCH_AGENT_ARGS.task },
+      model: { type: "string", description: UCCH_AGENT_ARGS.model },
+    },
+    required: ["description", "task"],
+    additionalProperties: false,
+  },
+};
+
+const EFFORTS: ReadonlySet<string> = new Set(["off", "low", "medium", "high", "xhigh", "max"]);
+function isEffort(value: string): value is ReasoningEffort {
+  return EFFORTS.has(value);
 }
 
 /** Which of the scheduler's limits a provider's turn counts against. */
@@ -284,6 +321,19 @@ export class AgentTurnReactor {
 
   readonly #scheduler: TurnScheduler;
 
+  /** Choice cards a subagent is waiting on (`SubagentRunner`). */
+  readonly #choices = new ChoiceWaiters();
+
+  /** `ucch_agent` subagents: absent without a bus and a dispatcher. */
+  readonly #subagents: SubagentRunner | null;
+
+  /**
+   * Each running turn's `ucch_agent` calls not yet matched to the subagent
+   * they started: a bridge call reaches the server without the CLI's tool
+   * call id, so it is matched here by its task (`#claimCall`).
+   */
+  readonly #spawnCalls = new Map<string, { turnId: string; calls: { toolUseId: string; task: string | null }[] }>();
+
   constructor(
     private readonly db: Database,
     private readonly store: EventStore,
@@ -292,6 +342,72 @@ export class AgentTurnReactor {
   ) {
     this.#scheduler =
       options.scheduler ?? new TurnScheduler({ cliPerUser: 2, cliTotal: Infinity, nativeTotal: Infinity });
+    const { bus, dispatch } = options;
+    this.#subagents =
+      bus && dispatch
+        ? new SubagentRunner({
+            db,
+            store,
+            bus,
+            dispatch,
+            harnesses: (subject) => this.#harnesses(subject),
+            catalogue: () => catalogue(),
+            customProvider: this.#customProvider(),
+            claimCall: (threadId, request) => this.#claimCall(threadId, request),
+            choices: this.#choices,
+            allowAllFor: (threadId) => this.allowAllFor(threadId),
+            onError,
+          })
+        : null;
+  }
+
+  /** What runs OpenRouter models: OMP with `OMP_ENABLED`, else the native loop. */
+  #customProvider(): "omp" | "native" {
+    return this.options.ompEnabled && this.options.cliEnabled ? "omp" : "native";
+  }
+
+  /** The harnesses a subject could run a turn on now. */
+  async #harnesses(subject: string) {
+    const cards = await this.options.providers?.health(subject);
+    if (!cards) {
+      return [{ provider: "native" as const, label: "Custom (OpenRouter)", usable: true, blocker: null, custom: true }];
+    }
+    return harnessAvailability(cards, { cliEnabled: this.options.cliEnabled ?? false, ompEnabled: this.options.ompEnabled ?? false });
+  }
+
+  /**
+   * A bridge's `ucch_agent` call, matched to the tool call it came from in
+   * its turn's stream: by its task, else the oldest unmatched. The CLI may
+   * run the tool a moment before its stream line reaches the server, so
+   * this waits a little for one to arrive.
+   */
+  async #claimCall(threadId: string, request: SubagentRequest): Promise<SubagentCall | null> {
+    for (let waited = 0; ; waited += 100) {
+      const entry = this.#spawnCalls.get(threadId);
+      if (!entry) return null;
+      const at = entry.calls.findIndex((call) => call.task === request.task);
+      const index = at >= 0 ? at : entry.calls.length > 0 ? 0 : -1;
+      if (index >= 0) {
+        const [call] = entry.calls.splice(index, 1);
+        return { turnId: entry.turnId, toolUseId: call!.toolUseId };
+      }
+      if (waited >= 3_000) return { turnId: entry.turnId, toolUseId: null };
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  /**
+   * One `ucch_agent` subagent a Claude Code or Codex turn's bridge asked
+   * for over the scheduler socket (`BridgeLeases.setSpawner`). `holder` is
+   * the turn's lease: whose subscriptions pay, and the parent session.
+   */
+  spawnSubagent(
+    holder: { ownerId: string; threadId: string },
+    request: SubagentRequest,
+    signal: AbortSignal,
+  ): Promise<{ text: string } | { error: string }> {
+    if (!this.#subagents) return Promise.resolve({ error: "this server does not run subagents" });
+    return this.#subagents.spawn(holder.threadId, holder.ownerId, request, signal);
   }
 
   /**
@@ -323,7 +439,23 @@ export class AgentTurnReactor {
       return;
     }
 
+    if (command.type === "thread.choice_reply") {
+      const answer = {
+        optionId: command.optionId === "dismiss" ? null : command.optionId,
+        ...(command.model ? { model: command.model } : {}),
+      };
+      // A subagent waiting in this process takes it; otherwise it is a
+      // card of the thread's own, read back from its log.
+      if (this.#choices.answer(command.requestId, answer)) return;
+      void this.#answerLimitCard(command.threadId, command.requestId, answer, principal).catch(this.onError);
+      return;
+    }
+
     for (const event of batch) {
+      if (event.type === "thread.harness_switch_requested") {
+        void this.#switchHarness(event, principal).catch(this.onError);
+        continue;
+      }
       if (event.type === "thread.compaction_requested") {
         void this.#compact(event.threadId, event.method, event.focus).catch(this.onError);
         continue;
@@ -487,39 +619,128 @@ export class AgentTurnReactor {
   }
 
   /**
-   * Automatic handoff on a usage limit (solution §5.4, OM4.6): a Claude Code
-   * or Codex turn that failed on its plan's limit goes on in a new thread on
-   * the workspace's fallback provider, which is asked the message that
-   * failed. The workspace turns it on (`agent_settings.autoHandoff`).
+   * A turn stopped on a usage limit (solution §5.4, OM4.6): a Claude Code or
+   * Codex plan's, or the OpenRouter key's. The session carries on, in the
+   * same thread, on another harness (`thread.switch_harness`), which is
+   * asked the message that failed:
    *
-   * Once per chain: a thread that already handed off on a limit, or was
-   * itself started by one, fails as it would without the setting. So a
-   * fallback that is limited too stops there instead of handing back.
+   * - on the workspace's fallback, without asking, when it turns automatic
+   *   handoff on (`agent_settings.autoHandoff`) -- once per chain, so a
+   *   fallback limited too does not switch back on its own;
+   * - otherwise on whichever the person picks from a card in the chat
+   *   (`agent.choice_requested`, answered in `#answerLimitCard`).
+   *
+   * A subagent's session asks its parent instead (`SubagentRunner`).
    */
   async #handOffOnLimit(threadId: string, provider: ProviderId, text: string, principal: Principal | undefined): Promise<void> {
     const dispatch = this.options.dispatch;
     if (!dispatch || !principal) return;
     const [row] = await this.db
-      .select({ agent: workspaces.agentSettings })
+      .select({
+        agent: workspaces.agentSettings,
+        projectId: threads.projectId,
+        parentThreadId: threads.parentThreadId,
+        createdByUserId: threads.createdByUserId,
+        credentialSource: threads.credentialSource,
+      })
       .from(threads)
       .innerJoin(projects, eq(projects.id, threads.projectId))
       .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
       .where(eq(threads.id, threadId))
       .limit(1);
-    const target = row ? limitFallback(readAgentSettings(row.agent), provider) : null;
-    if (!target) return;
+    if (!row || row.parentThreadId) return;
     const history = await this.store.threadHistory(threadId);
-    if (history.some(({ event }) => event.type === "thread.handed_off" && event.reason === "limit")) return;
+    const target = limitFallback(readAgentSettings(row.agent), provider);
+    const bounced = history.some(
+      ({ event }) =>
+        (event.type === "thread.handed_off" && event.reason === "limit") ||
+        (event.type === "thread.harness_switched" && event.reason === "limit" && event.toProvider === provider),
+    );
+    if (target && !bounced) {
+      const result = await dispatch(principal, {
+        type: "thread.switch_harness",
+        threadId,
+        targetProvider: target,
+        message: text,
+        reason: "limit",
+      });
+      if (result.ok) return;
+      // Refused -- the thread was sent another message meanwhile, or its
+      // worktree is gone: the person is asked instead.
+      this.onError(new Error(`automatic switch of ${threadId} refused: ${result.message}`));
+    }
+    if (!row.projectId) return;
+    const owner = await this.#owner(row.projectId, {
+      createdByUserId: row.createdByUserId ?? null,
+      credentialSource: row.credentialSource ?? null,
+    });
+    if (!owner) return;
+    const options = limitOptions(await this.#harnesses(owner.id), provider);
+    const events: DomainEvent[] = [
+      {
+        type: "agent.choice_requested",
+        threadId,
+        requestId: randomUUID(),
+        kind: "harness_limit",
+        title: `${harnessLabel(provider)} hit its usage limit`,
+        detail: "Carry this session on with another harness. The work so far goes over as a brief, and your last message is sent again.",
+        options,
+        provider,
+        message: text,
+      },
+    ];
+    await this.store.append({ projectId: row.projectId, threadId }, events, (tx) => applyProjection(tx, events, null));
+  }
+
+  /**
+   * The person's answer to a thread's own limit card: the switch it picks,
+   * with the message the limit stopped. A card a later turn or switch has
+   * overtaken, or one answered already, is left as it is.
+   */
+  async #answerLimitCard(
+    threadId: string,
+    requestId: string,
+    answer: { optionId: string | null; model?: string },
+    principal: Principal | undefined,
+  ): Promise<void> {
+    const dispatch = this.options.dispatch;
+    if (!dispatch || !principal) return;
+    const history = await this.store.threadHistory(threadId);
+    let request: Extract<DomainEvent, { type: "agent.choice_requested" }> | undefined;
+    let projectId: string | undefined;
+    for (const stored of history) {
+      const { event } = stored;
+      if (event.type === "agent.choice_requested" && event.requestId === requestId) {
+        request = event;
+        projectId = stored.projectId;
+      } else if (
+        request &&
+        ((event.type === "agent.choice_resolved" && event.requestId === requestId) ||
+          event.type === "turn.started" ||
+          event.type === "thread.harness_switch_requested")
+      ) {
+        return;
+      }
+    }
+    if (!request || !projectId || request.kind !== "harness_limit") return;
+    const resolved: DomainEvent[] = [
+      { type: "agent.choice_resolved", threadId, requestId, optionId: answer.optionId, ...(answer.model ? { model: answer.model } : {}) },
+    ];
+    await this.store.append({ projectId, threadId }, resolved, (tx) => applyProjection(tx, resolved, null));
+    const option = answer.optionId ? request.options.find((candidate) => candidate.id === answer.optionId) : undefined;
+    if (!option?.provider) return;
     const result = await dispatch(principal, {
-      type: "thread.handoff_to",
+      type: "thread.switch_harness",
       threadId,
-      targetProvider: target,
-      message: text,
+      targetProvider: option.provider,
+      ...((answer.model ?? option.model) ? { model: answer.model ?? option.model } : {}),
+      ...(request.message ? { message: request.message } : {}),
       reason: "limit",
     });
-    // Refused -- the thread was sent another message meanwhile, or its
-    // worktree is gone: the failed turn already says what happened.
-    if (!result.ok) this.onError(new Error(`automatic handoff of ${threadId} refused: ${result.message}`));
+    if (!result.ok) {
+      const failed: DomainEvent[] = [{ type: "thread.harness_switch_failed", threadId, error: result.message.slice(0, 2_000) }];
+      await this.store.append({ projectId, threadId }, failed, (tx) => applyProjection(tx, failed, null));
+    }
   }
 
   async #turn(
@@ -568,6 +789,9 @@ export class AgentTurnReactor {
 
     const turnId = randomUUID();
     const target = { projectId: thread.projectId, threadId };
+    // Where this turn's `ucch_agent` calls wait to be matched (`#claimCall`).
+    const spawnCalls = { turnId, calls: [] as { toolUseId: string; task: string | null }[] };
+    this.#spawnCalls.set(threadId, spawnCalls);
 
     // A project session works in its own worktree; every other thread in
     // the project's checkout.
@@ -584,6 +808,10 @@ export class AgentTurnReactor {
       if (batch.some((event) => event.type === "agent.turn_failed" && event.limit)) limited = true;
       for (const event of batch) {
         if (event.type === "agent.subagent_finished") subagentsTotal.inc({ provider: runsOn, status: event.status });
+        if (event.type === "agent.tool_use" && isUcchAgentTool(event.name)) {
+          const task = (event.input as { task?: unknown } | null)?.task;
+          spawnCalls.calls.push({ toolUseId: event.toolUseId, task: typeof task === "string" ? task : null });
+        }
       }
       const events = worktreeId
         ? batch.map((event) => (event.type === "file.changed" ? { ...event, worktreeId } : event))
@@ -651,7 +879,11 @@ export class AgentTurnReactor {
       // opens. Given back in `finally`, however the turn ends.
       try {
         release = await this.#scheduler.acquire({
-          ownerId: owner.id,
+          // A subagent's turn counts in a per-account allowance of its own:
+          // its parent holds one of the account's CLI slots while it waits,
+          // and two subagents asked for at once should run at once. The
+          // server's totals still hold over both.
+          ownerId: thread.parentThreadId ? `${owner.id}:subagents` : owner.id,
           kind: turnKindOf(provider),
           threadId,
           signal: controller.signal,
@@ -732,6 +964,14 @@ export class AgentTurnReactor {
           ]);
         }
 
+        // The first turn on a harness the thread was switched to: its session
+        // is new, and starts from the brief of the work so far. Only a bound
+        // thread can have been switched; a new one has nothing to read.
+        if (thread.provider && !thread.providerSessionId) {
+          const brief = await this.#pendingBrief(threadId);
+          if (brief) prompt = handoffMessage(brief, prompt);
+        }
+
         await this.#runCli(provider, {
           ownerId: owner.id,
           owner,
@@ -740,6 +980,7 @@ export class AgentTurnReactor {
           projectId: thread.projectId,
           workspace,
           text: prompt,
+          subagent: Boolean(thread.parentThreadId),
           resumeToken: thread.providerSessionId,
           model: cliModel,
           effort,
@@ -750,8 +991,8 @@ export class AgentTurnReactor {
           ...(mode ? { mode } : {}),
           ...(researched ? { researched } : {}),
         });
-        // Claude Code and Codex are the subscriptions with a limit to hit.
-        return limited && (provider === "claude" || provider === "codex") ? provider : undefined;
+        // A plan's usage limit (Claude Code, Codex) or the OpenRouter key's (OMP).
+        return limited ? provider : undefined;
       }
 
       const resolvedModel = resolveModel(model, owner.defaultModel, this.options.defaultModel);
@@ -824,10 +1065,13 @@ export class AgentTurnReactor {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await append([{ type: "agent.turn_failed", threadId, turnId, error: message }]).catch(
+      // The native loop's OpenRouter key out of credits is a limit too.
+      const limit = runsOn === "native" && isOpenRouterLimit(message);
+      await append([{ type: "agent.turn_failed", threadId, turnId, error: message, ...(limit ? { limit: true as const } : {}) }]).catch(
         this.onError,
       );
     } finally {
+      if (this.#spawnCalls.get(threadId) === spawnCalls) this.#spawnCalls.delete(threadId);
       release?.();
       // The tail of the answer, should the turn have ended without anything
       // durable after its last token.
@@ -836,6 +1080,24 @@ export class AgentTurnReactor {
       // conversation up, and a failure here is never the turn's.
       void this.#recheckStack(thread.projectId, workspace).catch(this.onError);
     }
+    return limited ? runsOn : undefined;
+  }
+
+  /**
+   * The brief a harness switch left for the thread's next session: the
+   * last `thread.harness_switched`, until a session has opened since it
+   * (which was handed it). A first turn that failed before its CLI named a
+   * session leaves it for the next one.
+   */
+  async #pendingBrief(threadId: string): Promise<string | null> {
+    const history = await this.store.threadHistory(threadId);
+    let brief: string | null = null;
+    for (const { event } of history) {
+      if (event.type === "thread.harness_switched") brief = event.brief;
+      // A clear after a switch empties that brief with the rest.
+      else if (event.type === "agent.session_started" || event.type === "thread.context_cleared") brief = null;
+    }
+    return brief;
   }
 
   /**
@@ -965,48 +1227,13 @@ export class AgentTurnReactor {
     }
     let handed: Extract<DomainEvent, { type: "thread.handed_off" }> | undefined;
     let error: string | undefined;
-    let release: (() => void) | undefined;
-    let overlay: { dispose(): Promise<void> } | undefined;
     const stopped = () => {
       if (controller.signal.aborted) throw new Error("Stopped.");
     };
     try {
       const dispatch = this.options.dispatch;
       if (!dispatch || !principal) throw new Error("this server cannot start a thread for a handoff");
-      const owner = await this.#owner(thread.projectId, thread);
-      if (!owner) throw new Error("there is nobody to bill this thread to");
-      const providers = this.options.providers;
-      if (!providers || !this.options.cliEnabled) throw new Error("a handoff's brief is written by OMP, which is disabled on this server");
-      // The key first: a missing one says where to add it.
-      const openrouterKey = this.#decryptKey(owner.openrouterKeyEncrypted);
-      const history = await this.store.threadHistory(threadId);
-      release = await this.#scheduler.acquire({ ownerId: owner.id, kind: "omp", threadId, signal: controller.signal });
-      stopped();
-      const resolved = await providers.resolve(owner.id, "omp", { openrouterKey, ompPreset: "standard" });
-      const omp = resolved.provider as Partial<BriefAsker>;
-      if (!omp.ask) throw new Error("this server's OMP provider cannot write a brief");
-      const written = await writeOmpOverlay(providers.ompRunDir(owner.id), randomUUID(), {
-        settings: { ...DEFAULT_OMP_SETTINGS, models: { default: this.options.searchModel } },
-        preset: "standard",
-        permissionMode: this.#modeFor(threadId, owner),
-        // A brief runs `--no-tools`: nothing for a trusted project's config to add.
-        trusted: false,
-        workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
-        webSearch: false,
-        hostTools: [],
-      });
-      overlay = written;
-      const brief = await buildHandoffBrief({
-        omp: omp as BriefAsker,
-        ctx: resolved.ctx(treeFor(this.options.workspaceRoot, thread.projectId, thread)),
-        files: { overlayPath: written.path, guardHookPath: providers.ompGuardHook(owner.id) },
-        events: history.map((stored) => stored.event),
-        ...(event.focus ? { focus: event.focus } : {}),
-        signal: controller.signal,
-      });
-      // The slot was for OMP; the new thread's turn takes its own.
-      release();
-      release = undefined;
+      const brief = await this.#writeBrief(thread, event.focus, controller.signal);
       stopped();
 
       const created = await dispatch(principal, {
@@ -1051,8 +1278,6 @@ export class AgentTurnReactor {
     } catch (caught) {
       error = controller.signal.aborted ? "Stopped." : caught instanceof Error ? caught.message : String(caught);
     } finally {
-      release?.();
-      await overlay?.dispose().catch(this.onError);
       if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
       const events: DomainEvent[] = [
         handed && !error ? handed : { type: "thread.handoff_failed", threadId, error: (error ?? "the handoff failed").slice(0, 2_000) },
@@ -1061,6 +1286,124 @@ export class AgentTurnReactor {
         .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
         .catch(this.onError);
     }
+  }
+
+  /**
+   * The brief of a thread's work so far (solution §5.4): its log as a
+   * transcript, on stdin to a one-shot `omp -p --no-session --no-tools` on
+   * the overlay's `smol` role -- the server's compaction model, never the
+   * coding one. OMP writes it whichever harnesses are on either side, so it
+   * bills as an OMP call does: the account's OpenRouter key, and an OMP slot.
+   */
+  async #writeBrief(thread: typeof threads.$inferSelect, focus: string | undefined, signal: AbortSignal): Promise<string> {
+    const owner = await this.#owner(thread.projectId, thread);
+    if (!owner) throw new Error("there is nobody to bill this thread to");
+    const providers = this.options.providers;
+    if (!providers || !this.options.cliEnabled) throw new Error("a handoff's brief is written by OMP, which is disabled on this server");
+    // The key first: a missing one says where to add it.
+    const openrouterKey = this.#decryptKey(owner.openrouterKeyEncrypted);
+    const history = await this.store.threadHistory(thread.id);
+    const release = await this.#scheduler.acquire({ ownerId: owner.id, kind: "omp", threadId: thread.id, signal });
+    let overlay: { dispose(): Promise<void> } | undefined;
+    try {
+      if (signal.aborted) throw new Error("Stopped.");
+      const resolved = await providers.resolve(owner.id, "omp", { openrouterKey, ompPreset: "standard" });
+      const omp = resolved.provider as Partial<BriefAsker>;
+      if (!omp.ask) throw new Error("this server's OMP provider cannot write a brief");
+      const written = await writeOmpOverlay(providers.ompRunDir(owner.id), randomUUID(), {
+        settings: { ...DEFAULT_OMP_SETTINGS, models: { default: this.options.searchModel } },
+        preset: "standard",
+        permissionMode: this.#modeFor(thread.id, owner),
+        // A brief runs `--no-tools`: nothing for a trusted project's config to add.
+        trusted: false,
+        workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
+        webSearch: false,
+        hostTools: [],
+      });
+      overlay = written;
+      return await buildHandoffBrief({
+        omp: omp as BriefAsker,
+        ctx: resolved.ctx(treeFor(this.options.workspaceRoot, thread.projectId, thread)),
+        files: { overlayPath: written.path, guardHookPath: providers.ompGuardHook(owner.id) },
+        // What the agent can still see: nothing from before a clear.
+        events: sinceCleared(history.map((stored) => stored.event)),
+        ...(focus ? { focus } : {}),
+        signal,
+      });
+    } finally {
+      // The slot was for OMP; whatever turn follows takes its own.
+      release();
+      await overlay?.dispose().catch(this.onError);
+    }
+  }
+
+  /**
+   * `thread.switch_harness`: the same thread, on another harness from its
+   * next turn. The brief of its work so far is written (`#writeBrief`) and
+   * recorded with the switch, which rebinds the thread and drops its old
+   * session; the next turn's new session starts from the brief
+   * (`#pendingBrief`), and the native loop folds the log into it as it
+   * folds a compaction. With a message -- the one a limit stopped -- that
+   * turn is started at once.
+   *
+   * The thread is busy from the request until the switch is recorded, and
+   * a stop ends the brief there.
+   */
+  async #switchHarness(
+    event: Extract<DomainEvent, { type: "thread.harness_switch_requested" }>,
+    principal: Principal | undefined,
+  ): Promise<void> {
+    const { threadId } = event;
+    const controller = new AbortController();
+    this.#running.set(threadId, controller);
+    const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1).catch((error: unknown) => {
+      this.#running.delete(threadId);
+      throw error;
+    });
+    if (!thread) {
+      this.#running.delete(threadId);
+      return;
+    }
+    // "Custom" is OMP where it is on, as a new thread's would be.
+    const toProvider: ProviderId =
+      event.targetProvider === "native" && this.#customProvider() === "omp" ? "omp" : event.targetProvider;
+    let switched: Extract<DomainEvent, { type: "thread.harness_switched" }> | undefined;
+    let error: string | undefined;
+    try {
+      const brief = await this.#writeBrief(thread, event.focus, controller.signal);
+      if (controller.signal.aborted) throw new Error("Stopped.");
+      switched = {
+        type: "thread.harness_switched",
+        threadId,
+        fromProvider: event.fromProvider,
+        toProvider,
+        ...(event.model ? { model: event.model } : {}),
+        brief,
+        ...(event.reason ? { reason: event.reason } : {}),
+      };
+    } catch (caught) {
+      error = controller.signal.aborted ? "Stopped." : caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
+      const events: DomainEvent[] = [
+        switched && !error ? switched : { type: "thread.harness_switch_failed", threadId, error: (error ?? "the switch failed").slice(0, 2_000) },
+      ];
+      await this.store
+        .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
+        .catch(this.onError);
+    }
+    if (!switched || error || !event.message) return;
+    const dispatch = this.options.dispatch;
+    if (!dispatch || !principal) return;
+    const sent = await dispatch(principal, {
+      type: "thread.send",
+      threadId,
+      text: event.message,
+      provider: toProvider,
+      ...(event.model ? { model: event.model } : {}),
+      ...(event.effort && isEffort(event.effort) ? { effort: event.effort } : {}),
+    });
+    if (!sent.ok) this.onError(new Error(`the message after switching ${threadId} could not be sent: ${sent.message}`));
   }
 
   /**
@@ -1249,6 +1592,8 @@ export class AgentTurnReactor {
        * moved the thread to idle with the CLI still to run.
        */
       researched?: { usage: TokenUsage; costUsd: number };
+      /** A subagent's own session: it is not offered `ucch_agent`. */
+      subagent?: boolean;
     },
   ): Promise<void> {
     if (!this.options.providers || !this.options.cliEnabled) {
@@ -1263,7 +1608,7 @@ export class AgentTurnReactor {
 
     let run: AgentRun | undefined;
     let overlay: { dispose(): Promise<void> } | undefined;
-    let bridge: (Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { dispose(): Promise<void> }) | null = null;
+    let bridge: (Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { omp: boolean; dispose(): Promise<void> }) | null = null;
     try {
       await this.#prepareWorkspace(input.workspace);
       const knowledge = await readProjectKnowledge(input.workspace).catch((error: unknown) => {
@@ -1272,17 +1617,30 @@ export class AgentTurnReactor {
       });
       // Before the instructions: whether the turn has the bridge decides
       // whether they carry its guide.
-      if (provider !== "omp" && input.agentSettings?.ompBridge.enabled) bridge = await this.#openBridge(provider, input);
+      // Subagents on any harness, for every session but a subagent's own.
+      const offersSubagents = this.#subagents !== null && !input.subagent;
+      const ompTools = input.agentSettings?.ompBridge.enabled === true;
+      if (provider !== "omp" && (ompTools || offersSubagents)) {
+        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents });
+      }
       // When to reach for the bridge's tools (solution §10.4). Codex reads
       // instructions only at the start of a session (`codexPrompt`), so a
       // resumed Codex turn is not handed it, and the log does not say so.
-      const guide = bridge && !(provider === "codex" && input.resumeToken) ? ompBridgeGuide() : null;
+      const fresh = !(provider === "codex" && input.resumeToken);
+      const guide =
+        bridge && fresh
+          ? [bridge.omp ? ompBridgeGuide() : null, offersSubagents ? UCCH_AGENT_GUIDE : null]
+              .filter((part): part is string => Boolean(part))
+              .join("\n\n") || null
+          : null;
       // OMP is handed the knowledge inside its own section of the system
       // prompt (solution §3.8). It reads the worktree's AGENTS.md itself, so
       // that is never added here.
       const instructions =
         provider === "omp"
-          ? ompInstructions(input.workspace, knowledge, input.mode)
+          ? [ompInstructions(input.workspace, knowledge, input.mode), offersSubagents ? UCCH_AGENT_GUIDE : null]
+              .filter((part): part is string => Boolean(part))
+              .join("\n\n")
           : guide
             ? [knowledge?.trimEnd(), guide].filter((part): part is string => Boolean(part)).join("\n\n")
             : knowledge;
@@ -1316,7 +1674,10 @@ export class AgentTurnReactor {
       let host: Pick<ProviderRunInput, "hostTools" | "onHostToolCall"> = {};
       if (provider === "omp") {
         const providers = this.options.providers;
-        const hostTools = hostToolSchemas(preset, this.options.registry);
+        const hostTools = [
+          ...hostToolSchemas(preset, this.options.registry),
+          ...(offersSubagents ? [UCCH_AGENT_HOST_TOOL] : []),
+        ];
         // One bank per project, under the subject that pays (solution §7.1).
         const memory = input.agentSettings?.memory ?? DEFAULT_OMP_SETTINGS.memory;
         const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), input.turnId, {
@@ -1350,7 +1711,9 @@ export class AgentTurnReactor {
         host = {
           hostTools,
           onHostToolCall: (call, signal) =>
-            this.#runHostTool(call, signal, {
+            call.toolName === UCCH_AGENT_TOOL
+              ? this.#hostSubagent(call, signal, input)
+              : this.#runHostTool(call, signal, {
               ...input,
               preset,
               advertised: new Set(hostTools.map((tool) => tool.name)),
@@ -1531,23 +1894,34 @@ export class AgentTurnReactor {
       agentSettings?: WorkspaceAgentSettings;
       trusted?: boolean;
     },
-  ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { dispose(): Promise<void> }) | null> {
+    /** What the bridge carries: OMP's tools (the workspace's bridge), `ucch_agent`, or both. */
+    offer: { omp: boolean; subagents: boolean },
+  ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { omp: boolean; dispose(): Promise<void> }) | null> {
     const options = this.options.ompBridge;
     const providers = this.options.providers;
     if (!options || !providers) return null;
-    let openrouterKey: string;
-    try {
-      openrouterKey = this.#decryptKey(input.owner.openrouterKeyEncrypted);
-    } catch {
-      return null;
+    // OMP's tools need the key their calls bill; without one the bridge
+    // can still carry `ucch_agent`.
+    let openrouterKey: string | null = null;
+    if (offer.omp) {
+      try {
+        openrouterKey = this.#decryptKey(input.owner.openrouterKeyEncrypted);
+      } catch {
+        openrouterKey = null;
+      }
     }
+    if (!openrouterKey && !offer.subagents) return null;
+    // A bridge for `ucch_agent` alone is offered to every Claude Code and
+    // Codex turn, so a server without the bundle must not hand the CLI an
+    // MCP server it cannot start.
+    if (!openrouterKey && !(await stat(options.bin).then((file) => file.isFile(), () => false))) return null;
     const memory = input.agentSettings?.memory ?? DEFAULT_OMP_SETTINGS.memory;
     const disposers: (() => Promise<void> | void)[] = [];
     const dispose = async () => {
       for (const step of disposers.splice(0).reverse()) await step();
     };
     try {
-      const overlay = await writeOmpOverlay(providers.ompRunDir(input.ownerId), `bridge-${input.turnId}`, {
+      const overlay = !openrouterKey ? null : await writeOmpOverlay(providers.ompRunDir(input.ownerId), `bridge-${input.turnId}`, {
         // Each call names a role (`@smol`, `@slow`); every role is the
         // account's OpenRouter model until the workspace picks its own.
         settings: {
@@ -1569,36 +1943,69 @@ export class AgentTurnReactor {
         workersPerTurn: 2,
         webSearch: false,
       });
-      disposers.push(() => overlay.dispose());
+      if (overlay) disposers.push(() => overlay.dispose());
       const lease = options.leases.register({ ownerId: input.ownerId, threadId: input.threadId });
       disposers.push(() => lease.revoke());
       const server = bridgeServer({
         node: process.execPath,
         bridgeBin: options.bin,
         ompBin: options.ompBin,
-        agentDir: providers.ompAgentDir(input.ownerId),
-        overlay: overlay.path,
-        openrouterKey,
+        omp:
+          overlay && openrouterKey
+            ? { agentDir: providers.ompAgentDir(input.ownerId), overlay: overlay.path, openrouterKey }
+            : null,
+        subagents: offer.subagents,
         worktree: input.workspace,
         schedulerSock: options.socket,
         token: lease.token,
         maxSeconds: options.maxSeconds,
         trusted: input.trusted === true,
-        memory: memory.enabled,
+        memory: Boolean(overlay) && memory.enabled,
       });
       const runDir = providers.cliRunDir(input.ownerId, provider);
       if (provider === "codex") {
-        const codex = await writeCodexBridge(runDir, input.turnId, server, options.maxSeconds);
+        const codex = await writeCodexBridge(runDir, input.turnId, server, options.maxSeconds, offer.subagents);
         disposers.push(() => codex.dispose());
-        return { codexMcp: codex.mcp, dispose };
+        return { codexMcp: codex.mcp, omp: Boolean(overlay), dispose };
       }
       const config = await writeClaudeMcpConfig(runDir, input.turnId, server);
       disposers.push(() => config.dispose());
-      return { mcpConfigPath: config.path, dispose };
+      return { mcpConfigPath: config.path, omp: Boolean(overlay), dispose };
     } catch (error) {
       await dispose().catch(this.onError);
       throw error;
     }
+  }
+
+  /**
+   * An OMP turn's `ucch_agent` call: a subagent on whichever harness its
+   * model routes to (`SubagentRunner`), its answer the tool's result. OMP
+   * names the call, so its card goes under it with no matching.
+   */
+  async #hostSubagent(
+    call: HostToolCall,
+    signal: AbortSignal,
+    input: { ownerId: string; threadId: string; turnId: string },
+  ): Promise<HostToolResult> {
+    const args = call.arguments;
+    const task = typeof args.task === "string" ? args.task : "";
+    if (!this.#subagents || !task.trim()) {
+      return { content: this.#subagents ? "ucch_agent needs a task" : "this server does not run subagents", isError: true };
+    }
+    const outcome = await this.#subagents.spawn(
+      input.threadId,
+      input.ownerId,
+      {
+        description: typeof args.description === "string" && args.description.trim() ? args.description.trim().slice(0, 200) : "Subagent",
+        task,
+        ...(typeof args.model === "string" && args.model.trim() ? { model: args.model.trim() } : {}),
+      },
+      signal,
+      { turnId: input.turnId, toolUseId: call.toolCallId },
+    );
+    return "text" in outcome
+      ? { content: outcome.text || "(the subagent finished without a reply)", isError: false }
+      : { content: `ucch_agent: ${outcome.error}`, isError: true };
   }
 
   /**
@@ -1702,8 +2109,7 @@ export class AgentTurnReactor {
     // The thread's earlier asks, for a follow-up to follow on from. Only
     // what the person typed: the CLI's own events are not replayable here.
     const history = await this.store.threadHistory(input.threadId);
-    const asks = history
-      .map((row) => row.event)
+    const asks = sinceCleared(history.map((row) => row.event))
       .filter((event) => event.type === "user.message")
       .map((event) => event.text);
     // The last one is the message this turn answers.
@@ -2019,4 +2425,15 @@ function shellCommandOf(input: unknown): string | null {
   if (typeof input !== "object" || input === null) return null;
   const command = (input as Record<string, unknown>).command;
   return typeof command === "string" ? command : null;
+}
+
+/**
+ * The events after the thread's last `thread.context_cleared`: what its
+ * agent can still see. Everything, when it was never cleared.
+ */
+export function sinceCleared<E extends { type: string }>(events: readonly E[]): E[] {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]!.type === "thread.context_cleared") return events.slice(i + 1);
+  }
+  return [...events];
 }

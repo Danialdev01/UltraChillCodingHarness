@@ -33,7 +33,7 @@ export default async function ProjectPage({
   ]);
 
   const asked = typeof thread === "string" ? sessions.find((s) => s.id === thread) : undefined;
-  const open = asked ?? sessions.find((s) => !isTaskThreadTitle(s.title));
+  const open = asked ?? sessions.find((s) => !isTaskThreadTitle(s.title) && !s.parentThreadId);
   if (open) {
     // The rest of the query is the session page's (`?preview=setup`).
     const query = new URLSearchParams();

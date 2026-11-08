@@ -52,6 +52,18 @@ export interface BridgeConfig {
    * is the turn's budget.
    */
   maxCalls: number;
+  /**
+   * OMP's own tools are offered (`UCCH_BRIDGE_OMP_TOOLS`, on unless "0"):
+   * the workspace turned the OMP bridge on. Off, the bridge is there only
+   * for `ucch_agent`, and starts no `omp` at all.
+   */
+  ompTools: boolean;
+  /**
+   * `ucch_agent` is offered (`UCCH_BRIDGE_SUBAGENTS=1`): subagents on any
+   * harness, run by the server over the scheduler socket. Never for a
+   * subagent's own turn, which does not start subagents.
+   */
+  subagents: boolean;
 }
 
 /**
@@ -97,6 +109,8 @@ export function readBridgeConfig(env: NodeJS.ProcessEnv, cwd: string = process.c
     schedulerSock: set("UCCH_SCHEDULER_SOCK"),
     leaseToken: set("UCCH_BRIDGE_TOKEN"),
     maxCalls: env.UCCH_BRIDGE_MAX_CALLS !== undefined && Number.isInteger(calls) && calls >= 0 ? calls : DEFAULT_MAX_CALLS,
+    ompTools: env.UCCH_BRIDGE_OMP_TOOLS !== "0",
+    subagents: env.UCCH_BRIDGE_SUBAGENTS === "1",
   };
 }
 

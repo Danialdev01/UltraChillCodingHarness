@@ -67,4 +67,9 @@ export const qk = {
     tree: (projectHash: string, session?: string | null) => ["files", "tree", projectHash, session ?? null] as const,
   },
   quotas: { all: ["quotas"] as const },
+  /** A project's command buttons, from `.agent/commands.json`. */
+  commands: {
+    all: ["commands"] as const,
+    list: (projectHash: string) => ["commands", projectHash] as const,
+  },
 } as const;

@@ -90,7 +90,14 @@ export async function listWorkspaceSessions(
     })
     .from(threads)
     .innerJoin(projects, eq(projects.id, threads.projectId))
-    .where(and(eq(projects.workspaceId, workspaceId), archived ? undefined : isNull(threads.archivedAt)))
+    // A subagent's session is its parent's, not one of the sidebar's.
+    .where(
+      and(
+        eq(projects.workspaceId, workspaceId),
+        isNull(threads.parentThreadId),
+        archived ? undefined : isNull(threads.archivedAt),
+      ),
+    )
     .orderBy(desc(threads.lastActivityAt))
     // Far more than a sidebar shows at once; the list is windowed.
     .limit(2000);

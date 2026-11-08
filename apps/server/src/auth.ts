@@ -14,6 +14,12 @@ export interface Principal {
   userId: string;
   sessionId: string;
   scopes: Scope[];
+  /**
+   * Set only on principals the server makes for itself, acting for a
+   * person (a subagent's session, a switch a limit started): commands that
+   * no client may send are allowed from it. Never set from a request.
+   */
+  internal?: true;
 }
 
 /**

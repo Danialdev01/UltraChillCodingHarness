@@ -10,3 +10,4 @@ export * from "./workspace-roles.js";
 export * from "./agent-settings.js";
 export * from "./verifier.js";
 export * from "./session-title.js";
+export * from "./project-commands.js";
