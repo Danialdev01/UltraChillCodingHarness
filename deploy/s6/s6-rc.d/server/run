@@ -40,6 +40,7 @@ export WEB_UPSTREAM="${WEB_UPSTREAM:-http://127.0.0.1:${WEB_PORT:-3100}}"
 export WEB_STATIC_DIR="${WEB_STATIC_DIR:-/app/apps/web/.next/static}"
 export WORKSPACE_ROOT="${WORKSPACE_ROOT:-$data/workspaces}"
 export CREDS_ROOT="${CREDS_ROOT:-$data/creds}"
+export RUNTIMES_ROOT="${RUNTIMES_ROOT:-$data/runtimes}"
 export MIGRATIONS_DIR="${MIGRATIONS_DIR:-/app/server/migrations}"
 export DOC_KIT_DIR="${DOC_KIT_DIR:-/app/server/doc-kit}"
 export HOME=/home/node

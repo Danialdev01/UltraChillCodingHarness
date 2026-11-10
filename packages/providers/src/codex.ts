@@ -6,6 +6,7 @@ import type {
   AgentProvider,
   AgentRun,
   ProviderHealth,
+  ProviderModel,
   CodexMcpServer,
   ProviderRunInput,
   RunContext,
@@ -26,7 +27,7 @@ import { forbiddenEnvPresent } from "./types.js";
  */
 
 /**
- * The models the composer offers for Codex. Not a whitelist: `--model`
+ * Fallback for older CLIs without model discovery. Not a whitelist: `--model`
  * takes any id the account's plan has, and a subagent asked for by name
  * ("gpt6 sol") is passed through as `parseModelRequest` spelled it.
  */
@@ -34,6 +35,63 @@ export const CODEX_MODELS = [
   { id: "gpt-5-codex", name: "GPT-5 Codex" },
   { id: "gpt-5", name: "GPT-5" },
 ] as const;
+
+/** Read the CLI's catalogue without starting an inference turn or reading credentials. */
+export async function listCodexModels(ctx: RunContext, bin: string): Promise<ProviderModel[]> {
+  const child = ctx.host.spawn({
+    argv: [bin, "app-server"], cwd: ctx.cwd, env: ctx.env, holdStdin: true,
+    stdin: JSON.stringify({ id: 1, method: "initialize", params: {
+      clientInfo: { name: "ucch", version: "1.0.0" },
+    } }) + "\n",
+  });
+  const models = new Map<string, ProviderModel>();
+  const cursors = new Set<string>();
+  let requestId = 1;
+  const send = (message: object) => child.write(JSON.stringify(message) + "\n");
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Codex model discovery timed out")), 15_000);
+  });
+  try {
+    return await Promise.race([timeout, (async () => {
+      for await (const { stream, line } of child.lines) {
+        if (stream !== "stdout") continue;
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.id !== requestId) continue;
+        if (message.error) throw new Error("Codex model discovery failed");
+        if (requestId === 1) {
+          send({ method: "initialized", params: {} });
+          send({ id: ++requestId, method: "model/list", params: { limit: 100 } });
+          continue;
+        }
+        if (!Array.isArray(message.result?.data)) throw new Error("Invalid Codex model catalogue");
+        for (const entry of message.result.data) {
+          if (!entry || entry.hidden === true || typeof entry.model !== "string" || !entry.model.trim()) continue;
+          models.set(entry.model, {
+            id: entry.model,
+            name: typeof entry.displayName === "string" && entry.displayName.trim() ? entry.displayName : entry.model,
+          });
+        }
+        const cursor = message.result.nextCursor;
+        if (typeof cursor === "string" && cursor) {
+          if (cursors.has(cursor)) throw new Error("Repeated Codex model cursor");
+          cursors.add(cursor);
+          send({ id: ++requestId, method: "model/list", params: { limit: 100, cursor } });
+          continue;
+        }
+        if (!models.size) throw new Error("Empty Codex model catalogue");
+        return [...models.values()];
+      }
+      throw new Error("Codex exited before returning its model catalogue");
+    })()]);
+  } finally {
+    clearTimeout(timer!);
+    child.endStdin();
+    child.signal("SIGKILL");
+    await child.exited;
+  }
+}
 
 /**
  * Shown before Codex subscription mode can be enabled. OpenAI's guidance is
@@ -443,6 +501,9 @@ export class CodexProvider implements AgentProvider {
   readonly id = "codex" as const;
   readonly label = "Codex";
   readonly models = CODEX_MODELS;
+  listModels(ctx: RunContext): Promise<ProviderModel[]> {
+    return listCodexModels(ctx, this.bin);
+  }
   #caps: CodexCapabilities | null = null;
 
   constructor(

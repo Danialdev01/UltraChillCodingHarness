@@ -76,6 +76,26 @@ describe("the omp bridge", () => {
     expect(tools[0]!.inputSchema.required).toEqual(["description", "task"]);
   });
 
+  it("offers show_widget only when widgets are allowed, and answers it without running anything", async () => {
+    const without = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_BRIDGE_SUBAGENTS: "1" });
+    expect((await without.listTools()).tools.map((tool) => tool.name)).not.toContain("show_widget");
+
+    const { host, seen } = recording({ stdout: "x" });
+    const client = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_WIDGETS: "1" }, host);
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name)).toEqual(["show_widget"]);
+    expect(tools[0]!.annotations?.readOnlyHint).toBe(true);
+    expect(tools[0]!.inputSchema.required).toEqual(["title", "widget_code"]);
+
+    const result = await client.callTool({ name: "show_widget", arguments: { title: "t", widget_code: "<svg></svg>" } });
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toEqual([{ type: "text", text: '{"ok":true}' }]);
+    expect(seen).toEqual([]);
+
+    const big = await client.callTool({ name: "show_widget", arguments: { title: "t", widget_code: "x".repeat(200_001) } });
+    expect(big.isError).toBe(true);
+  });
+
   it("answers ucch_agent with the server's result over the scheduler socket", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ucch-spawn-"));
     const path = join(dir, "s.sock");

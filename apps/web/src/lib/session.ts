@@ -149,7 +149,12 @@ export interface Project {
    * which does not carry them.
    */
   repoUrl?: string | null;
+  /** The base branch: what sessions fork from and settle into. */
   defaultBranch?: string;
+  /** Push the base to origin after a session is merged into it. */
+  autoPushBase?: boolean;
+  /** Delete a settled session's `ucch/{hash}` branch. */
+  deleteBranchOnSettle?: boolean;
   /** ISO strings: JSON has no date, and nothing here needs one. */
   lastActiveAt?: string;
   createdAt?: string;
@@ -402,8 +407,16 @@ export interface ProjectSession {
   provider: string | null;
   baseBranch: string | null;
   branch: string | null;
-  worktreeState: "creating" | "ready" | "error" | null;
+  /** `settled`: merged into the base and its worktree removed. */
+  worktreeState: "creating" | "ready" | "error" | "settled" | null;
   worktreeError: string | null;
+  /** The last settle's outcome; see `SidebarSession`. */
+  settleState?: "settled" | "failed" | null;
+  settleError?: string | null;
+  settleConflicts?: string[] | null;
+  settleBaseBranch?: string | null;
+  mergeCommitSha?: string | null;
+  settledAt?: string | null;
   /** Set when it works in another session's worktree: that one's hash. */
   treeHash?: string | null;
   /** Set on a session a handoff started: the one it carries on. */

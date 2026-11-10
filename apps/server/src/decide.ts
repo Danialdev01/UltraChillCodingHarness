@@ -51,7 +51,7 @@ export interface ThreadSnapshot {
   /** Whose credentials it was started on; null on threads older than the column. */
   credentialSource: CredentialSource | null;
   /** creating | ready | error for a session with its own worktree; null when it shares the project's. */
-  worktreeState?: "creating" | "ready" | "error" | null;
+  worktreeState?: "creating" | "ready" | "error" | "settled" | null;
   /** Its address; and, for a session, the branch it works on and where that came from. */
   hash?: string;
   branch?: string | null;
@@ -700,6 +700,9 @@ function worktreeRefusal(thread: ThreadSnapshot): Decision | null {
   if (thread.worktreeState === "creating") return fail("conflict", "this session's worktree is still being created");
   if (thread.worktreeState === "error") {
     return fail("conflict", "this session's worktree could not be created; start a new session");
+  }
+  if (thread.worktreeState === "settled") {
+    return fail("conflict", "this session was settled and its worktree removed; start a new session");
   }
   return null;
 }

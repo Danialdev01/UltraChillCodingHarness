@@ -166,6 +166,30 @@ const TABLE: Record<string, Describe> = {
     summary: `Saved the command buttons (${Array.isArray(b?.commands) ? b.commands.length : 0})`,
     resource: "commands",
   }),
+  "PUT /api/projects/:hash/runtimes": (_p, b) => {
+    const chosen = (b?.runtimes ?? {}) as Record<string, unknown>;
+    const php = str(chosen.php);
+    return {
+      action: "runtimes.save",
+      targetType: "project",
+      summary: php ? `Set PHP to ${php}` : "Saved the runtime versions",
+      resource: "runtimes",
+    };
+  },
+  "POST /api/projects/:hash/runtimes/:runtime/install": (p, b) => ({
+    action: "runtimes.install",
+    targetType: "runtime",
+    targetId: p.runtime ?? null,
+    summary: `Installing ${p.runtime === "php" ? "PHP" : (p.runtime ?? "a runtime")}${str(b?.version) ? ` ${str(b?.version)}` : " (update)"}`,
+    resource: "runtimes",
+  }),
+  "DELETE /api/projects/:hash/runtimes/:runtime/:version": (p) => ({
+    action: "runtimes.uninstall",
+    targetType: "runtime",
+    targetId: p.runtime ?? null,
+    summary: `Removed ${p.runtime === "php" ? "PHP" : (p.runtime ?? "a runtime")} ${p.version ?? ""}`.trim(),
+    resource: "runtimes",
+  }),
   "PUT /api/projects/:hash/task-settings": (_p, b) => {
     const autoRun = b?.autoRun as { enabled?: unknown; time?: unknown; timezone?: unknown } | undefined;
     return {

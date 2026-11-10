@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { DomainEvent } from "@ucch/protocol";
+import { WIDGET_TURN_NUDGE, type DomainEvent } from "@ucch/protocol";
 import type { Complete, CompletionRequest, CompletionResult, ToolCall } from "./completion.js";
 import { HostExecutor } from "./executors/host.js";
 import { runTool, runTurn, type TurnInput } from "./loop.js";
@@ -109,6 +109,7 @@ describe("a two-iteration tool conversation", () => {
 
     expect(types(appended)).toEqual([
       // Recorded before it is used, so the log says what the model was shown.
+      "context.injected",
       "context.injected",
       "context.injected",
       "context.injected",
@@ -309,6 +310,7 @@ describe("the prompt", () => {
     const injected = appended.filter((e) => e.type === "context.injected");
     expect(injected.map((e) => (e.type === "context.injected" ? e.source : ""))).toEqual([
       "system_prompt",
+      "system_prompt",
       "project_context",
       "file_tree",
     ]);
@@ -341,7 +343,7 @@ describe("the prompt", () => {
     expect(JSON.stringify(script.requests[0]!.tools)).toBe(
       JSON.stringify(script.requests[1]!.tools),
     );
-    expect(script.requests[0]!.tools).toHaveLength(13);
+    expect(script.requests[0]!.tools).toHaveLength(14);
   });
 
   it("withholds the shell when the deployment has not allowed it", async () => {
@@ -354,7 +356,43 @@ describe("the prompt", () => {
 
     const names = script.requests[0]!.tools!.map((t) => t.function.name);
     expect(names).not.toContain("bash");
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(13);
+  });
+
+  it("withholds widgets, the prompt section and show_widget together, when the workspace turned them off", async () => {
+    const on = scripted(reply({ text: "hi" }));
+    await runTurn(harness({ complete: on.complete }).input);
+    expect(on.requests[0]!.tools!.map((t) => t.function.name)).toContain("show_widget");
+    expect(JSON.stringify(on.requests[0]!.messages[0])).toContain("show_widget");
+
+    const off = scripted(reply({ text: "hi" }));
+    const { input, appended } = harness({ complete: off.complete, registry: { widgets: false } });
+    await runTurn(input);
+    expect(off.requests[0]!.tools!.map((t) => t.function.name)).not.toContain("show_widget");
+    expect(JSON.stringify(off.requests[0]!.messages[0])).not.toContain("show_widget");
+    expect(appended.filter((e) => e.type === "context.injected")).toHaveLength(3);
+  });
+
+  it("tells a message asking for a visual, on that message, to answer with a widget", async () => {
+    const ask = (text: string): DomainEvent[] => [{ type: "user.message", threadId: THREAD, text }];
+    const lastText = (s: ReturnType<typeof scripted>) => JSON.stringify(s.requests[0]!.messages.at(-1));
+
+    const asked = scripted(reply({ text: "here" }));
+    const run = harness({ complete: asked.complete, history: ask("create a visualizer of my hosting costs") });
+    await runTurn(run.input);
+    expect(lastText(asked)).toContain("create a visualizer of my hosting costs");
+    expect(lastText(asked)).toContain("This message asks for a visual");
+    expect(run.appended).toContainEqual(expect.objectContaining({ type: "context.injected", content: WIDGET_TURN_NUDGE }));
+    // Not in the system prompt, which stays the same for the cache.
+    expect(JSON.stringify(asked.requests[0]!.messages[0])).not.toContain("This message asks for a visual");
+
+    const plain = scripted(reply({ text: "done" }));
+    await runTurn(harness({ complete: plain.complete, history: ask("fix the failing test") }).input);
+    expect(lastText(plain)).not.toContain("This message asks for a visual");
+
+    const off = scripted(reply({ text: "done" }));
+    await runTurn(harness({ complete: off.complete, history: ask("create a visualizer"), registry: { widgets: false } }).input);
+    expect(lastText(off)).not.toContain("This message asks for a visual");
   });
 
   it("does not mention research on an ordinary turn", async () => {
@@ -363,7 +401,7 @@ describe("the prompt", () => {
     await runTurn(input);
 
     const injected = appended.filter((e) => e.type === "context.injected");
-    expect(injected).toHaveLength(3);
+    expect(injected).toHaveLength(4);
     expect(JSON.stringify(script.requests[0]!.messages[0])).not.toContain("research_search");
   });
 });
@@ -381,6 +419,7 @@ describe("a research turn", () => {
 
     const injected = appended.filter((e) => e.type === "context.injected");
     expect(injected.map((e) => (e.type === "context.injected" ? e.source : ""))).toEqual([
+      "system_prompt",
       "system_prompt",
       "system_prompt",
       "project_context",

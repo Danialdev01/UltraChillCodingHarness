@@ -245,6 +245,7 @@ describe("workspace member routes", () => {
       ompBridge: { enabled: false },
       ompVerify: { enabled: false },
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
+      widgets: { enabled: true },
     });
     const bad = await app.inject({
       method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN),

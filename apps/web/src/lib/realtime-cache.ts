@@ -1,5 +1,5 @@
 import type { DomainEvent, LiveResource } from "@ucch/protocol"
-import { PROJECT_COMMANDS_FILE } from "@ucch/protocol/plain"
+import { PROJECT_COMMANDS_FILE, RUNTIMES_FILE } from "@ucch/protocol/plain"
 import type { QueryKey } from "@tanstack/react-query"
 
 import { removeRow, upsertRow } from "./field-edit"
@@ -53,6 +53,7 @@ const RESOURCES: Record<LiveResource, CacheEffect> = {
   // or moved. In a session workspace the project carries the title too.
   sessions: { invalidate: [qk.sessions.all], deferred: [qk.bootstrap()] },
   commands: { invalidate: [qk.commands.all] },
+  runtimes: { invalidate: [qk.runtimes.all] },
 }
 
 const NONE: CacheEffect = { invalidate: [] }
@@ -80,6 +81,10 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
       // The command buttons are a file an agent or a person may edit by hand.
       if (event.path === PROJECT_COMMANDS_FILE && !event.worktreeId) {
         return { invalidate: [qk.files.all, qk.commands.all] }
+      }
+      // So is the runtime choice, and the server links whatever it now says.
+      if (event.path === RUNTIMES_FILE && !event.worktreeId) {
+        return { invalidate: [qk.files.all, qk.runtimes.all] }
       }
       return { invalidate: [qk.files.all] }
     case "git.committed":
@@ -109,6 +114,7 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
     case "turn.dequeued":
       return { invalidate: [qk.sessions.all] }
     case "thread.removed":
+    case "thread.settled":
     case "thread.worktree_ready":
     case "thread.worktree_failed":
       return { invalidate: [qk.sessions.all, qk.bootstrap()] }

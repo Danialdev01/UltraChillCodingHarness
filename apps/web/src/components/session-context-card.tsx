@@ -230,9 +230,7 @@ function CardBody({
               </span>
             )}
           </Row>
-          {session?.baseBranch && (
-            <p className="text-muted-foreground -mt-0.5 truncate pb-1 pl-8 text-2xs">from {session.baseBranch}</p>
-          )}
+          <GitOwnership project={project} session={session} />
           <Row
             icon={GitCommitHorizontalIcon}
             onClick={changes ? () => setMode("git") : undefined}
@@ -622,4 +620,53 @@ function useGitStatus(project: { hash: string; sessionHash?: string | null }): G
   }, [key])
 
   return status
+}
+
+/**
+ * Whose repository this is and where the session's work goes:
+ * `ucch/x → main` while it works, `merged into main @ abc1234` once
+ * settled, and the files that conflicted when a settle failed.
+ */
+function GitOwnership({ project, session }: { project: Project; session?: ProjectSession | null }) {
+  const base = session?.settleBaseBranch ?? project.defaultBranch ?? session?.baseBranch ?? null
+  const repo = project.repoUrl ? repoLabel(project.repoUrl) : "local repository"
+  return (
+    <div className="text-muted-foreground -mt-0.5 flex min-w-0 flex-col gap-0.5 pb-1 pl-8 text-2xs">
+      <span className="truncate" title={project.repoUrl ?? undefined}>
+        {project.name} · {repo}
+      </span>
+      {session?.settleState === "settled" ? (
+        <span className="truncate font-mono">
+          merged into {base}
+          {session.mergeCommitSha ? ` @ ${session.mergeCommitSha.slice(0, 7)}` : ""}
+        </span>
+      ) : session?.branch ? (
+        <span className="truncate font-mono" title={`Settling merges ${session.branch} into ${base ?? "the base branch"}`}>
+          {session.branch} → {base ?? "base"}
+        </span>
+      ) : base ? (
+        <span className="truncate font-mono">on {base}</span>
+      ) : null}
+      {session?.settleState === "failed" && (
+        <span className="text-destructive flex flex-col gap-0.5" role="status">
+          <span>Settle failed{session.settleConflicts?.length ? " – conflicts" : ""}</span>
+          {session.settleConflicts?.slice(0, 10).map((path) => (
+            <span key={path} className="truncate font-mono">
+              {path}
+            </span>
+          ))}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** `host/owner/name` from a repository URL, with no scheme, credentials or `.git`. */
+function repoLabel(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.host}${parsed.pathname}`.replace(/\.git$/, "").replace(/\/$/, "")
+  } catch {
+    return url.replace(/^[^@]*@/, "").replace(":", "/").replace(/\.git$/, "")
+  }
 }

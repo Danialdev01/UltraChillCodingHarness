@@ -66,6 +66,13 @@ const ProjectCloned = z.object({
   headSha: z.string(),
   stack: z.string(),
   /**
+   * The branch the clone actually checked out: the project's base branch
+   * from here on. Differs from `project.created`'s `defaultBranch` when that
+   * one did not exist and the clone fell back to the remote's own HEAD.
+   * Absent on events older than the field.
+   */
+  branch: z.string().optional(),
+  /**
    * Set when the project asked for a database and creating it failed. The
    * project itself is fine; the database is what is missing.
    */
@@ -157,6 +164,26 @@ const ThreadRemoved = z.object({
   threadId: z.string().uuid(),
   hash: ThreadHash.optional(),
   pushedBranch: z.string().nullable(),
+});
+
+/**
+ * A project session was settled: its branch merged into the project's base
+ * branch (`state: "settled"`, `mergeCommitSha` set), or the merge stopped
+ * on conflicts and was aborted (`state: "failed"`, `conflicts` listing the
+ * paths). Either way the thread stays; a failed one keeps its worktree and
+ * branch. Project-scoped, like `thread.removed`, since it is announced
+ * rather than appended to the thread's log.
+ */
+const ThreadSettled = z.object({
+  type: z.literal("thread.settled"),
+  projectId: z.string().uuid(),
+  threadId: z.string().uuid(),
+  hash: ThreadHash.optional(),
+  state: z.enum(["settled", "failed"]),
+  baseBranch: z.string(),
+  mergeCommitSha: z.string().nullable(),
+  conflicts: z.array(z.string()),
+  error: z.string().nullable(),
 });
 
 /**
@@ -1008,6 +1035,11 @@ export const LiveResource = z.enum([
   "sessions",
   /** The project's command buttons (`.agent/commands.json`) were saved from the app. */
   "commands",
+  /**
+   * A project's runtime versions (`.agent/runtimes.json`) were saved, or an
+   * install it waits on started, finished or failed.
+   */
+  "runtimes",
 ]);
 export type LiveResource = z.infer<typeof LiveResource>;
 
@@ -1204,6 +1236,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ThreadWorktreeReady,
   ThreadWorktreeFailed,
   ThreadRemoved,
+  ThreadSettled,
   ThreadUpdated,
   UserMessage,
   ThreadCancelRequested,

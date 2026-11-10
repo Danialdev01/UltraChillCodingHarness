@@ -72,4 +72,9 @@ export const qk = {
     all: ["commands"] as const,
     list: (projectHash: string) => ["commands", projectHash] as const,
   },
+  /** A project's runtime versions, from `.agent/runtimes.json` and the server's installs. */
+  runtimes: {
+    all: ["runtimes"] as const,
+    list: (projectHash: string) => ["runtimes", projectHash] as const,
+  },
 } as const;

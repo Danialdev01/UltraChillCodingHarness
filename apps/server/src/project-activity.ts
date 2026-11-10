@@ -50,6 +50,7 @@ export function activityOf(event: DomainEvent): { threadId: string; state: Proje
 const SESSION_ROWS: ReadonlySet<DomainEvent["type"]> = new Set([
   "thread.created",
   "thread.removed",
+  "thread.settled",
   "thread.updated",
   "thread.worktree_ready",
   "thread.worktree_failed",

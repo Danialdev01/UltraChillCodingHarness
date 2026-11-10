@@ -17,6 +17,7 @@ import {
 import { researchBrowse, researchRead, researchSearch } from "./tools/research.js";
 import { attachUpload } from "./tools/uploads.js";
 import { webFetch, webSearch } from "./tools/web.js";
+import { showWidget } from "./tools/widget.js";
 
 /**
  * Every tool, in the one order that exists.
@@ -61,6 +62,9 @@ export const ALL: readonly AnyTool[] = Object.freeze([
   docDiagram,
   docChart,
   docCheck,
+  // Inline widgets. At the end for the reason above; withheld when the
+  // workspace turns widgets off (`RegistryOptions.widgets`).
+  showWidget,
 ]);
 
 /**
@@ -142,7 +146,7 @@ const toolCache = new Map<string, readonly AnyTool[]>();
 const schemaCache = new Map<string, readonly ToolSchema[]>();
 
 const cacheKey = (preset: ToolPreset, options: RegistryOptions): string =>
-  `${preset}:${options.allowHostShell ?? true}`;
+  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}`;
 
 /**
  * Filters a tool list to a preset, in the list's own order.
@@ -201,7 +205,15 @@ export interface RegistryOptions {
    * told otherwise. `apps/server` passes `shellPluginEnabled(config)`.
    */
   allowHostShell?: boolean;
+  /**
+   * Defaults to true. False withholds `show_widget`: the workspace has
+   * turned interactive widgets off.
+   */
+  widgets?: boolean;
 }
+
+/** Tools withheld when widgets are off. */
+const WIDGET_TOOLS: readonly string[] = ["show_widget"];
 
 export function selectPreset(
   tools: readonly AnyTool[],
@@ -209,9 +221,11 @@ export function selectPreset(
   options: RegistryOptions = {},
 ): readonly AnyTool[] {
   const allowHostShell = options.allowHostShell ?? true;
+  const widgets = options.widgets ?? true;
   return Object.freeze(
     tools.filter((tool) => {
       if (!allowHostShell && HOST_SHELL.includes(tool.name)) return false;
+      if (!widgets && WIDGET_TOOLS.includes(tool.name)) return false;
       if (preset !== "research" && RESEARCH_ONLY.includes(tool.name)) return false;
       if (preset !== "documentation" && DOCUMENTATION_ONLY.includes(tool.name)) return false;
       switch (preset) {
@@ -281,6 +295,7 @@ export function toolByName(
 const HOST_TOOLS: readonly string[] = [
   "current_time",
   "attach_upload",
+  "show_widget",
   ...RESEARCH_ONLY,
   ...DOCUMENTATION_ONLY,
 ];

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowRightLeftIcon, BotIcon, BrainIcon, GitForkIcon, KeyRoundIcon, ListChecksIcon, Loader2Icon, PlugIcon, TrashIcon } from "lucide-react"
+import { ArrowRightLeftIcon, BotIcon, BrainIcon, GitForkIcon, KeyRoundIcon, ListChecksIcon, Loader2Icon, PlugIcon, SparklesIcon, TrashIcon } from "lucide-react"
 import type { CredentialPolicy, CredentialSource, ProviderId } from "@ucch/protocol"
 
 import { ProviderSettings } from "@/components/provider-settings"
@@ -87,7 +87,10 @@ export function WorkspaceHarnessSettings({
         <MemorySection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
       )}
       {settings && (
-        <OmpBridgeSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+        <>
+          <OmpBridgeSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+          <WidgetsSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+        </>
       )}
       {settings && settings.credentialPolicy !== "member" && (
         <>
@@ -499,6 +502,49 @@ function OmpBridgeSection({
           aria-label="OMP tools for Claude Code and Codex"
         />
         On
+      </label>
+      {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
+      <Outcome error={error} done={done} />
+    </SettingsSection>
+  )
+}
+
+/**
+ * Interactive widgets in chat: agents are taught the ```widget fence and
+ * `show_widget`, and answers run them in a sandboxed frame. Off: agents are
+ * not told, and widgets already in a thread show as code.
+ */
+function WidgetsSection({
+  workspaceId,
+  settings,
+  manages,
+  onChange,
+}: {
+  workspaceId: string
+  settings: HarnessSettings
+  manages: boolean
+  onChange: (settings: HarnessSettings) => void
+}) {
+  const { busy, error, done, run } = useOutcome()
+  const enabled = settings.agent.widgets?.enabled !== false
+  const save = (next: boolean) =>
+    void run(async () => {
+      onChange(await setAgentSettings(workspaceId, { widgets: { enabled: next } }))
+      return "Saved."
+    })
+
+  return (
+    <SettingsSection icon={SparklesIcon} title="Interactive widgets" description={<>Lets agents draw charts, diagrams and small
+        calculators inline in their answers. Widgets run in a locked-down frame: they cannot reach the network, this
+        app, or your session. Applies to the built-in agent, Claude Code and Codex.</>} bare>
+      <label className="mt-4 flex items-center gap-2 text-sm">
+        <Switch
+          checked={enabled}
+          disabled={!manages || busy}
+          onCheckedChange={(checked) => save(checked)}
+          aria-label="Allow interactive widgets"
+        />
+        Allow interactive widgets
       </label>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />

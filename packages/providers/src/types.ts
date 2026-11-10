@@ -194,8 +194,10 @@ export interface ProviderModel {
 export interface AgentProvider {
   readonly id: CliProviderId;
   readonly label: string;
-  /** What the composer offers. Static: the CLIs own their catalogues. */
+  /** Default choices when the provider does not expose a live catalogue. */
   readonly models: readonly ProviderModel[];
+  /** Discover the catalogue using this account's CLI environment. */
+  listModels?(ctx: RunContext): Promise<readonly ProviderModel[]>;
   /** Is this provider usable in this context for this user right now? */
   probe(ctx: RunContext): Promise<ProviderHealth>;
   /** Start or resume a turn. */

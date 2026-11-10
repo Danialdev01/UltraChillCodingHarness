@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { GlobeIcon, Loader2Icon, MonitorPlayIcon, RulerIcon, SaveIcon, ShieldCheckIcon } from "lucide-react"
+import { GitMergeIcon, GlobeIcon, Loader2Icon, MonitorPlayIcon, RulerIcon, SaveIcon, ShieldCheckIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
@@ -9,15 +9,19 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { TaskAutomationSettings } from "@/components/tasks/task-automation-settings"
 import { DEFAULT_DOC_WIDTH, DOC_WIDTHS, readDocWidth, watchDocWidth, writeDocWidth } from "@/lib/doc-width"
+import { fetchGitBranches } from "@/lib/git-api"
 import { setPreviewPort } from "@/lib/preview-api"
 import { fetchOmpTrust, setOmpTrust, type OmpTrustState } from "@/lib/omp-trust-api"
 import { fetchPublicSite, setPublicSite, type PublicSiteState } from "@/lib/public-api"
+import { qk } from "@/lib/query-keys"
 import type { Project } from "@/lib/session"
+import { useInvalidate } from "@/lib/use-invalidate"
 import { cn } from "@/lib/utils"
 import { SettingsSection } from "@/components/layout/settings-section"
 
 /**
- * The project's own settings, on the manage page's Preferences tab: which
+ * The project's own settings, on the manage page's Preferences tab: the
+ * base branch sessions fork from and settle into, which
  * port the live preview serves, whether the read-only public site is on,
  * whether OMP may run the repository's own tooling config, how the Tasks
  * board runs, and how wide the documentation's pages read.
@@ -27,12 +31,170 @@ import { SettingsSection } from "@/components/layout/settings-section"
 export function ProjectPreferences({ project }: { project: Project }) {
   return (
     <div className="flex flex-col gap-4">
+      {project.workspaceKind !== "session" && <GitSettings project={project} />}
       <PreviewPortSetting project={project} />
       <PublicSiteSetting hash={project.hash} />
       <OmpTrustSetting hash={project.hash} />
       <TaskAutomationSettings hash={project.hash} />
       <DocWidthSetting />
     </div>
+  )
+}
+
+const selectClass = cn(
+  "border-input bg-background h-8 w-full max-w-72 rounded-lg border px-2.5 text-sm outline-none",
+  "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring disabled:opacity-50",
+  "dark:bg-input/30",
+)
+
+/** Saves the project's git settings; the server checks the branch exists. */
+async function saveGitSettings(
+  hash: string,
+  body: { baseBranch?: string; autoPushBase?: boolean; deleteBranchOnSettle?: boolean },
+): Promise<void> {
+  const response = await fetch(`/api/projects/${hash}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as { error?: string }
+    throw new Error(error.error ?? "Could not save the git settings.")
+  }
+}
+
+/**
+ * The base branch: what every new session forks `ucch/{hash}` from, and what
+ * settling merges it into. Starts as the remote's default branch; any
+ * branch the repository has, locally or on origin, can be picked. Beside
+ * it, whether the base is pushed after a settle and whether the session's
+ * branch is kept.
+ */
+function GitSettings({ project }: { project: Project }) {
+  const invalidate = useInvalidate()
+  const [branches, setBranches] = React.useState<string[] | null>(null)
+  const [saved, setSaved] = React.useState({
+    baseBranch: project.defaultBranch ?? "",
+    autoPushBase: project.autoPushBase ?? false,
+    deleteBranchOnSettle: project.deleteBranchOnSettle ?? true,
+  })
+  const [pending, setPending] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    let cancelled = false
+    fetchGitBranches(project.hash).then(
+      (list) => {
+        if (cancelled) return
+        // Remote branches by their own name: `origin/x` is offered as `x`.
+        const names = [
+          ...list.local.map((b) => b.name),
+          ...list.remote.map((b) => b.name.replace(/^origin\//, "")),
+        ].filter((name) => name && name !== "HEAD" && !name.startsWith("ucch/"))
+        setBranches([...new Set(names)])
+      },
+      (e: unknown) => {
+        if (cancelled) return
+        setBranches([])
+        setError(e instanceof Error ? e.message : "Could not list the project's branches.")
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [project.hash])
+
+  const change = async (next: Partial<typeof saved>) => {
+    setPending(true)
+    setError(null)
+    try {
+      await saveGitSettings(project.hash, next)
+      setSaved((s) => ({ ...s, ...next }))
+      invalidate(qk.project(project.hash), qk.projects.all, qk.sessions.all, qk.bootstrap())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the git settings.")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const options = branches && saved.baseBranch && !branches.includes(saved.baseBranch)
+    ? [saved.baseBranch, ...branches]
+    : (branches ?? [])
+
+  return (
+    <SettingsSection
+      icon={GitMergeIcon}
+      title="Git"
+      description={
+        <>
+          Each session works on its own branch, <span className="font-mono">ucch/…</span>, in a worktree of this
+          project&apos;s repository. It is forked from the base branch, and settling it merges it back into the base.
+        </>
+      }
+      bare
+    >
+      <div className="mt-4 flex max-w-xl flex-col gap-4">
+        <Field>
+          <FieldLabel htmlFor="project-base-branch">Base branch</FieldLabel>
+          {branches === null ? (
+            <Skeleton className="h-8 w-72" />
+          ) : (
+            <select
+              id="project-base-branch"
+              value={saved.baseBranch}
+              disabled={pending || options.length === 0}
+              onChange={(e) => void change({ baseBranch: e.target.value })}
+              className={selectClass}
+            >
+              {options.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                  {branches.includes(name) ? "" : " (missing)"}
+                </option>
+              ))}
+            </select>
+          )}
+          <FieldDescription>
+            New sessions fork from it and settling merges into it. Sessions already open keep the branch they
+            started from, but settle into this one.
+          </FieldDescription>
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="project-auto-push">After a session is merged</FieldLabel>
+          <select
+            id="project-auto-push"
+            value={saved.autoPushBase ? "push" : "local"}
+            disabled={pending}
+            onChange={(e) => void change({ autoPushBase: e.target.value === "push" })}
+            className={selectClass}
+          >
+            <option value="local">Keep the merge local</option>
+            <option value="push">Push {saved.baseBranch || "the base"} to origin</option>
+          </select>
+          <FieldDescription>A normal push of the base branch: never forced.</FieldDescription>
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="project-delete-branch">Session branch after merging</FieldLabel>
+          <select
+            id="project-delete-branch"
+            value={saved.deleteBranchOnSettle ? "delete" : "keep"}
+            disabled={pending}
+            onChange={(e) => void change({ deleteBranchOnSettle: e.target.value === "delete" })}
+            className={selectClass}
+          >
+            <option value="delete">Delete it — its commits are in the base</option>
+            <option value="keep">Keep it</option>
+          </select>
+        </Field>
+        {error && (
+          <p role="alert" className="text-destructive text-xs">
+            {error}
+          </p>
+        )}
+      </div>
+    </SettingsSection>
   )
 }
 

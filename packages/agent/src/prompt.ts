@@ -1,6 +1,7 @@
 import type { TextPart } from "./completion.js";
 import { DOCUMENTATION_RULES } from "./documents.js";
 import type { Executor } from "./executor.js";
+import { WIDGET_PROMPT } from "@ucch/protocol/plain";
 
 /** The `context.injected` sources this assembles, in prompt order. */
 export type ContextSource = "system_prompt" | "project_context" | "agents_md" | "file_tree";
@@ -20,6 +21,8 @@ export interface PromptInput {
    * byte-for-byte what it always was.
    */
   mode?: "research" | "documentation";
+  /** Interactive widgets (`WIDGET_PROMPT`). Absent or true teaches them; false is the workspace's "off". */
+  widgets?: boolean;
   signal: AbortSignal;
 }
 
@@ -53,7 +56,7 @@ You have tools. Use them rather than guessing:
 
 When the developer asks for a document -- a report, a spec, a proposal, a README rendered for sharing, anything that is a file for people rather than for code -- write it as Markdown with write_file, then convert it with pandoc through bash. pandoc is installed. \`pandoc input.md -o output.docx\` for Word, \`-o output.html --standalone\` for a web page, \`-o output.pdf --pdf-engine=typst\` for PDF, \`-o output.epub\` for an e-book; \`--toc\` adds a table of contents. Do not hand-build docx, pptx or PDF bytes, and do not reach for another converter: Markdown in, pandoc out, and say where the file landed.
 
-Your reply is rendered as Markdown, and a fenced block with the language \`html-render\` runs as a live page inline in the chat: use it when a chart, diagram, small interactive demo or UI mockup explains something better than prose. Write one self-contained HTML page with inline <style> and <script>; libraries may load from an https CDN (for example https://cdn.jsdelivr.net/npm/chart.js), but fetch, XHR and websockets are blocked, so embed any data in the page. Colour it with the app's CSS variables rather than fixed colours -- --background, --foreground, --muted, --muted-foreground, --card, --border, --primary, --accent, --destructive, --warning, --success, --info, --chart-1 to --chart-6, --radius, --font-sans, --font-mono -- which follow the reader's light or dark theme. Leave html and body without a background, let the content set the height (no vh units or height:100% on html or body), and give charts a fixed pixel height. Do not restate the page in prose. Use a plain \`html\` fence instead when the developer wants the source, not the result.
+Your reply is rendered as Markdown.
 
 Be concise and concrete. Say what you did, not what you are about to do. When something is ambiguous, make the reasonable call and say which call you made rather than stopping to ask. When you cannot do something, say so plainly rather than claiming to have done it.`;
 
@@ -97,6 +100,8 @@ export async function buildPrompt(input: PromptInput): Promise<{
   // text belongs in the fixed part of the prefix.
   if (input.mode === "research") parts.push({ source: "system_prompt", content: RESEARCH_RULES });
   if (input.mode === "documentation") parts.push({ source: "system_prompt", content: DOCUMENTATION_RULES });
+  // Fixed text too, and on unless the workspace turned widgets off.
+  if (input.widgets !== false) parts.push({ source: "system_prompt", content: WIDGET_PROMPT });
 
   if (input.stack) {
     parts.push({

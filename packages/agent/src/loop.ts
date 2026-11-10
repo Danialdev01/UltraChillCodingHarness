@@ -1,4 +1,4 @@
-import { isModelImageType, type DomainEvent, type TokenUsage } from "@ucch/protocol";
+import { asksForWidget, isModelImageType, WIDGET_TURN_NUDGE, type DomainEvent, type TokenUsage } from "@ucch/protocol";
 import type { ChatMessage, Complete, ToolCall } from "./completion.js";
 import type { Executor } from "./executor.js";
 import {
@@ -175,6 +175,9 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
     executor: input.executor,
     stack: input.stack,
     ...(input.mode ? { mode: input.mode } : {}),
+    // One switch for the prompt and the tool: `show_widget` is in the
+    // registry exactly when the rules that teach it are in the prompt.
+    widgets: input.registry.widgets ?? true,
     signal,
   });
 
@@ -198,6 +201,21 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
     { role: "system", content: prompt.segments },
     ...rebuild(input.history, images),
   ];
+
+  // A message asking for a visual is told, on that message, to answer with a
+  // widget. On the message rather than in the system prompt, which stays
+  // byte-identical for the cache; and only on this turn's.
+  if (input.registry.widgets ?? true) {
+    const asked = input.history.findLast((event) => event.type === "user.message");
+    const last = messages.at(-1);
+    if (asked?.type === "user.message" && asksForWidget(asked.text) && last?.role === "user") {
+      last.content =
+        typeof last.content === "string"
+          ? `${last.content}\n\n${WIDGET_TURN_NUDGE}`
+          : [...last.content, { type: "text", text: WIDGET_TURN_NUDGE }];
+      await input.append([{ type: "context.injected", threadId, source: "system_prompt", content: WIDGET_TURN_NUDGE }]);
+    }
+  }
 
   // The frozen per-preset array, passed straight through: the same object
   // every request is what keeps the cached prefix byte-identical.

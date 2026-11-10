@@ -233,7 +233,10 @@ export class OrchestrationEngine {
               ? row.credentialSource
               : null,
           worktreeState:
-            row.worktreeState === "creating" || row.worktreeState === "ready" || row.worktreeState === "error"
+            row.worktreeState === "creating" ||
+            row.worktreeState === "ready" ||
+            row.worktreeState === "error" ||
+            row.worktreeState === "settled"
               ? row.worktreeState
               : null,
           hash: row.hash,
@@ -371,7 +374,11 @@ export async function applyProjection(
       case "project.cloned":
         await tx
           .update(projects)
-          .set({ stack: event.stack, lastActiveAt: new Date() })
+          .set({
+            stack: event.stack,
+            lastActiveAt: new Date(),
+            ...(event.branch ? { defaultBranch: event.branch } : {}),
+          })
           .where(eq(projects.id, event.projectId));
         break;
 

@@ -75,7 +75,10 @@ export function NewSessionDialog({
         if (cancelled) return
         const names = [...list.local, ...list.remote].map((b) => b.name)
         setBranches(names)
-        setBranch(list.current ?? names[0] ?? "")
+        // The project's base branch (Project Settings), not whatever the
+        // checkout happens to be on.
+        const base = project.defaultBranch
+        setBranch(base && names.includes(base) ? base : (list.current ?? names[0] ?? ""))
       },
       (e: unknown) => {
         if (cancelled) return
@@ -86,7 +89,7 @@ export function NewSessionDialog({
     return () => {
       cancelled = true
     }
-  }, [open, project.hash])
+  }, [open, project.hash, project.defaultBranch])
 
   // The harness this project was last used with, else the first one that
   // can take a turn; its model likewise.

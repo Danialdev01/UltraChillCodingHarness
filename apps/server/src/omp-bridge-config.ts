@@ -46,6 +46,8 @@ export interface BridgeServerInput {
   trusted: boolean;
   /** The overlay keeps the project's memory: `omp_recall` and `omp_retain` exist (§7.3). */
   memory: boolean;
+  /** The workspace allows interactive widgets: `show_widget` exists. */
+  widgets?: boolean;
 }
 
 export function bridgeServer(input: BridgeServerInput): BridgeServer {
@@ -68,6 +70,7 @@ export function bridgeServer(input: BridgeServerInput): BridgeServer {
       UCCH_BRIDGE_MAX_SECONDS: String(input.maxSeconds),
       ...(input.trusted ? { UCCH_OMP_TRUSTED: "1" } : {}),
       ...(input.memory ? { UCCH_OMP_MEMORY: "1" } : {}),
+      ...(input.widgets ? { UCCH_WIDGETS: "1" } : {}),
     },
   };
 }

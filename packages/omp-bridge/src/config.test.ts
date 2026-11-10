@@ -20,6 +20,7 @@ describe("readBridgeConfig", () => {
           UCCH_BRIDGE_MAX_CALLS: "3",
           UCCH_BRIDGE_OMP_TOOLS: "0",
           UCCH_BRIDGE_SUBAGENTS: "1",
+          UCCH_WIDGETS: "1",
         },
         "/elsewhere",
       ),
@@ -38,6 +39,7 @@ describe("readBridgeConfig", () => {
       maxCalls: 3,
       ompTools: false,
       subagents: true,
+      widgets: true,
     });
   });
 
@@ -57,6 +59,7 @@ describe("readBridgeConfig", () => {
       maxCalls: 12,
       ompTools: true,
       subagents: false,
+      widgets: false,
     });
   });
 });

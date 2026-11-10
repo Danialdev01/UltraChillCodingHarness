@@ -100,6 +100,12 @@ export class ProviderService {
     private readonly config: Config,
     private readonly host: ProcessHost,
     private readonly providers: CliProviders,
+    /**
+     * The folder to put first on PATH for a run in `cwd`: the project's
+     * runtime versions (runtimes/manager.ts `pathFor`), so a CLI agent's
+     * `php` is the one the project's terminal runs.
+     */
+    private readonly runtimePath?: (cwd: string) => string | null,
   ) {}
 
   /**
@@ -269,7 +275,13 @@ export class ProviderService {
       ...(id === "omp" && options.openrouterKey ? { openrouterKey: options.openrouterKey } : {}),
       ...(id === "omp" && options.ompPreset ? { ompPreset: options.ompPreset } : {}),
     });
-    return { provider, ctx: (cwd) => ({ cwd, env, host: this.host }) };
+    return {
+      provider,
+      ctx: (cwd) => {
+        const prefix = this.runtimePath?.(cwd);
+        return { cwd, env: prefix ? { ...env, PATH: prependPath(prefix, env.PATH) } : env, host: this.host };
+      },
+    };
   }
 
   /** The three cards the settings page shows. Cached briefly per user. */
@@ -280,10 +292,19 @@ export class ProviderService {
     const row = await this.#storedKeys(userId);
 
     const enabled = cliProvidersEnabled(this.config);
-    const probe = async (id: CliProviderId): Promise<ProviderHealth> => {
+    const probe = async (id: CliProviderId): Promise<ProviderHealth & { models?: AgentProvider["models"] }> => {
       try {
         const { provider, ctx } = await this.resolve(userId, id);
-        return await provider.probe(ctx(this.config.WORKSPACE_ROOT));
+        const context = ctx(this.config.WORKSPACE_ROOT);
+        const health = await provider.probe(context);
+        if (health.installed && health.authenticated && provider.listModels) {
+          try {
+            return { ...health, models: await provider.listModels(context) };
+          } catch {
+            return { ...health, warnings: [...(health.warnings ?? []), "Could not refresh the model catalogue; showing fallback models."] };
+          }
+        }
+        return health;
       } catch (error) {
         return {
           installed: false,
@@ -325,7 +346,7 @@ export class ProviderService {
         label: PROVIDER_LABELS.codex,
         ...codex,
         enabled,
-        models: this.providers.codex.models,
+        models: codex.models ?? this.providers.codex.models,
       },
       // A turn that names `omp` runs on it, but the card stays off until the
       // settings page has an OMP card to show (OMP plan, OM8.1).
@@ -408,4 +429,9 @@ export class ProviderService {
       .limit(1);
     return row;
   }
+}
+
+/** `dir` first on a PATH, which may be unset. */
+export function prependPath(dir: string, path: string | undefined): string {
+  return path ? `${dir}:${path}` : dir;
 }

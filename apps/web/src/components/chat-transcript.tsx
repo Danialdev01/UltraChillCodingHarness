@@ -5,6 +5,7 @@ import { ChevronRightIcon, Loader2Icon } from "lucide-react"
 
 import { Markdown, StreamingMarkdown } from "@/components/markdown"
 import { SubagentCard } from "@/components/subagent-card"
+import { ToolWidget } from "@/components/widget-frame"
 import {
   formatDuration,
   isSubagentCall,
@@ -106,6 +107,8 @@ function TranscriptTool({
   if (isSubagentCall(call.name) || call.subagents) return <SubagentCard call={call} harness={harness} />
   const view = classifyTool(call)
   switch (view.kind) {
+    case "widget":
+      return <ToolWidget name={call.name} input={call.input} />
     case "shell":
       return <ShellCall call={call} command={view.command} />
     case "edit":

@@ -5,6 +5,7 @@
 #   mysql/       projects' MySQL dev databases, when ENABLE_MYSQL      mysql     0700
 #   workspaces/  project checkouts and session worktrees               node      0755
 #   creds/       per-account Claude/Codex CLI logins                    node      0700
+#   runtimes/    installed PHP (and later other) versions, per project  node      0755
 #   secrets/     generated passwords and keys                           root      0700
 #   backups/     ucch-backup's dumps                                    root      0700
 #
@@ -32,6 +33,7 @@ own "$data/postgres" postgres 700
 own "$data/mysql" mysql 700
 own "$data/workspaces" node 755
 own "$data/creds" node 700
+own "$data/runtimes" node 755
 own "$data/secrets" root 700
 own "$data/backups" root 700
 # Sockets: postgres's for local administration, mariadb's for its own.

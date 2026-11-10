@@ -8,6 +8,17 @@ for f in ~/.bash_profile ~/.bash_login ~/.profile; do
   [ -f "$f" ] && { . "$f"; break; }
 done
 
+# The project's runtime versions first (Manage -> Runtimes), again: a
+# profile that sets PATH from scratch -- Debian's /etc/profile does -- has
+# dropped what the server put in front.
+if [ -n "$UCCH_RUNTIME_PATH" ]; then
+  case ":$PATH:" in
+    ":$UCCH_RUNTIME_PATH:"*) ;;
+    *) PATH="$UCCH_RUNTIME_PATH:$PATH" ;;
+  esac
+  export PATH
+fi
+
 builtin cd -- "$UCCH_ROOT" && UCCH_ROOT=$(pwd -P) && export UCCH_ROOT
 
 cd() {

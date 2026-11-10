@@ -1,6 +1,7 @@
 "use client"
 
-import { ChevronRightIcon, PlusIcon } from "lucide-react"
+import { ChevronRightIcon, EllipsisIcon, PlusIcon, Settings2Icon, Trash2Icon } from "lucide-react"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
 import { ProjectStackIcon } from "@/components/project-stack-icon"
 import type { SidebarProject } from "@/lib/session-sidebar"
@@ -10,7 +11,8 @@ import { TransitionLink } from "@/lib/view-transitions"
 /**
  * A project's header in the grouped list: its mark and name (a link to the
  * project), how many sessions it has, a chevron that folds its sessions
- * away, and -- on hover or focus -- a + that starts a session in it.
+ * away, and a menu for managing or deleting it. Session workspaces keep
+ * their new-session shortcut.
  */
 export function ProjectGroupHeader({
   project,
@@ -21,6 +23,8 @@ export function ProjectGroupHeader({
   href,
   isActive,
   onNavigate,
+  onManage,
+  onDelete,
 }: {
   project: SidebarProject
   count: number
@@ -31,6 +35,8 @@ export function ProjectGroupHeader({
   href: string
   isActive?: boolean
   onNavigate?: () => void
+  onManage?: () => void
+  onDelete?: () => void
 }) {
   const action =
     "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent focus-visible:ring-sidebar-ring grid size-6 shrink-0 place-items-center rounded-md outline-none focus-visible:ring-2"
@@ -62,7 +68,17 @@ export function ProjectGroupHeader({
           {count}
         </span>
       </TransitionLink>
-      {onNewSession && (
+      {onManage ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger aria-label={`Options for ${project.name}`} className={action}>
+            <EllipsisIcon className="size-3.5" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuItem onClick={onManage}><Settings2Icon />Manage</DropdownMenuItem>
+            {onDelete && <DropdownMenuItem variant="destructive" onClick={onDelete}><Trash2Icon />Delete Project</DropdownMenuItem>}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : onNewSession && (
         <button
           type="button"
           onClick={onNewSession}

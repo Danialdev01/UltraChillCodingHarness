@@ -1,18 +1,18 @@
-import { mkdir, rm } from "node:fs/promises";
-import { dirname } from "node:path";
 import type { Command, DomainEvent } from "@ucch/protocol";
-import { runGit } from "./git-exec.js";
-import { projectRoot, sessionTree } from "./trees.js";
+import { ProjectGit } from "./project-git.js";
 import { DrainableWorker } from "./worker.js";
 
 type ThreadCreated = Extract<DomainEvent, { type: "thread.created" }>;
 type WorktreeOutcome = Extract<DomainEvent, { type: "thread.worktree_ready" | "thread.worktree_failed" }>;
 
-const TIMEOUT_MS = 60_000;
-
 export interface WorktreeOptions {
   /** Host directory the project workspaces live under. */
   workspaceRoot: string;
+  /**
+   * The project repositories' git, shared with settling so the two take the
+   * same per-project lock. One of its own when absent.
+   */
+  projectGit?: ProjectGit;
 }
 
 /**
@@ -24,12 +24,13 @@ export interface WorktreeOptions {
  * from the same base each get a branch of their own, which is what lets them
  * run side by side: git refuses one branch checked out twice.
  *
- * One at a time, in a `DrainableWorker`: `worktree add` writes the shared
- * repository's refs and worktree list, and two at once would race for
- * `.git`'s locks.
+ * In a `DrainableWorker`, and under `ProjectGit`'s per-project lock:
+ * `worktree add` writes the project repository's refs and worktree list,
+ * and two at once -- or one beside a settle -- would race for `.git`'s locks.
  */
 export class WorktreeReactor {
   readonly worker: DrainableWorker<ThreadCreated>;
+  readonly #git: ProjectGit;
 
   /** @param append emits the outcome against the session's thread. */
   constructor(
@@ -37,6 +38,7 @@ export class WorktreeReactor {
     private readonly options: WorktreeOptions,
     onError: (error: unknown, event: ThreadCreated) => void = () => {},
   ) {
+    this.#git = options.projectGit ?? new ProjectGit(options.workspaceRoot);
     this.worker = new DrainableWorker<ThreadCreated>("worktree", (event) => this.#add(event), onError);
   }
 
@@ -54,23 +56,12 @@ export class WorktreeReactor {
   }
 
   async #add(event: ThreadCreated): Promise<void> {
-    const repo = projectRoot(this.options.workspaceRoot, event.projectId);
-    const tree = sessionTree(this.options.workspaceRoot, event.projectId, event.hash!);
     try {
-      await mkdir(dirname(tree), { recursive: true });
-      // `--` keeps a base branch from ever being read as an option; the
-      // branch itself is `ucch/{hash}`, made by `decide()`.
-      await runGit(
-        ["worktree", "add", "-b", event.branch!, "--", tree, event.baseBranch!],
-        repo,
-        TIMEOUT_MS,
-      );
+      // The branch is `ucch/{hash}`, made by `decide()`, forked in the
+      // project's own repository from the base the session was created on.
+      await this.#git.addWorktree(event.projectId, event.hash!, event.branch!, event.baseBranch!);
       await this.append({ type: "thread.worktree_ready", threadId: event.threadId }, event.projectId);
     } catch (error) {
-      // A half-made tree would be refused by the next attempt; clear it and
-      // let git forget it.
-      await rm(tree, { recursive: true, force: true }).catch(() => {});
-      await runGit(["worktree", "prune"], repo, TIMEOUT_MS).catch(() => {});
       await this.append(
         {
           type: "thread.worktree_failed",

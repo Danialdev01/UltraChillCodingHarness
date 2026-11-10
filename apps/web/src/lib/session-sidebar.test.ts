@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  branchLine,
   compareSessions,
   dateBucket,
   filterReducer,
@@ -179,5 +180,45 @@ describe("relativeTime", () => {
     expect(relativeTime("2024-11-07T12:00:00Z", now)).toBe("2y")
     expect(relativeTime("2026-11-07T11:00:00Z", null)).toBe("")
     expect(relativeTime("garbage", now)).toBe("")
+  })
+})
+
+describe("branchLine", () => {
+  const prod = { ...BAKERY, baseBranch: "production" }
+
+  it("shows the session's branch and where settling takes it", () => {
+    expect(branchLine(session({ branch: "ucch/abc", baseBranch: "main", project: prod }))).toEqual({
+      text: "ucch/abc → production",
+      tone: "normal",
+    })
+  })
+
+  it("falls back to the base it was created from, and drops the arrow when there is no other branch", () => {
+    expect(branchLine(session({ branch: "ucch/abc", baseBranch: "develop" })).text).toBe("ucch/abc → develop")
+    expect(branchLine(session({ branch: "main", baseBranch: null })).text).toBe("main")
+    expect(branchLine(session({ branch: null, baseBranch: null, project: prod })).text).toBe("production")
+  })
+
+  it("says where a settled session was merged, and flags a failed one", () => {
+    expect(
+      branchLine(
+        session({ branch: "ucch/abc", settleState: "settled", settleBaseBranch: "production", mergeCommitSha: "abcdef1234567" }),
+      ),
+    ).toEqual({ text: "merged into production @ abcdef1", tone: "merged" })
+    expect(branchLine(session({ branch: "ucch/abc", settleState: "failed", project: prod }))).toEqual({
+      text: "ucch/abc → production · settle failed",
+      tone: "failed",
+    })
+  })
+})
+
+describe("settled sessions", () => {
+  it("sort after the others under a Settled divider, unless pinned", () => {
+    const now = new Date("2026-11-07T12:00:00Z")
+    const merged = session({ settleState: "settled", lastActivityAt: "2026-11-07T11:59:00Z" })
+    const older = session({ lastActivityAt: "2026-10-01T00:00:00Z" })
+    expect(sortSessions([merged, older]).map((s) => s.id)).toEqual([older.id, merged.id])
+    expect(dateBucket(merged, now)).toBe("Settled")
+    expect(dateBucket({ ...merged, pinned: true }, now)).toBe("Pinned")
   })
 })

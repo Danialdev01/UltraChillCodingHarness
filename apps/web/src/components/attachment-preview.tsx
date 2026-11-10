@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { AlertCircleIcon, DownloadIcon, FileIcon } from "lucide-react";
+import { AlertCircleIcon, DownloadIcon, FileIcon, PencilIcon } from "lucide-react";
 import { extensionOf } from "@ucch/protocol/plain";
 
 import { ImageViewer } from "@/components/image-viewer";
@@ -56,13 +56,17 @@ export function AttachmentPreviewDialog({
   hash,
   attachment,
   onClose,
+  onEdit,
 }: {
   hash: string;
   /** The attachment to show, or null when the dialog is closed. */
   attachment: PreviewableAttachment | null;
   onClose: () => void;
+  /** Opens the image editor on this attachment. Offered for images only. */
+  onEdit?: (attachment: PreviewableAttachment) => void;
 }) {
   const open = attachment !== null && attachment.uploadId !== null;
+  const editable = Boolean(onEdit && attachment && previewKindOf(attachment) === "image");
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
@@ -80,7 +84,13 @@ export function AttachmentPreviewDialog({
           <PreviewBody key={attachment.uploadId} hash={hash} attachment={attachment} />
         )}
 
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          {editable && attachment && (
+            <Button variant="outline" size="sm" onClick={() => onEdit!(attachment)}>
+              <PencilIcon />
+              Edit
+            </Button>
+          )}
           {attachment?.uploadId && (
             <DownloadButton hash={hash} uploadId={attachment.uploadId} name={attachment.name} />
           )}

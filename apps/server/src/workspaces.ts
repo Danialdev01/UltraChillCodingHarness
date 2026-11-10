@@ -50,6 +50,12 @@ export interface ProjectSummary {
   workspaceKind?: WorkspaceKind;
   /** The caller's standing in the project's workspace, when resolved for a caller. */
   membership?: Membership;
+  /** Where its repository lives, credentials taken out; null for a local-only one. */
+  repoUrl?: string | null;
+  /** The base branch: what sessions fork from and settle into. */
+  defaultBranch?: string;
+  autoPushBase?: boolean;
+  deleteBranchOnSettle?: boolean;
 }
 
 /**
@@ -62,7 +68,10 @@ export interface ProjectSummary {
 export interface ProjectRow extends ProjectSummary {
   /** Null for a project that was started rather than cloned. */
   repoUrl: string | null;
+  /** The base branch: what sessions fork from and settle into. */
   defaultBranch: string;
+  autoPushBase: boolean;
+  deleteBranchOnSettle: boolean;
   lastActiveAt: Date;
   createdAt: Date;
   /** Whether a turn is in flight in any of this project's threads. */
@@ -309,6 +318,19 @@ export class WorkspaceService {
   }
 
   /** Renames a project, through `findByHash` so only a member can. */
+  /** The base branch and settle options, as Project Settings sets them. */
+  async setGitSettings(
+    projectId: string,
+    settings: { baseBranch?: string; autoPushBase?: boolean; deleteBranchOnSettle?: boolean },
+  ): Promise<void> {
+    const set: Partial<typeof projects.$inferInsert> = {};
+    if (settings.baseBranch !== undefined) set.defaultBranch = settings.baseBranch;
+    if (settings.autoPushBase !== undefined) set.autoPushBase = settings.autoPushBase;
+    if (settings.deleteBranchOnSettle !== undefined) set.deleteBranchOnSettle = settings.deleteBranchOnSettle;
+    if (Object.keys(set).length === 0) return;
+    await this.db.update(projects).set(set).where(eq(projects.id, projectId));
+  }
+
   async renameProject(hash: string, userId: string, name: string): Promise<ProjectSummary | null> {
     const project = await this.findByHash(hash, userId);
     if (!project) return null;
@@ -341,6 +363,10 @@ export class WorkspaceService {
         role: workspaceMembers.role,
         canCreateProject: workspaceMembers.canCreateProject,
         canCreateSession: workspaceMembers.canCreateSession,
+        repoUrl: projects.repoUrl,
+        defaultBranch: projects.defaultBranch,
+        autoPushBase: projects.autoPushBase,
+        deleteBranchOnSettle: projects.deleteBranchOnSettle,
       })
       .from(projects)
       .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
@@ -355,6 +381,8 @@ export class WorkspaceService {
     const { role, canCreateProject, canCreateSession, workspaceKind, ...project } = row;
     return {
       ...project,
+      // A URL stored with credentials in it never reaches a browser.
+      repoUrl: project.repoUrl ? withoutCredentials(project.repoUrl) : null,
       workspaceKind: workspaceKind === "session" ? "session" : "project",
       membership: toMembership({ role, canCreateProject, canCreateSession }),
     };
@@ -395,6 +423,8 @@ export class WorkspaceService {
         workspaceKind: workspaces.kind,
         repoUrl: projects.repoUrl,
         defaultBranch: projects.defaultBranch,
+        autoPushBase: projects.autoPushBase,
+        deleteBranchOnSettle: projects.deleteBranchOnSettle,
         lastActiveAt: projects.lastActiveAt,
         createdAt: projects.createdAt,
         running: sql<boolean>`exists (
@@ -415,6 +445,8 @@ export class WorkspaceService {
       .then((rows) =>
         rows.map((row) => ({
           ...row,
+          // A URL stored with credentials in it never reaches a browser.
+          repoUrl: row.repoUrl ? withoutCredentials(row.repoUrl) : null,
           workspaceKind: row.workspaceKind === "session" ? ("session" as const) : ("project" as const),
           tokens: Number(row.tokens ?? 0),
           costUsd: Number(row.costUsd ?? 0),
@@ -937,4 +969,17 @@ export function slugify(name: string): string {
     .slice(0, 48);
   // A name of only punctuation or non-Latin script would slugify to nothing.
   return slug || "workspace";
+}
+
+/** A repository URL with any `user:password@` taken out. */
+export function withoutCredentials(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return url;
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString();
+  } catch {
+    return url.replace(/\/\/[^/@]*@/, "//");
+  }
 }

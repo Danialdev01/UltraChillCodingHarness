@@ -34,6 +34,10 @@ export interface TurnLimits {
   nativeTotal: number;
   /** Unlimited when absent. */
   ompTotal?: number;
+  /** Shared estimated working-set budget; absent preserves count-only scheduling. */
+  memory?: { budgetMb: number; estimatesMb: Record<TurnKind, number> };
+  maxWaiting?: number;
+  waitTimeoutMs?: number;
 }
 
 export interface TurnRequest {
@@ -57,6 +61,7 @@ interface Waiting extends TurnRequest {
   /** Last told through `onAhead`; -1 before the first time. */
   ahead: number;
   onAbort?: () => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export class TurnScheduler {
@@ -71,6 +76,10 @@ export class TurnScheduler {
   readonly #cliByOwner = new Map<string, number>();
 
   constructor(limits: TurnLimits) {
+    if (limits.memory && (!Number.isFinite(limits.memory.budgetMb) || limits.memory.budgetMb <= 0 ||
+      Object.values(limits.memory.estimatesMb).some((n) => !Number.isFinite(n) || n <= 0))) {
+      throw new Error("Memory budget and estimates must be finite positive numbers.");
+    }
     this.#limits = limits;
   }
 
@@ -81,6 +90,14 @@ export class TurnScheduler {
    */
   acquire(request: TurnRequest): Promise<() => void> {
     if (request.signal?.aborted) return Promise.reject(abortError());
+    const memory = this.#limits.memory;
+    if (memory && memory.estimatesMb[request.kind] > memory.budgetMb) {
+      return Promise.reject(new Error("This turn exceeds the configured agent memory budget."));
+    }
+    const waiting = this.stats().waiting;
+    if (this.#limits.maxWaiting !== undefined && waiting.cli + waiting.native + waiting.omp >= this.#limits.maxWaiting) {
+      return Promise.reject(new Error("The agent waiting queue is full. Try again later."));
+    }
     return new Promise((resolve, reject) => {
       const entry: Waiting = { ...request, resolve, reject, ahead: -1 };
       const queue = this.#waiting.get(request.ownerId);
@@ -89,6 +106,10 @@ export class TurnScheduler {
       if (request.signal) {
         entry.onAbort = () => this.#cancel(entry);
         request.signal.addEventListener("abort", entry.onAbort, { once: true });
+      }
+      if (this.#limits.waitTimeoutMs !== undefined) {
+        entry.timer = setTimeout(() => this.#cancel(entry, new Error("Timed out waiting for agent capacity.")), this.#limits.waitTimeoutMs);
+        entry.timer.unref();
       }
       this.#pump();
     });
@@ -150,7 +171,17 @@ export class TurnScheduler {
     this.#announce();
   }
 
+  /** Estimates remain reserved for the entire turn, including bridge calls. Not an RSS measurement. */
+  reservedMemoryMb(): number {
+    const memory = this.#limits.memory;
+    if (!memory) return 0;
+    return this.#running.cli * memory.estimatesMb.cli + this.#running.omp * memory.estimatesMb.omp +
+      this.#running.native * memory.estimatesMb.native;
+  }
+
   #fits(entry: Waiting): boolean {
+    const memory = this.#limits.memory;
+    if (memory && this.reservedMemoryMb() + memory.estimatesMb[entry.kind] > memory.budgetMb) return false;
     if (entry.kind === "native") return this.#running.native < this.#limits.nativeTotal;
     if (entry.kind === "omp") return this.#running.omp < (this.#limits.ompTotal ?? Infinity);
     return (
@@ -160,6 +191,7 @@ export class TurnScheduler {
   }
 
   #start(entry: Waiting): void {
+    clearTimeout(entry.timer);
     if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
     this.#running[entry.kind]++;
     if (entry.kind === "cli") this.#cliByOwner.set(entry.ownerId, (this.#cliByOwner.get(entry.ownerId) ?? 0) + 1);
@@ -177,13 +209,15 @@ export class TurnScheduler {
     });
   }
 
-  #cancel(entry: Waiting): void {
+  #cancel(entry: Waiting, error: Error = abortError()): void {
     const queue = this.#waiting.get(entry.ownerId);
     const at = queue?.indexOf(entry) ?? -1;
     if (!queue || at < 0) return;
     queue.splice(at, 1);
     if (queue.length === 0) this.#waiting.delete(entry.ownerId);
-    entry.reject(abortError());
+    clearTimeout(entry.timer);
+    if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
+    entry.reject(error);
     this.#announce();
   }
 

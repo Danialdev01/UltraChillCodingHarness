@@ -1,4 +1,6 @@
 import type { DiffLine } from "./git-diff";
+import { isShowWidgetTool } from "@ucch/protocol/plain";
+
 import { isShellCall, type ToolPart } from "./chat-messages";
 
 /**
@@ -20,6 +22,7 @@ export type ToolView =
   | { kind: "files"; changes: { path: string; change: string }[] }
   | { kind: "delete"; path: string }
   | { kind: "read"; verb: string; label: string }
+  | { kind: "widget" }
   | { kind: "other" };
 
 const READ_TOOLS: Record<string, string> = {
@@ -40,6 +43,8 @@ const READ_TOOLS: Record<string, string> = {
 export function classifyTool(call: Pick<ToolPart, "name" | "input">): ToolView {
   const input = record(call.input);
   const path = str(input.path) ?? str(input.file_path) ?? str(input.notebook_path);
+
+  if (isShowWidgetTool(call.name)) return { kind: "widget" };
 
   if (isShellCall(call.name)) {
     const command = shellCommand(input.command ?? input.cmd ?? call.input);

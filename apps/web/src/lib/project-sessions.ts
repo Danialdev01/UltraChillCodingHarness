@@ -42,30 +42,92 @@ export async function startProjectSession(
 }
 
 /**
- * Removes a project session.
+ * Settles or removes a project session.
  *
  * Settling (the default) commits whatever the session left uncommitted and
- * pushes its branch to origin before removing it; when that cannot happen
- * the server refuses and says why, and the session stays. With `ifEmpty` it
+ * merges its branch into the project's base branch; the session stays,
+ * marked settled. A conflict throws `SettleConflictError` with the files,
+ * and the session is left as it was. With `ifEmpty` it
  * is removed only if nothing was said or changed in it -- what leaving a
- * session asks -- and `keepalive` lets that request outlive the page.
+ * session asks -- and `keepalive` lets that request outlive the page. With
+ * `discard` nothing is committed or pushed: the changes are dropped with the
+ * worktree and the branch.
  */
 export async function settleProjectSession(
   projectHash: string,
   sessionHash: string,
-  options: { ifEmpty?: boolean } = {},
-): Promise<{ removed: boolean; pushed: string | null }> {
+  options: { ifEmpty?: boolean; discard?: boolean } = {},
+): Promise<SettleResult> {
+  const query = options.ifEmpty ? "?ifEmpty=1" : options.discard ? "?discard=1" : ""
   const response = await fetch(
-    `/api/projects/${projectHash}/sessions/${sessionHash}${options.ifEmpty ? "?ifEmpty=1" : ""}`,
+    `/api/projects/${projectHash}/sessions/${sessionHash}${query}`,
     { method: "DELETE", credentials: "include", keepalive: options.ifEmpty === true },
   )
-  const body = (await response.json().catch(() => ({}))) as {
-    removed?: boolean
-    pushed?: string | null
+  const body = (await response.json().catch(() => ({}))) as Partial<SettleResult> & {
     error?: string
+    conflicts?: string[]
   }
-  if (!response.ok) throw new Error(body.error ?? "Could not settle the session.")
-  return { removed: body.removed === true, pushed: body.pushed ?? null }
+  if (!response.ok) {
+    if (Array.isArray(body.conflicts)) {
+      throw new SettleConflictError(body.error ?? "The merge conflicts.", body.baseBranch ?? null, body.conflicts)
+    }
+    throw new Error(body.error ?? "Could not settle the session.")
+  }
+  return {
+    removed: body.removed === true,
+    settled: body.settled === true,
+    pushed: body.pushed ?? null,
+    pushError: body.pushError ?? null,
+    baseBranch: body.baseBranch ?? null,
+    mergeCommitSha: body.mergeCommitSha ?? null,
+  }
+}
+
+/** What settling did: merged into `baseBranch` at `mergeCommitSha`, or -- with nothing to merge -- removed. */
+export interface SettleResult {
+  removed: boolean
+  settled: boolean
+  /** The base branch, when it was pushed to origin afterwards. */
+  pushed: string | null
+  pushError: string | null
+  baseBranch: string | null
+  mergeCommitSha: string | null
+}
+
+/** Settling stopped on a conflict: the merge was aborted and the session left as it was. */
+export class SettleConflictError extends Error {
+  constructor(
+    message: string,
+    readonly baseBranch: string | null,
+    readonly conflicts: string[],
+  ) {
+    super(message)
+    this.name = "SettleConflictError"
+  }
+}
+
+/** What settling a session would involve: work to merge, and where it would go. */
+export interface SettleCheck {
+  changes: boolean
+  hasRemote: boolean
+  running: boolean
+  /** The session's own branch, `ucch/{hash}`; null for one with no worktree. */
+  branch: string | null
+  /** The project's base branch, which settling merges into. */
+  baseBranch: string | null
+}
+
+export async function fetchSettleCheck(projectHash: string, sessionHash: string): Promise<SettleCheck> {
+  const response = await fetch(`/api/projects/${projectHash}/sessions/${sessionHash}/settle`, { credentials: "include" })
+  const body = (await response.json().catch(() => ({}))) as Partial<SettleCheck> & { error?: string }
+  if (!response.ok) throw new Error(body.error ?? "Could not check the session.")
+  return {
+    changes: body.changes === true,
+    hasRemote: body.hasRemote === true,
+    running: body.running === true,
+    branch: body.branch ?? null,
+    baseBranch: body.baseBranch ?? null,
+  }
 }
 
 /**
@@ -97,6 +159,7 @@ export function keepSession(sessionHash: string): void {
 const SESSION_EVENTS: ReadonlySet<DomainEvent["type"]> = new Set([
   "thread.created",
   "thread.removed",
+  "thread.settled",
   "thread.worktree_ready",
   "thread.worktree_failed",
   "turn.started",

@@ -2,7 +2,17 @@
 
 import * as React from "react"
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
-import { CheckIcon, ClockIcon, FolderIcon, GitBranchIcon, HardDriveIcon, MoreHorizontalIcon, PinIcon } from "lucide-react"
+import {
+  CheckIcon,
+  ClockIcon,
+  FolderIcon,
+  GitBranchIcon,
+  GitMergeIcon,
+  HardDriveIcon,
+  MoreHorizontalIcon,
+  PinIcon,
+  TriangleAlertIcon,
+} from "lucide-react"
 
 import { HarnessIcon } from "@/components/harness-icon"
 import { ProjectStackIcon } from "@/components/project-stack-icon"
@@ -14,7 +24,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { highlightRanges, type SessionStatus, type SidebarSession } from "@/lib/session-sidebar"
+import { branchLine, highlightRanges, type SessionStatus, type SidebarSession } from "@/lib/session-sidebar"
 import { cn } from "@/lib/utils"
 import { TransitionLink } from "@/lib/view-transitions"
 
@@ -78,7 +88,9 @@ export function SessionCard({
 }) {
   const tooltipId = React.useId()
   const [menuOpen, setMenuOpen] = React.useState(false)
-  const branch = session.branch ?? session.baseBranch ?? "main"
+  const line = branchLine(session)
+  const branch = line.text
+  const BranchIcon = line.tone === "merged" ? GitMergeIcon : line.tone === "failed" ? TriangleAlertIcon : GitBranchIcon
   const running = status === "running"
 
   return (
@@ -129,8 +141,13 @@ export function SessionCard({
               {hideProject && <StatusColumn status={status} time={time} isActive={isActive} />}
             </span>
             <span className="text-muted-foreground flex min-w-0 items-center justify-between gap-2 text-2xs">
-              <span className="flex min-w-0 items-center gap-1 font-mono">
-                <GitBranchIcon className="size-3 shrink-0" aria-hidden />
+              <span
+                className={cn(
+                  "flex min-w-0 items-center gap-1 font-mono",
+                  line.tone === "failed" && "text-destructive",
+                )}
+              >
+                <BranchIcon className="size-3 shrink-0" aria-hidden />
                 <span className="truncate">
                   <Highlighted text={branch} query={query} />
                 </span>
@@ -300,7 +317,10 @@ function SessionDetails({
         <span className="grid size-3.5 shrink-0 place-items-center [&_svg]:size-3.5" aria-hidden>
           {session.project.stack ? <ProjectStackIcon stack={session.project.stack} /> : <FolderIcon />}
         </span>
-        <span className="truncate">{session.project.name}</span>
+        <span className="truncate">
+          {session.project.name}
+ · {session.project.repo ?? "local repository"}
+        </span>
       </span>
       {hostName && (
         <span className={row}>
@@ -312,6 +332,22 @@ function SessionDetails({
         <GitBranchIcon className="size-3.5 shrink-0" aria-hidden />
         <span className="truncate font-mono">{branch}</span>
       </span>
+      {session.settleState === "failed" && (
+        <span className="text-destructive flex flex-col gap-0.5">
+          <span>Settle failed{session.settleConflicts?.length ? " – conflicts" : ""}: {session.settleError}</span>
+          {session.settleConflicts?.slice(0, 8).map((path) => (
+            <span key={path} className="truncate font-mono text-2xs">
+              {path}
+            </span>
+          ))}
+          {(session.settleConflicts?.length ?? 0) > 8 && (
+            <span className="text-2xs">and {(session.settleConflicts?.length ?? 0) - 8} more</span>
+          )}
+        </span>
+      )}
+      {session.settleState === "settled" && session.settleError && (
+        <span className="text-muted-foreground">{session.settleError}</span>
+      )}
       <span className={row}>
         <HarnessIcon harness={session.provider} size={14} />
         <span className="truncate">{modelLabel}</span>

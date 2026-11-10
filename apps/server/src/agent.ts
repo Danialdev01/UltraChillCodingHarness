@@ -31,6 +31,10 @@ import {
   UCCH_AGENT_DESCRIPTION,
   UCCH_AGENT_GUIDE,
   UCCH_AGENT_TOOL,
+  SHOW_WIDGET_TOOL,
+  WIDGET_PROMPT,
+  WIDGET_TURN_NUDGE,
+  asksForWidget,
   needsApproval,
   readAgentSettings,
   type CliProviderId,
@@ -119,6 +123,11 @@ export interface AgentOptions {
   heavyJobs?: HeavyJobGate;
   /** Puts the native loop's tool calls behind a lower priority (child-priority.ts). */
   wrapArgv?: ArgvWrapper;
+  /**
+   * The folder to put first on PATH for a command run in a workspace: that
+   * project's runtime versions (runtimes/manager.ts `pathFor`).
+   */
+  runtimePath?: (cwd: string) => string | null;
   /**
    * The CLI providers. Optional so a harness can run with the native loop
    * alone; a turn that asks for one then fails with a message saying so.
@@ -964,6 +973,14 @@ export class AgentTurnReactor {
           ]);
         }
 
+        // A message asking for a visual is told, right there, to answer with
+        // a widget: the standing prompt alone loses to a history of building
+        // files, pages or Claude Code mods instead.
+        if (widgetsOn(readAgentSettings(project.agent)) && !thread.parentThreadId && asksForWidget(text)) {
+          prompt = `${prompt}\n\n${WIDGET_TURN_NUDGE}`;
+          await append([{ type: "context.injected", threadId, source: "system_prompt", content: WIDGET_TURN_NUDGE }]);
+        }
+
         // The first turn on a harness the thread was switched to: its session
         // is new, and starts from the brief of the work so far. Only a bound
         // thread can have been switched; a new one has nothing to read.
@@ -1034,12 +1051,21 @@ export class AgentTurnReactor {
         preset: mode ?? "standard",
         ...(mode === "research" ? { mode, research: this.options.research } : {}),
         ...(mode === "documentation" ? { mode, documents: this.options.documents } : {}),
-        registry: this.options.registry,
+        // The workspace's "Allow interactive widgets": the prompt section
+        // and `show_widget` together.
+        registry: {
+          ...this.options.registry,
+          widgets: widgetsOn(readAgentSettings(project.agent)) && !thread.parentThreadId,
+        },
         contextLength,
         supportsImages: canSeeImages,
         searchModel: this.options.searchModel,
         maxIterations: this.options.maxIterations,
-        executor: new HostExecutor(workspace, { heavyJobs: this.options.heavyJobs, wrapArgv: this.options.wrapArgv }),
+        executor: new HostExecutor(workspace, {
+          heavyJobs: this.options.heavyJobs,
+          wrapArgv: this.options.wrapArgv,
+          pathPrefix: () => this.options.runtimePath?.(workspace) ?? null,
+        }),
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
         complete: streamCompletion,
         signal: controller.signal,
@@ -1620,8 +1646,12 @@ export class AgentTurnReactor {
       // Subagents on any harness, for every session but a subagent's own.
       const offersSubagents = this.#subagents !== null && !input.subagent;
       const ompTools = input.agentSettings?.ompBridge.enabled === true;
-      if (provider !== "omp" && (ompTools || offersSubagents)) {
-        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents });
+      // Interactive widgets: taught in the instructions (the fence works on
+      // every harness), and `show_widget` on the bridge. Not for a
+      // subagent, whose answer goes to its parent rather than the reader.
+      const widgets = widgetsOn(input.agentSettings) && !input.subagent;
+      if (provider !== "omp" && (ompTools || offersSubagents || widgets)) {
+        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets });
       }
       // When to reach for the bridge's tools (solution §10.4). Codex reads
       // instructions only at the start of a session (`codexPrompt`), so a
@@ -1636,13 +1666,20 @@ export class AgentTurnReactor {
       // OMP is handed the knowledge inside its own section of the system
       // prompt (solution §3.8). It reads the worktree's AGENTS.md itself, so
       // that is never added here.
+      // Codex is handed instructions only on a fresh session; Claude Code
+      // and OMP every turn.
+      const widgetRules = widgets && fresh ? WIDGET_PROMPT : null;
       const instructions =
         provider === "omp"
-          ? [ompInstructions(input.workspace, knowledge, input.mode), offersSubagents ? UCCH_AGENT_GUIDE : null]
+          ? [
+              ompInstructions(input.workspace, knowledge, input.mode),
+              offersSubagents ? UCCH_AGENT_GUIDE : null,
+              widgetRules,
+            ]
               .filter((part): part is string => Boolean(part))
               .join("\n\n")
-          : guide
-            ? [knowledge?.trimEnd(), guide].filter((part): part is string => Boolean(part)).join("\n\n")
+          : guide || widgetRules
+            ? [knowledge?.trimEnd(), guide, widgetRules].filter((part): part is string => Boolean(part)).join("\n\n")
             : knowledge;
       // Logged as the native loop logs its prompt parts, so the thread says
       // exactly what the CLI was handed on top of the message: for OMP the
@@ -1660,6 +1697,11 @@ export class AgentTurnReactor {
         if (guide) {
           await input.append([{ type: "context.injected", threadId: input.threadId, source: "omp_bridge", content: guide }]);
         }
+        if (widgetRules) {
+          await input.append([
+            { type: "context.injected", threadId: input.threadId, source: "system_prompt", content: widgetRules },
+          ]);
+        }
       }
       // The mode's tools and rules (solution §3.7); the guard hook reads it
       // too, to keep a documentation turn's writes under docs/.
@@ -1675,7 +1717,7 @@ export class AgentTurnReactor {
       if (provider === "omp") {
         const providers = this.options.providers;
         const hostTools = [
-          ...hostToolSchemas(preset, this.options.registry),
+          ...hostToolSchemas(preset, { ...this.options.registry, widgets }),
           ...(offersSubagents ? [UCCH_AGENT_HOST_TOOL] : []),
         ];
         // One bank per project, under the subject that pays (solution §7.1).
@@ -1894,8 +1936,8 @@ export class AgentTurnReactor {
       agentSettings?: WorkspaceAgentSettings;
       trusted?: boolean;
     },
-    /** What the bridge carries: OMP's tools (the workspace's bridge), `ucch_agent`, or both. */
-    offer: { omp: boolean; subagents: boolean },
+    /** What the bridge carries: OMP's tools (the workspace's bridge), `ucch_agent`, `show_widget`, in any mix. */
+    offer: { omp: boolean; subagents: boolean; widgets?: boolean },
   ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { omp: boolean; dispose(): Promise<void> }) | null> {
     const options = this.options.ompBridge;
     const providers = this.options.providers;
@@ -1910,7 +1952,7 @@ export class AgentTurnReactor {
         openrouterKey = null;
       }
     }
-    if (!openrouterKey && !offer.subagents) return null;
+    if (!openrouterKey && !offer.subagents && !offer.widgets) return null;
     // A bridge for `ucch_agent` alone is offered to every Claude Code and
     // Codex turn, so a server without the bundle must not hand the CLI an
     // MCP server it cannot start.
@@ -1955,6 +1997,7 @@ export class AgentTurnReactor {
             ? { agentDir: providers.ompAgentDir(input.ownerId), overlay: overlay.path, openrouterKey }
             : null,
         subagents: offer.subagents,
+        widgets: offer.widgets === true,
         worktree: input.workspace,
         schedulerSock: options.socket,
         token: lease.token,
@@ -2053,7 +2096,11 @@ export class AgentTurnReactor {
         searchModel: this.options.searchModel,
         preset: input.preset,
         registry: this.options.registry,
-        executor: new HostExecutor(input.workspace, { heavyJobs: this.options.heavyJobs, wrapArgv: this.options.wrapArgv }),
+        executor: new HostExecutor(input.workspace, {
+          heavyJobs: this.options.heavyJobs,
+          wrapArgv: this.options.wrapArgv,
+          pathPrefix: () => this.options.runtimePath?.(input.workspace) ?? null,
+        }),
         complete: streamCompletion,
         signal: turnSignal,
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
@@ -2137,12 +2184,17 @@ export class AgentTurnReactor {
       preset: "research",
       mode: "research",
       research: this.options.research,
-      registry: this.options.registry,
+      // A hidden phase: its answer is read by the next agent, not the reader.
+      registry: { ...this.options.registry, widgets: false },
       contextLength,
       supportsImages: canSeeImages,
       searchModel: this.options.searchModel,
       maxIterations: this.options.maxIterations,
-      executor: new HostExecutor(input.workspace, { heavyJobs: this.options.heavyJobs, wrapArgv: this.options.wrapArgv }),
+      executor: new HostExecutor(input.workspace, {
+          heavyJobs: this.options.heavyJobs,
+          wrapArgv: this.options.wrapArgv,
+          pathPrefix: () => this.options.runtimePath?.(input.workspace) ?? null,
+        }),
       complete: streamCompletion,
       signal: input.signal,
       conclude: false,
@@ -2216,12 +2268,17 @@ export class AgentTurnReactor {
         history: [{ type: "user.message", threadId, text: input.ask }],
         stack: input.stack,
         preset: "readonly",
-        registry: this.options.registry,
+        // A subagent reports to its parent, not to the reader: no widgets.
+        registry: { ...this.options.registry, widgets: false },
         contextLength,
         supportsImages: canSeeImages,
         searchModel: this.options.searchModel,
         maxIterations: this.options.maxIterations,
-        executor: new HostExecutor(workspace, { heavyJobs: this.options.heavyJobs, wrapArgv: this.options.wrapArgv }),
+        executor: new HostExecutor(workspace, {
+          heavyJobs: this.options.heavyJobs,
+          wrapArgv: this.options.wrapArgv,
+          pathPrefix: () => this.options.runtimePath?.(workspace) ?? null,
+        }),
         complete: streamCompletion,
         signal: input.signal,
         conclude: false,
@@ -2341,7 +2398,14 @@ const OMP_BRIDGE_READS: ReadonlySet<string> = new Set(OMP_BRIDGE_READ_TOOLS.map(
  * read-only ones run unasked (Claude Code is started with them allowed,
  * so it does not ask about those at all); under Strict every one asks.
  */
+/** The workspace's "Allow interactive widgets"; on when it has no say. */
+export function widgetsOn(settings: WorkspaceAgentSettings | undefined | null): boolean {
+  return settings?.widgets?.enabled !== false;
+}
+
 export function claudePromptNeedsPerson(mode: AgentPermissionMode, toolName: string, input: unknown): boolean {
+  // Draws a widget in the chat and does nothing else: never worth asking about.
+  if (toolName === ompBridgeToolName(SHOW_WIDGET_TOOL)) return false;
   if (toolName.startsWith(ompBridgeToolName(""))) {
     return mode === "allow_all" ? false : !(mode === "normal" && OMP_BRIDGE_READS.has(toolName));
   }

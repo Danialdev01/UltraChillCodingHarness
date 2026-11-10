@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DomainEvent } from "@ucch/protocol";
 import { describe, expect, it } from "vitest";
-import { CodexNormaliser, CodexProvider, codexArgv, codexMcpArgs, codexPrompt, isCodexLimit, probeCodex } from "./codex.js";
+import { CodexNormaliser, CodexProvider, codexArgv, codexMcpArgs, codexPrompt, isCodexLimit, listCodexModels, probeCodex } from "./codex.js";
 import { FakeProcessHost, stdout } from "./testing.js";
 
 const WORKSPACE = "/srv/ucch/workspaces/11111111-1111-4111-8111-111111111111";
@@ -13,6 +13,49 @@ const ids = {
 };
 
 const fixture = readFileSync(join(import.meta.dirname, "fixtures", "codex-edit.jsonl"), "utf8");
+
+describe("Codex model discovery", () => {
+  it("initializes, follows pagination, and preserves distinct model slugs and names", async () => {
+    const host = new FakeProcessHost([{
+      match: (argv) => argv[1] === "app-server",
+      lines: [
+        stdout("startup log"),
+        stdout(JSON.stringify({ id: 1, result: {} })),
+        stdout(JSON.stringify({ id: 2, result: { data: [
+          { id: "catalogue-id", model: "gpt-6-sol", displayName: "GPT-6 Sol" },
+          { model: "hidden-model", hidden: true },
+          { displayName: "Missing slug" },
+        ], nextCursor: "page2" } })),
+        stdout(JSON.stringify({ id: 3, result: { data: [
+          { model: "gpt-5.3-codex", displayName: "GPT-5.3 Codex" },
+          { model: "gpt-6-sol", displayName: "GPT-6 Sol" },
+        ], nextCursor: null } })),
+      ],
+    }]);
+    const env = { CODEX_HOME: "/credentials/account-a" };
+    expect(await listCodexModels({ cwd: WORKSPACE, env, host }, "codex")).toEqual([
+      { id: "gpt-6-sol", name: "GPT-6 Sol" },
+      { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
+    ]);
+    expect(host.spawned[0]).toMatchObject({ env, holdStdin: true });
+    expect(host.written.map((line) => JSON.parse(line))).toEqual([
+      { method: "initialized", params: {} },
+      { id: 2, method: "model/list", params: { limit: 100 } },
+      { id: 3, method: "model/list", params: { limit: 100, cursor: "page2" } },
+    ]);
+    expect(host.signals).toContain("SIGKILL");
+  });
+
+  it("rejects unavailable catalogues so the caller can retain its fallback", async () => {
+    for (const lines of [[], [stdout('{"id":1,"error":{"code":-1}}')], [
+      stdout('{"id":1,"result":{}}'), stdout('{"id":2,"result":{"data":[]}}'),
+    ]]) {
+      const host = new FakeProcessHost([{ match: () => true, lines }]);
+      await expect(listCodexModels({ cwd: WORKSPACE, env: {}, host }, "codex")).rejects.toThrow();
+      expect(host.signals).toContain("SIGKILL");
+    }
+  });
+});
 
 function feed(normaliser: CodexNormaliser, text: string): DomainEvent[] {
   const events: DomainEvent[] = [];

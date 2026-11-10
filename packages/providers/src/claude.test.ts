@@ -146,16 +146,17 @@ describe("claudeArgv", () => {
       const at = normal.indexOf("--mcp-config");
       expect(normal.slice(at, at + 3)).toEqual(["--mcp-config", "/c/run/t.mcp.json", "--strict-mcp-config"]);
       const allowed = normal.indexOf("--allowedTools");
-      expect(normal.slice(allowed + 1, allowed + 6)).toEqual([
+      expect(normal.slice(allowed + 1, allowed + 7)).toEqual([
         "mcp__omp__omp_symbols",
         "mcp__omp__omp_recall",
         "mcp__omp__omp_review",
         "mcp__omp__omp_task",
         "mcp__omp__ucch_agent",
+        "mcp__omp__show_widget",
       ]);
       // `--allowedTools` takes every word up to the next flag: whatever follows it is one.
       const resumed = claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", model: "opus", resumeToken: "s1" });
-      expect(resumed[resumed.indexOf("--allowedTools") + 6]).toMatch(/^--/);
+      expect(resumed[resumed.indexOf("--allowedTools") + 7]).toMatch(/^--/);
       expect(claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", permissionMode: "normal" })).toEqual(
         claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x" }),
       );

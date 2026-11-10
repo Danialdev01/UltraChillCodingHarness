@@ -151,6 +151,25 @@ const Env = z.object({
   CREDS_ROOT: z.string().default("/srv/ucch/creds"),
 
   /**
+   * Language runtimes a project can pick the version of (runtimes/manager.ts):
+   * `{RUNTIMES_ROOT}/php/8.4.12/` per installed version, shared by every
+   * project, and `{RUNTIMES_ROOT}/projects/{id}/bin`, first on the PATH of
+   * everything that project runs. Unset, `runtimes` beside CREDS_ROOT.
+   */
+  RUNTIMES_ROOT: z.string().optional(),
+
+  /**
+   * Download the newest stable version of each runtime at boot when none is
+   * installed, and whatever version a project's `.agent/runtimes.json` asks
+   * for when it is missing. Off, only an explicit install from the project's
+   * Runtimes tab downloads anything; until then projects use the system's.
+   */
+  RUNTIMES_AUTO_INSTALL: z
+    .string()
+    .optional()
+    .transform((v) => v === undefined || v === "true" || v === "1"),
+
+  /**
    * CLI-provider turns one account may have in flight at once. A
    * subscription is one human's; several containers hammering it together is
    * how a rate limit gets mistaken for a broken integration.
@@ -163,6 +182,14 @@ const Env = z.object({
    * API and Next.js in a 7 GB container. A turn over the limit waits for a
    * slot, and the thread says how many are ahead (`turn-scheduler.ts`).
    */
+  /** Opt-in shared estimate budget, excluding API/web/databases and unmanaged project servers. */
+  AGENT_MEMORY_BUDGET_MB: z.coerce.number().int().positive().optional(),
+  AGENT_CLI_MEMORY_MB: z.coerce.number().int().positive().default(512),
+  AGENT_OMP_MEMORY_MB: z.coerce.number().int().positive().default(512),
+  AGENT_NATIVE_MEMORY_MB: z.coerce.number().int().positive().default(128),
+  AGENT_MAX_WAITING: z.coerce.number().int().positive().optional(),
+  AGENT_WAIT_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+
   AGENT_MAX_CONCURRENT_TOTAL: z.coerce.number().int().positive().default(5),
 
   /** Native turns running at once on the whole server, diagram jobs included; likewise. */

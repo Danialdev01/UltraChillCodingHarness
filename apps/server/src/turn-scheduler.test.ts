@@ -203,3 +203,48 @@ describe("TurnScheduler", () => {
     expect(turns.every((turn) => turn.started)).toBe(true);
   });
 });
+
+describe("shared memory admission", () => {
+  const memory = { budgetMb: 1024, estimatesMb: { cli: 512, omp: 512, native: 128 } };
+  it("shares reservations across providers and releases exactly once", async () => {
+    const scheduler = new TurnScheduler({ ...limits, ompTotal: 6, memory });
+    const a = await scheduler.acquire({ ownerId: "a", threadId: "a", kind: "cli" });
+    const b = await scheduler.acquire({ ownerId: "b", threadId: "b", kind: "omp" });
+    const c = ask(scheduler, "c", "native", "c");
+    await settle();
+    expect(c.started).toBe(false);
+    expect(scheduler.reservedMemoryMb()).toBe(1024);
+    a(); a();
+    await settle();
+    expect(c.started).toBe(true);
+    expect(scheduler.reservedMemoryMb()).toBe(640);
+    b(); c.release();
+    expect(scheduler.reservedMemoryMb()).toBe(0);
+  });
+  it("rejects an impossible request without retaining it", async () => {
+    const scheduler = new TurnScheduler({ ...limits, memory: { ...memory, budgetMb: 100 } });
+    await expect(scheduler.acquire({ ownerId: "a", threadId: "a", kind: "cli" })).rejects.toThrow("exceeds");
+    expect(scheduler.stats().waiting.cli).toBe(0);
+  });
+  it("bounds waiting work and frees cancelled queue positions", async () => {
+    const scheduler = new TurnScheduler({ ...limits, cliTotal: 1, maxWaiting: 1 });
+    const release = await scheduler.acquire({ ownerId: "a", threadId: "a", kind: "cli" });
+    const controller = new AbortController();
+    const queued = ask(scheduler, "b", "cli", "b", { signal: controller.signal });
+    await expect(scheduler.acquire({ ownerId: "c", threadId: "c", kind: "cli" })).rejects.toThrow("queue is full");
+    controller.abort();
+    await settle();
+    expect(queued.failed?.name).toBe("AbortError");
+    expect(scheduler.stats().waiting.cli).toBe(0);
+    release();
+  });
+  it("expires waiting requests without leaking reservations", async () => {
+    const scheduler = new TurnScheduler({ ...limits, cliTotal: 1, waitTimeoutMs: 10 });
+    const release = await scheduler.acquire({ ownerId: "a", threadId: "a", kind: "cli" });
+    const queued = ask(scheduler, "b", "cli", "b");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(queued.failed?.message).toContain("Timed out");
+    expect(scheduler.stats().waiting.cli).toBe(0);
+    release();
+  });
+});

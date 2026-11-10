@@ -19,6 +19,17 @@ export interface SidebarSession {
   branch: string | null
   baseBranch: string | null
   worktreeState: string | null
+  /**
+   * The last settle's outcome: `settled` (merged into `settleBaseBranch` at
+   * `mergeCommitSha`, worktree removed) or `failed` (the merge conflicted
+   * in `settleConflicts` and was aborted). Null until settled.
+   */
+  settleState?: "settled" | "failed" | null
+  settleError?: string | null
+  settleConflicts?: string[] | null
+  settleBaseBranch?: string | null
+  mergeCommitSha?: string | null
+  settledAt?: string | null
   pinned: boolean
   archivedAt: string | null
   lastActivityAt: string
@@ -33,6 +44,10 @@ export interface SidebarProject {
   name: string
   stack: string | null
   lastActiveAt?: string | null
+  /** The project's base branch: what its sessions fork from and settle into. */
+  baseBranch?: string | null
+  /** Where its repository lives, `host/owner/name`; null for a local-only one. */
+  repo?: string | null
 }
 
 export interface WorkspaceSessions {
@@ -78,9 +93,15 @@ const time = (iso: string | null | undefined) => {
   return Number.isNaN(t) ? 0 : t
 }
 
-/** Pinned first, then the most recent activity; ties by title so the order is stable. */
+const isMerged = (s: SidebarSession) => s.settleState === "settled" && !s.pinned
+
+/**
+ * Pinned first, settled (merged) last, otherwise the most recent activity;
+ * ties by title so the order is stable.
+ */
 export function compareSessions(a: SidebarSession, b: SidebarSession): number {
   if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+  if (isMerged(a) !== isMerged(b)) return isMerged(a) ? 1 : -1
   const by = time(b.lastActivityAt) - time(a.lastActivityAt)
   return by !== 0 ? by : a.title.localeCompare(b.title)
 }
@@ -89,11 +110,15 @@ export function sortSessions(sessions: readonly SidebarSession[]): SidebarSessio
   return [...sessions].sort(compareSessions)
 }
 
-export type DateBucket = "Pinned" | "Today" | "Yesterday" | "This week" | "Older"
+export type DateBucket = "Pinned" | "Today" | "Yesterday" | "This week" | "Older" | "Settled"
 
-/** Which divider a session falls under, by its last activity in local time. */
+/**
+ * Which divider a session falls under: by its last activity in local time,
+ * or "Settled" once its work is merged -- at the bottom, out of the way.
+ */
 export function dateBucket(session: SidebarSession, now: Date): DateBucket {
   if (session.pinned) return "Pinned"
+  if (isMerged(session)) return "Settled"
   const at = new Date(time(session.lastActivityAt))
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   const day = 86_400_000
@@ -141,7 +166,9 @@ export function searchFields(session: SidebarSession, names?: ReadonlyMap<string
   return {
     title: session.title,
     project: session.project.name,
-    branch: session.branch ?? session.baseBranch ?? "",
+    branch: [session.branch, session.settleBaseBranch ?? session.baseBranch ?? session.project.baseBranch]
+      .filter(Boolean)
+      .join(" "),
     model: sessionModelLabel(session.provider, session.model, names),
   }
 }
@@ -275,4 +302,26 @@ export function relativeTime(iso: string | null | undefined, now: number | null)
   const weeks = Math.floor(days / 7)
   if (weeks < 52) return `${weeks}w`
   return `${Math.floor(days / 365)}y`
+}
+
+/**
+ * The branch line for a session: where its work is and where it goes.
+ * `ucch/x → main` while it works; `merged into main @ abc1234` once
+ * settled; just the project's base for a session in the main checkout.
+ */
+export function branchLine(session: SidebarSession): {
+  text: string
+  tone: "normal" | "merged" | "failed"
+} {
+  const base = session.settleBaseBranch ?? session.project.baseBranch ?? session.baseBranch ?? null
+  if (session.settleState === "settled") {
+    const sha = session.mergeCommitSha ? ` @ ${session.mergeCommitSha.slice(0, 7)}` : ""
+    return { text: `merged into ${base ?? "base"}${sha}`, tone: "merged" }
+  }
+  const target = (branch: string) => (base && base !== branch ? `${branch} → ${base}` : branch)
+  if (session.settleState === "failed") {
+    return { text: `${target(session.branch ?? "?")} · settle failed`, tone: "failed" }
+  }
+  if (session.branch) return { text: target(session.branch), tone: "normal" }
+  return { text: base ?? "", tone: "normal" }
 }

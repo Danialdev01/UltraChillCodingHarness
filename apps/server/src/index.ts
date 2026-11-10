@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import compress from "@fastify/compress";
 import cookie from "@fastify/cookie";
 import rateLimit from "@fastify/rate-limit";
@@ -36,6 +36,8 @@ import { researchBackends } from "./research.js";
 import { DIAGRAM_FILES, diagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
 import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.js";
 import { WorktreeReactor } from "./worktrees.js";
+import { ProjectGit, SettleRefusedError } from "./project-git.js";
+import { projectDeletionCheck } from "./project-deletion.js";
 import { projectOf, projectRoot, sessionTree, sessionTreesOf, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
 import {
   ConflictError,
@@ -93,6 +95,9 @@ import { TodoMirror } from "./agent-todo.js";
 import { NotesMirror, type MirroredNote } from "./agent-notes.js";
 import { registerTaskRoutes } from "./tasks-routes.js";
 import { registerCommandRoutes } from "./commands-routes.js";
+import { registerRuntimeRoutes } from "./runtimes-routes.js";
+import { RuntimeManager } from "./runtimes/manager.js";
+import { createRuntimeProviders } from "./runtimes/registry.js";
 import { TaskPipeline } from "./task-pipeline.js";
 import { TaskScheduler } from "./task-scheduler.js";
 import { registerDatabaseRoutes } from "./database-routes.js";
@@ -181,6 +186,28 @@ await mkdir(config.CREDS_ROOT, { recursive: true, mode: 0o700 });
 const bus = new EventBus();
 const store = new EventStore(db, bus, { historyCacheEvents: config.HISTORY_CACHE_EVENTS });
 
+/**
+ * Per-project runtime versions (PHP today): installed once under
+ * RUNTIMES_ROOT, picked per project in `.agent/runtimes.json`, and put first
+ * on the PATH of every terminal, command button and agent the project runs.
+ */
+const runtimesRoot = config.RUNTIMES_ROOT ?? join(dirname(config.CREDS_ROOT), "runtimes");
+await mkdir(runtimesRoot, { recursive: true });
+const runtimes = new RuntimeManager({
+  root: runtimesRoot,
+  workspaceRoot: config.WORKSPACE_ROOT,
+  providers: createRuntimeProviders(),
+  autoInstall: config.RUNTIMES_AUTO_INSTALL,
+  changed: (projectId) =>
+    bus.publish({
+      seq: null,
+      projectId,
+      threadId: null,
+      event: { type: "resource.changed", projectId, resource: "runtimes" },
+    }),
+  log: (error, context) => app.log.warn({ err: error }, context),
+});
+
 // A message whose turn never opened before the restart left its thread
 // `queued`, refusing every new message. Released through the log, not a
 // bare update like the one above, so the chat says why nothing answered.
@@ -250,6 +277,7 @@ const providerService = new ProviderService(
     ompBin: config.OMP_BIN,
     isRepo: (cwd) => existsSync(join(cwd, ".git")),
   }),
+  (cwd) => runtimes.pathFor(cwd),
 );
 
 /** Where agent turns wait when the server runs as many as it allows. */
@@ -258,6 +286,12 @@ const turnScheduler = new TurnScheduler({
   cliTotal: config.AGENT_MAX_CONCURRENT_TOTAL,
   nativeTotal: config.AGENT_MAX_NATIVE_TOTAL,
   ompTotal: config.OMP_TURN_TOTAL,
+  ...(config.AGENT_MEMORY_BUDGET_MB ? { memory: {
+    budgetMb: config.AGENT_MEMORY_BUDGET_MB,
+    estimatesMb: { cli: config.AGENT_CLI_MEMORY_MB, omp: config.AGENT_OMP_MEMORY_MB, native: config.AGENT_NATIVE_MEMORY_MB },
+  } } : {}),
+  maxWaiting: config.AGENT_MAX_WAITING ?? (config.AGENT_MEMORY_BUDGET_MB ? 256 : undefined),
+  waitTimeoutMs: config.AGENT_WAIT_TIMEOUT_MS ?? (config.AGENT_MEMORY_BUDGET_MB ? 300_000 : undefined),
 });
 
 /**
@@ -288,6 +322,7 @@ const agentTurns = new AgentTurnReactor(
     documents,
     heavyJobs: new HeavyJobGate(config.DOC_JOBS_MAX, documents.kitDir),
     wrapArgv: wrapChild,
+    runtimePath: (cwd) => runtimes.pathFor(cwd),
     // Decided once, at boot: in production the shell plugin loads only when
     // it has been asked for explicitly.
     registry: { allowHostShell: shellPluginEnabled(config) },
@@ -403,6 +438,13 @@ const clones = new CloneReactor(
 );
 
 /**
+ * Git against project repositories -- worktrees, base branches, settling --
+ * with one lock per project, shared by everything that changes a repository's
+ * refs or worktree list.
+ */
+const projectGit = new ProjectGit(config.WORKSPACE_ROOT);
+
+/**
  * A git worktree for each project session, so sessions on the same project
  * run side by side on branches of their own.
  */
@@ -412,7 +454,7 @@ const worktrees = new WorktreeReactor(
       applyProjection(tx, [event], null),
     );
   },
-  { workspaceRoot: config.WORKSPACE_ROOT },
+  { workspaceRoot: config.WORKSPACE_ROOT, projectGit },
   (error, event) => app.log.error({ err: error, threadId: event.threadId }, "worktree failed"),
 );
 
@@ -433,6 +475,7 @@ const terminals = new TerminalReactor(
     maxTotal: config.TERMINAL_MAX_TOTAL,
     idleMs: config.TERMINAL_IDLE_MINUTES * 60_000,
     wrapArgv: wrapTerminal,
+    runtimePath: (cwd) => runtimes.pathFor(cwd),
     // `claude` and `codex` started by hand get the OMP bridge when the
     // workspace has it on (solution §10.3).
     ompBridge: new TerminalBridge({
@@ -1622,28 +1665,85 @@ app.get("/api/projects/:hash/preview/open/*", openPreview);
  * The client confirms by typing the project's name -- this is unrecoverable,
  * and the log it deletes is the only record of the work.
  */
-/** Renames a project -- a session's title, set from its first message. */
+/**
+ * Changes a project: its name (a session's title, set from its first
+ * message), or its git settings -- the base branch sessions fork from and
+ * settle into, whether the base is pushed after a settle, and whether a
+ * settled session's branch is deleted. A base branch must exist in the
+ * project's repository, locally or on origin.
+ */
+const ProjectPatch = z
+  .object({
+    name: z.string().trim().min(1).max(100).optional(),
+    baseBranch: z.string().trim().min(1).max(250).optional(),
+    autoPushBase: z.boolean().optional(),
+    deleteBranchOnSettle: z.boolean().optional(),
+  })
+  .refine((body) => Object.values(body).some((v) => v !== undefined), { message: "nothing to change" });
+
 app.patch<{ Params: { hash: string } }>("/api/projects/:hash", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
 
-  const parsed = z.object({ name: z.string().trim().min(1).max(100) }).safeParse(request.body);
+  const parsed = ProjectPatch.safeParse(request.body);
   if (!parsed.success) {
-    return reply.code(400).send({ error: "a name of 1-100 characters is required" });
+    return reply.code(400).send({ error: "a name of 1-100 characters, or a git setting, is required" });
   }
+  const { name, baseBranch, autoPushBase, deleteBranchOnSettle } = parsed.data;
 
-  const project = await workspaceService.renameProject(
-    request.params.hash,
-    principal.userId,
-    parsed.data.name,
-  );
+  let project = await workspaceService.findByHash(request.params.hash, principal.userId);
   if (!project) return reply.code(404).send({ error: "project not found" });
-  return { id: project.id, hash: project.hash, name: project.name };
+
+  if (baseBranch !== undefined || autoPushBase !== undefined || deleteBranchOnSettle !== undefined) {
+    if (!can(project.membership, "project.write")) {
+      return reply.code(403).send({ error: "you cannot change this project" });
+    }
+    if (baseBranch !== undefined) {
+      if (baseBranch.startsWith("ucch/")) {
+        return reply.code(400).send({ error: "a session's own branch cannot be the base branch" });
+      }
+      const where = await projectGit.branchExists(project.id, baseBranch).catch(() => null);
+      if (!where) {
+        return reply.code(400).send({ error: `there is no branch "${baseBranch}" in this project, locally or on origin` });
+      }
+    }
+    await workspaceService.setGitSettings(project.id, { baseBranch, autoPushBase, deleteBranchOnSettle });
+  }
+  if (name !== undefined) {
+    project = (await workspaceService.renameProject(request.params.hash, principal.userId, name)) ?? project;
+  }
+  return {
+    id: project.id,
+    hash: project.hash,
+    name: project.name,
+    ...(baseBranch !== undefined ? { baseBranch } : {}),
+    ...(autoPushBase !== undefined ? { autoPushBase } : {}),
+    ...(deleteBranchOnSettle !== undefined ? { deleteBranchOnSettle } : {}),
+  };
 });
 
-app.delete<{ Params: { hash: string } }>("/api/projects/:hash", async (request, reply) => {
+app.get<{ Params: { hash: string } }>("/api/projects/:hash/deletion-check", async (request, reply) => {
+  const project = await projectFor(request);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  if (!can(project.membership, "workspace.manage")) return reply.code(403).send({ error: "only a workspace admin can delete a project" });
+  return projectDeletionCheck(config.WORKSPACE_ROOT, project.id, gitService);
+});
+
+app.delete<{ Params: { hash: string }; Body: unknown }>("/api/projects/:hash", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  if (!can(project.membership, "workspace.manage")) return reply.code(403).send({ error: "only a workspace admin can delete a project" });
+  const body = z.object({ name: z.string(), discardChanges: z.boolean().optional() }).safeParse(request.body);
+  if (!body.success || body.data.name.trim() !== project.name.trim()) {
+    return reply.code(400).send({ error: "type the project name to confirm deletion" });
+  }
+  const check = await projectDeletionCheck(config.WORKSPACE_ROOT, project.id, gitService);
+  if (check.trees.length && !body.data.discardChanges) {
+    return reply.code(409).send({ error: "This project has uncommitted changes. Commit them first or confirm discarding them.", trees: check.trees });
+  }
 
   const result = await workspaceService.deleteProject(request.params.hash, principal.userId);
   if ("error" in result) {
@@ -1669,18 +1769,21 @@ app.delete<{ Params: { hash: string } }>("/api/projects/:hash", async (request, 
   // of the workspace root.
   const workspace = join(config.WORKSPACE_ROOT, result.projectId);
   try {
-    await rm(workspace, { recursive: true, force: true });
-    // Its sessions' worktrees live beside it, and go with it. Their
-    // branches were in the repository just removed.
-    await rm(sessionTreesOf(config.WORKSPACE_ROOT, result.projectId), { recursive: true, force: true });
-    // Staging is outside the workspace, so removing the tree does not take
-    // it: an attachment nobody placed would otherwise outlive its project.
-    await uploads.discardAll(result.projectId);
+    await terminals.closeProject(result.projectId);
+    // Worktrees, runtime links and attachment staging live outside the
+    // checkout and must be removed separately.
+    const cleanup = await Promise.allSettled([
+      rm(workspace, { recursive: true, force: true }),
+      rm(sessionTreesOf(config.WORKSPACE_ROOT, result.projectId), { recursive: true, force: true }),
+      runtimes.removeProject(result.projectId),
+      uploads.discardAll(result.projectId),
+    ]);
+    const failed = cleanup.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   } catch (error) {
-    // The project is gone either way; a directory left behind is a wasted
-    // few megabytes, not a broken state, and saying so beats failing a
-    // deletion that has already happened.
+    // Do not report complete deletion if any project files remain.
     app.log.error({ err: error, workspace }, "could not remove the project workspace");
+    return reply.code(500).send({ error: "The project was deleted, but some files could not be removed. Contact the server administrator to finish cleanup." });
   }
 
   return { ok: true };
@@ -2116,12 +2219,53 @@ bus.tap(({ projectId, event }) => {
 });
 
 /**
- * Removing project sessions: settled by hand (their work pushed first), or
- * swept away for having nothing in them. See `session-lifecycle.ts`.
+ * Settling project sessions (their work merged into the base branch), or
+ * sweeping them away for having nothing in them. See `session-lifecycle.ts`.
  */
 const sessionLifecycle = new SessionLifecycle({
   git: gitService,
+  projectGit,
   workspaceRoot: config.WORKSPACE_ROOT,
+  projectSettings: async (projectId) => {
+    const [row] = await db
+      .select({
+        baseBranch: projects.defaultBranch,
+        autoPushBase: projects.autoPushBase,
+        deleteBranchOnSettle: projects.deleteBranchOnSettle,
+      })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    if (!row) throw new Error("project not found");
+    return row;
+  },
+  // The row stays: settled with its merge commit (its worktree is gone, so
+  // nothing more runs in it), or failed with the files that conflicted.
+  markSettled: async (session, outcome) => {
+    await db
+      .update(threads)
+      .set(
+        outcome.state === "settled"
+          ? {
+              settleState: "settled",
+              settleError: outcome.pushError ? `merged, but pushing ${outcome.baseBranch} failed: ${outcome.pushError}` : null,
+              settleConflicts: null,
+              settleBaseBranch: outcome.baseBranch,
+              mergeCommitSha: outcome.mergeCommitSha,
+              settledAt: new Date(),
+              worktreeState: "settled",
+            }
+          : {
+              settleState: "failed",
+              settleError: outcome.error,
+              settleConflicts: outcome.conflicts,
+              settleBaseBranch: outcome.baseBranch,
+              mergeCommitSha: null,
+              settledAt: null,
+            },
+      )
+      .where(eq(threads.id, session.id));
+  },
   turnCount: async (threadId) => {
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
@@ -2165,7 +2309,7 @@ const sessionLifecycle = new SessionLifecycle({
   announce: async (projectId, event) => {
     await store
       .append({ projectId, threadId: null }, [event])
-      .catch((error) => app.log.error({ err: error }, "could not announce a removed session"));
+      .catch((error) => app.log.error({ err: error }, "could not announce a removed or settled session"));
   },
   onCleanupError: (error, session) =>
     app.log.error({ err: error, threadId: session.id }, "could not remove a session's worktree"),
@@ -2530,6 +2674,21 @@ const taskPipeline = new TaskPipeline({
   announce: announceTask,
   onError: (error, context) => app.log.error({ err: error }, context),
 });
+
+registerRuntimeRoutes(app, {
+  projectFor,
+  rootOf: (projectId) => projectRoot(config.WORKSPACE_ROOT, projectId),
+  runtimes,
+  changed: (projectId) =>
+    bus.publish({
+      seq: null,
+      projectId,
+      threadId: null,
+      event: { type: "resource.changed", projectId, resource: "runtimes" },
+    }),
+});
+// The newest stable PHP, in the background, when none is installed yet.
+runtimes.ensureDefaults();
 
 registerCommandRoutes(app, {
   projectFor,
@@ -3898,6 +4057,12 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
       branch: threads.branch,
       worktreeState: threads.worktreeState,
       worktreeError: threads.worktreeError,
+      settleState: threads.settleState,
+      settleError: threads.settleError,
+      settleConflicts: threads.settleConflicts,
+      settleBaseBranch: threads.settleBaseBranch,
+      mergeCommitSha: threads.mergeCommitSha,
+      settledAt: threads.settledAt,
       treeHash: threads.treeHash,
       handoffFromThreadId: threads.handoffFromThreadId,
       // A subagent's session: listed so its page can open by hash, and left
@@ -3917,13 +4082,56 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
 });
 
 /**
- * Removes a project session. By default it settles it: any uncommitted
- * edits are committed and its branch pushed to origin first, and if that
- * cannot happen nothing is removed (409, with why). With `?ifEmpty=1` it is
- * only removed when it has nothing in it -- what the web app asks when a
- * session is left -- and is otherwise left alone.
+ * What settling a project session would involve, for its dialog: whether it
+ * has work that settling merges (uncommitted edits or commits of its own),
+ * and the base branch it would be merged into. Reads only.
  */
-app.delete<{ Params: { hash: string; sessionHash: string }; Querystring: { ifEmpty?: string } }>(
+app.get<{ Params: { hash: string; sessionHash: string } }>(
+  "/api/projects/:hash/sessions/:sessionHash/settle",
+  async (request, reply) => {
+    const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+    if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+    const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (!ThreadHash.safeParse(request.params.sessionHash).success) {
+      return reply.code(404).send({ error: "session not found" });
+    }
+    const [session] = await db
+      .select(SESSION_COLUMNS)
+      .from(threads)
+      .where(and(eq(threads.hash, request.params.sessionHash), eq(threads.projectId, project.id)))
+      .limit(1);
+    if (!session) return reply.code(404).send({ error: "session not found" });
+
+    const inspection = await sessionLifecycle.inspect(session);
+    const [settings] = await db
+      .select({ baseBranch: projects.defaultBranch })
+      .from(projects)
+      .where(eq(projects.id, project.id))
+      .limit(1);
+    return {
+      changes: inspection.dirty || inspection.unpushed > 0,
+      hasRemote: inspection.hasRemote,
+      running: inspection.running || inspection.sharers.running,
+      branch: session.branch,
+      baseBranch: settings?.baseBranch ?? session.baseBranch,
+    };
+  },
+);
+
+/**
+ * Settles or removes a project session. By default it settles it: any
+ * uncommitted edits are committed and its branch merged into the project's
+ * base branch; the session is kept, marked settled. A conflict aborts the
+ * merge and answers 409 with the conflicting files; so does anything that
+ * stops the merge from starting (a dirty base checkout, a base that has
+ * diverged from origin). With `?ifEmpty=1` it is
+ * only removed when it has nothing in it -- what the web app asks when a
+ * session is left -- and is otherwise left alone. With `?discard=1` it is
+ * removed without committing or pushing: its changes are dropped.
+ */
+app.delete<{ Params: { hash: string; sessionHash: string }; Querystring: { ifEmpty?: string; discard?: string } }>(
   "/api/projects/:hash/sessions/:sessionHash",
   async (request, reply) => {
     const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
@@ -3963,11 +4171,43 @@ app.delete<{ Params: { hash: string; sessionHash: string }; Querystring: { ifEmp
         if (removed) await record("Removed an empty session");
         return { removed, pushed: null };
       }
-      const { pushed } = await sessionLifecycle.settle(session);
-      await record(pushed ? `Settled “${session.title}”, its work pushed to ${pushed}` : `Settled “${session.title}”`);
-      return { removed: true, pushed };
+      if (request.query.discard === "1") {
+        await sessionLifecycle.discard(session);
+        await record(`Discarded “${session.title}” without committing its changes`);
+        return { removed: true, pushed: null };
+      }
+      const result = await sessionLifecycle.settle(session);
+      if (result.state === "removed") {
+        await record(`Settled “${session.title}”`);
+        return { removed: true, pushed: null, settled: true };
+      }
+      if (result.state === "failed") {
+        await record(`Could not settle “${session.title}” into ${result.baseBranch}: ${result.error}`);
+        return reply.code(409).send({
+          error: result.error,
+          settled: false,
+          baseBranch: result.baseBranch,
+          conflicts: result.conflicts,
+        });
+      }
+      await record(
+        `Settled “${session.title}”: merged into ${result.baseBranch} at ${result.mergeCommitSha.slice(0, 7)}` +
+          (result.pushed ? `, pushed` : ""),
+      );
+      return {
+        removed: false,
+        settled: true,
+        pushed: result.pushed ? result.baseBranch : null,
+        pushError: result.pushError,
+        baseBranch: result.baseBranch,
+        mergeCommitSha: result.mergeCommitSha,
+      };
     } catch (error) {
-      if (error instanceof SessionBusyError || error instanceof SessionUnsavedError) {
+      if (
+        error instanceof SessionBusyError ||
+        error instanceof SessionUnsavedError ||
+        error instanceof SettleRefusedError
+      ) {
         return reply.code(409).send({ error: error.message });
       }
       throw error;
@@ -4243,6 +4483,27 @@ await app.listen({ port: config.PORT, host: config.HOST });
 await bridgeLeases
   .listen(BRIDGE_SOCKET)
   .catch((error: unknown) => app.log.warn({ err: error, path: BRIDGE_SOCKET }, "could not open the OMP bridge's scheduler socket"));
+
+// A base branch that does not exist in the project's repository -- the old
+// `"main"` default on a repository whose branch is `master`, or a clone that
+// fell back to the remote's HEAD before the clone recorded which -- is
+// replaced with the repository's own: origin's default, else the checked-out
+// branch. One that exists is a choice, and is left alone. Reads git only.
+void (async () => {
+  const rows = await db.select({ id: projects.id, baseBranch: projects.defaultBranch }).from(projects);
+  for (const row of rows) {
+    if (!existsSync(join(config.WORKSPACE_ROOT, row.id, ".git"))) continue;
+    try {
+      if (await projectGit.branchExists(row.id, row.baseBranch)) continue;
+      const detected = await projectGit.detectBaseBranch(row.id);
+      if (!detected || detected === row.baseBranch) continue;
+      await workspaceService.setGitSettings(row.id, { baseBranch: detected });
+      app.log.info({ projectId: row.id, from: row.baseBranch, to: detected }, "repaired a project's base branch");
+    } catch (error) {
+      app.log.warn({ err: error, projectId: row.id }, "could not check a project's base branch");
+    }
+  }
+})();
 
 // Every project keeps its knowledge in `.agent/` (once `.ucch/`), and projects made before
 // that did not get the folder at creation. Each turn fills it in too; this is

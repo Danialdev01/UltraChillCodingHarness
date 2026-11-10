@@ -106,6 +106,13 @@ export interface TerminalOptions {
   /** Rewrites a shell's argv just before it starts: its priority (child-priority.ts). */
   wrapArgv?: ArgvWrapper;
   /**
+   * The folder to put first on PATH for a shell in `cwd`: the project's
+   * runtime versions (runtimes/manager.ts `pathFor`). The folder's links are
+   * re-pointed in place when the version changes, so an open terminal runs
+   * the new one on its next command.
+   */
+  runtimePath?: (cwd: string) => string | null;
+  /**
    * The OMP bridge for CLIs started by hand (`terminal-bridge.ts`, OM6.7):
    * a project shell gets `UCCH_OMP_MCP` = `path(...)` when it starts, and
    * `open` writes the files there just after, if the workspace has the
@@ -282,6 +289,13 @@ export class TerminalReactor {
     void this.#closeBridge(session);
   }
 
+  /** Stop a deleted project's shells and command processes, and remove their bridge files. */
+  async closeProject(projectId: string): Promise<void> {
+    const sessions = [...this.#sessions.values()].filter((session) => session.projectId === projectId);
+    for (const session of sessions) this.close(session.id);
+    await Promise.all(sessions.map((session) => this.#closeBridge(session)));
+  }
+
   /** Every terminal, on the way down; resolves once their bridge files are gone. */
   async closeAll(): Promise<void> {
     const sessions = [...this.#sessions.values()];
@@ -452,6 +466,13 @@ export class TerminalReactor {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(terminalEnv())) if (value !== undefined) env[name] = value;
     env.UCCH_ROOT = cwd;
+    const runtimes = this.options.runtimePath?.(cwd);
+    if (runtimes) {
+      env.PATH = env.PATH ? `${runtimes}:${env.PATH}` : runtimes;
+      // A login shell's profile may set PATH from scratch (/etc/profile does
+      // on many distributions): the rc files put this back in front after.
+      env.UCCH_RUNTIME_PATH = runtimes;
+    }
     if (command) {
       const at = commandCwd(cwd, command.cwd);
       if (!at) return null;

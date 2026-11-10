@@ -14,8 +14,9 @@ import {
 } from "lucide-react"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
-import { NewProjectDialog, NewSessionDialog, RenameSessionDialog } from "@/components/on-demand"
+import { DeleteProjectDialog, NewProjectDialog, NewSessionDialog, RenameSessionDialog } from "@/components/on-demand"
 import { SessionCard, type SessionAction } from "@/components/session-sidebar/session-card"
+import { SettleSessionDialog } from "@/components/session-sidebar/settle-session-dialog"
 import { FilterPopover } from "@/components/session-sidebar/filter-popover"
 import { ProjectGroupHeader } from "@/components/session-sidebar/project-group"
 import { ListRowsSkeleton } from "@/components/page-skeletons"
@@ -36,6 +37,7 @@ import { qk } from "@/lib/query-keys"
 import { useRealtime, useToast } from "@/lib/realtime"
 import {
   projectHref,
+  projectPageHref,
   projectSessionHashFromPath,
 } from "@/lib/sections"
 import type { Project, Workspace } from "@/lib/session"
@@ -118,6 +120,7 @@ export function SessionSidebar({
 
   const [newSessionFor, setNewSessionFor] = React.useState<Project | null>(null)
   const [creatingProject, setCreatingProject] = React.useState(false)
+  const [deleteTarget, setDeleteTarget] = React.useState<Project | null>(null)
   const [renameTarget, setRenameTarget] = React.useState<SidebarSession | null>(null)
   const [settleTarget, setSettleTarget] = React.useState<SidebarSession | null>(null)
 
@@ -184,7 +187,10 @@ export function SessionSidebar({
       return
     }
     if (!client) throw new Error("Not connected to the server yet.")
-    const created = await startProjectSession(client, project, { baseBranch: session.baseBranch ?? session.branch })
+    // The project's base as it is now, not the one the original forked from.
+    const created = await startProjectSession(client, project, {
+      baseBranch: project.defaultBranch ?? session.project.baseBranch ?? session.baseBranch,
+    })
     router.push(projectHref(ws, "project", project.hash, created.hash))
   }
 
@@ -200,8 +206,37 @@ export function SessionSidebar({
       if (isActive(session)) router.push(`/${ws}`)
       return
     }
-    const { pushed } = await settleProjectSession(session.project.hash, session.hash ?? "")
-    toast({ title: `Settled ${session.title}`, description: pushed ? `Its changes were pushed to ${pushed}.` : undefined })
+    let result
+    try {
+      result = await settleProjectSession(session.project.hash, session.hash ?? "")
+    } finally {
+      // Settled or failed, the row changed.
+      invalidate(qk.sessions.all, qk.git.all)
+    }
+    const merged = result.mergeCommitSha
+      ? `Merged into ${result.baseBranch} @ ${result.mergeCommitSha.slice(0, 7)}.`
+      : undefined
+    const pushed = result.pushed
+      ? ` ${result.pushed} was pushed to origin.`
+      : result.pushError
+        ? ` Pushing ${result.baseBranch} failed: ${result.pushError}`
+        : ""
+    toast({ title: `Settled ${session.title}`, description: merged ? merged + pushed : undefined })
+    if (result.removed && isActive(session)) router.push(projectHref(ws, "project", session.project.hash))
+  }
+
+  /** Takes a settled session off the list: its work is merged, its worktree already gone. */
+  async function remove(session: SidebarSession) {
+    await settleProjectSession(session.project.hash, session.hash ?? "", { discard: true })
+    toast({ title: `Removed ${session.title}` })
+    invalidate(qk.sessions.all, qk.git.all)
+    if (isActive(session)) router.push(projectHref(ws, "project", session.project.hash))
+  }
+
+  /** Removes a project session without committing: its changes go with its worktree and branch. */
+  async function discard(session: SidebarSession) {
+    await settleProjectSession(session.project.hash, session.hash ?? "", { discard: true })
+    toast({ title: `Settled ${session.title}`, description: "Its changes were not committed." })
     invalidate(qk.sessions.all)
     if (isActive(session)) router.push(projectHref(ws, "project", session.project.hash))
   }
@@ -232,7 +267,15 @@ export function SessionSidebar({
               onSelect: () => void act("archive it", () => update(session, { archived: true })),
             },
         "separator",
-        { label: "Settle…", icon: CheckIcon, destructive: true, disabled: working, onSelect: () => setSettleTarget(session) },
+        session.settleState === "settled"
+          ? { label: "Remove", icon: CheckIcon, destructive: true, onSelect: () => void act("remove it", () => remove(session)) }
+          : {
+              label: session.settleState === "failed" ? "Retry settle…" : "Settle…",
+              icon: CheckIcon,
+              destructive: true,
+              disabled: working,
+              onSelect: () => setSettleTarget(session),
+            },
       )
     }
     return out
@@ -377,6 +420,8 @@ export function SessionSidebar({
               open={open}
               onToggle={() => toggleCollapsed(group.project.id)}
               onNewSession={canStart && project ? () => startNew(project) : undefined}
+              onManage={!sessionWorkspace ? () => { router.push(projectPageHref(ws, group.project.hash, "manage")); onNavigate?.() } : undefined}
+              onDelete={!sessionWorkspace && permissions.includes("workspace.manage") && project ? () => setDeleteTarget(project) : undefined}
               href={sessionWorkspace ? projectHref(ws, "session", group.project.hash) : projectHref(ws, "project", group.project.hash)}
               isActive={group.project.hash === activeProjectHash}
               onNavigate={onNavigate}
@@ -430,6 +475,19 @@ export function SessionSidebar({
           onOpenChange={(open) => !open && setNewSessionFor(null)}
         />
       )}
+      {deleteTarget && (
+        <DeleteProjectDialog
+          project={deleteTarget}
+          open
+          onOpenChange={(open) => !open && setDeleteTarget(null)}
+          onDeleted={(deleted) => {
+            setDeleteTarget(null)
+            invalidate(qk.projects.all, qk.sessions.all, qk.bootstrap())
+            if (deleted.hash === activeProjectHash) router.push(`/${ws}`)
+            router.refresh()
+          }}
+        />
+      )}
       {creatingProject && (
         <NewProjectDialog open workspaceId={workspace.id} onOpenChange={(open) => !open && setCreatingProject(false)} />
       )}
@@ -447,20 +505,25 @@ export function SessionSidebar({
           invalidate(qk.sessions.all, qk.bootstrap())
         }}
       />
-      <ConfirmDialog
-        open={settleTarget !== null}
-        onOpenChange={(open) => !open && setSettleTarget(null)}
-        title={`Settle ${settleTarget?.title ?? "session"}?`}
-        description={
-          sessionWorkspace
-            ? "Settling is done with a session: it and its files are deleted. Push anything you want to keep first."
-            : "Its changes are pushed to origin first, then the session and its worktree are removed. It refuses if the push fails."
-        }
-        confirmLabel="Settle"
-        onConfirm={async () => {
-          if (settleTarget) await settle(settleTarget)
-        }}
-      />
+      {sessionWorkspace ? (
+        <ConfirmDialog
+          open={settleTarget !== null}
+          onOpenChange={(open) => !open && setSettleTarget(null)}
+          title={`Settle ${settleTarget?.title ?? "session"}?`}
+          description="Settling is done with a session: it and its files are deleted. Push anything you want to keep first."
+          confirmLabel="Settle"
+          onConfirm={async () => {
+            if (settleTarget) await settle(settleTarget)
+          }}
+        />
+      ) : (
+        <SettleSessionDialog
+          session={settleTarget}
+          onOpenChange={(open) => !open && setSettleTarget(null)}
+          onSettle={settle}
+          onDiscard={discard}
+        />
+      )}
     </div>
   )
 }

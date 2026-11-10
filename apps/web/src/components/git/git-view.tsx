@@ -126,7 +126,8 @@ export function GitView({
         }}
         review={{
           running: reviews.running,
-          base: session ? (session.baseBranch ?? project.defaultBranch ?? null) : (project.defaultBranch ?? null),
+          // What settling merges into: the project's base as set now.
+          base: project.defaultBranch ?? session?.baseBranch ?? null,
           onReview: (scope) => void reviews.run(scope),
         }}
       />

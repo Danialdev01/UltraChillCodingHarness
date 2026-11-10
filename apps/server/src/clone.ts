@@ -167,6 +167,9 @@ export class CloneReactor {
     }
 
     const headSha = (await runGit(["rev-parse", "HEAD"], dest, timeoutMs)).trim();
+    // What the clone landed on, which is the project's base branch: the
+    // asked-for one, or the remote's own default when that did not exist.
+    const branch = (await runGit(["branch", "--show-current"], dest, timeoutMs).catch(() => "")).trim();
     const stack = await detectStack(dest);
     // A cloned repository's are left uncommitted, for its people to review.
     if (!settled) await settle(stack);
@@ -176,6 +179,7 @@ export class CloneReactor {
       projectId: event.projectId,
       headSha,
       stack,
+      ...(branch ? { branch } : {}),
       ...(databaseError ? { databaseError } : {}),
     });
   }

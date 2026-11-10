@@ -272,7 +272,16 @@ export const projects = pgTable(
      * push it.
      */
     repoUrl: text("repo_url"),
+    /**
+     * The project's base branch: what new sessions fork from and what
+     * settling merges into. Set from the remote's default branch at clone,
+     * editable in Project Settings.
+     */
     defaultBranch: text("default_branch").notNull().default("main"),
+    /** Push the base branch to origin after a session is merged into it. */
+    autoPushBase: boolean("auto_push_base").notNull().default(false),
+    /** Delete `ucch/{hash}` once a session is merged and its worktree removed. */
+    deleteBranchOnSettle: boolean("delete_branch_on_settle").notNull().default(true),
     /**
      * Detected stack, as `detectStack` in apps/server/src/clone.ts names it:
      * a framework (laravel, nextjs, nuxt, react, django, rails, …), else a
@@ -373,7 +382,7 @@ export const threads = pgTable(
      */
     baseBranch: text("base_branch"),
     branch: text("branch"),
-    /** creating | ready | error, while `branch` is set; null otherwise. */
+    /** creating | ready | error | settled (worktree removed), while `branch` is set; null otherwise. */
     worktreeState: text("worktree_state"),
     worktreeError: text("worktree_error"),
     /**
@@ -392,6 +401,18 @@ export const threads = pgTable(
      * sessions list; its page is still reachable by hash, from the card.
      */
     parentThreadId: uuid("parent_thread_id"),
+    /**
+     * null | settled | failed: the outcome of the last settle. A settled
+     * session's branch was merged into `settleBaseBranch` at
+     * `mergeCommitSha`; a failed one keeps its worktree and branch, with the
+     * paths that conflicted in `settleConflicts`.
+     */
+    settleState: text("settle_state"),
+    settleError: text("settle_error"),
+    settleConflicts: jsonb("settle_conflicts").$type<string[]>(),
+    settleBaseBranch: text("settle_base_branch"),
+    mergeCommitSha: text("merge_commit_sha"),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
     /** Pinned to the top of the sidebar's session list, for everyone in the workspace. */
     pinned: boolean("pinned").notNull().default(false),
     /** Set while archived: left out of the sidebar unless its filter asks for them. */

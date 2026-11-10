@@ -7,11 +7,13 @@ import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 
 import { FileTypeIcon } from "@/components/file-type-icon"
-import { HtmlRenderBlock } from "@/components/html-render-block"
+import { WidgetFrame, WidgetPlaceholder } from "@/components/widget-frame"
 import { copyText } from "@/lib/clipboard"
 import { nodeLanguage, nodeText, type SyntaxNode } from "@/lib/code-text"
-import { isHtmlRenderLanguage } from "@/lib/html-render"
+import { isFenceClosed } from "@/lib/widget-frame"
+import { useWidgetHost } from "@/lib/widget-host"
 import { streamingCut } from "@/lib/streaming-markdown"
+import { isWidgetLanguage, parseWidgetFence } from "@ucch/protocol/plain"
 
 /**
  * Model prose, rendered as the Markdown it is written in.
@@ -118,8 +120,8 @@ const COMPONENTS: Components = {
 
   pre: ({ children, node }) => {
     const syntax = node as SyntaxNode | undefined
-    if (isHtmlRenderLanguage(nodeLanguage(syntax))) {
-      return <HtmlRenderFence node={syntax}>{children}</HtmlRenderFence>
+    if (isWidgetLanguage(nodeLanguage(syntax))) {
+      return <WidgetFence node={syntax}>{children}</WidgetFence>
     }
     return <CodeBlock node={syntax}>{children}</CodeBlock>
   },
@@ -154,16 +156,33 @@ const COMPONENTS: Components = {
 }
 
 /**
- * True inside the part of an answer still being written. A ```html-render
- * fence there may be half a page -- running it would flash broken output and
- * re-run the script on every token -- so it shows as code until it settles.
+ * Inside the part of an answer still being written: that part's source, so a
+ * fence can tell whether its closing marker has arrived. Null in settled
+ * Markdown. A ```widget fence still open there is half a page -- running it
+ * would flash broken output and re-run the script on every token -- so it
+ * shows as a placeholder until it closes.
  */
-const StreamingTail = React.createContext(false)
+const StreamingTail = React.createContext<string | null>(null)
 
-function HtmlRenderFence({ children, node }: { children: React.ReactNode; node?: SyntaxNode }) {
-  const streaming = React.useContext(StreamingTail)
-  if (streaming) return <CodeBlock node={node}>{children}</CodeBlock>
-  return <HtmlRenderBlock source={nodeText(node)} />
+interface Positioned {
+  position?: { start?: { offset?: number }; end?: { offset?: number } }
+}
+
+/** A ```widget fence (or an older ```html-render one), run as a widget. */
+function WidgetFence({ children, node }: { children: React.ReactNode; node?: SyntaxNode }) {
+  const tail = React.useContext(StreamingTail)
+  const host = useWidgetHost()
+  const source = nodeText(node)
+  const position = (node as Positioned | undefined)?.position
+  const closed = tail === null || isFenceClosed(tail, position?.start?.offset, position?.end?.offset)
+  const parsed = React.useMemo(() => parseWidgetFence(source, { closed }), [source, closed])
+
+  if (!host.enabled) return <CodeBlock node={node}>{children}</CodeBlock>
+  if (parsed.status === "streaming") {
+    return <WidgetPlaceholder title={parsed.title} loadingMessages={parsed.loadingMessages} />
+  }
+  if (parsed.status === "too_large") return <CodeBlock node={node}>{children}</CodeBlock>
+  return <WidgetFrame widget={parsed} />
 }
 
 /**
@@ -267,7 +286,7 @@ export function StreamingMarkdown({ children, className }: { children: string; c
   return (
     <div>
       <Markdown>{children.slice(0, cut)}</Markdown>
-      <StreamingTail.Provider value={true}>
+      <StreamingTail.Provider value={children.slice(cut)}>
         <Markdown className={className}>{children.slice(cut)}</Markdown>
       </StreamingTail.Provider>
     </div>

@@ -6,6 +6,7 @@ import { ompEnv, refuseForeignCredentials, type BridgeConfig } from "./config.js
 import { callGate } from "./lease.js";
 import { ucchAgent } from "./tools/agent.js";
 import { BRIDGE_TOOLS } from "./tools/index.js";
+import { showWidget } from "./tools/widget.js";
 
 /**
  * The bridge as an MCP server: OMP's tools, offered to Claude Code and Codex
@@ -20,8 +21,13 @@ export function createBridgeServer(config: BridgeConfig, host: ProcessHost, pare
   const server = new McpServer({ name: "omp", version: "0.0.0" });
 
   // OMP's tools only where the workspace turned the bridge on; `ucch_agent`
-  // only where the turn may start subagents. Either can be the only one.
-  const tools = [...(config.ompTools ? BRIDGE_TOOLS : []), ...(config.subagents ? [ucchAgent] : [])];
+  // only where the turn may start subagents; `show_widget` where the
+  // workspace allows widgets. Any of them can be the only one.
+  const tools = [
+    ...(config.ompTools ? BRIDGE_TOOLS : []),
+    ...(config.subagents ? [ucchAgent] : []),
+    ...(config.widgets ? [showWidget] : []),
+  ];
 
   if (config.ompTools) server.registerTool(
     "omp_ping",

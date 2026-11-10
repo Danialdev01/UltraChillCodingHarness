@@ -173,8 +173,8 @@ describe("hostToolsFor", () => {
   const names = (preset: Parameters<typeof hostToolsFor>[0]) => hostToolsFor(preset).map((tool) => tool.name);
 
   it("offers OMP only what it has nothing of its own for", () => {
-    expect(names("standard")).toEqual(["current_time", "attach_upload"]);
-    expect(names("research")).toEqual(["current_time", "research_search", "research_read", "research_browse"]);
+    expect(names("standard")).toEqual(["current_time", "attach_upload", "show_widget"]);
+    expect(names("research")).toEqual(["current_time", "research_search", "research_read", "research_browse", "show_widget"]);
     expect(names("documentation")).toEqual([
       "current_time",
       "attach_upload",
@@ -186,7 +186,9 @@ describe("hostToolsFor", () => {
       "doc_diagram",
       "doc_chart",
       "doc_check",
+      "show_widget",
     ]);
+    expect(hostToolsFor("standard", { widgets: false }).map((tool) => tool.name)).toEqual(["current_time", "attach_upload"]);
   });
 
   it("never offers a file, search or shell tool, which OMP has", () => {

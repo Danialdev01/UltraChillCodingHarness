@@ -865,7 +865,7 @@ describe("htmlToText", () => {
 });
 
 describe("the tool surface", () => {
-  it("registers all twenty-four, in the canonical order", () => {
+  it("registers all twenty-five, in the canonical order", () => {
     expect(ALL.map((t) => t.name)).toEqual([
       "read_file",
       "list_dir",
@@ -891,6 +891,7 @@ describe("the tool surface", () => {
       "doc_diagram",
       "doc_chart",
       "doc_check",
+      "show_widget",
     ]);
   });
 
@@ -910,6 +911,7 @@ describe("the tool surface", () => {
       "research_search",
       "research_read",
       "research_browse",
+      "show_widget",
     ]);
 
     for (const preset of ["standard", "readonly", "minimal", "ptc"] as const) {
@@ -947,6 +949,7 @@ describe("the tool surface", () => {
       "doc_diagram",
       "doc_chart",
       "doc_check",
+      "show_widget",
     ]);
     for (const preset of ["standard", "readonly", "minimal", "ptc", "research"] as const) {
       expect(toolsFor(preset).some((t) => t.name.startsWith("doc_"))).toBe(false);

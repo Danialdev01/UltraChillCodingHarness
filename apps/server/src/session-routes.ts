@@ -78,6 +78,12 @@ export async function listWorkspaceSessions(
       branch: threads.branch,
       baseBranch: threads.baseBranch,
       worktreeState: threads.worktreeState,
+      settleState: threads.settleState,
+      settleError: threads.settleError,
+      settleConflicts: threads.settleConflicts,
+      settleBaseBranch: threads.settleBaseBranch,
+      mergeCommitSha: threads.mergeCommitSha,
+      settledAt: threads.settledAt,
       pinned: threads.pinned,
       archivedAt: threads.archivedAt,
       lastActivityAt: threads.lastActivityAt,
@@ -87,6 +93,8 @@ export async function listWorkspaceSessions(
       projectHash: projects.hash,
       projectName: projects.name,
       projectStack: projects.stack,
+      projectBaseBranch: projects.defaultBranch,
+      projectRepoUrl: projects.repoUrl,
     })
     .from(threads)
     .innerJoin(projects, eq(projects.id, threads.projectId))
@@ -109,6 +117,8 @@ export async function listWorkspaceSessions(
       name: projects.name,
       stack: projects.stack,
       lastActiveAt: projects.lastActiveAt,
+      baseBranch: projects.defaultBranch,
+      repoUrl: projects.repoUrl,
     })
     .from(projects)
     .where(eq(projects.workspaceId, workspaceId));
@@ -116,11 +126,18 @@ export async function listWorkspaceSessions(
   return {
     sessions: rows
       .filter((r) => !isTaskThreadTitle(r.title))
-      .map(({ projectId, projectHash, projectName, projectStack, ...row }) => ({
+      .map(({ projectId, projectHash, projectName, projectStack, projectBaseBranch, projectRepoUrl, ...row }) => ({
         ...row,
-        project: { id: projectId, hash: projectHash, name: projectName, stack: projectStack },
+        project: {
+          id: projectId,
+          hash: projectHash,
+          name: projectName,
+          stack: projectStack,
+          baseBranch: projectBaseBranch,
+          repo: repoLabel(projectRepoUrl),
+        },
       })),
-    projects: projectRows,
+    projects: projectRows.map(({ repoUrl, ...row }) => ({ ...row, repo: repoLabel(repoUrl) })),
   };
 }
 
@@ -181,4 +198,20 @@ export function registerSessionRoutes(app: FastifyInstance, deps: SessionRouteDe
     await deps.db.update(users).set({ sidebarMode: parsed.data.mode }).where(eq(users.id, principal.userId));
     return { mode: parsed.data.mode };
   });
+}
+
+/**
+ * Where a project's repository lives, for a label: `host/owner/name` with no
+ * scheme, credentials or `.git`. Null for a project with no remote.
+ */
+export function repoLabel(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`.replace(/\.git$/, "").replace(/\/$/, "");
+  } catch {
+    // scp-style `git@host:owner/name.git`
+    const match = /^[^@\s]+@([^:\s]+):(.+?)(?:\.git)?$/.exec(url);
+    return match ? `${match[1]}/${match[2]}` : null;
+  }
 }

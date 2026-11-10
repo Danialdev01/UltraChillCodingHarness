@@ -2,6 +2,7 @@ import type { QueryKey } from "@tanstack/react-query"
 import type { TaskSettings } from "@ucch/protocol"
 
 import { listCommands } from "../commands-api"
+import { listRuntimes } from "../runtimes-api"
 import { fetchTree } from "../files-api"
 import { listEnvVars } from "../env-api"
 import { listNotes } from "../notes-api"
@@ -59,5 +60,7 @@ export const projectQueries = {
   // Names, tags and links only: values never reach the cache.
   env: (hash: string) => ({ queryKey: qk.keys.list(hash), queryFn: () => listEnvVars(hash), persist: true }),
   commands: (hash: string) => ({ queryKey: qk.commands.list(hash), queryFn: () => listCommands(hash), persist: true }),
+  // Not persisted: install progress and "update available" go stale fast.
+  runtimes: (hash: string) => ({ queryKey: qk.runtimes.list(hash), queryFn: () => listRuntimes(hash), persist: false }),
   filesTree: (target: ProjectTarget) => ({ queryKey: treeKey(target), queryFn: () => fetchTree(target), persist: true }),
 } satisfies Record<string, (arg: never) => ProjectQuery<unknown>>

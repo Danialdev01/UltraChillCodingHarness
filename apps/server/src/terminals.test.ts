@@ -370,6 +370,28 @@ describe("a login terminal", () => {
     plain.closeAll();
   });
 
+  it("puts the project's runtime folder first on PATH, and tells the rc files", () => {
+    const { calls, spawn } = fakeSpawn();
+    const asked: string[] = [];
+    const shell = new TerminalReactor(
+      {
+        workspaceRoot: root,
+        allowHostShell: true,
+        spawn,
+        runtimePath: (cwd) => {
+          asked.push(cwd);
+          return "/runtimes/projects/p/bin";
+        },
+      },
+      () => {},
+    );
+    shell.react({ type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24 }, USER);
+    expect(asked).toEqual([join(root, PROJECT)]);
+    expect(calls[0]?.env.PATH?.split(":")[0]).toBe("/runtimes/projects/p/bin");
+    expect(calls[0]?.env.UCCH_RUNTIME_PATH).toBe("/runtimes/projects/p/bin");
+    shell.closeAll();
+  });
+
   it("says so when the server has no sign-in flow to offer", () => {
     const { calls, spawn } = fakeSpawn();
     const sink: string[] = [];
@@ -541,6 +563,21 @@ describe("how many terminals may be open", () => {
     // Another project is not affected.
     open(PROJECTS[1]!, THIRD);
     expect(spawned()).toBe(3);
+  });
+
+  it("closes only the deleted project's terminals across all users", async () => {
+    const { terminals, open, killed } = capped({});
+    const first = open(PROJECTS[0]!, USER);
+    const second = open(PROJECTS[0]!, OTHER);
+    const kept = open(PROJECTS[1]!, USER);
+    await terminals.closeProject(PROJECTS[0]!);
+    expect(killed()).toBe(2);
+    expect(terminals.input(first, USER, "x")).toBe(false);
+    expect(terminals.input(second, OTHER, "x")).toBe(false);
+    expect(terminals.input(kept, USER, "x")).toBe(true);
+    await terminals.closeProject(PROJECTS[0]!);
+    expect(killed()).toBe(2);
+    await terminals.closeAll();
   });
 
   it("refuses one more for a person who has their limit, in any project", () => {

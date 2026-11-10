@@ -29,7 +29,7 @@ export const SETTINGS_GROUPS: readonly { label: string | null; entries: readonly
       {
         scope: "workspace",
         id: "general",
-        keywords: "default model permission mode access keybindings shortcuts vim font size editor tree chat view transcript debug diff commands",
+        keywords: "default model permission mode access keybindings shortcuts vim font size editor tree chat view transcript debug diff commands widget follow-up sendprompt",
       },
       {
         scope: "account",
@@ -51,7 +51,7 @@ export const SETTINGS_GROUPS: readonly { label: string | null; entries: readonly
     label: "Agents",
     entries: [
       { scope: "account", id: "providers", keywords: "providers claude codex sign in login cli" },
-      { scope: "workspace", id: "harness", keywords: "harness subscription claude codex shared login" },
+      { scope: "workspace", id: "harness", keywords: "harness subscription claude codex shared login widgets interactive visual chart diagram" },
     ],
   },
   {

@@ -1,5 +1,5 @@
 import { AgentPermissionSettings } from "@/components/agent-permission-settings"
-import { ChatViewSettings } from "@/components/chat-view-settings"
+import { ChatViewSettings, WidgetPromptSettings } from "@/components/chat-view-settings"
 import { DefaultSettings } from "@/components/default-settings"
 import { FontSizeSettings, TreeFontSizeSettings } from "@/components/font-size-settings"
 import { KeybindingSettings } from "@/components/keybinding-settings"
@@ -36,6 +36,7 @@ export function WorkspaceSettingsPage({
           <DefaultSettings />
           <AgentPermissionSettings />
           <ChatViewSettings />
+          <WidgetPromptSettings />
           <KeybindingSettings />
           <FontSizeSettings />
           <TreeFontSizeSettings />

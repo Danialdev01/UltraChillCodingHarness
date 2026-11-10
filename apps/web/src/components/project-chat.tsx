@@ -30,6 +30,7 @@ import {
   ImageIcon,
   Loader2Icon,
   PaperclipIcon,
+  PencilIcon,
   PlusIcon,
   RotateCcwIcon,
   SparklesIcon,
@@ -68,6 +69,7 @@ import {
   isPlaceable,
   modelImages,
   pasteCarriesText,
+  previewKindOf,
   pendingImageCount,
   readAttachment,
   type Attachment,
@@ -76,15 +78,23 @@ import {
   AttachmentPreviewDialog,
   type PreviewableAttachment,
 } from "@/components/attachment-preview";
+import { ImageEditorDialog } from "@/components/image-editor-dialog";
 import { discardUpload, stageUpload, uploadContentUrl } from "@/lib/uploads-api";
 import { AccessSelect } from "@/components/access-select";
 import { ContextMeter } from "@/components/context-meter";
 import { InlineError } from "@/components/layout/inline-error";
 import { Markdown, StreamingMarkdown } from "@/components/markdown";
+import { ToolWidget } from "@/components/widget-frame";
+import { WidgetHostProvider, type WidgetHost } from "@/lib/widget-host";
+import { fetchHarnessSettings } from "@/lib/workspace-api";
+import { isShowWidgetTool } from "@ucch/protocol/plain";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
 import { SubagentCard, SubagentDetail, SubagentGroup } from "@/components/subagent-card";
 import { TranscriptTurn } from "@/components/chat-transcript";
+import { ConversationRail, type RailTurn } from "@/components/conversation-rail";
+import { useActiveTurn, useTurnShortcuts } from "@/hooks/use-active-turn";
+import { turnPreview } from "@/lib/turn-spy";
 import { useChatViewMode, type ChatViewMode } from "@/lib/chat-view-mode";
 import {
   lineageKey,
@@ -207,6 +217,17 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    * cannot be opened twice over itself.
    */
   const [previewing, setPreviewing] = useState<PreviewableAttachment | null>(null);
+  /**
+   * The image being drawn on or cropped, or null.
+   *
+   * `replaceId` names the composer chip the result takes the place of. A
+   * picture from a sent message has none: the message is history, so its edit
+   * arrives as a new attachment instead.
+   */
+  const [editing, setEditing] = useState<{
+    source: PreviewableAttachment;
+    replaceId: string | null;
+  } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   /**
@@ -778,6 +799,37 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     [agentParam, messages],
   );
   const closeDetail = useCallback(() => transitionRouter.replace(pathname ?? "."), [pathname, transitionRouter]);
+
+  /**
+   * The conversation rail: a tick per turn, a turn being a prompt and all the
+   * agent did for it. Keyed by the prompt's position (`m3`), which survives
+   * the optimistic message turning into the stored one. Rebuilt on every
+   * render while a reply streams, but cheap, and handed on as the same array
+   * when no prompt changed, so the rail does not draw again per token.
+   */
+  const railTurnsRef = useRef<RailTurn[]>([]);
+  const railTurns = useMemo(() => {
+    const next: RailTurn[] = [];
+    messages.forEach((m, i) => {
+      if (m.role === "user" && !m.switched && !m.cleared) next.push({ id: turnAnchor(i), preview: turnPreview(m.text, m.attachments) });
+    });
+    const prev = railTurnsRef.current;
+    const same = prev.length === next.length && prev.every((t, i) => t.id === next[i]?.id && t.preview === next[i]?.preview);
+    if (!same) railTurnsRef.current = next;
+    return railTurnsRef.current;
+  }, [messages]);
+  const railIds = useMemo(() => railTurns.map((t) => t.id), [railTurns]);
+  const { activeId: activeTurn, scrollToTurn } = useActiveTurn(listRef, railIds, sessionId);
+  const selectTurn = useCallback(
+    (id: string) => {
+      // Stop following first: a token landing mid-jump would otherwise pull
+      // the thread back to the floor. Reaching the floor turns it back on.
+      followRef.current = false;
+      scrollToTurn(id);
+    },
+    [scrollToTurn],
+  );
+  useTurnShortcuts(panelRef, railIds, activeTurn, selectTurn);
   // The view reads from its top: the prompt first, not the chat's floor.
   const detailKey = detail ? lineageKey(detail) : null;
   useEffect(() => {
@@ -1079,6 +1131,67 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    * Uploads run in parallel and each settles its own chip, so one refused
    * file does not hold up the rest.
    */
+  const stageOne = useCallback(
+    async (attachment: Attachment, file: File) => {
+      try {
+        const upload = await stageUpload(project.hash, file);
+        setAttachments((current) =>
+          current.map((a) =>
+            a.id === attachment.id ? { ...a, uploadId: upload.id, status: "staged" as const } : a,
+          ),
+        );
+      } catch (e) {
+        setAttachments((current) =>
+          current.map((a) =>
+            a.id === attachment.id
+              ? { ...a, status: "failed" as const, error: e instanceof Error ? e.message : String(e) }
+              : a,
+          ),
+        );
+      }
+    },
+    [project.hash],
+  );
+
+  /**
+   * What widgets in the answers need from the chat: whether the workspace
+   * allows them, and a way into the composer (`sendPrompt`, "Ask AI to
+   * fix"). Sending goes through the draft, so it is the same `send` as the
+   * button: set the text, then send once it has landed.
+   */
+  const [widgetsEnabled, setWidgetsEnabled] = useState(true);
+  useEffect(() => {
+    if (!project.workspaceId) return;
+    let live = true;
+    fetchHarnessSettings(project.workspaceId).then(
+      (settings) => live && setWidgetsEnabled(settings.agent.widgets?.enabled !== false),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [project.workspaceId]);
+  const sendAfterDraft = useRef(false);
+  useEffect(() => {
+    if (!sendAfterDraft.current) return;
+    sendAfterDraft.current = false;
+    void send();
+  }, [draft, send]);
+  const widgetHost = useMemo<WidgetHost>(
+    () => ({
+      enabled: widgetsEnabled,
+      insert: (text) => {
+        setDraft(text);
+        requestAnimationFrame(() => draftRef.current?.focus());
+      },
+      send: (text) => {
+        sendAfterDraft.current = true;
+        setDraft(text);
+      },
+    }),
+    [widgetsEnabled],
+  );
+
   const addFiles = useCallback(
     async (list: ArrayLike<File> | null) => {
       if (!list?.length) return;
@@ -1089,30 +1202,32 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       );
       setAttachments((current) => [...current, ...staged]);
 
-      await Promise.all(
-        staged.map(async (attachment, i) => {
-          try {
-            const upload = await stageUpload(project.hash, picked[i]!);
-            setAttachments((current) =>
-              current.map((a) =>
-                a.id === attachment.id
-                  ? { ...a, uploadId: upload.id, status: "staged" as const }
-                  : a,
-              ),
-            );
-          } catch (e) {
-            setAttachments((current) =>
-              current.map((a) =>
-                a.id === attachment.id
-                  ? { ...a, status: "failed" as const, error: e instanceof Error ? e.message : String(e) }
-                  : a,
-              ),
-            );
-          }
-        }),
-      );
+      await Promise.all(staged.map((attachment, i) => stageOne(attachment, picked[i]!)));
     },
-    [project.hash],
+    [stageOne],
+  );
+
+  /**
+   * Swaps a chip for an edited copy of its file, in the same place.
+   *
+   * The old staged upload is dropped as the new one goes up: the edit is what
+   * the person means to send, and the original is a click away in their own
+   * files if they change their mind.
+   */
+  const replaceAttachment = useCallback(
+    async (id: string, oldUploadId: string | null, file: File) => {
+      const next = await readAttachment(file, `${Date.now()}-edit-${file.name}`);
+      // If the chip was removed while the editor was open, the edit is still
+      // wanted, so it arrives as a new attachment rather than vanishing.
+      setAttachments((current) =>
+        current.some((a) => a.id === id)
+          ? current.map((a) => (a.id === id ? next : a))
+          : [...current, next],
+      );
+      if (oldUploadId) void discardUpload(project.hash, oldUploadId);
+      await stageOne(next, file);
+    },
+    [project.hash, stageOne],
   );
 
   /**
@@ -1588,10 +1703,12 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                 )}
               </>
             ) : (
-              messages.map((message, i) => (
+              <WidgetHostProvider value={widgetHost}>
+              {messages.map((message, i) => (
                 <Message
                   key={i}
                   ref={blockRef(i)}
+                  anchor={message.role === "user" ? turnAnchor(i) : undefined}
                   message={message}
                   hash={project.hash}
                   onPreview={setPreviewing}
@@ -1601,7 +1718,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   onJump={jumpTo}
                   viewMode={viewMode}
                 />
-              ))
+              ))}
+              </WidgetHostProvider>
             )}
 
             {continuedIn && (
@@ -1615,6 +1733,18 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
             <div ref={endRef} />
           </div>
         </div>
+
+        {/* The turns, down the left edge. Outside the scroll box, so it stays
+            put while the thread moves; only on a panel wide enough to have a
+            margin beside the column for it, so it never sits on a message. */}
+        {!detail && (
+          <ConversationRail
+            turns={railTurns}
+            activeId={activeTurn}
+            onSelect={selectTurn}
+            className="absolute top-1/2 left-0 z-10 hidden -translate-y-1/2 @min-[54rem]:flex"
+          />
+        )}
 
         {/* The way back down. Only once the reader has left the bottom: on
             the floor it would cover the last line of the reply and say
@@ -1641,6 +1771,23 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
         hash={project.hash}
         attachment={previewing}
         onClose={() => setPreviewing(null)}
+        onEdit={(source) => {
+          setPreviewing(null);
+          // Opened from a composer chip, the edit replaces that chip; opened
+          // from a sent message, it becomes a new attachment.
+          const chip = attachments.find((a) => a.uploadId && a.uploadId === source.uploadId);
+          setEditing({ source, replaceId: chip?.id ?? null });
+        }}
+      />
+      <ImageEditorDialog
+        hash={project.hash}
+        source={editing?.source ?? null}
+        onClose={() => setEditing(null)}
+        onSave={(file) => {
+          if (editing?.replaceId) void replaceAttachment(editing.replaceId, editing.source.uploadId, file);
+          else void addFiles([file]);
+          requestAnimationFrame(() => draftRef.current?.focus());
+        }}
       />
 
       {/* shrink-0: the composer keeps its height and the message list gives
@@ -1804,6 +1951,17 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                       </button>
                     ) : (
                       <span className="truncate">{describeAttachment(file)}</span>
+                    )}
+                    {isPlaceable(file) && previewKindOf(file) === "image" && (
+                      <button
+                        type="button"
+                        onClick={() => setEditing({ source: file, replaceId: file.id })}
+                        title={`Draw on or crop ${file.name}`}
+                        className="hover:text-foreground shrink-0 rounded-sm p-0.5"
+                      >
+                        <PencilIcon className="size-3" />
+                        <span className="sr-only">Edit {file.name}</span>
+                      </button>
                     )}
                     <button
                       type="button"
@@ -2313,8 +2471,14 @@ async function createThread(client: UcchClient, project: Project): Promise<strin
  * One message. Memoised: while an answer streams only its own message is a
  * new object (`overlayLive`), so every other one is skipped.
  */
+/** The rail's id for the prompt at `index`, and its anchor in the DOM (`data-turn-id`). */
+function turnAnchor(index: number): string {
+  return `m${index}`;
+}
+
 const Message = memo(function Message({
   ref,
+  anchor,
   message,
   hash,
   onPreview,
@@ -2325,6 +2489,8 @@ const Message = memo(function Message({
   viewMode,
 }: {
   ref: Ref<HTMLDivElement>;
+  /** On a prompt: the rail's anchor for its turn. */
+  anchor?: string;
   message: ChatMessage;
   hash: string;
   onPreview: (file: PreviewableAttachment) => void;
@@ -2343,7 +2509,7 @@ const Message = memo(function Message({
     // Clear of the top of the scroll box when jumped to, so the bubble does
     // not land flush against the edge.
     return (
-      <div ref={ref} className="flex scroll-mt-3 flex-col items-end gap-1.5">
+      <div ref={ref} data-turn-id={anchor} className="flex scroll-mt-3 flex-col items-end gap-1.5">
         {/* Which kind of turn was asked for. Only the one that is not the
             default is labelled: a label on every message says nothing. */}
         {message.mode &&
@@ -2494,6 +2660,7 @@ const Message = memo(function Message({
   const flow: (
     | { kind: "answer"; key: string; text: string; streaming: boolean }
     | { kind: "compaction"; key: string; part: CompactionPart }
+    | { kind: "widget"; key: string; call: ToolPart }
   )[] = [];
   if (message.reasoning) work.push({ kind: "think", key: "reasoning", text: message.reasoning });
   // Subagents are drawn on the page, not folded into the work: they are
@@ -2502,7 +2669,10 @@ const Message = memo(function Message({
   const delegated: ToolPart[] = [];
   message.parts.forEach((part, i) => {
     if (part.kind === "tool") {
-      if (isSubagentCall(part.name) || part.subagents) delegated.push(part);
+      // A widget is part of the answer, not the work behind it: on the page,
+      // where the agent put it.
+      if (isShowWidgetTool(part.name)) flow.push({ kind: "widget", key: part.id, call: part });
+      else if (isSubagentCall(part.name) || part.subagents) delegated.push(part);
       else work.push({ kind: "tool", key: part.id, call: part });
       return;
     }
@@ -2549,6 +2719,7 @@ const Message = memo(function Message({
 
       {!transcript && flow.map((item) => {
         if (item.kind === "compaction") return <CompactionDivider key={item.key} part={item.part} />;
+        if (item.kind === "widget") return <ToolWidget key={item.key} name={item.call.name} input={item.call.input} />;
         const answer = item;
         const caret = message.streaming && lastIsAnswer && answer.key === answers.at(-1)?.key;
         // Rendered as Markdown, which is what the model writes whether or

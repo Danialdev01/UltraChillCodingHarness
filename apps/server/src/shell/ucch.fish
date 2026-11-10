@@ -10,6 +10,12 @@
 # This is the shell keeping to the folder, not a sandbox: `ls /` still lists
 # `/`. The container runtime is where the real boundary will be.
 
+# The project's runtime versions first (Manage -> Runtimes), again: the
+# user's config, or a login profile, may have rebuilt PATH since.
+if set -q UCCH_RUNTIME_PATH; and test -n "$UCCH_RUNTIME_PATH"
+    set -gx PATH $UCCH_RUNTIME_PATH (string match -v -- $UCCH_RUNTIME_PATH $PATH)
+end
+
 builtin cd -- $UCCH_ROOT
 set -gx UCCH_ROOT (builtin realpath -- $UCCH_ROOT)
 set -g __ucch_last $UCCH_ROOT

@@ -204,6 +204,42 @@ describe("the environment a provider gets", () => {
 });
 
 describe("health", () => {
+  it("discovers Codex models per account and caches them only for that account", async () => {
+    const host = new FakeProcessHost([
+      { match: (a) => a[0] === "codex" && a[1] === "--version", lines: [stdout("codex 0.166.0")] },
+      { match: (a) => a[0] === "codex" && a[1] === "login", lines: [stdout("Logged in using ChatGPT")] },
+      { match: (a) => a[1] === "app-server", lines: [
+        stdout('{"id":1,"result":{}}'),
+        stdout(JSON.stringify({ id: 2, result: { data: [
+          { model: "gpt-6-sol", displayName: "GPT-6 Sol" },
+          { model: "gpt-5.3-codex", displayName: "GPT-5.3 Codex" },
+        ] } })),
+      ] },
+    ]);
+    const svc = service(host);
+    const first = await svc.health(USER);
+    expect(first.codex.models.map((model) => model.id)).toEqual(["gpt-6-sol", "gpt-5.3-codex"]);
+    await svc.health(USER);
+    expect(host.spawned.filter((s) => s.argv[1] === "app-server")).toHaveLength(1);
+    const other = "22222222-2222-2222-2222-222222222222";
+    await svc.health(other);
+    const discoveries = host.spawned.filter((s) => s.argv[1] === "app-server");
+    expect(discoveries).toHaveLength(2);
+    expect(discoveries[0]!.env.CODEX_HOME).toBe(join(root, USER, "codex"));
+    expect(discoveries[1]!.env.CODEX_HOME).toBe(join(root, other, "codex"));
+  });
+
+  it("keeps Codex usable with an explicit warning when discovery fails", async () => {
+    const svc = service(new FakeProcessHost([
+      { match: (a) => a[0] === "codex" && a[1] === "--version", lines: [stdout("codex 0.166.0")] },
+      { match: (a) => a[0] === "codex" && a[1] === "login", lines: [stdout("Logged in using ChatGPT")] },
+    ]));
+    const { codex } = await svc.health(USER);
+    expect(codex.authenticated).toBe(true);
+    expect(codex.models.length).toBeGreaterThan(0);
+    expect(codex.warnings).toContain("Could not refresh the model catalogue; showing fallback models.");
+  });
+
   const scripts = (loggedIn: boolean) => [
     { match: (a: readonly string[]) => a[0] === "claude" && a[1] === "--version", lines: [stdout("2.1.270 (Claude Code)")] },
     { match: (a: readonly string[]) => a[0] === "claude" && a[1] === "-p", lines: [stdout("--permission-prompts")] },

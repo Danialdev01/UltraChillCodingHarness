@@ -1,4 +1,4 @@
-import { join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 /**
  * Where a project's files are on disk.
@@ -14,6 +14,21 @@ import { join, relative, sep } from "node:path";
  */
 export function projectRoot(workspaceRoot: string, projectId: string): string {
   return join(workspaceRoot, projectId);
+}
+
+const PROJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The project a folder belongs to: its checkout, a session worktree of it,
+ * or anywhere inside either. Null for anything else -- the root itself, a
+ * path outside it, a folder that is not named by a project id.
+ */
+export function projectIdOfPath(workspaceRoot: string, path: string): string | null {
+  const rel = relative(workspaceRoot, path);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null;
+  const parts = rel.split(sep);
+  const id = parts[0] === ".worktrees" ? parts[1] : parts[0];
+  return id && PROJECT_ID.test(id) ? id : null;
 }
 
 /** Every session worktree a project has, removed with the project. */

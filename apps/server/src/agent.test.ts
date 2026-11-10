@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
-import { DomainEvent, type Command } from "@ucch/protocol";
+import { DomainEvent, WIDGET_PROMPT, WIDGET_TURN_NUDGE, type Command } from "@ucch/protocol";
 import {
   ClaudeNormaliser,
   createProviders,
@@ -288,7 +288,7 @@ describe("a turn over the server's limits", () => {
       while (!appended.flat().some((event) => event.type === "agent.turn_completed") && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
-      expect(appended.flat().map((event) => event.type)).toEqual(["agent.queued", "turn.started", "agent.turn_completed"]);
+      expect(appended.flat().map((event) => event.type)).toEqual(["agent.queued", "turn.started", "context.injected", "agent.turn_completed"]);
       expect(scheduler.stats().running.cli).toBe(0);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -351,7 +351,7 @@ describe("a turn's streamed tokens", () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
       const streamed = appended
-        .filter((batch) => batch.some((event) => event.type !== "turn.started"))
+        .filter((batch) => batch.some((event) => event.type !== "turn.started" && event.type !== "context.injected"))
         .map((batch) => batch.map((event) => (event.type === "agent.text_delta" ? `text:${event.text}` : event.type)));
       // A flush interval longer than the whole turn: only the turn's first
       // token goes out on its own, and each run goes out when something
@@ -646,7 +646,7 @@ describe("an OMP turn", () => {
     expect(injected).toHaveLength(1);
     const [prompt] = injected as Extract<DomainEvent, { type: "context.injected" }>[];
     expect(prompt!.source).toBe("system_prompt");
-    expect(prompt!.content).toBe(ompInstructions(workspace, await readProjectKnowledge(workspace)));
+    expect(prompt!.content).toBe(`${ompInstructions(workspace, await readProjectKnowledge(workspace))}\n\n${WIDGET_PROMPT}`);
     expect(prompt!.content).toContain("Uses pnpm.");
     expect(prompt!.content).toContain("## Working in UCCH");
     expect(prompt!.content).not.toContain("Agents file.");
@@ -849,6 +849,7 @@ describe("an OMP turn", () => {
         "research_search",
         "research_read",
         "research_browse",
+        "show_widget",
       ]);
       expect(seen.input!.instructions).toContain("## Research turn");
       expect(seen.env!.UCCH_OMP_PRESET).toBe("research");
@@ -1659,8 +1660,8 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     return { ...built, seen, tokens, registered };
   }
 
-  async function turn(run: ReturnType<typeof bridgeReactor>, command: Command = ask) {
-    run.agent.react(command, [message]);
+  async function turn(run: ReturnType<typeof bridgeReactor>, command: Command = ask, said: DomainEvent = message) {
+    run.agent.react(command, [said]);
     const deadline = Date.now() + 5_000;
     const done = (e: DomainEvent) => e.type === "agent.turn_completed" || e.type === "agent.turn_failed";
     while (!run.appended.flat().some(done) && Date.now() < deadline) await settle();
@@ -1687,6 +1688,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
       UCCH_SCHEDULER_SOCK: "/c/omp-scheduler.sock",
       UCCH_BRIDGE_TOKEN: "tok-0",
       UCCH_BRIDGE_MAX_SECONDS: "240",
+      UCCH_WIDGETS: "1",
     });
     // Billing: the CLI's environment has no key of any kind; the bridge's has the OpenRouter key alone.
     expect(forbiddenEnvPresent(input.ctx.env)).toBeNull();
@@ -1834,14 +1836,37 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     for (const id of ["claude", "codex"] as const) {
       const on = bridgeReactor(keyed, { ompBridge: { enabled: true } }, true, id);
       await turn(on, { ...ask, provider: id });
-      expect(on.seen[0]!.input.instructions).toBe(guide);
+      expect(on.seen[0]!.input.instructions).toBe(`${guide}\n\n${WIDGET_PROMPT}`);
       expect(guides(on)).toEqual([{ type: "context.injected", threadId: THREAD, source: "omp_bridge", content: guide }]);
     }
-    for (const off of [bridgeReactor(keyed, { ompBridge: { enabled: false } }), bridgeReactor(person, { ompBridge: { enabled: true } })]) {
+    const noWidgets = { enabled: false };
+    for (const off of [
+      bridgeReactor(keyed, { ompBridge: { enabled: false }, widgets: noWidgets }),
+      bridgeReactor(person, { ompBridge: { enabled: true }, widgets: noWidgets }),
+    ]) {
       await turn(off);
       expect(off.seen[0]!.input.instructions).toBeUndefined();
       expect(guides(off)).toEqual([]);
     }
+  });
+
+  it("tells a message asking for a visual to answer with a widget, on that turn's message, and logs it", async () => {
+    const text = "create a visualizer of my hosting costs";
+    const said: DomainEvent = { type: "user.message", threadId: THREAD, text };
+    for (const id of ["claude", "codex"] as const) {
+      const asked = bridgeReactor(keyed, {}, true, id);
+      await turn(asked, { ...ask, provider: id, text }, said);
+      expect(asked.seen[0]!.input.prompt).toBe(`${text}\n\n${WIDGET_TURN_NUDGE}`);
+      expect(asked.appended.flat()).toContainEqual(
+        expect.objectContaining({ type: "context.injected", source: "system_prompt", content: WIDGET_TURN_NUDGE }),
+      );
+    }
+    const plain = bridgeReactor(keyed, {});
+    await turn(plain);
+    expect(plain.seen[0]!.input.prompt).toBe("hi");
+    const off = bridgeReactor(keyed, { widgets: { enabled: false } });
+    await turn(off, { ...ask, text }, said);
+    expect(off.seen[0]!.input.prompt).toBe(text);
   });
 
   it("does not claim the guide for a resumed Codex session, which is not handed instructions", async () => {

@@ -115,6 +115,12 @@ export interface HostExecutorOptions {
    * behind a lower priority (apps/server/src/child-priority.ts).
    */
   wrapArgv?: (argv: readonly string[], env?: NodeJS.ProcessEnv, cwd?: string) => string[];
+  /**
+   * A folder to put first on PATH, asked for at every command: the
+   * project's runtime versions (apps/server/src/runtimes/manager.ts), so
+   * `php` here is the one its terminal runs. Null leaves PATH as it is.
+   */
+  pathPrefix?: () => string | null;
 }
 
 /**
@@ -218,6 +224,8 @@ export class HostExecutor implements Executor {
     const cap = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
     const env = safeEnv();
+    const prefix = this.options.pathPrefix?.();
+    if (prefix) env.PATH = `${prefix}:${env.PATH}`;
     const [file, ...rest] = this.options.wrapArgv?.([command, ...args], env, cwd) ?? [command, ...args];
 
     return new Promise<ExecResult>((settle, fail) => {

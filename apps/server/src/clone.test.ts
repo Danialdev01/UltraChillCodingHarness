@@ -101,7 +101,7 @@ describe("CloneReactor", () => {
     expect(await readFile(join(dest, "README.md"), "utf8")).toBe("# fixture\n");
 
     expect(emitted).toEqual([
-      { type: "project.cloned", projectId: PROJECT, headSha: originSha, stack: "nextjs" },
+      { type: "project.cloned", projectId: PROJECT, headSha: originSha, stack: "nextjs", branch: "main" },
     ]);
 
     // Shallow, as asked for: one commit, not the origin's history.
@@ -118,7 +118,8 @@ describe("CloneReactor", () => {
     await clones.drain();
 
     expect(errors).toEqual([]);
-    expect(emitted).toMatchObject([{ type: "project.cloned", headSha: originSha }]);
+    // The base branch becomes the one the clone actually landed on.
+    expect(emitted).toMatchObject([{ type: "project.cloned", headSha: originSha, branch: "main" }]);
   }, 60_000);
 
   it("is idempotent: a redelivered event does not fail on the existing tree", async () => {
@@ -244,7 +245,7 @@ describe("the project.cloned projection", () => {
 
     await applyProjection(
       tx,
-      [{ type: "project.cloned", projectId: PROJECT, headSha: originSha, stack: "nextjs" }],
+      [{ type: "project.cloned", projectId: PROJECT, headSha: originSha, stack: "nextjs", branch: "main" }],
       null,
     );
 

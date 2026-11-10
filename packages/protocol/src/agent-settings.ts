@@ -65,6 +65,13 @@ export const WorkspaceAgentSettings = z.object({
       retainCliTurns: z.boolean().default(false),
     })
     .default({}),
+  /**
+   * Interactive widgets in chat: every agent is taught the ```widget fence
+   * (and given `show_widget`), and the chat runs them in a sandboxed frame.
+   * On by default. Off: agents are not told about them, and any already in
+   * a thread show as code.
+   */
+  widgets: z.object({ enabled: z.boolean().default(true) }).default({}),
 });
 export type WorkspaceAgentSettings = z.infer<typeof WorkspaceAgentSettings>;
 
