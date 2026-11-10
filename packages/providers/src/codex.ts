@@ -1,4 +1,5 @@
 import type { DomainEvent, TokenUsage } from "@ucch/protocol";
+import { CODEX_IMAGE_INSTRUCTIONS, rolloutImagePaths, withCodexImages } from "./codex-images.js";
 import { workspaceRelative } from "./claude.js";
 import type { ExitStatus } from "./process.js";
 import { exitedBySignal, runCli, type Normaliser } from "./run.js";
@@ -119,17 +120,20 @@ export function codexArgv(input: {
   mcp?: CodexMcpServer;
 }): string[] {
   const argv = [input.bin, "exec"];
-  if (input.resumeToken) argv.push("resume", input.resumeToken);
   argv.push("--json");
   // The default sandbox is read-only, which makes the agent look broken.
   // Full access is not offered: this is not yet a container.
   argv.push("--sandbox", "workspace-write");
+  // Subscription image generation must be available in headless chat turns too.
+  argv.push("-c", "features.image_generation=true");
   if (!input.isRepo) argv.push("--skip-git-repo-check");
   // A cloned repository's own `.rules` is model-visible instruction from a
   // stranger, so it does not apply.
   if (input.caps.ignoreRules) argv.push("--ignore-rules");
   if (input.model) argv.push("--model", input.model);
   if (input.mcp) argv.push(...codexMcpArgs("omp", input.mcp));
+  // Exec-only options such as --sandbox must precede the resume subcommand.
+  if (input.resumeToken) argv.push("resume", input.resumeToken);
   return argv;
 }
 
@@ -266,6 +270,7 @@ interface Line {
 export class CodexNormaliser implements Normaliser {
   #sessionId: string | null = null;
   #closed = false;
+  readonly imagePaths = new Set<string>();
   /** Tool items announced by `item.started`, with when. */
   #started = new Map<string, number>();
 
@@ -291,6 +296,8 @@ export class CodexNormaliser implements Normaliser {
     } catch {
       return [];
     }
+    for (const path of rolloutImagePaths(line)) this.imagePaths.add(path);
+    for (const path of rolloutImagePaths(line.item)) this.imagePaths.add(path);
     const ids = { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
 
     switch (line.type) {
@@ -526,7 +533,7 @@ export class CodexProvider implements AgentProvider {
       turnId: input.turnId,
       workspace: input.ctx.cwd,
     });
-    return runCli({
+    return withCodexImages(input, () => runCli({
       provider: "codex",
       ctx: input.ctx,
       spec: {
@@ -538,9 +545,9 @@ export class CodexProvider implements AgentProvider {
           caps,
           ...(input.codexMcp ? { mcp: input.codexMcp } : {}),
         }),
-        stdin: codexPrompt(input.prompt, input.instructions, input.resumeToken),
+        stdin: `${CODEX_IMAGE_INSTRUCTIONS}\n\n${codexPrompt(input.prompt, input.instructions, input.resumeToken)}`,
       },
       normaliser,
-    });
+    }), () => normaliser.sessionId, () => [...normaliser.imagePaths]);
   }
 }

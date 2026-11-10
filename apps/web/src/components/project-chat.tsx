@@ -85,6 +85,8 @@ import { ContextMeter } from "@/components/context-meter";
 import { InlineError } from "@/components/layout/inline-error";
 import { Markdown, StreamingMarkdown } from "@/components/markdown";
 import { ToolWidget } from "@/components/widget-frame";
+import { ChatImageHostProvider } from "@/components/chat-image";
+import { targetOf } from "@/lib/project-target";
 import { WidgetHostProvider, type WidgetHost } from "@/lib/widget-host";
 import { fetchHarnessSettings } from "@/lib/workspace-api";
 import { isShowWidgetTool } from "@ucch/protocol/plain";
@@ -1704,6 +1706,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
               </>
             ) : (
               <WidgetHostProvider value={widgetHost}>
+              <ChatImageHostProvider value={{ target: targetOf(project), busy: running || sending || worktreeBlocked || !threadId, send: dispatchMessage }}>
               {messages.map((message, i) => (
                 <Message
                   key={i}
@@ -1719,6 +1722,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   viewMode={viewMode}
                 />
               ))}
+              </ChatImageHostProvider>
               </WidgetHostProvider>
             )}
 

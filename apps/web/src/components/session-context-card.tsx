@@ -8,15 +8,12 @@ import {
   ChevronRightIcon,
   ChevronsRightIcon,
   CrosshairIcon,
-  FileDiffIcon,
   FolderIcon,
   GitBranchIcon,
-  GitCommitHorizontalIcon,
   GlobeIcon,
   HistoryIcon,
   Loader2Icon,
   PanelRightOpenIcon,
-  PinIcon,
   SearchIcon,
   SquareKanbanIcon,
   SquareTerminalIcon,
@@ -25,7 +22,6 @@ import type { GitStatus } from "@ucch/protocol"
 
 import { useFilesPanel } from "@/components/files-panel"
 import { HarnessIcon } from "@/components/harness-icon"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { formatDuration } from "@/lib/chat-messages"
 import { fetchGitStatus } from "@/lib/git-api"
 import { formatUsd } from "@/lib/stats-format"
@@ -57,8 +53,8 @@ const DONE_OPEN_KEY = "ucch:context-card-done-open"
  * Floats at the top right once the chat panel is 84rem wide -- the reading
  * column plus a card's width of margin on each side, so it never covers a
  * line of the thread; narrower, it is one button that opens the same card as a
- * popover, so it never sits over the messages uninvited. Collapsible to
- * that button on wide screens too, remembered per browser.
+ * persistent card when opened. Collapsible to that button on wide screens
+ * too, remembered per browser. Reopening restores the same card.
  */
 export function SessionContextCard({
   project,
@@ -68,6 +64,7 @@ export function SessionContextCard({
   session?: ProjectSession | null
 }) {
   const [collapsed, setCollapsed] = React.useState(false)
+  const [openedOnNarrow, setOpenedOnNarrow] = React.useState(false)
   React.useEffect(() => {
     try {
       setCollapsed(localStorage.getItem(COLLAPSED_KEY) === "1")
@@ -85,49 +82,38 @@ export function SessionContextCard({
 
   return (
     <>
-      {/* Narrow, or hidden on wide: one button, the card as a popover. */}
-      <Popover>
-        <PopoverTrigger
-          render={
-            <button
-              type="button"
-              title="Session details"
-              className={cn(
-                "bg-popover/90 text-muted-foreground hover:text-foreground data-popup-open:text-foreground absolute top-3 right-3 z-10 grid size-8 place-items-center rounded-lg border shadow-sm backdrop-blur",
-                !collapsed && "@[84rem]/session:hidden",
-              )}
-            />
-          }
-        >
-          <PanelRightOpenIcon className="size-4" />
-          {running > 0 && (
-            <span className="bg-ucch-active absolute -top-0.5 -right-0.5 size-2 rounded-full" aria-hidden />
-          )}
-          <span className="sr-only">Session details</span>
-        </PopoverTrigger>
-        <PopoverContent align="end" className="w-64 p-0">
-          <CardBody project={project} session={session} />
-          {collapsed && (
-            <div className="border-t p-1.5">
-              <button
-                type="button"
-                onClick={() => toggle(false)}
-                className="text-muted-foreground hover:text-foreground hover:bg-muted flex h-7 w-full items-center gap-2 rounded-md px-1.5 text-xs"
-              >
-                <PinIcon className="size-3.5" />
-                Keep beside the chat
-              </button>
-            </div>
-          )}
-        </PopoverContent>
-      </Popover>
+      <button
+        type="button"
+        title="Session details"
+        aria-label="Session details"
+        aria-expanded={false}
+        onClick={() => {
+          toggle(false)
+          setOpenedOnNarrow(true)
+        }}
+        className={cn(
+          "bg-popover/90 text-muted-foreground hover:text-foreground absolute top-3 right-3 z-10 grid size-8 place-items-center rounded-lg border shadow-sm backdrop-blur",
+          !collapsed && (openedOnNarrow ? "hidden" : "@[84rem]/session:hidden"),
+        )}
+      >
+        <PanelRightOpenIcon className="size-4" />
+        {running > 0 && (
+          <span className="bg-ucch-active absolute -top-0.5 -right-0.5 size-2 rounded-full" aria-hidden />
+        )}
+      </button>
 
       {!collapsed && (
         <aside
           aria-label="Session details"
-          className="bg-popover/90 absolute top-3 right-3 z-10 hidden w-64 flex-col rounded-xl border text-sm shadow-sm backdrop-blur @[84rem]/session:flex"
+          className={cn(
+            "bg-popover/90 absolute top-3 right-3 z-10 w-64 flex-col rounded-xl border text-sm shadow-sm backdrop-blur",
+            openedOnNarrow ? "flex" : "hidden @[84rem]/session:flex",
+          )}
         >
-          <CardBody project={project} session={session} onHide={() => toggle(true)} />
+          <CardBody project={project} session={session} onHide={() => {
+              toggle(true)
+              setOpenedOnNarrow(false)
+            }} />
         </aside>
       )}
     </>
@@ -150,7 +136,6 @@ function CardBody({
   const status = read === "none" ? null : read
   const lineage = useLineage()
   const shells = useShellCalls()
-  const changes = status?.files.length ?? null
   const branch = status?.branch ?? session?.branch ?? project.defaultBranch ?? null
   const manageable = project.workspaceKind !== "session"
   const running = lineage.filter((entry) => entry.run.status === "running").length
@@ -165,7 +150,6 @@ function CardBody({
     if (row instanceof HTMLDetailsElement) row.open = true
     row?.scrollIntoView({ behavior: "smooth", block: "start" })
   }
-  const busy = status?.mergeInProgress ? "merging" : status?.rebaseInProgress ? "rebasing" : null
 
   return (
     <div className="flex flex-col text-sm">
@@ -231,30 +215,7 @@ function CardBody({
             )}
           </Row>
           <GitOwnership project={project} session={session} />
-          <Row
-            icon={GitCommitHorizontalIcon}
-            onClick={changes ? () => setMode("git") : undefined}
-            title={changes ? "Commit these changes" : "Nothing to commit"}
-          >
-            <span className={cn(!changes && "text-muted-foreground")}>Commit</span>
-            {busy && <span className="text-warning ml-auto shrink-0 text-2xs">{busy}</span>}
-          </Row>
-          <Row icon={FileDiffIcon} onClick={() => setMode("git")} title="Review changes">
-            <span>Changes</span>
-            <span
-              className={cn(
-                "ml-auto flex shrink-0 items-center gap-1.5 text-2xs tabular-nums",
-                changes ? "text-ucch-active font-medium" : "text-muted-foreground",
-              )}
-            >
-              {changes ? <span className="bg-ucch-active size-1.5 rounded-full" aria-hidden /> : null}
-              {changes === null
-                ? "…"
-                : changes === 0
-                  ? "clean"
-                  : `${changes}${status?.truncated ? "+" : ""} ${changes === 1 ? "file" : "files"}`}
-            </span>
-          </Row>
+
         </div>
       )}
 
@@ -265,7 +226,7 @@ function CardBody({
             Subagents
             {running > 0 && <span className="text-ucch-active">&nbsp;· {running} running</span>}
           </p>
-          <div className="flex max-h-48 flex-col overflow-y-auto">
+          <div className="flex flex-col">
             {active.map((entry) => (
               <LineageRow
                 key={lineageKey(entry)}
@@ -291,7 +252,7 @@ function CardBody({
             Terminal
             <span className="text-ucch-active">&nbsp;· {shells.length} running</span>
           </p>
-          <div className="flex max-h-48 flex-col overflow-y-auto">
+          <div className="flex flex-col">
             {shells.map((entry) => (
               <button
                 key={entry.callId}

@@ -70,6 +70,7 @@ describe("codexArgv", () => {
     const argv = codexArgv({ bin: "codex", isRepo: true, caps });
     expect(argv.slice(0, 2)).toEqual(["codex", "exec"]);
     expect(argv).toContain("--json");
+    expect(argv).toContain("features.image_generation=true");
     expect(argv.join(" ")).toContain("--sandbox workspace-write");
     expect(argv).toContain("--ignore-rules");
     expect(argv).not.toContain("--skip-git-repo-check");
@@ -88,7 +89,8 @@ describe("codexArgv", () => {
 
   it("resumes with the positional form and skips the repo check off a repo", () => {
     const argv = codexArgv({ bin: "codex", isRepo: false, caps: { ignoreRules: false }, resumeToken: "th-1", model: "gpt-5" });
-    expect(argv.slice(0, 4)).toEqual(["codex", "exec", "resume", "th-1"]);
+    expect(argv.slice(-2)).toEqual(["resume", "th-1"]);
+    expect(argv.indexOf("--sandbox")).toBeLessThan(argv.indexOf("resume"));
     expect(argv).toContain("--skip-git-repo-check");
     expect(argv).not.toContain("--ignore-rules");
     expect(argv.join(" ")).toContain("--model gpt-5");
@@ -107,8 +109,8 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
 
   it("is unchanged with the bridge off", () => {
     expect(codexArgv({ bin: "codex", isRepo: false, caps, resumeToken: "th-1", model: "gpt-5" })).toEqual([
-      "codex", "exec", "resume", "th-1", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check",
-      "--ignore-rules", "--model", "gpt-5",
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--skip-git-repo-check",
+      "--ignore-rules", "--model", "gpt-5", "resume", "th-1",
     ]);
   });
 
@@ -121,10 +123,11 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
       "-c", 'mcp_servers.omp.default_tools_approval_mode="approve"',
     ];
     expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp })).toEqual([
-      "codex", "exec", "--json", "--sandbox", "workspace-write", "--ignore-rules", ...flags,
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", ...flags,
     ]);
-    expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp, resumeToken: "th-1" }).slice(0, 4)).toEqual(["codex", "exec", "resume", "th-1"]);
-    expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp, resumeToken: "th-1" }).slice(-10)).toEqual(flags);
+    expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp, resumeToken: "th-1" })).toEqual([
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", ...flags, "resume", "th-1",
+    ]);
   });
 
   it("quotes values as TOML strings, and refuses a name that would be another key", () => {
@@ -290,7 +293,8 @@ describe("CodexProvider.run", () => {
     const run = provider.run({ ctx: { cwd: WORKSPACE, env: { PATH: "/usr/bin", CODEX_HOME: "/creds" }, host }, prompt: "fix it", ...ids });
     const events: DomainEvent[] = [];
     for await (const event of run.events) events.push(event);
-    expect(host.spawned[0]?.stdin).toBe("fix it");
+    expect(host.spawned[0]?.stdin).toContain("<image-output>");
+    expect(host.spawned[0]?.stdin).toMatch(/fix it$/);
     expect(host.spawned[0]?.argv).toContain("--skip-git-repo-check");
     expect(events.at(-1)?.type).toBe("agent.turn_completed");
 

@@ -75,9 +75,8 @@ const MODES = [
  * The sidebar's list of coding sessions: every session in the workspace,
  * either newest first (Sessions) or under their projects (Projects).
  *
- * One list for both kinds of workspace. In a session workspace each session
- * is its own little project, so Projects shows one group per session -- the
- * mode is the person's choice, kept per account. The cards come from
+ * Session workspaces always show the sessions list; project workspaces
+ * remember the chosen grouping per account. The cards come from
  * `GET /api/workspaces/:id/sessions`, refreshed by the cache bridge as
  * sessions come, go, are renamed or end a turn; what a turn is doing right
  * now comes straight off the socket (`useLiveTurns`).
@@ -105,7 +104,8 @@ export function SessionSidebar({
   const me = useMe()
   const now = useMinuteClock()
 
-  const [mode, setMode] = useSidebarMode(sessionWorkspace ? "sessions" : "projects")
+  const [savedMode, setMode] = useSidebarMode(sessionWorkspace ? "sessions" : "projects")
+  const mode = sessionWorkspace ? "sessions" : savedMode
   const [filters, dispatchFilter] = React.useReducer(filterReducer, NO_FILTERS)
   const [collapsed, toggleCollapsed] = useCollapsedProjects(workspace.id)
 
@@ -440,22 +440,24 @@ export function SessionSidebar({
 
   return (
     <div className="flex min-h-0 flex-col">
-      <div className="flex items-center gap-1 px-2 pt-2 pb-1">
-        <Segmented<SidebarMode>
-          options={MODES}
-          value={mode}
-          onChange={setMode}
-          size="sm"
-          aria-label="List sessions by"
-          className="min-w-0 flex-1 [&>button]:flex-1"
-        />
-        <FilterPopover
-          filters={filters}
-          dispatch={dispatchFilter}
-          projects={data?.projects ?? []}
-          sessionWorkspace={sessionWorkspace}
-        />
-      </div>
+      {!sessionWorkspace && (
+        <div className="flex items-center gap-1 px-2 pt-2 pb-1">
+          <Segmented<SidebarMode>
+            options={MODES}
+            value={mode}
+            onChange={setMode}
+            size="sm"
+            aria-label="List sessions by"
+            className="min-w-0 flex-1 [&>button]:flex-1"
+          />
+          <FilterPopover
+            filters={filters}
+            dispatch={dispatchFilter}
+            projects={data?.projects ?? []}
+            sessionWorkspace={sessionWorkspace}
+          />
+        </div>
+      )}
 
       <div
         ref={listRef}

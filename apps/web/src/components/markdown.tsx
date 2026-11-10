@@ -6,6 +6,7 @@ import ReactMarkdown, { type Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 
+import { ChatImage } from "@/components/chat-image"
 import { FileTypeIcon } from "@/components/file-type-icon"
 import { WidgetFrame, WidgetPlaceholder } from "@/components/widget-frame"
 import { copyText } from "@/lib/clipboard"
@@ -148,11 +149,7 @@ const COMPONENTS: Components = {
       <input type="checkbox" checked={checked} readOnly className="mr-1.5 align-middle" />
     ) : null,
 
-  img: ({ src, alt }) => (
-    // eslint-disable-next-line @next/next/no-img-element -- an arbitrary URL
-    // from model output, which next/image would try to proxy and optimise.
-    <img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} className="my-2 max-w-full rounded" />
-  ),
+  img: ({ src, alt }) => <ChatImage src={typeof src === "string" ? src : ""} alt={alt ?? ""} />,
 }
 
 /**
