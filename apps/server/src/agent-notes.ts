@@ -1,18 +1,18 @@
-import { readdir, rm, rmdir } from "node:fs/promises";
+import { readFile, readdir, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { NoteDoc } from "@ucch/protocol";
 
 import { agentPath, Debouncer, hasCheckout, slugify, writeIfChanged } from "./agent-sync.js";
+import { richMarkdown } from "./note-markdown.js";
+import { digest, noteDigest, readNoteFiles, reconcileNotes, saveNoteState, type NoteFileChanges } from "./note-files.js";
 import { refreshIndexFiles } from "./dev-database.js";
 
 /**
  * `.agent/notes/`: the Knowledge section's notes as Markdown, for agents.
  *
- * One way, app to files. A note's body is ProseMirror JSON in Postgres and
- * the editor is the only thing that writes it; this rewrites the folder
- * after every save -- live collaborative edits included -- so what an agent
- * reads is what the page says now.
+ * Markdown and the editor synchronize in both directions, with persisted
+ * baselines detecting concurrent changes before exporting.
  */
 
 export const NOTES_DIR = "notes";
@@ -55,6 +55,7 @@ export interface MirroredNote {
   parentId: string | null;
   title: string;
   icon: string | null;
+  cover?: string | null;
   position: number;
   content: NoteDoc;
   updatedAt: string;
@@ -284,6 +285,7 @@ function relativeLink(from: string, to: string): string {
 export function renderNotes(
   notes: readonly MirroredNote[],
   images: ReadonlyMap<string, string> = new Map(),
+  legacy = false,
 ): Map<string, string> {
   const paths = notePaths(notes);
   const files = new Map<string, string>();
@@ -296,13 +298,14 @@ export function renderNotes(
       return target && linked ? { href: relativeLink(path, target), title: linked.title || "Untitled" } : null;
     };
     const title = `${note.icon ? `${note.icon} ` : ""}${note.title.replace(/\s+/g, " ").trim() || "Untitled"}`;
-    const body = noteToMarkdown(note.content, linkFor).replace(UPLOAD_SRC, (url, id: string) => {
+    const render = (doc: NoteDoc) => noteToMarkdown(doc, linkFor).replace(UPLOAD_SRC, (url, id: string) => {
       const copy = images.get(id.toLowerCase());
       return copy ? relativeLink(`${NOTES_DIR}/${path}`, copy) : url;
     });
+    const body = legacy ? render(note.content) : richMarkdown(note.content, render);
     files.set(
       path,
-      `# ${title}\n\n<!-- note:${note.id} · generated from the app's Knowledge notes; edit it there, changes made here are overwritten -->\n${body ? `\n${body}\n` : ""}`,
+      legacy ? `# ${title}\n\n<!-- note:${note.id} · generated from the app's Knowledge notes; edit it there, changes made here are overwritten -->\n${body ? `\n${body}\n` : ""}` : `---\nucch: ${JSON.stringify({ id: note.id, title: note.title, parentId: note.parentId, icon: note.icon, cover: note.cover ?? null, position: note.position })}\n---\n\n${body}\n`,
     );
   }
   return files;
@@ -314,14 +317,16 @@ export interface NotesMirrorDeps {
   rootOf(projectId: string): string;
   onError(error: unknown, projectId: string): void;
   delayMs?: number;
+  changes?: NoteFileChanges;
 }
 
 /** Keeps `.agent/notes/` in step with a project's notes. */
 export class NotesMirror {
   readonly #debounce: Debouncer;
+  readonly errors = new Map<string, string>();
 
   constructor(private readonly deps: NotesMirrorDeps) {
-    this.#debounce = new Debouncer(deps.delayMs ?? 1000, (id) => this.#write(id), deps.onError);
+    this.#debounce = new Debouncer(deps.delayMs ?? 500, async (id) => { await this.#write(id); this.errors.delete(id); }, (error, id) => { this.errors.set(id, String(error)); deps.onError(error, id); });
   }
 
   schedule(projectId: string): void {
@@ -335,7 +340,7 @@ export class NotesMirror {
   async #write(projectId: string): Promise<void> {
     const root = this.deps.rootOf(projectId);
     if (!(await hasCheckout(root))) return;
-    const notes = await this.deps.notes(projectId);
+    let notes = await this.deps.notes(projectId);
 
     // Images first, so the Markdown can point at the copies.
     let changed = false;
@@ -356,7 +361,7 @@ export class NotesMirror {
       }
     }
     const refsDir = await agentPath(root, NOTE_REFERENCES);
-    for (const entry of await readdir(refsDir, { withFileTypes: true }).catch(() => [])) {
+    for (const entry of this.deps.changes ? [] : await readdir(refsDir, { withFileTypes: true }).catch(() => [])) {
       const wanted = entry.isDirectory() ? keep.get(entry.name) : undefined;
       if (!wanted) {
         await rm(join(refsDir, entry.name), { recursive: true, force: true });
@@ -371,7 +376,29 @@ export class NotesMirror {
       }
     }
 
+    let before: Map<string, string> | undefined;
+    if (this.deps.changes) {
+      // Seed the migration baseline only for byte-identical legacy exports.
+      const existing = await readNoteFiles(root);
+      const statePath = await agentPath(root, "cache/notes-sync.json");
+      if (!(await readFile(statePath).catch(() => null))) {
+        const legacy = renderNotes(notes, images, true);
+        const state: Record<string, { id: string; file: string; note: string }> = {};
+        const paths = notePaths(notes);
+        for (const note of notes) {
+          const path = paths.get(note.id)!;
+          if (existing.get(path) === legacy.get(path)) state[path] = { id: note.id, file: digest(existing.get(path)!), note: noteDigest(note) };
+        }
+        await writeIfChanged(statePath, JSON.stringify(state));
+      }
+      before = await reconcileNotes(root, projectId, notes, this.deps.changes);
+      notes = await this.deps.notes(projectId);
+    }
     const files = renderNotes(notes, images);
+    if (before) {
+      const now = await readNoteFiles(root);
+      if (JSON.stringify([...now]) !== JSON.stringify([...before])) throw new Error("Documentation changed during synchronization; retrying is required");
+    }
     for (const [path, content] of files) {
       if (await writeIfChanged(await agentPath(root, `${NOTES_DIR}/${path}`), content)) changed = true;
     }
@@ -385,7 +412,7 @@ export class NotesMirror {
         if (entry.isDirectory()) {
           await sweep(path);
           await rmdir(join(base, path)).catch(() => {});
-        } else if (!files.has(path)) {
+        } else if (!files.has(path) && (!before || before.has(path))) {
           await rm(join(base, path), { force: true });
           changed = true;
         }
@@ -393,6 +420,7 @@ export class NotesMirror {
     };
     await sweep("");
 
+    if (this.deps.changes) await saveNoteState(root, files, notes);
     if (changed) await refreshIndexFiles(root);
   }
 }

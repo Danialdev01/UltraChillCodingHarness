@@ -18,6 +18,7 @@ import type { WebProvider } from "./web.js";
 
 /** What a tool is given when it runs. */
 export interface ToolContext {
+  coordination?: (name: string, args: Record<string, unknown>, context: Pick<ToolContext, "threadId" | "turnId" | "toolUseId" | "signal">) => Promise<ToolResult>;
   projectId: string;
   threadId: string;
   turnId: string;

@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, Trash2Icon } from "lucide-react"
 import {
   PROJECT_COMMAND_ICONS,
@@ -101,6 +102,7 @@ export function ManageCommandsDialog({
   const [pending, setPending] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const invalidate = useInvalidate()
+  const queryClient = useQueryClient()
 
   // Fresh from the file each time it opens, never a half-edit from last time.
   React.useEffect(() => {
@@ -125,6 +127,7 @@ export function ManageCommandsDialog({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
+    if (pending) return
     if (incomplete) {
       setError("Every command needs a label and a command line.")
       return
@@ -132,7 +135,8 @@ export function ManageCommandsDialog({
     setPending(true)
     setError(null)
     try {
-      await saveCommands(project.hash, toCommands(filled))
+      const saved = await saveCommands(project.hash, toCommands(filled))
+      queryClient.setQueryData(qk.commands.list(project.hash), saved)
       invalidate(qk.commands.all)
       onOpenChange(false)
     } catch (e) {

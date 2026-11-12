@@ -151,3 +151,16 @@ describe("BridgeLeases spawn frames (ucch_agent)", () => {
     expect(stopped).toBe(true);
   });
 });
+
+it("binds collaboration requests to a live turn and rejects revoked tokens", async () => {
+  const { path, leases } = await serve(1);
+  const seen: unknown[] = [];
+  leases.setCollaborator(async (holder, name, args) => { seen.push({ holder, name, args }); return { text: "sent" }; });
+  const turn = leases.register({ ownerId: "u1", threadId: "t1" });
+  const frame = JSON.stringify({ type: "collaboration", token: turn.token, name: "ucch_message", args: { sessionId: "t2", text: "hello", fromThreadId: "forged" } });
+  expect(await ask(path, frame).answer).toEqual({ type: "result", text: "sent" });
+  expect(seen).toEqual([{ holder: { ownerId: "u1", threadId: "t1" }, name: "ucch_message", args: { sessionId: "t2", text: "hello", fromThreadId: "forged" } }]);
+  turn.revoke();
+  expect(await ask(path, frame).answer).toMatchObject({ type: "refused" });
+  expect(seen).toHaveLength(1);
+});

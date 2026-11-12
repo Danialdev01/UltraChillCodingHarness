@@ -14,11 +14,12 @@ export const ucchAgent = tool({
   inputSchema: {
     description: z.string().min(1).max(200).describe(UCCH_AGENT_ARGS.description),
     task: z.string().min(1).max(60_000).describe(UCCH_AGENT_ARGS.task),
+    background: z.boolean().optional().describe(UCCH_AGENT_ARGS.background),
     model: z.string().max(200).optional().describe(UCCH_AGENT_ARGS.model),
   },
   annotations: { title: "Subagent (any harness)", openWorldHint: true },
-  run: async ({ description, task, model }, ctx) => {
-    const outcome = await spawnSubagent(ctx.config, { description, task, model });
+  run: async ({ description, task, model, background }, ctx) => {
+    const outcome = await spawnSubagent(ctx.config, { description, task, model, background });
     if ("error" in outcome) return failure(`ucch_agent: ${outcome.error}`);
     return { content: [{ type: "text", text: outcome.text || "(the subagent finished without a reply)" }] };
   },

@@ -13,6 +13,8 @@ import {
   type StoredEvent,
 } from "@ucch/protocol";
 import {
+  agentMessages,
+  agentRuns,
   previews,
   projects,
   reviews,
@@ -244,10 +246,20 @@ export class OrchestrationEngine {
           baseBranch: row.baseBranch,
           treeHash: row.treeHash,
           parentThreadId: row.parentThreadId,
+          hasActiveChildren: command.type === "thread.cancel" && (await this.db.select({ id: agentRuns.id }).from(agentRuns).where(and(eq(agentRuns.parentThreadId, row.id), eq(agentRuns.status, "running"))).limit(1)).length > 0,
         };
       }
     }
 
+    if (command.type === "thread.send" && command.subagentId && state.thread) {
+      const history = await this.store.threadHistory(state.thread.id);
+      const started = history.findLast(row => row.event.type === "agent.subagent_started" && row.event.subagentId === command.subagentId)?.event;
+      if (started?.type === "agent.subagent_started") state.subagent = { id: started.subagentId, provider: started.provider, childThreadId: started.childThreadId };
+    }
+    if (command.type === "thread.agent_message") {
+      const [source] = await this.db.select({ id: threads.id, projectId: threads.projectId, hash: threads.hash }).from(threads).where(eq(threads.id, command.fromThreadId)).limit(1);
+      if (source) state.messageSource = source;
+    }
     const projectId = "projectId" in command ? command.projectId : state.thread?.projectId;
     if (projectId) {
       const [row] = await this.db
@@ -448,14 +460,36 @@ export async function applyProjection(
         break;
       }
 
+      case "agent.session_message":
+        await tx.insert(agentMessages).values({ id: event.messageId, threadId: event.threadId,
+          fromThreadId: event.fromThreadId, text: event.text, replyTo: event.replyTo, depth: event.depth }).onConflictDoNothing();
+        break;
+      case "agent.message_delivered":
+        if (event.messageIds.length) await tx.update(agentMessages).set({ deliveredAt: sql`now()` })
+          .where(and(eq(agentMessages.threadId, event.threadId), inArray(agentMessages.id, event.messageIds)));
+        break;
+      case "agent.subagent_started":
+        if (event.childThreadId && event.provider) await tx.insert(agentRuns).values({ id: event.subagentId,
+          parentThreadId: event.threadId, childThreadId: event.childThreadId, background: event.background ?? false,
+          provider: event.provider, model: event.model, routing: event.routing }).onConflictDoNothing();
+        break;
+      case "agent.subagent_routed":
+        await tx.update(agentRuns).set({ provider: event.provider, model: event.model, routing: event.routing }).where(eq(agentRuns.id, event.subagentId));
+        break;
+      case "agent.subagent_finished":
+        await tx.update(agentRuns).set({ status: event.status, result: event.result }).where(eq(agentRuns.id, event.subagentId));
+        break;
       case "user.message": {
+        if (event.agentMessageIds?.length) await tx.update(agentMessages).set({ deliveredAt: sql`now()` })
+          .where(and(eq(agentMessages.threadId, event.threadId), inArray(agentMessages.id, event.agentMessageIds)));
+
         // The message claims the thread. `decide` refuses a send unless the
         // thread is idle or errored, but two sends can both read it so; only
         // one of them gets this row, and the other's transaction rolls back.
         // `turn.started` moves it on to `running`, `turn.dequeued` back.
         const claimed = await tx
           .update(threads)
-          .set({ status: "queued", lastActivityAt: sql`now()` })
+          .set({ status: "queued", lastActivityAt: sql`now()`, ...(!event.agentMessageIds ? { agentMessagesPaused: false } : {}) })
           .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["idle", "error"])))
           .returning({ id: threads.id });
         if (claimed.length === 0) throw new ProjectionConflict("this thread already has a turn in progress");
@@ -493,6 +527,7 @@ export async function applyProjection(
         break;
 
       case "thread.cancel_requested":
+        await tx.update(threads).set({ agentMessagesPaused: true }).where(eq(threads.id, event.threadId));
         // Not `idle`: the loop is still unwinding, and letting a new message
         // in before it finishes is exactly what the guard exists to stop.
         // `agent.turn_completed` (or `turn.dequeued`) moves it the rest of

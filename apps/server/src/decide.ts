@@ -60,6 +60,7 @@ export interface ThreadSnapshot {
   treeHash?: string | null;
   /** A subagent's session: the thread whose agent started it. */
   parentThreadId?: string | null;
+  hasActiveChildren?: boolean;
 }
 
 export interface TurnSnapshot {
@@ -75,6 +76,8 @@ export interface DecisionState {
   project?: ProjectSnapshot;
   thread?: ThreadSnapshot;
   turn?: TurnSnapshot;
+  subagent?: { id: string; provider?: string; childThreadId?: string };
+  messageSource?: { id: string; projectId: string; hash?: string | null };
 }
 
 /** Non-deterministic inputs, injected so decisions stay pure. */
@@ -281,11 +284,29 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       ]);
     }
 
+    case "thread.agent_message": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      if (!ctx.internal) return fail("forbidden", "only a running agent can send an agent message");
+      if (!state.messageSource || state.messageSource.id !== command.fromThreadId || state.messageSource.projectId !== thread.value.projectId) {
+        return fail("not_found", "source session not found in this project");
+      }
+      return ok([{ type: "agent.session_message", threadId: command.threadId, fromThreadId: command.fromThreadId,
+        messageId: ctx.newId(), fromHash: state.messageSource.hash, text: command.text, depth: command.depth, ...(command.replyTo ? { replyTo: command.replyTo } : {}) }]);
+    }
+
     case "thread.send": {
+      if (command.agentMessageIds && !ctx.internal) return fail("forbidden", "agent delivery is server-only");
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
       const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
+
+      if (command.subagentId && (state.subagent?.id !== command.subagentId ||
+        state.subagent.provider !== "codex" || state.subagent.childThreadId || thread.value.provider !== "codex")) {
+        return fail("invalid", "This native subagent is not available for follow-up in this session.");
+      }
+      if (command.subagentId && command.mode) return fail("invalid", "A subagent follow-up uses its existing task mode");
 
       // One turn at a time per thread. Queueing a second would interleave two
       // agents editing the same working tree. A `queued` thread has a message
@@ -325,6 +346,8 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           type: "user.message",
           threadId: thread.value.id,
           text: command.text,
+          ...(command.subagentId ? { subagentId: command.subagentId } : {}),
+          ...(command.agentMessageIds ? { agentMessageIds: command.agentMessageIds } : {}),
           // Only when there are some: an ordinary message keeps the shape it
           // has always had, and so does the log.
           ...(command.images?.length ? { images: command.images } : {}),
@@ -354,7 +377,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     case "thread.cancel": {
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
-      if (thread.value.status !== "running" && thread.value.status !== "queued") {
+      if (thread.value.status !== "running" && thread.value.status !== "queued" && !thread.value.hasActiveChildren) {
         return fail("conflict", "no turn is running on this thread");
       }
       // The turn is not over yet -- the reactor aborts the run in flight and

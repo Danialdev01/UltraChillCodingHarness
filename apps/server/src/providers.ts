@@ -63,6 +63,7 @@ export const TOKEN_WARN_AFTER_MS = 11 * 30 * 24 * 3600_000;
 export type LoginProgram = "claude-login" | "codex-login";
 
 export interface ProviderCard extends ProviderHealth {
+  modelsAuthoritative?: boolean;
   id: ProviderId;
   label: string;
   /** False when the server refuses this provider outright, whatever its health. */
@@ -347,6 +348,7 @@ export class ProviderService {
         ...codex,
         enabled,
         models: codex.models ?? this.providers.codex.models,
+        modelsAuthoritative: codex.models !== undefined,
       },
       // A turn that names `omp` runs on it, but the card stays off until the
       // settings page has an OMP card to show (OMP plan, OM8.1).

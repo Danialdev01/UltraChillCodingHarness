@@ -67,6 +67,8 @@ export interface SubagentRun {
    */
   provider?: string;
   childHash?: string;
+  childThreadId?: string;
+  background?: boolean;
   routing?: string;
   /**
    * What a CLI's built-in subagent did, in order (Claude Code's): its prose,
@@ -258,6 +260,7 @@ export interface ChatMessage {
    * rerun sends again as it was.
    */
   subagentTask?: true;
+  agentMessage?: { id: string; sessionId: string; hash?: string | null; direction: "from" | "to"; delivered: boolean; depth: number };
   raw?: string;
   parts: MessagePart[];
   reasoning: string;
@@ -447,14 +450,13 @@ export function toMessages(
     message.streaming = false;
     for (const part of message.parts) {
       if (part.kind === "text") part.streaming = false;
-      // The turn is over, so nothing it spawned still runs: the provider
-      // closes its subagents, but a window that slid past that must not
-      // leave one spinning.
-      if (part.kind === "tool") for (const run of part.subagents ?? []) if (run.status === "running") run.status = "aborted";
+      // Native children are observed by the parent's process. Independent
+      // application child sessions can continue after their parent replies.
+      if (part.kind === "tool") for (const run of part.subagents ?? []) if (run.status === "running" && !run.childThreadId) run.status = "aborted";
     }
     // A run resumed by this turn hangs from an earlier turn's card.
     for (const entry of runs.values()) {
-      if (entry.turnId === message.turnId && entry.run.status === "running") entry.run.status = "aborted";
+      if (entry.turnId === message.turnId && entry.run.status === "running" && !entry.run.childThreadId) entry.run.status = "aborted";
     }
   };
 
@@ -469,10 +471,25 @@ export function toMessages(
   /** The calls subagents made, by id: their results land on them, not on the turn. */
   const subagentCalls = new Map<string, ToolPart>();
 
+  const deliveredMessages = new Set(events.flatMap(({ event }) => event.type === "agent.message_delivered" ? event.messageIds : event.type === "user.message" ? event.agentMessageIds ?? [] : []));
   for (const row of events) {
     const { event } = row;
     switch (event.type) {
+      case "agent.session_message":
+      case "agent.session_message_sent": {
+        const incoming = event.type === "agent.session_message";
+        messages.push({ role: "user", text: event.text, parts: [], reasoning: "", streaming: false, startedAt: row.receivedAt ?? null, completedAt: null,
+          agentMessage: { id: event.messageId, sessionId: incoming ? event.fromThreadId : event.toThreadId,
+            hash: incoming ? event.fromHash : event.toHash, direction: incoming ? "from" : "to", depth: event.depth, delivered: deliveredMessages.has(event.messageId) } });
+        break;
+      }
+      case "agent.subagent_routed": {
+        const run = subagent(event.subagentId);
+        if (run) { run.provider = event.provider; run.model = event.model; run.routing = event.routing; }
+        break;
+      }
       case "user.message": {
+        if (event.agentMessageIds?.length) break;
         // The attachment block is for the model; the chat shows the sentence
         // that was typed, and a tag per file.
         const { text: typed, attachments } = parseAttachments(event.text);
@@ -649,10 +666,14 @@ export function toMessages(
         const known = subagent(event.subagentId);
         if (known) {
           // Resumed after it ended: running again on its own card.
-          if (known.status !== "running") {
-            known.status = "running";
-            known.summary = null;
-          }
+          known.status = "running";
+          known.summary = null;
+          known.result = null;
+          known.toolCalls = null;
+          known.durationMs = null;
+          known.costUsd = null;
+          delete known.recentTools;
+          delete known.recentOutput;
           runs.get(known.id)!.turnId = event.turnId;
           break;
         }
@@ -688,6 +709,8 @@ export function toMessages(
           steps: [],
           ...(event.provider ? { provider: event.provider } : {}),
           ...(event.childHash ? { childHash: event.childHash } : {}),
+          ...(event.childThreadId ? { childThreadId: event.childThreadId } : {}),
+          ...(event.background ? { background: true } : {}),
           ...(event.routing ? { routing: event.routing } : {}),
         };
         (call.subagents ??= []).push(run);
@@ -713,6 +736,7 @@ export function toMessages(
         if (!run) break;
         run.status = event.status;
         run.result = event.result;
+        if (event.model) run.model = event.model;
         if (event.toolCalls !== undefined) run.toolCalls = event.toolCalls;
         if (event.durationMs !== undefined) run.durationMs = event.durationMs;
         if (event.costUsd !== undefined) run.costUsd = event.costUsd;

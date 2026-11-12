@@ -114,3 +114,8 @@ describe("credential files", () => {
     expect(await readCodexTokens(dir)).toEqual({ accessToken: "eyJ", accountId: "acct_1" });
   });
 });
+
+it("keeps model-specific Claude buckets for routing", () => {
+  expect(parseClaudeUsage({ five_hour: { utilization: 25 }, seven_day: { utilization: 40 }, seven_day_opus: { utilization: 95 }, seven_day_sonnet: { utilization: 20 } }))
+    .toEqual(expect.arrayContaining([expect.objectContaining({ model: "opus", usedPercent: 95 }), expect.objectContaining({ model: "sonnet", usedPercent: 20 })]));
+});

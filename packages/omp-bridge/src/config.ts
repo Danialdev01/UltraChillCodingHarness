@@ -64,6 +64,7 @@ export interface BridgeConfig {
    * subagent's own turn, which does not start subagents.
    */
   subagents: boolean;
+  messaging?: boolean;
   /**
    * `show_widget` is offered (`UCCH_WIDGETS=1`): the workspace allows
    * interactive widgets. It runs nothing; the chat draws the call's input.
@@ -116,6 +117,7 @@ export function readBridgeConfig(env: NodeJS.ProcessEnv, cwd: string = process.c
     maxCalls: env.UCCH_BRIDGE_MAX_CALLS !== undefined && Number.isInteger(calls) && calls >= 0 ? calls : DEFAULT_MAX_CALLS,
     ompTools: env.UCCH_BRIDGE_OMP_TOOLS !== "0",
     subagents: env.UCCH_BRIDGE_SUBAGENTS === "1",
+    messaging: env.UCCH_BRIDGE_MESSAGING === "1",
     widgets: env.UCCH_WIDGETS === "1",
   };
 }

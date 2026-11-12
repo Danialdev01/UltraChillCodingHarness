@@ -10,6 +10,7 @@ import {
   CrosshairIcon,
   FolderIcon,
   GitBranchIcon,
+  GitCommitHorizontalIcon,
   GlobeIcon,
   HistoryIcon,
   Loader2Icon,
@@ -40,6 +41,7 @@ import { projectPageHref } from "@/lib/sections"
 import type { Project, ProjectSession } from "@/lib/session"
 import { cn } from "@/lib/utils"
 import { TransitionLink } from "@/lib/view-transitions"
+import { useProjectEvents } from "@/lib/realtime"
 import { useActiveWorkspace, useWorkspaceHash } from "@/lib/workspace-context"
 
 const COLLAPSED_KEY = "ucch:context-card-collapsed"
@@ -189,6 +191,46 @@ function CardBody({
           <Row icon={HistoryIcon} to={projectPageHref(ws, project.hash, "timeline")} title="The project's timeline">
             <span>Timeline</span>
           </Row>
+        )}
+        {manageable && kind === "project" && (
+          <>
+            <Row
+              icon={GitCommitHorizontalIcon}
+              onClick={!noRepo && status ? () => setMode("git") : undefined}
+              title="Review, stage, and commit this session's changes"
+            >
+              <span>Commit</span>
+              {status && <span className="text-muted-foreground ml-auto text-2xs tabular-nums">{status.files.length}{status.truncated ? "+" : ""} changed</span>}
+            </Row>
+            <div className="px-1.5 pb-1 pl-8" aria-label="Working tree changes" aria-live="polite">
+              {!read ? (
+                <p className="text-muted-foreground text-xs">Loading changes…</p>
+              ) : noRepo ? (
+                <p className="text-muted-foreground text-xs">Git status unavailable.</p>
+              ) : status?.files.length === 0 ? (
+                <p className="text-muted-foreground text-xs">No local changes.</p>
+              ) : (
+                <ul className="max-h-40 overflow-y-auto text-xs">
+                  {status?.files.map((file) => (
+                    <li key={file.path}>
+                      <button
+                        type="button"
+                        onClick={() => setMode("git")}
+                        title={file.origPath ? `${file.origPath} → ${file.path}` : file.path}
+                        className="hover:bg-muted focus-visible:ring-ring flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-1 text-left outline-none focus-visible:ring-2"
+                      >
+                        <span className={cn("shrink-0 font-mono text-2xs", file.conflicted ? "text-destructive" : "text-muted-foreground")} aria-label={file.conflicted ? "Conflicted" : file.untracked ? "Untracked" : `Git status ${file.index}${file.worktree}`}>
+                          {file.conflicted ? "!" : file.untracked ? "?" : `${file.index}${file.worktree}`.replaceAll(".", " ").trim()}
+                        </span>
+                        <span className="truncate">{file.path}</span>
+                      </button>
+                    </li>
+                  ))}
+                  {status?.truncated && <li className="text-muted-foreground py-1">More changes available in Git.</li>}
+                </ul>
+              )}
+            </div>
+          </>
         )}
       </div>
 
@@ -553,9 +595,13 @@ function Row({
  * while the tab is visible, and when the window regains focus -- enough to
  * follow an agent's edits without a socket of its own.
  */
-function useGitStatus(project: { hash: string; sessionHash?: string | null }): GitStatus | null | "none" {
+function useGitStatus(project: { id: string; hash: string; sessionHash?: string | null }): GitStatus | null | "none" {
   // "none": the tree has no repository to read (or the server said no).
   const [status, setStatus] = React.useState<GitStatus | null | "none">(null)
+  const [revision, refresh] = React.useReducer((value: number) => value + 1, 0)
+  useProjectEvents(project.id, (event) => {
+    if (event.type === "resource.changed" && event.resource === "git") refresh()
+  })
   const target = targetOf(project)
   const key = typeof target === "string" ? target : `${target.hash}:${target.session ?? ""}`
 
@@ -578,7 +624,7 @@ function useGitStatus(project: { hash: string; sessionHash?: string | null }): G
     }
     // `target` is rebuilt every render; `key` is what it says.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+  }, [key, revision])
 
   return status
 }

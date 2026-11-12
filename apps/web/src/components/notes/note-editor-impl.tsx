@@ -88,6 +88,27 @@ function NotePage({
   const userId = useRealtime().client?.userId ?? null
   const [status, setStatus] = React.useState<SaveStatus>("saved")
   const [saveError, setSaveError] = React.useState<string | null>(null)
+  const [diskStatus, setDiskStatus] = React.useState<"saving" | "saved" | "error">("saving")
+  const [diskError, setDiskError] = React.useState<string | null>(null)
+  React.useEffect(() => {
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    setDiskStatus("saving")
+    const check = async () => {
+      try {
+        const response = await fetch(`/api/projects/${hash}/notes/sync-status?noteId=${note.id}`, { credentials: "include" })
+        if (!response.ok) throw new Error("Could not verify Markdown storage")
+        const result = await response.json() as { error: string | null }
+        if (active) { setDiskError(result.error); setDiskStatus(result.error ? "error" : "saved") }
+      } catch (error) {
+        if (active) { setDiskError(String(error)); setDiskStatus("error") }
+      }
+      if (active) timer = setTimeout(check, 3000)
+    }
+    timer = setTimeout(check, 600)
+    return () => { active = false; clearTimeout(timer) }
+  }, [hash, note.id, status, collab.unsynced])
+
   const [title, setTitle] = React.useState(note.title)
   const [icon, setIcon] = React.useState(note.icon)
   const [cover, setCover] = React.useState(note.cover)
@@ -346,8 +367,8 @@ function NotePage({
         <div className="mb-2 flex h-5 items-center justify-end gap-2">
           {presence}
           <SaveStatusPill
-            status={status === "saved" && collab.unsynced > 0 ? "saving" : status}
-            error={saveError}
+            status={diskStatus === "error" ? "error" : status === "saved" && (collab.unsynced > 0 || diskStatus === "saving") ? "saving" : status}
+            error={diskError ?? saveError}
           />
           <DropdownMenu>
             <DropdownMenuTrigger

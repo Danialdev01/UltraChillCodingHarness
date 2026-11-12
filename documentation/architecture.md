@@ -268,6 +268,52 @@ flowchart LR
 - **OMP** is pinned (18.14.1, `/opt/omp`, SHA-256 checked at build) with its ~120 MB of native modules unpacked once at build time into `PI_NATIVES_DIR`. New "Custom" threads use it only with `OMP_ENABLED=true`. `NATIVE_LOOP_FALLBACK` keeps threads already on the native loop running there.
 - **omp-bridge** (`packages/omp-bridge`): an MCP stdio server that gives Claude Code and Codex the tools `omp_task`, `omp_review`, `omp_symbols`, `omp_rename`, `omp_codemod`, `omp_debug`, `omp_recall`, `omp_retain` and `omp_handoff_brief`. Each call is one `omp` process billed to OpenRouter. It takes a slot from the server's scheduler over `UCCH_SCHEDULER_SOCK`, and the call's own guard overlay denies subagents every tool the call didn't ask for.
 
+### Native Codex sub-agent visibility
+
+Codex workers normalize into the same `agent.subagent_started`, progress,
+output, and finish events as Claude Code and OMP. Their tools and output belong
+to the worker details, while the parent chat uses the shared sub-agent group.
+Start, output, and finish events are durable; progress remains transient.
+Independent `ucch_agent` child sessions keep their separate lifecycle and may
+continue after their parent's turn completes.
+
+Verified against Codex CLI 0.167.0: `exec --json` emits wait items but omits
+native v2 spawn, follow-up, status snapshots, and attributed worker replies.
+The provider therefore tails the exact parent rollout and locates worker
+rollouts using matching parent-session and agent-path metadata under that
+account's `CODEX_HOME`. It retains exec collaboration-item and older rollout
+support. This narrowly scoped fallback depends on private rollout formats;
+unknown records and unavailable files are tolerated. If observation ends
+without a terminal outcome, the card says interrupted, rather than success.
+
+Successful spawn results establish a worker identity; wait completion only
+establishes mailbox activity. Canonical agent paths, spawn call IDs, and child
+session aliases correlate later updates. Child task boundaries exclude inherited
+parent history, which includes copied assistant messages and synthetic aborts.
+Task completion leaves the worker session reusable. Follow-up work reopens the
+same card, including after parent-session resume; historical mappings are
+restored without replaying old work into the new turn. Worker model metadata
+comes from its attributed turn context and is retained with the durable finish
+event. Encrypted task messages
+are unavailable to this integration, so cards show supplied task labels and
+omit unavailable descriptions/models/usage.
+
+The native Codex detail page is also a task conversation. `thread.send` can
+carry a validated `subagentId`, persisted with `user.message`. The parent
+session is resumed and instructed to use native `followup_task` on that exact
+existing worker. Codex 0.167.0 rejects direct `exec resume` of unloaded v2
+children, so this keeps execution on the supported parent-owned path. Normal
+busy guards prevent concurrent parent execution. The detail view has an
+isolated draft and reconstructs the selected worker's questions, tools, and
+answers from durable events; sibling output and parent commentary stay out.
+When an encrypted original task brief is unavailable, the page labels the
+actual parent request as context instead of inventing delegation text.
+
+Sanitized captures and regression tests are in `tests/fixtures/codex-0.167.0`
+and `tests/codex-native-v2.test.ts`. The native browser case in
+`apps/web/e2e/subagent.spec.ts` streams normalized fixture events through the
+normal WebSocket client and verifies live cards, reload, and reconnect.
+
 ---
 
 ## 8. Deployment

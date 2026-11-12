@@ -6,7 +6,7 @@ import type { Publication } from "./bus.js";
 import { ChoiceWaiters, type HarnessAvailability } from "./choices.js";
 import type { EngineResult } from "./engine.js";
 import type { EventStore } from "./eventstore.js";
-import { SubagentRunner } from "./subagents.js";
+import { SubagentRunner, type SubagentDeps } from "./subagents.js";
 
 const PARENT = "44444444-4444-4444-4444-444444444444";
 const CHILD = "66666666-6666-4666-8666-666666666666";
@@ -26,10 +26,11 @@ const harnesses: HarnessAvailability[] = [
  * A runner whose child session answers each turn it is started with by the
  * next of `turns`: the events its bus would carry.
  */
-function runner(turns: DomainEvent[][]) {
+function runner(turns: DomainEvent[][], overrides: Partial<SubagentDeps> = {}, extraRows: unknown[][] = []) {
   const rows: unknown[][] = [
     [{ id: PARENT, projectId: PROJECT, provider: "claude", createdByUserId: USER, parentThreadId: null, creator: USER }],
     [{ model: "claude-sonnet-5-5" }],
+    ...extraRows,
   ];
   const chain: Record<string, unknown> = {};
   for (const step of ["from", "innerJoin", "where", "orderBy"]) chain[step] = () => chain;
@@ -89,6 +90,7 @@ function runner(turns: DomainEvent[][]) {
     onError: (error) => {
       throw error;
     },
+    ...overrides,
   });
   return { run, onParent, commands, choices, allowed };
 }
@@ -176,5 +178,54 @@ describe("SubagentRunner", () => {
     controller.abort();
     expect(await done).toEqual({ error: "the subagent was stopped" });
     expect(commands.at(-1)).toEqual({ type: "thread.cancel", threadId: CHILD });
+  });
+});
+
+describe("background subagents", () => {
+  it("returns an ID before completion and survives the spawn connection closing", async () => {
+    const { run, commands, onParent } = runner([reply("Background result")]);
+    const signal = new AbortController();
+    const outcome = await run.spawn(PARENT, USER, { description: "Review", task: "Inspect", model: "gpt6 sol", background: true }, signal.signal);
+    expect(outcome).toHaveProperty("text");
+    const info = JSON.parse((outcome as { text: string }).text);
+    expect(info).toMatchObject({ sessionId: CHILD, provider: "codex", status: "running" });
+    expect(onParent.some((e) => e.type === "agent.subagent_finished")).toBe(false);
+    signal.abort();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(commands.some((c) => c.type === "thread.cancel")).toBe(false);
+    expect(onParent.at(-1)).toMatchObject({ type: "agent.subagent_finished", status: "completed", result: "Background result" });
+  });
+  it("stops a background child when its parent is explicitly cancelled", async () => {
+    const { run, onParent, commands } = runner([]);
+    await run.spawn(PARENT, USER, { description: "Review", task: "Inspect", model: "gpt6 sol", background: true }, new AbortController().signal);
+    run.cancel(PARENT);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(commands).toContainEqual({ type: "thread.cancel", threadId: CHILD });
+    expect(onParent.at(-1)).toMatchObject({ type: "agent.subagent_finished", status: "aborted" });
+  });
+});
+
+describe("automatic same-model fallback", () => {
+  const catalogue = async () => [{ id: "anthropic/claude-opus-5.5" }];
+  const limited: DomainEvent[] = [{ type: "agent.turn_failed", threadId: CHILD, turnId: TURN, error: "subscription limit", limit: true }];
+  it("starts on OMP above the quota threshold without attempting Claude", async () => {
+    const { run, commands, onParent } = runner([reply("done")], { catalogue,
+      harnesses: async () => harnesses.map((h) => ({ ...h, ...(h.provider === "claude" ? { usedPercent: 95 } : {}) })) });
+    expect(await run.spawn(PARENT, USER, { description: "Review", task: "Inspect", model: "opus 5.5" }, new AbortController().signal)).toEqual({ text: "done" });
+    expect(commands[1]).toMatchObject({ type: "thread.send", provider: "omp", model: "anthropic/claude-opus-5.5" });
+    expect(onParent[0]).toMatchObject({ routing: expect.stringContaining("95% exceeds 90%") });
+  });
+  it("switches an established child session automatically after a limit", async () => {
+    const { run, commands, onParent } = runner([limited, reply("continued")], { catalogue }, [[{ provider: "claude" }]]);
+    expect(await run.spawn(PARENT, USER, { description: "Review", task: "Inspect", model: "opus 5.5" }, new AbortController().signal)).toEqual({ text: "continued" });
+    expect(commands.at(-1)).toMatchObject({ type: "thread.switch_harness", targetProvider: "omp", model: "anthropic/claude-opus-5.5" });
+    expect(onParent).toEqual(expect.arrayContaining([expect.objectContaining({ type: "agent.subagent_routed", provider: "omp" })]));
+    expect(onParent.some((e) => e.type === "agent.choice_requested")).toBe(false);
+  });
+  it("can retry on OMP when the CLI rejected the model before creating a session", async () => {
+    const rejected: DomainEvent[] = [{ type: "agent.turn_failed", threadId: CHILD, turnId: TURN, error: "model is not available" }];
+    const { run, commands } = runner([rejected, reply("done")], { catalogue }, [[{ provider: null }]]);
+    await run.spawn(PARENT, USER, { description: "Review", task: "Inspect", model: "opus 5.5" }, new AbortController().signal);
+    expect(commands.at(-1)).toMatchObject({ type: "thread.send", provider: "omp", model: "anthropic/claude-opus-5.5" });
   });
 });

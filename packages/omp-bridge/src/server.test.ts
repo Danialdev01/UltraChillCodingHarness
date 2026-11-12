@@ -186,3 +186,9 @@ describe("the omp bridge", () => {
     expect((result.content as { text: string }[])[0]!.text).toMatch(/\/nonexistent\/omp/);
   });
 });
+
+it("offers messaging to children without allowing recursive spawning", async () => {
+  const client = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_BRIDGE_MESSAGING: "1" });
+  expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ucch_sessions", "ucch_message", "ucch_inbox", "ucch_agent_status", "ucch_agent_cancel"]);
+  expect((await client.callTool({ name: "ucch_message", arguments: { sessionId: "33333333-3333-4333-8333-333333333333", text: "hello" } })).isError).toBe(true);
+});

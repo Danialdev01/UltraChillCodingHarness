@@ -4,7 +4,7 @@ A cloud coding harness. Clone a GitHub repository into a container, run it, poin
 
 Built for **HTML, PHP, Laravel, React (Vite), and Next.js**. Deployed on a Dokploy VPS.
 
-> **Docs:** [`architecture.md`](documentation/architecture.md) (stack, structure, integrations) · [`spec.md`](documentation/spec.md) (every feature, end to end, plus open work) · [`solutions.md`](documentation/solutions.md) (problems and how they were solved) · [`reference.md`](documentation/reference.md) (routes, frames, commands, events, modules).
+> **Docs:** [`agent-coordination.md`](documentation/agent-coordination.md) (cross-harness agents and messages) · [`architecture.md`](documentation/architecture.md) (stack, structure, integrations) · [`spec.md`](documentation/spec.md) (every feature, end to end, plus open work) · [`solutions.md`](documentation/solutions.md) (problems and how they were solved) · [`reference.md`](documentation/reference.md) (routes, frames, commands, events, modules).
 
 ---
 

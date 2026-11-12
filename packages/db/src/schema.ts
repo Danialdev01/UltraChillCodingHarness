@@ -347,6 +347,7 @@ export const threads = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     title: text("title").notNull().default("Untitled"),
     /** idle | queued | running | cancelling | error */
+    agentMessagesPaused: boolean("agent_messages_paused").notNull().default(false),
     status: text("status").notNull().default("idle"),
     /** Set when this thread was forked from another, for provenance. */
     forkedFromThreadId: uuid("forked_from_thread_id"),
@@ -969,3 +970,28 @@ export const auditLog = pgTable(
     index("audit_log_user_id_idx").on(t.userId, t.id),
   ],
 );
+
+/** Durable project-local agent mailbox, projected from session-message events. */
+export const agentMessages = pgTable("agent_messages", {
+  id: uuid("id").primaryKey(),
+  threadId: uuid("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+  fromThreadId: uuid("from_thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  replyTo: uuid("reply_to"),
+  depth: integer("depth").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+}, (t) => [index("agent_messages_inbox_idx").on(t.threadId, t.createdAt, t.id)]);
+
+/** Background ownership and terminal results survive parent turns and reconnects. */
+export const agentRuns = pgTable("agent_runs", {
+  id: text("id").primaryKey(),
+  parentThreadId: uuid("parent_thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+  childThreadId: uuid("child_thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+  background: boolean("background").notNull().default(false),
+  status: text("status").notNull().default("running"),
+  provider: text("provider").notNull(),
+  model: text("model"),
+  routing: text("routing"),
+  result: text("result"),
+}, (t) => [index("agent_runs_parent_idx").on(t.parentThreadId)]);

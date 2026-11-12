@@ -211,7 +211,10 @@ describe("health", () => {
       { match: (a) => a[1] === "app-server", lines: [
         stdout('{"id":1,"result":{}}'),
         stdout(JSON.stringify({ id: 2, result: { data: [
-          { model: "gpt-6-sol", displayName: "GPT-6 Sol" },
+          { model: "gpt-6-sol", displayName: "GPT-6 Sol", supportedReasoningEfforts: [
+            { reasoningEffort: "low" }, { reasoningEffort: "medium" },
+            { reasoningEffort: "high" }, { reasoningEffort: "xhigh" },
+          ] },
           { model: "gpt-5.3-codex", displayName: "GPT-5.3 Codex" },
         ] } })),
       ] },
@@ -219,6 +222,7 @@ describe("health", () => {
     const svc = service(host);
     const first = await svc.health(USER);
     expect(first.codex.models.map((model) => model.id)).toEqual(["gpt-6-sol", "gpt-5.3-codex"]);
+    expect(first.codex.models[0]?.efforts).toEqual(["low", "medium", "high", "xhigh"]);
     await svc.health(USER);
     expect(host.spawned.filter((s) => s.argv[1] === "app-server")).toHaveLength(1);
     const other = "22222222-2222-2222-2222-222222222222";

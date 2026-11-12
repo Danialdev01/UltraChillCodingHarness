@@ -4,6 +4,7 @@ import type { ProcessHost } from "@ucch/providers";
 import { failure } from "./call.js";
 import { ompEnv, refuseForeignCredentials, type BridgeConfig } from "./config.js";
 import { callGate } from "./lease.js";
+import { coordinationTools } from "./tools/coordination.js";
 import { ucchAgent } from "./tools/agent.js";
 import { BRIDGE_TOOLS } from "./tools/index.js";
 import { showWidget } from "./tools/widget.js";
@@ -26,6 +27,7 @@ export function createBridgeServer(config: BridgeConfig, host: ProcessHost, pare
   const tools = [
     ...(config.ompTools ? BRIDGE_TOOLS : []),
     ...(config.subagents ? [ucchAgent] : []),
+    ...(config.messaging ? coordinationTools : []),
     ...(config.widgets ? [showWidget] : []),
   ];
 

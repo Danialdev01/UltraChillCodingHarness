@@ -53,10 +53,13 @@ export interface SpawnFrame {
   description: string;
   task: string;
   model?: string;
+  background?: boolean;
 }
 
 /** Runs one `ucch_agent` subagent for the turn `holder` names: its answer, or why not. */
 export type Spawner = (holder: Holder, frame: SpawnFrame, signal: AbortSignal) => Promise<{ text: string } | { error: string }>;
+
+type Collaborator = (holder: Holder, name: string, args: Record<string, unknown>) => Promise<{ text: string } | { error: string }>;
 
 export interface BridgeLeaseOptions {
   waitMs?: number;
@@ -69,6 +72,9 @@ export class BridgeLeases {
   readonly #sockets = new Set<Socket>();
   #server: Server | null = null;
   #spawner: Spawner | null = null;
+  #collaborator: Collaborator | null = null;
+
+  setCollaborator(handler: Collaborator): void { this.#collaborator = handler; }
 
   constructor(scheduler: TurnScheduler, options: BridgeLeaseOptions = {}) {
     this.#scheduler = scheduler;
@@ -137,15 +143,22 @@ export class BridgeLeases {
       const end = buffer.indexOf("\n");
       if (end < 0) return;
       asked = true;
-      let request: { type?: unknown; token?: unknown; description?: unknown; task?: unknown; model?: unknown };
+      let request: { type?: unknown; token?: unknown; description?: unknown; task?: unknown; model?: unknown; background?: unknown; name?: unknown; args?: unknown };
       try {
         request = JSON.parse(buffer.slice(0, end)) as typeof request;
       } catch {
         return refuse("not a lease request");
       }
-      if (request.type !== "lease" && request.type !== "spawn") return refuse("not a lease request");
+      if (request.type !== "lease" && request.type !== "spawn" && request.type !== "collaboration") return refuse("not a lease request");
       const holder = typeof request.token === "string" ? this.#tokens.get(request.token) : undefined;
       if (!holder) return refuse("no turn holds this token: the bridge belongs to a turn that is over");
+      if (request.type === "collaboration") {
+        if (!this.#collaborator || typeof request.name !== "string" || !request.args || typeof request.args !== "object" || Array.isArray(request.args)) return refuse("invalid collaboration request");
+        void this.#collaborator(holder, request.name, request.args as Record<string, unknown>)
+          .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }))
+          .then((outcome) => { reply("text" in outcome ? { type: "result", text: outcome.text } : { type: "error", reason: outcome.error }); socket.end(); });
+        return;
+      }
       if (request.type === "spawn") {
         const spawner = this.#spawner;
         if (!spawner) return refuse("this server does not run subagents");
@@ -153,6 +166,7 @@ export class BridgeLeases {
         const frame: SpawnFrame = {
           description: typeof request.description === "string" && request.description.trim() ? request.description.trim().slice(0, 200) : "Subagent",
           task: request.task,
+          ...(request.background === true ? { background: true } : {}),
           ...(typeof request.model === "string" && request.model.trim() ? { model: request.model.trim().slice(0, 200) } : {}),
         };
         void spawner(holder, frame, gone.signal)

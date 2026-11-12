@@ -140,7 +140,7 @@ describe("turn.started", () => {
 
     // The message claims the thread (and names it); the turn moves it on.
     expect(statements.filter((s) => s.table === "threads")).toEqual([
-      { op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything() } },
+      { op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything(), agentMessagesPaused: false } },
       { op: "update", table: "threads", values: { title: "Hello" } },
       { op: "update", table: "threads", values: { status: "running" } },
     ]);
@@ -188,7 +188,7 @@ describe("turn.started", () => {
 describe("thread status", () => {
   it("is claimed by a message, only from idle or error", async () => {
     const statements = await apply([{ type: "user.message", threadId: THREAD, text: "hello" }]);
-    expect(statements[0]).toEqual({ op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything() } });
+    expect(statements[0]).toEqual({ op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything(), agentMessagesPaused: false } });
     const where = rendered(wheres.get(statements[0]!));
     expect(where.sql).toMatch(/"threads"\."id" = \$1 and "threads"\."status" in \(\$2, \$3\)/);
     expect(where.params).toEqual([THREAD, "idle", "error"]);
@@ -299,11 +299,12 @@ describe("thread status", () => {
   it("moves to cancelling on a cancel request, not straight to idle", async () => {
     const statements = await apply([{ type: "thread.cancel_requested", threadId: THREAD }]);
     expect(statements).toEqual([
+      { op: "update", table: "threads", values: { agentMessagesPaused: true } },
       { op: "update", table: "threads", values: { status: "cancelling" } },
     ]);
     // Only while a turn is waiting or running: one that already ended would
     // leave the thread cancelling for good.
-    expect(rendered(wheres.get(statements[0]!)).params).toEqual([THREAD, "queued", "running"]);
+    expect(rendered(wheres.get(statements[1]!)).params).toEqual([THREAD, "queued", "running"]);
   });
 
   it("returns to idle when the turn completes", async () => {

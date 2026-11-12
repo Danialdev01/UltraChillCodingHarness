@@ -84,6 +84,8 @@ import { registry as metrics } from "./metrics.js";
 import type { EventBus } from "./bus.js";
 import { catalogue } from "./openrouter.js";
 import { ChoiceWaiters, harnessAvailability, harnessLabel, limitOptions } from "./choices.js";
+import { AgentMessaging, COLLABORATION_GUIDE } from "./agent-messaging.js";
+import { SubscriptionQuotaService } from "./quotas.js";
 import { SubagentRunner, type SubagentCall, type SubagentRequest } from "./subagents.js";
 
 export interface AgentOptions {
@@ -180,6 +182,7 @@ export interface OmpBridgeOptions {
 
 /** How a turn was asked for: carried on the command, not the event. */
 interface TurnOptions {
+  subagentId?: string;
   model?: string | undefined;
   effort?: ReasoningEffort | undefined;
   provider?: ProviderId | undefined;
@@ -231,6 +234,7 @@ const UCCH_AGENT_HOST_TOOL = {
       description: { type: "string", description: UCCH_AGENT_ARGS.description },
       task: { type: "string", description: UCCH_AGENT_ARGS.task },
       model: { type: "string", description: UCCH_AGENT_ARGS.model },
+      background: { type: "boolean", description: UCCH_AGENT_ARGS.background },
     },
     required: ["description", "task"],
     additionalProperties: false,
@@ -335,6 +339,9 @@ export class AgentTurnReactor {
 
   /** `ucch_agent` subagents: absent without a bus and a dispatcher. */
   readonly #subagents: SubagentRunner | null;
+  readonly messaging: AgentMessaging | null;
+  readonly #subscriptionQuotas: SubscriptionQuotaService | null;
+  #ompProbe: { at: number; value: Promise<boolean> } | null = null;
 
   /**
    * Each running turn's `ucch_agent` calls not yet matched to the subagent
@@ -352,6 +359,8 @@ export class AgentTurnReactor {
     this.#scheduler =
       options.scheduler ?? new TurnScheduler({ cliPerUser: 2, cliTotal: Infinity, nativeTotal: Infinity });
     const { bus, dispatch } = options;
+    this.messaging = dispatch ? new AgentMessaging(db, store, dispatch, onError) : null;
+    this.#subscriptionQuotas = options.providers ? new SubscriptionQuotaService(options.providers) : null;
     this.#subagents =
       bus && dispatch
         ? new SubagentRunner({
@@ -359,7 +368,10 @@ export class AgentTurnReactor {
             store,
             bus,
             dispatch,
-            harnesses: (subject) => this.#harnesses(subject),
+            harnesses: (subject, model) => this.#routingHarnesses(subject, model),
+            manage: (child) => this.messaging?.manage(child),
+            release: (child) => this.messaging?.release(child),
+            notify: async (parent, child, text) => { await this.messaging?.notify(parent, child, text); },
             catalogue: () => catalogue(),
             customProvider: this.#customProvider(),
             claimCall: (threadId, request) => this.#claimCall(threadId, request),
@@ -382,6 +394,49 @@ export class AgentTurnReactor {
       return [{ provider: "native" as const, label: "Custom (OpenRouter)", usable: true, blocker: null, custom: true }];
     }
     return harnessAvailability(cards, { cliEnabled: this.options.cliEnabled ?? false, ompEnabled: this.options.ompEnabled ?? false });
+  }
+
+  async #routingHarnesses(subject: string, model?: string) {
+    const available = await this.#harnesses(subject);
+    const cards = await this.options.providers?.health(subject);
+    return Promise.all(available.map(async (h) => {
+      if (h.custom) {
+        if (h.provider !== "omp" || !h.usable) return { ...h, usable: false, blocker: h.blocker ?? "Enable OMP to run cross-harness OpenRouter agents" };
+        if (!this.#ompProbe || Date.now() - this.#ompProbe.at >= 30_000) {
+          this.#ompProbe = { at: Date.now(), value: (async () => {
+            if (!this.options.providers?.provider("omp")) return false;
+            const resolved = await this.options.providers.resolve(subject, "omp");
+            return (await resolved.provider.probe(resolved.ctx(this.options.workspaceRoot))).installed;
+          })().catch(() => false) };
+        }
+        const installed = await this.#ompProbe.value;
+        return { ...h, usable: installed, blocker: installed ? null : "OMP is not installed on this server" };
+      }
+      const provider = h.provider as "claude" | "codex";
+      const quota = await this.#subscriptionQuotas?.get(subject, provider);
+      const windows = quota?.status === "ok" ? quota.windows.filter((w) => !w.model || model?.toLowerCase().includes(w.model)) : [];
+      return { ...h, usable: h.usable && cards?.[provider].authMode !== "api-key",
+        quota: { status: quota?.status ?? "unavailable", ...(quota?.status === "ok" ? { checkedAt: quota.checkedAt } : {}), ...(windows.length ? { usedPercent: Math.max(...windows.map((w) => w.usedPercent)) } : {}) },
+        ...(windows.length ? { usedPercent: Math.max(...windows.map((w) => w.usedPercent)) } : {}),
+        ...(cards?.[provider].modelsAuthoritative ? { models: cards[provider].models } : {}) };
+    }));
+  }
+
+  async collaboration(holder: { threadId: string }, name: string, args: Record<string, unknown>) {
+    if (!this.messaging) return { error: "project messaging is unavailable" };
+    return this.messaging.call(holder.threadId, name, args);
+  }
+
+  async #coordinate(name: string, args: Record<string, unknown>, context: { threadId: string; turnId: string; toolUseId: string; signal: AbortSignal }) {
+    if (name === UCCH_AGENT_TOOL) {
+      const [thread] = await this.db.select().from(threads).where(eq(threads.id, context.threadId)).limit(1);
+      const owner = thread ? await this.#owner(thread.projectId, thread) : null;
+      if (!owner) return { content: "session not found", isError: true };
+      return this.#hostSubagent({ id: context.toolUseId, toolCallId: context.toolUseId, toolName: name, arguments: args }, context.signal,
+        { ownerId: owner.id, threadId: context.threadId, turnId: context.turnId });
+    }
+    const outcome = await this.collaboration(context, name, args);
+    return "error" in outcome ? { content: outcome.error, isError: true } : { content: outcome.text, isError: false };
   }
 
   /**
@@ -428,6 +483,8 @@ export class AgentTurnReactor {
     if (command.type === "thread.cancel") {
       // The loop notices between tool calls and unwinds itself; a tool
       // already dispatched still records its result rather than vanishing.
+      this.messaging?.pause(command.threadId);
+      this.#subagents?.cancel(command.threadId);
       this.#running.get(command.threadId)?.abort();
       return;
     }
@@ -481,10 +538,12 @@ export class AgentTurnReactor {
       // The model and effort ride on the command rather than the event: they
       // are how this turn was asked for, not something that happened.
       const sent = command.type === "thread.send" ? command : undefined;
+      if (!sent?.agentMessageIds) this.messaging?.resume(event.threadId);
       void this.#run(
         event.threadId,
         event.text,
         {
+          subagentId: event.subagentId,
           model: sent?.model,
           effort: sent?.effort,
           provider: sent?.provider,
@@ -602,6 +661,8 @@ export class AgentTurnReactor {
 
   /** Hard-stops every CLI run: the teardown path, not the stop button. */
   async killAll(): Promise<void> {
+    this.messaging?.shutdown();
+    this.#subagents?.shutdown();
     await Promise.all([...this.#cliRuns].map((run) => run.kill().catch(() => {})));
   }
 
@@ -622,6 +683,7 @@ export class AgentTurnReactor {
       // Only if it is still ours: a turn that overran its own cancellation
       // must not clear a controller the next turn has already registered.
       if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
+      if (!controller.signal.aborted) setImmediate(() => void this.messaging?.deliver(threadId).catch(this.onError));
     }
     // After the turn has let go of the thread: the handoff claims it anew.
     if (limited) await this.#handOffOnLimit(threadId, limited, text, principal);
@@ -755,7 +817,7 @@ export class AgentTurnReactor {
   async #turn(
     threadId: string,
     text: string,
-    { model, effort, provider: requestedProvider, mode }: TurnOptions,
+    { model, effort, provider: requestedProvider, mode, subagentId }: TurnOptions,
     controller: AbortController,
   ): Promise<ProviderId | undefined> {
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
@@ -997,6 +1059,7 @@ export class AgentTurnReactor {
           projectId: thread.projectId,
           workspace,
           text: prompt,
+          ...(subagentId ? { subagentId } : {}),
           subagent: Boolean(thread.parentThreadId),
           resumeToken: thread.providerSessionId,
           model: cliModel,
@@ -1045,6 +1108,7 @@ export class AgentTurnReactor {
         // clamped here rather than sent on to be refused.
         ...(effort ? { effort: effort === "xhigh" || effort === "max" ? "high" : effort } : {}),
         history: history.map((row) => row.event),
+        instructions: this.messaging ? [COLLABORATION_GUIDE, !thread.parentThreadId ? UCCH_AGENT_GUIDE : ""].join("\n\n") : undefined,
         stack: project.stack,
         // The preset and the mode travel together: each mode's prompt
         // describes its own tools, and only its preset offers them.
@@ -1056,6 +1120,7 @@ export class AgentTurnReactor {
         registry: {
           ...this.options.registry,
           widgets: widgetsOn(readAgentSettings(project.agent)) && !thread.parentThreadId,
+          ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx), subagents: !thread.parentThreadId } : {}),
         },
         contextLength,
         supportsImages: canSeeImages,
@@ -1596,6 +1661,7 @@ export class AgentTurnReactor {
       projectId: string;
       workspace: string;
       text: string;
+      subagentId?: string;
       resumeToken: string | null;
       model: string | undefined;
       effort: ReasoningEffort | undefined;
@@ -1650,8 +1716,8 @@ export class AgentTurnReactor {
       // every harness), and `show_widget` on the bridge. Not for a
       // subagent, whose answer goes to its parent rather than the reader.
       const widgets = widgetsOn(input.agentSettings) && !input.subagent;
-      if (provider !== "omp" && (ompTools || offersSubagents || widgets)) {
-        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets });
+      if (provider !== "omp" && (ompTools || offersSubagents || widgets || this.messaging)) {
+        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets, messaging: Boolean(this.messaging) });
       }
       // When to reach for the bridge's tools (solution §10.4). Codex reads
       // instructions only at the start of a session (`codexPrompt`), so a
@@ -1659,7 +1725,7 @@ export class AgentTurnReactor {
       const fresh = !(provider === "codex" && input.resumeToken);
       const guide =
         bridge && fresh
-          ? [bridge.omp ? ompBridgeGuide() : null, offersSubagents ? UCCH_AGENT_GUIDE : null]
+          ? [bridge.omp ? ompBridgeGuide() : null, offersSubagents ? UCCH_AGENT_GUIDE : null, this.messaging ? COLLABORATION_GUIDE : null]
               .filter((part): part is string => Boolean(part))
               .join("\n\n") || null
           : null;
@@ -1674,6 +1740,7 @@ export class AgentTurnReactor {
           ? [
               ompInstructions(input.workspace, knowledge, input.mode),
               offersSubagents ? UCCH_AGENT_GUIDE : null,
+              this.messaging ? COLLABORATION_GUIDE : null,
               widgetRules,
             ]
               .filter((part): part is string => Boolean(part))
@@ -1717,7 +1784,7 @@ export class AgentTurnReactor {
       if (provider === "omp") {
         const providers = this.options.providers;
         const hostTools = [
-          ...hostToolSchemas(preset, { ...this.options.registry, widgets }),
+          ...hostToolSchemas(preset, { ...this.options.registry, widgets, ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx) } : {}) }),
           ...(offersSubagents ? [UCCH_AGENT_HOST_TOOL] : []),
         ];
         // One bank per project, under the subject that pays (solution §7.1).
@@ -1753,8 +1820,8 @@ export class AgentTurnReactor {
         host = {
           hostTools,
           onHostToolCall: (call, signal) =>
-            call.toolName === UCCH_AGENT_TOOL
-              ? this.#hostSubagent(call, signal, input)
+            [UCCH_AGENT_TOOL, "ucch_sessions", "ucch_message", "ucch_inbox", "ucch_agent_status", "ucch_agent_cancel"].includes(call.toolName) && hostTools.some((tool) => tool.name === call.toolName)
+              ? this.#coordinate(call.toolName, call.arguments, { threadId: input.threadId, turnId: input.turnId, toolUseId: call.toolCallId, signal })
               : this.#runHostTool(call, signal, {
               ...input,
               preset,
@@ -1765,7 +1832,8 @@ export class AgentTurnReactor {
       }
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
-        prompt: input.text,
+        ...(input.subagentId ? { subagentId: input.subagentId } : {}),
+        prompt: !fresh && this.messaging ? `${input.text}\n\n${COLLABORATION_GUIDE}\n\n${offersSubagents ? UCCH_AGENT_GUIDE : ""}` : input.text,
         projectId: input.projectId,
         threadId: input.threadId,
         turnId: input.turnId,
@@ -1937,7 +2005,7 @@ export class AgentTurnReactor {
       trusted?: boolean;
     },
     /** What the bridge carries: OMP's tools (the workspace's bridge), `ucch_agent`, `show_widget`, in any mix. */
-    offer: { omp: boolean; subagents: boolean; widgets?: boolean },
+    offer: { omp: boolean; subagents: boolean; widgets?: boolean; messaging?: boolean },
   ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { omp: boolean; dispose(): Promise<void> }) | null> {
     const options = this.options.ompBridge;
     const providers = this.options.providers;
@@ -1952,7 +2020,7 @@ export class AgentTurnReactor {
         openrouterKey = null;
       }
     }
-    if (!openrouterKey && !offer.subagents && !offer.widgets) return null;
+    if (!openrouterKey && !offer.subagents && !offer.widgets && !offer.messaging) return null;
     // A bridge for `ucch_agent` alone is offered to every Claude Code and
     // Codex turn, so a server without the bundle must not hand the CLI an
     // MCP server it cannot start.
@@ -1997,6 +2065,7 @@ export class AgentTurnReactor {
             ? { agentDir: providers.ompAgentDir(input.ownerId), overlay: overlay.path, openrouterKey }
             : null,
         subagents: offer.subagents,
+        messaging: offer.messaging === true,
         widgets: offer.widgets === true,
         worktree: input.workspace,
         schedulerSock: options.socket,
@@ -2041,6 +2110,7 @@ export class AgentTurnReactor {
       {
         description: typeof args.description === "string" && args.description.trim() ? args.description.trim().slice(0, 200) : "Subagent",
         task,
+        background: args.background === true,
         ...(typeof args.model === "string" && args.model.trim() ? { model: args.model.trim() } : {}),
       },
       signal,

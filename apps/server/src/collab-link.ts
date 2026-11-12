@@ -70,12 +70,12 @@ export class CollabLink {
   }
 
   /** Replaces a note's body through its document. False when the service could not take it. */
-  async writeNote(noteId: string, content: NoteDoc): Promise<boolean> {
+  async writeNote(noteId: string, content: NoteDoc, expected?: NoteDoc): Promise<boolean> {
     try {
       const response = await fetch(new URL(`/internal/notes/${noteId}/content`, this.#upstream), {
         method: "PUT",
         headers: { "content-type": "application/json", [COLLAB_SECRET_HEADER]: this.#secret },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, expected }),
         signal: AbortSignal.timeout(10_000),
       });
       return response.ok;
@@ -83,6 +83,15 @@ export class CollabLink {
       this.#log?.error({ err: error, noteId }, "could not write a note through the collab service");
       return false;
     }
+  }
+
+  async flushNote(noteId: string): Promise<boolean> {
+    try {
+      const response = await fetch(new URL(`/internal/notes/${noteId}/flush`, this.#upstream), {
+        method: "POST", headers: { [COLLAB_SECRET_HEADER]: this.#secret }, signal: AbortSignal.timeout(10_000),
+      });
+      return response.ok;
+    } catch { return false; }
   }
 
   /** By tree: the paths changed in this beat, or null for "too many to name". */

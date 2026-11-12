@@ -218,11 +218,12 @@ export function createCollab(options: CollabOptions) {
   }
 
   /** Closes a direct connection of ours: saved, and unloaded if nobody else has it open. */
-  async function release(documentName: string, connection: Promise<DirectConnection> | DirectConnection) {
+  async function release(documentName: string, connection: Promise<DirectConnection> | DirectConnection, strict = false) {
     releasing.add(documentName);
     try {
       await (await connection).disconnect();
-    } catch {
+    } catch (error) {
+      if (strict) throw error;
       // Already gone with the document.
     } finally {
       releasing.delete(documentName);
@@ -234,13 +235,18 @@ export function createCollab(options: CollabOptions) {
    * write, the agent -- through the document, so every open editor gets it
    * as an ordinary change, and saves it before answering.
    */
-  async function applyNote(noteId: string, content: NoteDoc): Promise<void> {
+  async function applyNote(noteId: string, content: NoteDoc, expected?: NoteDoc): Promise<void> {
     const name = noteDocumentName(noteId);
     const connection = await instance.openDirectConnection(name, { system: true });
     try {
-      await connection.transact((document) => writeDocToFragment(document.getXmlFragment(NOTE_FIELD), content));
+      await connection.transact((document) => {
+        const fragment = document.getXmlFragment(NOTE_FIELD);
+        const stable = (value: unknown) => JSON.stringify(value, (_key, v) => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
+        if (expected && stable(readDocFromFragment(fragment)) !== stable(expected)) throw new Error("Concurrent documentation edits; import refused");
+        writeDocToFragment(fragment, content);
+      });
     } finally {
-      await release(name, connection);
+      await release(name, connection, true);
     }
   }
 
@@ -327,14 +333,22 @@ export function createCollab(options: CollabOptions) {
       response.end(JSON.stringify({ documents: instance.getDocumentsCount(), connections: instance.getConnectionsCount() }));
       return;
     }
+    const flush = /^\/internal\/notes\/([0-9a-f-]{36})\/flush$/.exec(url.pathname);
+    if (flush && request.method === "POST") {
+      const name = noteDocumentName(flush[1]!);
+      const connection = await instance.openDirectConnection(name, { system: true });
+      await release(name, connection, true);
+      response.writeHead(204).end();
+      return;
+    }
     const note = /^\/internal\/notes\/([0-9a-f-]{36})\/content$/.exec(url.pathname);
     if (request.method === "PUT" && note) {
-      const body = JSON.parse(await readBody(request)) as { content?: NoteDoc };
+      const body = JSON.parse(await readBody(request)) as { content?: NoteDoc; expected?: NoteDoc };
       if (body.content?.type !== "doc") {
         response.writeHead(400).end();
         return;
       }
-      await applyNote(note[1]!, body.content);
+      await applyNote(note[1]!, body.content, body.expected);
       response.writeHead(204).end();
       return;
     }

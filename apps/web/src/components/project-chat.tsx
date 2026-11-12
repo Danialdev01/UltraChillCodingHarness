@@ -92,7 +92,8 @@ import { fetchHarnessSettings } from "@/lib/workspace-api";
 import { isShowWidgetTool } from "@ucch/protocol/plain";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
-import { SubagentCard, SubagentDetail, SubagentGroup } from "@/components/subagent-card";
+import { subagentConversation, subagentParentRequest } from "@/lib/subagent-chat";
+import { AgentSessionMessage, SubagentCard, SubagentComposer, SubagentDetail, SubagentGroup } from "@/components/subagent-card";
 import { TranscriptTurn } from "@/components/chat-transcript";
 import { ConversationRail, type RailTurn } from "@/components/conversation-rail";
 import { useActiveTurn, useTurnShortcuts } from "@/hooks/use-active-turn";
@@ -418,7 +419,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   /**
    * The effort levels the chosen model takes, or null for none. OpenRouter
    * says per model whether it reasons; a CLI lists its levels per model, and
-   * one that lists none (Codex, so far) gets no control at all.
+   * one that lists none gets no control at all.
    */
   const effortLevels: readonly ReasoningEffort[] | null = useMemo(() => {
     if (!cli) return reasons ? NATIVE_EFFORTS : null;
@@ -800,6 +801,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     () => (agentParam ? (lineageOf(messages).find((entry) => lineageKey(entry) === agentParam) ?? null) : null),
     [agentParam, messages],
   );
+  const detailMessages = useMemo(() => detail ? subagentConversation(durableEvents, detail.run.id) : [], [detail, durableEvents]);
+  const detailParentRequest = useMemo(() => detail ? subagentParentRequest(messages, detail.callId) : null, [detail, messages]);
   const closeDetail = useCallback(() => transitionRouter.replace(pathname ?? "."), [pathname, transitionRouter]);
 
   /**
@@ -813,7 +816,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   const railTurns = useMemo(() => {
     const next: RailTurn[] = [];
     messages.forEach((m, i) => {
-      if (m.role === "user" && !m.switched && !m.cleared) next.push({ id: turnAnchor(i), preview: turnPreview(m.text, m.attachments) });
+      if (m.role === "user" && !m.agentMessage && !m.switched && !m.cleared) next.push({ id: turnAnchor(i), preview: turnPreview(m.text, m.attachments) });
     });
     const prev = railTurnsRef.current;
     const same = prev.length === next.length && prev.every((t, i) => t.id === next[i]?.id && t.preview === next[i]?.preview);
@@ -926,7 +929,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   // From the settled messages: what streams changes no prompt, and these
   // stay the same objects while a turn streams.
   const promptHistory = useMemo(
-    () => settled.messages.filter((m) => m.role === "user" && m.text.trim()).map((m) => m.text),
+    () => settled.messages.filter((m) => m.role === "user" && !m.agentMessage && m.text.trim()).map((m) => m.text),
     [settled],
   );
   const neighbours = useMemo(() => promptNeighbours(settled.messages), [settled]);
@@ -1690,7 +1693,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
               </>
             )}
             {detail ? (
-              <SubagentDetail entry={detail} onBack={closeDetail} renderWork={renderSubagentWork} />
+              <SubagentDetail entry={detail} onBack={closeDetail} renderWork={renderSubagentWork} parentRequest={detailParentRequest}
+                conversation={detailMessages.map((message, i) => <Message key={i} ref={null} message={message} hash={project.hash} onPreview={setPreviewing} rating={null} onRate={rate} neighbours={undefined} onJump={() => {}} viewMode={viewMode} />)} />
             ) : !historyLoaded && messages.length === 0 ? (
               <ConversationSkeleton />
             ) : messages.length === 0 ? (
@@ -1798,6 +1802,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           way, so a long conversation can never squeeze the box you type in. */}
       {/* The safe-area inset is what keeps the composer clear of a phone's
           home indicator, which otherwise sits on top of the send button. */}
+      {detail && (detail.run.provider ?? detail.harness) === "codex" && <SubagentComposer key={detailKey} agent={detail.run.agent} busy={running || sending || worktreeBlocked || !threadId}
+        onSend={async text => {
+          const client = clientRef.current;
+          if (!client || !threadId) throw new Error("The conversation is not connected.");
+          await client.dispatch({ type: "thread.send", threadId, subagentId: detail.run.id, text, provider: "codex" });
+          scrollToEnd();
+        }} />}
       <div
         hidden={Boolean(detail)}
         className={cn(
@@ -2508,6 +2519,7 @@ const Message = memo(function Message({
 }) {
   if (message.switched) return <HarnessSwitchRow ref={ref} change={message.switched} />;
   if (message.cleared) return <ContextClearedRow ref={ref} />;
+  if (message.agentMessage) return <div ref={ref}><AgentSessionMessage message={message} /></div>;
   if (message.role === "user") {
     const sent = describeSent(message.startedAt);
     // Clear of the top of the scroll box when jumped to, so the bubble does

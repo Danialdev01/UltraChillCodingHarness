@@ -180,6 +180,24 @@ describe("the collab service", () => {
     expect(announced).toEqual([]);
   });
 
+  it("refuses a stale Markdown import while an editor has newer content", async () => {
+    const a = client();
+    await a.synced();
+    await collab.applyNote(NOTE, paragraph("newer"));
+    await expect(collab.applyNote(NOTE, paragraph("file"), paragraph("hello"))).rejects.toThrow("Concurrent documentation");
+    expect(memory.row.content).toEqual(paragraph("newer"));
+  });
+
+  it("flushes a collaborative note before acknowledging disk synchronization", async () => {
+    const a = client();
+    await a.synced();
+    typeAt(a.document, 5, "!");
+    await until(() => JSON.stringify(readDocFromFragment(collab.instance.documents.get(`note:${NOTE}`)!.getXmlFragment(NOTE_FIELD))).includes("hello!"));
+    const response = await fetch(`http://127.0.0.1:${port}/internal/notes/${NOTE}/flush`, { method: "POST", headers: { "x-ucch-collab": "s" } });
+    expect(response.status).toBe(204);
+    expect(memory.row.content).toEqual(paragraph("hello!"));
+  });
+
   it("unloads a document a while after its last editor leaves, saving first", async () => {
     const a = client();
     await a.synced();

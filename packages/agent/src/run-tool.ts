@@ -124,6 +124,7 @@ export async function runTool(call: ToolCall, input: ToolRunInput): Promise<Tool
   let timer: NodeJS.Timeout | undefined;
 
   const ctx: ToolContext = {
+    ...(input.registry?.coordination ? { coordination: input.registry.coordination } : {}),
     projectId: input.projectId,
     threadId: input.threadId,
     turnId: input.turnId,

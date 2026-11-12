@@ -107,3 +107,35 @@ describe("matchCatalogue", () => {
     expect(matches.map(({ model }) => model.id)).toEqual(["anthropic/claude-opus-5.5"]);
   });
 });
+
+describe("subscription routing policy", () => {
+  it.each([0, 89.99, 90])("keeps subscription routing at %s percent", (usedPercent) => {
+    const config = input();
+    config.harnesses = config.harnesses.map((h) => ({ ...h, usedPercent }));
+    expect(resolveHarness("opus 5.5", config)).toMatchObject({ ok: true, provider: "claude" });
+    expect(resolveHarness("gpt6 sol", config)).toMatchObject({ ok: true, provider: "codex" });
+  });
+  it("routes to the same OpenRouter model above 90%, regardless of parent", () => {
+    const config = input({ parent: { provider: "codex", model: "gpt-6-sol" } });
+    config.harnesses = config.harnesses.map((h) => ({ ...h, usedPercent: h.provider === "omp" ? 0 : 90.01 }));
+    expect(resolveHarness("opus 5.5", config)).toMatchObject({ ok: true, provider: "omp", model: "anthropic/claude-opus-5.5", label: expect.stringContaining("exceeds 90%") });
+    expect(resolveHarness("gpt6 sol", config)).toMatchObject({ ok: true, provider: "omp", model: "openai/gpt-6-sol" });
+  });
+  it("tries the subscription when its quota or model catalogue is unknown", () => {
+    expect(resolveHarness("opus 5.5", input())).toMatchObject({ ok: true, provider: "claude" });
+  });
+  it("checks an authoritative model catalogue before choosing a CLI", () => {
+    const config = input();
+    config.harnesses = config.harnesses.map((h) => ({ ...h, models: [{ id: "claude-sonnet-5-5" }] }));
+    expect(resolveHarness("opus 5.5", config)).toMatchObject({ ok: true, provider: "omp", model: "anthropic/claude-opus-5.5" });
+  });
+  it("never substitutes a patch version for an exact version", () => {
+    expect(matchCatalogue(parseModelRequest("opus 5.5"), [{ id: "anthropic/claude-opus-5.5.1" }])).toEqual([]);
+  });
+  it("routes MiniMax through OMP and reports missing OMP credentials", () => {
+    const config = input({ catalogue: [{ id: "minimax/minimax-m3", name: "MiniMax 3" }] });
+    expect(resolveHarness("minimax 3", config)).toMatchObject({ ok: true, provider: "omp", model: "minimax/minimax-m3" });
+    config.harnesses = config.harnesses.filter((h) => h.provider !== "omp");
+    expect(resolveHarness("minimax 3", config)).toMatchObject({ ok: false });
+  });
+});

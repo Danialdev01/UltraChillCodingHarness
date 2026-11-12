@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { EllipsisIcon, PlusIcon, Settings2Icon, TriangleAlertIcon } from "lucide-react"
+import { PlusIcon, Settings2Icon, TriangleAlertIcon, TerminalIcon } from "lucide-react"
 
 import { commandIcon } from "@/components/commands/command-icons"
 import { useFilesPanel } from "@/components/files-panel"
@@ -32,18 +32,21 @@ const SHOWN = 3
  */
 export function CommandButtons({ project }: { project: Project }) {
   const query = projectQueries.commands(project.hash)
-  const [data] = useCachedState(query.queryKey, query.queryFn, { persist: query.persist })
+  const [data, , , state] = useCachedState(query.queryKey, query.queryFn, {
+    persist: query.persist,
+    refetchInterval: 5000,
+  })
   const { runCommand } = useFilesPanel()
   const [managing, setManaging] = React.useState(false)
 
   const commands = data?.commands ?? []
   const shown = commands.slice(0, SHOWN)
+  const error = state.error?.message ?? data?.error
   const run = (id: string, label: string) => runCommand(project.id, id, label)
 
   return (
     <>
-      {/* Hidden on a phone: the bar there is for the view toggles. */}
-      <div className="hidden items-center gap-1 sm:flex">
+      <div role="group" aria-label="Run commands" className="flex min-w-0 items-center gap-1 overflow-x-auto">
         {shown.map((command) => {
           const Icon = commandIcon(command.icon)
           return (
@@ -53,7 +56,7 @@ export function CommandButtons({ project }: { project: Project }) {
               size="sm"
               title={`${command.description ? `${command.description}\n` : ""}$ ${command.command}`}
               onClick={() => run(command.id, command.label)}
-              className="text-muted-foreground hover:text-foreground h-7 max-w-40 gap-1.5 px-2"
+              className="text-muted-foreground hover:text-foreground h-7 max-w-40 shrink-0 gap-1.5 px-2"
             >
               <Icon className="size-3.5 shrink-0" />
               <span className="truncate text-xs">{command.label}</span>
@@ -63,26 +66,25 @@ export function CommandButtons({ project }: { project: Project }) {
       </div>
       <DropdownMenu>
         <DropdownMenuTrigger
-          title={data?.error ? `Commands: ${data.error}` : "Commands"}
-          className="text-muted-foreground hover:text-foreground hover:bg-muted aria-expanded:bg-muted flex size-7 shrink-0 items-center justify-center rounded-md transition-colors"
+          title={error ? `Commands: ${error}` : "Manage project commands"}
+          className="text-muted-foreground hover:text-foreground hover:bg-muted aria-expanded:bg-muted flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs transition-colors"
         >
-          {data?.error ? <TriangleAlertIcon className="text-warning size-4" /> : <EllipsisIcon className="size-4" />}
-          <span className="sr-only">Project commands</span>
+          {error ? <TriangleAlertIcon className="text-warning size-4" /> : <TerminalIcon className="size-4" />}
+          <span>Commands</span>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuGroup>
             <DropdownMenuLabel>Commands</DropdownMenuLabel>
-            {data?.error && (
-              <p className="text-warning px-2 pb-1.5 text-xs leading-snug">{data.error}</p>
+            {error && (
+              <p role="alert" className="text-warning break-words px-2 pb-1.5 text-xs leading-snug">{error}</p>
             )}
-            {/* Every command on a phone, where the buttons are hidden; the overflow elsewhere. */}
-            {commands.map((command, i) => {
+            {/* Repeat all commands here so overflow remains reachable on narrow screens. */}
+            {commands.map((command) => {
               const Icon = commandIcon(command.icon)
               return (
                 <DropdownMenuItem
                   key={command.id}
                   onClick={() => run(command.id, command.label)}
-                  className={i < SHOWN ? "sm:hidden" : undefined}
                 >
                   <Icon />
                   <span className="flex min-w-0 flex-1 flex-col">
@@ -92,7 +94,7 @@ export function CommandButtons({ project }: { project: Project }) {
                 </DropdownMenuItem>
               )
             })}
-            {commands.length === 0 && !data?.error && (
+            {commands.length === 0 && !error && (
               <p className="text-muted-foreground px-2 pb-1.5 text-xs leading-snug">
                 Buttons that run a command in a terminal tab, kept in <code>.agent/commands.json</code>.
               </p>
@@ -105,6 +107,8 @@ export function CommandButtons({ project }: { project: Project }) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {error && <p role="alert" className="w-full text-xs text-warning break-words">{error} Use .agent/commands.json with id, label, and command fields.</p>}
+      {!data && state.fetching && <span role="status" className="text-muted-foreground text-xs">Loading commands…</span>}
       <ManageCommandsDialog project={project} open={managing} onOpenChange={setManaging} commands={commands} />
     </>
   )

@@ -1,4 +1,5 @@
-import type { DomainEvent, TokenUsage } from "@ucch/protocol";
+import { CodexSubagents, withCodexSubagents } from "./codex-subagents.js";
+import type { DomainEvent, ReasoningEffort, TokenUsage } from "@ucch/protocol";
 import { CODEX_IMAGE_INSTRUCTIONS, rolloutImagePaths, withCodexImages } from "./codex-images.js";
 import { workspaceRelative } from "./claude.js";
 import type { ExitStatus } from "./process.js";
@@ -32,9 +33,12 @@ import { forbiddenEnvPresent } from "./types.js";
  * takes any id the account's plan has, and a subagent asked for by name
  * ("gpt6 sol") is passed through as `parseModelRequest` spelled it.
  */
+const CODEX_DEFAULT_EFFORTS = ["low", "medium", "high"] as const;
+const CODEX_EFFORTS: readonly ReasoningEffort[] = [...CODEX_DEFAULT_EFFORTS, "xhigh", "max"];
+
 export const CODEX_MODELS = [
-  { id: "gpt-5-codex", name: "GPT-5 Codex" },
-  { id: "gpt-5", name: "GPT-5" },
+  { id: "gpt-5-codex", name: "GPT-5 Codex", efforts: CODEX_DEFAULT_EFFORTS },
+  { id: "gpt-5", name: "GPT-5", efforts: CODEX_DEFAULT_EFFORTS },
 ] as const;
 
 /** Read the CLI's catalogue without starting an inference turn or reading credentials. */
@@ -69,9 +73,17 @@ export async function listCodexModels(ctx: RunContext, bin: string): Promise<Pro
         if (!Array.isArray(message.result?.data)) throw new Error("Invalid Codex model catalogue");
         for (const entry of message.result.data) {
           if (!entry || entry.hidden === true || typeof entry.model !== "string" || !entry.model.trim()) continue;
+          // Older CLIs omit this field; an explicit empty list means no control.
+          const efforts = Array.isArray(entry.supportedReasoningEfforts)
+            ? CODEX_EFFORTS.filter((effort) => entry.supportedReasoningEfforts.some(
+              (option: unknown) => typeof option === "object" && option !== null &&
+                "reasoningEffort" in option && option.reasoningEffort === effort,
+            ))
+            : CODEX_DEFAULT_EFFORTS;
           models.set(entry.model, {
             id: entry.model,
             name: typeof entry.displayName === "string" && entry.displayName.trim() ? entry.displayName : entry.model,
+            efforts,
           });
         }
         const cursor = message.result.nextCursor;
@@ -112,6 +124,7 @@ export interface CodexCapabilities {
 export function codexArgv(input: {
   bin: string;
   model?: string;
+  effort?: ReasoningEffort;
   resumeToken?: string;
   /** Whether the workspace is a git repository. Codex refuses one that is not, unless told. */
   isRepo: boolean;
@@ -131,6 +144,9 @@ export function codexArgv(input: {
   // stranger, so it does not apply.
   if (input.caps.ignoreRules) argv.push("--ignore-rules");
   if (input.model) argv.push("--model", input.model);
+  if (input.effort && input.effort !== "off") {
+    argv.push("-c", `model_reasoning_effort=${JSON.stringify(input.effort)}`);
+  }
   if (input.mcp) argv.push(...codexMcpArgs("omp", input.mcp));
   // Exec-only options such as --sandbox must precede the resume subcommand.
   if (input.resumeToken) argv.push("resume", input.resumeToken);
@@ -256,6 +272,11 @@ interface Item {
   query?: string;
   items?: unknown;
   message?: string;
+  receiver_thread_ids?: string[];
+  sender_thread_id?: string;
+  prompt?: string;
+  model?: string;
+  agents_states?: Record<string, { status?: string; message?: string | null }>;
 }
 
 interface Line {
@@ -273,6 +294,8 @@ export class CodexNormaliser implements Normaliser {
   readonly imagePaths = new Set<string>();
   /** Tool items announced by `item.started`, with when. */
   #started = new Map<string, number>();
+  #completed = new Set<string>();
+  readonly subagents: CodexSubagents;
 
   constructor(
     private readonly ctx: {
@@ -282,7 +305,7 @@ export class CodexNormaliser implements Normaliser {
       workspace: string;
       now?: () => number;
     },
-  ) {}
+  ) { this.subagents = new CodexSubagents(ctx); }
 
   get sessionId(): string | null {
     return this.#sessionId;
@@ -373,6 +396,14 @@ export class CodexNormaliser implements Normaliser {
     const id = item.id ?? "";
 
     switch (item.type) {
+      case "collab_tool_call": {
+        // A replayed completed tool is not a new task on a reusable worker.
+        const lifecycle = this.#completed.has(id) ? [] : this.subagents.observe(item);
+        return [
+          ...this.#tool(phase, id, `codex:${item.tool ?? "collab"}`, { description: item.prompt ?? "Codex subagent", prompt: item.prompt ?? null, model: item.model ?? null }, () => ({ content: describe(item.agents_states), isError: item.status === "failed" })),
+          ...lifecycle,
+        ];
+      }
       case "agent_message":
         if (!completed || !item.text) return [];
         return [
@@ -465,6 +496,7 @@ export class CodexNormaliser implements Normaliser {
   ): DomainEvent[] {
     const ids = { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
     const events: DomainEvent[] = [];
+    if (this.#completed.has(id)) return events;
     if (!this.#started.has(id)) {
       this.#started.set(id, this.#now());
       events.push({ type: "agent.tool_use", ...ids, toolUseId: id, name, input });
@@ -472,6 +504,7 @@ export class CodexNormaliser implements Normaliser {
     if (phase !== "item.completed") return events;
     const startedAt = this.#started.get(id) ?? this.#now();
     this.#started.delete(id);
+    this.#completed.add(id);
     const { content, isError } = result();
     events.push({
       type: "agent.tool_result",
@@ -504,6 +537,20 @@ export function mapCodexUsage(usage: Record<string, unknown> | undefined): Token
   };
 }
 
+/** v2 workers must be addressed through the resumed parent, not exec resume on the child. */
+export function codexSubagentPrompt(text: string, subagentId: string, parentSession: string | undefined): string {
+  const prefix = `${parentSession}:`;
+  const target = subagentId.startsWith(prefix) ? subagentId.slice(prefix.length) : "";
+  if (!parentSession || !/^\/root(?:\/[a-zA-Z0-9_-]+)+$/.test(target)) throw new Error("This Codex subagent cannot be resumed from this parent session.");
+  return [
+    `The user is chatting directly with your existing native subagent ${JSON.stringify(target)} about its current task.`,
+    "Use collaboration.followup_task to pass the user message below verbatim to that exact existing agent, then wait for its final response.",
+    "The selected agent may answer questions or edit its current task in the existing workspace. Do not spawn a replacement, ask a sibling, answer for it, or do its edits yourself.",
+    "If the selected agent is unavailable, report the delivery failure clearly. Do not silently substitute another agent.",
+    "<subagent-user-message>", text, "</subagent-user-message>",
+  ].join("\n\n");
+}
+
 export class CodexProvider implements AgentProvider {
   readonly id = "codex" as const;
   readonly label = "Codex";
@@ -533,21 +580,22 @@ export class CodexProvider implements AgentProvider {
       turnId: input.turnId,
       workspace: input.ctx.cwd,
     });
-    return withCodexImages(input, () => runCli({
+    return withCodexImages(input, () => withCodexSubagents(input, runCli({
       provider: "codex",
       ctx: input.ctx,
       spec: {
         argv: codexArgv({
           bin: this.bin,
           ...(input.model ? { model: input.model } : {}),
+          ...(input.effort ? { effort: input.effort } : {}),
           ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
           isRepo: this.isRepo(input.ctx.cwd),
           caps,
           ...(input.codexMcp ? { mcp: input.codexMcp } : {}),
         }),
-        stdin: `${CODEX_IMAGE_INSTRUCTIONS}\n\n${codexPrompt(input.prompt, input.instructions, input.resumeToken)}`,
+        stdin: `${CODEX_IMAGE_INSTRUCTIONS}\n\n${codexPrompt(input.subagentId ? codexSubagentPrompt(input.prompt, input.subagentId, input.resumeToken) : input.prompt, input.instructions, input.resumeToken)}`,
       },
       normaliser,
-    }), () => normaliser.sessionId, () => [...normaliser.imagePaths]);
+    }), normaliser.subagents, () => normaliser.sessionId), () => normaliser.sessionId, () => [...normaliser.imagePaths]);
   }
 }

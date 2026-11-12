@@ -29,6 +29,11 @@ export interface RoutingHarness {
   provider: ProviderId;
   /** Signed in, enabled, has its key: a turn could start on it now. */
   usable: boolean;
+  /** Authoritative discovery only; absent means availability is unknown. */
+  models?: readonly CatalogueModel[];
+  usedPercent?: number;
+  blocker?: string | null;
+  quota?: { status: string; checkedAt?: string; usedPercent?: number };
 }
 
 export interface CatalogueModel {
@@ -135,6 +140,9 @@ function distance(parsed: ParsedModel, model: CatalogueModel): number | null {
   const idTokens = modelTokens(model.id.replace(/:.*$/, ""));
   const vendor = model.id.includes("/") ? modelTokens(model.id.split("/")[0]!).length : 0;
   const candidates = [idTokens.slice(vendor), idTokens, model.name ? modelTokens(model.name) : []];
+  // A named version must match in full, including patch versions.
+  const version = parsed.tokens.filter((token) => /^\d+$/.test(token)).join(".");
+  if (version && idTokens.filter((token) => /^\d+$/.test(token)).join(".") !== version) return null;
   const fits = candidates.filter((tokens) => inOrder(parsed.tokens, tokens));
   if (fits.length === 0) return null;
   return Math.min(...fits.map((tokens) => tokens.length - parsed.tokens.length)) + (model.id.includes(":") ? 1 : 0);
@@ -157,7 +165,12 @@ export function matchCatalogue(
 }
 
 function usable(input: RoutingInput, provider: ProviderId): boolean {
-  return input.harnesses.some((harness) => harness.provider === provider && harness.usable);
+  return input.harnesses.some((harness) => harness.provider === provider && harness.usable && (harness.usedPercent === undefined || harness.usedPercent <= 90));
+}
+
+function supports(input: RoutingInput, provider: ProviderId, parsed: ParsedModel): boolean {
+  const models = input.harnesses.find((harness) => harness.provider === provider)?.models;
+  return !models || matchCatalogue(parsed, models).length > 0;
 }
 
 /** Where a named model runs. See the module comment for the order. */
@@ -173,10 +186,10 @@ export function resolveHarness(request: string | null | undefined, input: Routin
     };
   }
   const parsed = parseModelRequest(request);
-  if (parsed.family === "claude" && usable(input, "claude")) {
+  if (parsed.family === "claude" && usable(input, "claude") && supports(input, "claude", parsed)) {
     return { ok: true, provider: "claude", model: parsed.cliModel, via: "claude-cli", label: `${parsed.cliModel} on Claude Code` };
   }
-  if (parsed.family === "openai" && usable(input, "codex")) {
+  if (parsed.family === "openai" && usable(input, "codex") && supports(input, "codex", parsed)) {
     return { ok: true, provider: "codex", model: parsed.cliModel, via: "codex-cli", label: `${parsed.cliModel} on Codex` };
   }
   if (!usable(input, input.customProvider)) {
@@ -184,7 +197,7 @@ export function resolveHarness(request: string | null | undefined, input: Routin
     return {
       ok: false,
       reason: cli
-        ? `${cli} is not signed in, and the Custom harness (OpenRouter) is not set up either`
+        ? `${cli} cannot run the requested model within the subscription routing policy, and OMP (OpenRouter) is not set up either`
         : `"${parsed.raw}" needs the Custom harness (OpenRouter), which is not set up`,
       candidates: [],
     };
@@ -202,7 +215,13 @@ export function resolveHarness(request: string | null | undefined, input: Routin
       candidates: matches.filter((match) => match.distance === best.distance).slice(0, 6).map(({ model }) => model.id),
     };
   }
-  const label = `${best.model.id} on ${PROVIDER_LABEL[input.customProvider]} (OpenRouter)`;
+  const preferred = parsed.family === "claude" ? "claude" : parsed.family === "openai" ? "codex" : null;
+  const cli = input.harnesses.find((h) => h.provider === preferred);
+  const reason = !preferred ? "model uses OpenRouter" : cli?.usedPercent !== undefined && cli.usedPercent > 90
+    ? `${PROVIDER_LABEL[preferred]} subscription usage ${cli.usedPercent}% exceeds 90%`
+    : cli && !cli.usable ? cli.blocker ?? `${PROVIDER_LABEL[preferred]} is unavailable`
+    : `requested model is unavailable on ${PROVIDER_LABEL[preferred]}`;
+  const label = `${best.model.id} on ${PROVIDER_LABEL[input.customProvider]} (OpenRouter; billed to the configured key): ${reason}`;
   return { ok: true, provider: input.customProvider, model: best.model.id, via: "openrouter", label };
 }
 
@@ -222,6 +241,7 @@ export const UCCH_AGENT_DESCRIPTION = [
   'Use it when the person names a model or harness for a subagent ("use opus 5.5 for development and gpt6 sol for research"):',
   "put their words in `model`, as they said them. Claude models run on Claude Code, OpenAI models on Codex,",
   "anything else on an OpenRouter model. Leave `model` out to use the same model as this session.",
+  "Set background=true for coordinated work: this returns a child session ID immediately; completion arrives as a message. Subscription usage above 90% falls back to the same model on OMP/OpenRouter, billed to the configured key.",
   "The subagent works in this session's folder but cannot see this conversation: make `task` self-contained.",
   "Call it several times in one message to run independent subagents at once. It can take many minutes.",
 ].join(" ");
@@ -230,6 +250,7 @@ export const UCCH_AGENT_DESCRIPTION = [
 export const UCCH_AGENT_ARGS = {
   description: "A few words for the person: what this subagent is for.",
   task: "Everything the subagent needs to do the work, self-contained.",
+  background: "Return the child session ID immediately so you can keep working and exchange messages. Defaults to false.",
   model: 'The model or harness the person asked for, in their words ("opus 5.5", "gpt6 sol", "kimi k2"). Omit for this session\'s own.',
 } as const;
 
@@ -243,7 +264,8 @@ export const UCCH_AGENT_GUIDE = [
   "",
   "When the person asks for subagents on a particular model or harness (for example \"create 2 subagents for research and development; use opus 5.5 for development and gpt6 sol for research\"),",
   "start each one with the `ucch_agent` tool, passing the model in their words as `model`. Start independent ones in the same message so they run in parallel.",
-  "When no model or harness is named, use your built-in subagent tool if you have one, or `ucch_agent` without `model`: the subagent then runs on this session's own model.",
+  "Use `ucch_agent` with background=true for agents that need messaging or coordination, even when no model is named. Leave `model` out to inherit this session's model. Built-in subagents remain suitable for isolated tasks.",
+  "For coordinated work use background=true, continue independent work, and use ucch_message and ucch_agent_status to coordinate. End your turn when waiting; completion messages resume you without holding a scheduler slot.",
   "If `ucch_agent` answers that a model name is ambiguous, pick the closest candidate it lists, or ask the person.",
 ].join("\n");
 

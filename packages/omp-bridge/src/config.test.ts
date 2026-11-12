@@ -39,6 +39,7 @@ describe("readBridgeConfig", () => {
       maxCalls: 3,
       ompTools: false,
       subagents: true,
+      messaging: false,
       widgets: true,
     });
   });
@@ -59,6 +60,7 @@ describe("readBridgeConfig", () => {
       maxCalls: 12,
       ompTools: true,
       subagents: false,
+      messaging: false,
       widgets: false,
     });
   });

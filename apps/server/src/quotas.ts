@@ -29,6 +29,7 @@ export interface QuotaWindow {
   resetsAt: string | null;
   /** A vendor-specific line the tooltip can show under the percent. */
   detail?: string;
+  model?: "opus" | "sonnet";
 }
 
 /**
@@ -86,6 +87,8 @@ export async function readClaudeAccessToken(claudeDir: string): Promise<string |
 interface ClaudeUsageBody {
   five_hour?: { utilization?: number; resets_at?: string | null } | null;
   seven_day?: { utilization?: number; resets_at?: string | null } | null;
+  seven_day_opus?: { utilization?: number; resets_at?: string | null } | null;
+  seven_day_sonnet?: { utilization?: number; resets_at?: string | null } | null;
 }
 
 export function parseClaudeUsage(body: unknown): QuotaWindow[] {
@@ -108,6 +111,11 @@ export function parseClaudeUsage(body: unknown): QuotaWindow[] {
       usedPercent: weekly,
       resetsAt: isoOrNull(usage.seven_day?.resets_at),
     });
+  }
+  for (const model of ["opus", "sonnet"] as const) {
+    const bucket = usage[`seven_day_${model}`];
+    const usedPercent = clampPercent(bucket?.utilization);
+    if (usedPercent !== null) windows.push({ id: "weekly", label: `${model} weekly`, model, usedPercent, resetsAt: isoOrNull(bucket?.resets_at) });
   }
   return windows;
 }
@@ -266,4 +274,46 @@ export function openRouterWindows(quota: KeyQuota): QuotaWindow[] {
       detail: `${money(quota.usageUsd)} spent; no limit on this key`,
     },
   ];
+}
+
+/** Subscription lookups are keyed by credential subject, including dedicated workspace accounts. */
+export class SubscriptionQuotaService {
+  private readonly cache = new Map<string, { at: number; value: SessionQuota }>();
+  private readonly pending = new Map<string, Promise<SessionQuota>>();
+  constructor(private readonly providers: {
+    credsDir(subject: string, provider: "claude" | "codex"): string;
+    claudeToken(subject: string): Promise<string | null>;
+  }) {}
+
+  get(subject: string, provider: "claude" | "codex"): Promise<SessionQuota> {
+    const key = `${subject}:${provider}`;
+    const hit = this.cache.get(key);
+    if (hit && Date.now() - hit.at < 60_000) return Promise.resolve(hit.value);
+    const pending = this.pending.get(key);
+    if (pending) return pending;
+    const lookup = this.lookup(subject, provider).then((value) => {
+      this.cache.set(key, { at: Date.now(), value });
+      return value;
+    }).finally(() => this.pending.delete(key));
+    this.pending.set(key, lookup);
+    return lookup;
+  }
+
+  private async lookup(subject: string, provider: "claude" | "codex"): Promise<SessionQuota> {
+    try {
+      let windows: QuotaWindow[];
+      if (provider === "claude") {
+        const token = await readClaudeAccessToken(this.providers.credsDir(subject, provider)) ?? await this.providers.claudeToken(subject);
+        if (!token) return { provider, status: "no_auth" };
+        windows = await fetchClaudeUsage(token, AbortSignal.timeout(10_000));
+      } else {
+        const tokens = await readCodexTokens(this.providers.credsDir(subject, provider));
+        if (!tokens) return { provider, status: "no_auth" };
+        windows = await fetchCodexUsage(tokens, AbortSignal.timeout(10_000));
+      }
+      return { provider, status: "ok", windows, checkedAt: new Date().toISOString() };
+    } catch {
+      return { provider, status: "unavailable" };
+    }
+  }
 }

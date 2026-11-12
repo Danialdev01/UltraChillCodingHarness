@@ -9,7 +9,6 @@ import { StatusBadge } from "@/components/session-sidebar/session-card"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Segmented } from "@/components/ui/segmented"
-import { Switch } from "@/components/ui/switch"
 import { HARNESSES } from "@/lib/harnesses"
 import {
   filtersActive,
@@ -126,13 +125,7 @@ export function FilterPopover({
           />
         </Group>
 
-        <label className="flex items-center justify-between gap-2 text-sm">
-          Show archived
-          <Switch
-            checked={filters.showArchived}
-            onCheckedChange={(value) => dispatch({ type: "showArchived", value })}
-          />
-        </label>
+
       </PopoverContent>
     </Popover>
   )

@@ -1,8 +1,9 @@
 "use client";
 
-import { ArrowLeftIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { useRealtime } from "@/lib/realtime";
 import { HarnessIcon } from "@/components/harness-icon";
 import { projectHashFromPath } from "@/lib/sections";
 import { TransitionLink } from "@/lib/view-transitions";
@@ -10,6 +11,8 @@ import { useActiveWorkspace, useWorkspaceHash } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
 import { subagentAnchor, type LineageEntry } from "@/lib/subagent-lineage";
 import { Markdown } from "@/components/markdown";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { agentOf, descriptionOf, formatDuration, type ChatMessage, type SubagentRun, type ToolPart } from "@/lib/chat-messages";
 import { formatUsd } from "@/lib/stats-format";
@@ -54,7 +57,9 @@ export function SubagentGroup({ calls, harness }: { calls: readonly ToolPart[]; 
   const longest = calls
     .flatMap((call) => call.subagents ?? [])
     .reduce<number | null>((max, run) => (run.durationMs === null ? max : Math.max(max ?? 0, run.durationMs)), null);
-  const state = working > 0 ? `${working} working` : failed > 0 ? `${failed} failed` : `${count} done`;
+  const interrupted = runs.filter((run) => run?.status === "aborted").length;
+  const done = count - working - failed - interrupted;
+  const state = [working && `${working} working`, failed && `${failed} failed`, interrupted && `${interrupted} interrupted`, done && `${done} done`].filter(Boolean).join(", ");
 
   return (
     <section className="flex flex-col gap-2" aria-label="Subagents" data-testid="subagent-group">
@@ -109,7 +114,8 @@ function harnessOf(call: ToolPart, parent: string | undefined): string {
 export function SubagentCard({ call, harness }: { call: ToolPart; harness?: string }) {
   const runs = call.subagents ?? [];
   const running = runs.length > 0 ? runs.some((run) => run.status === "running") : call.result === null;
-  const failed = call.isError || runs.some((run) => run.status === "failed");
+  const failed = runs.length > 0 ? runs.some((run) => run.status === "failed") : call.isError;
+  const interrupted = runs.some((run) => run.status === "aborted");
   const agents = [...new Set(runs.map((run) => run.agent))];
   const label = agents.length > 0 ? agents.join(", ") : agentOf(call.input) ?? "subagent";
   const description = runs.length === 1 ? runs[0]!.description : runs.length > 1 ? `${runs.length} tasks` : descriptionOf(call.input);
@@ -121,7 +127,7 @@ export function SubagentCard({ call, harness }: { call: ToolPart; harness?: stri
       id={subagentAnchor(call.id)}
       className={`group/subagent bg-card/40 scroll-mt-4 rounded-lg border text-xs ${failed ? "border-destructive/40" : ""}`}
       data-testid="subagent-card"
-      data-status={running ? "running" : failed ? "failed" : "done"}
+      data-status={running ? "running" : failed ? "failed" : interrupted ? "aborted" : "done"}
     >
       <summary className="flex cursor-pointer list-none flex-col gap-1 px-3 py-2 select-none [&::-webkit-details-marker]:hidden">
         <span className="flex items-center gap-2">
@@ -132,6 +138,8 @@ export function SubagentCard({ call, harness }: { call: ToolPart; harness?: stri
           <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1.5 tabular-nums">
             {running && <span className="text-ucch-active">running</span>}
             {failed && <span className="text-destructive">failed</span>}
+            {!running && interrupted && <span>interrupted</span>}
+            {!running && !failed && !interrupted && <span>completed</span>}
             <Figures {...totals} />
           </span>
         </span>
@@ -175,6 +183,16 @@ function useSessionHref(childHash: string | undefined): string | null {
 
 function Run({ run, titled }: { run: SubagentRun; titled: boolean }) {
   const transcript = useSessionHref(run.childHash);
+  const { client } = useRealtime();
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+  const stop = async () => {
+    if (!client || !run.childThreadId) return;
+    setStopping(true); setStopError(null);
+    try { await client.dispatch({ type: "thread.cancel", threadId: run.childThreadId }); }
+    catch (error) { setStopError(error instanceof Error ? error.message : String(error)); }
+    finally { setStopping(false); }
+  };
   return (
     <div className="flex flex-col gap-1" data-testid="subagent-run" data-provider={run.provider}>
       {(titled || run.model || run.provider) && (
@@ -200,11 +218,15 @@ function Run({ run, titled }: { run: SubagentRun; titled: boolean }) {
           )}
           <span className="ml-auto flex shrink-0 items-center gap-1.5 tabular-nums">
             {run.status === "failed" && <span className="text-destructive">failed</span>}
-            {run.status === "aborted" && <span>stopped</span>}
+            {run.status === "aborted" && <span>interrupted</span>}
             {titled && <Figures toolCalls={run.toolCalls} durationMs={run.durationMs} costUsd={run.costUsd} />}
           </span>
         </span>
       )}
+      {run.routing && <p className="text-muted-foreground text-xs" data-testid="subagent-routing">{run.routing}</p>}
+      {run.background && <span className="text-muted-foreground">Background agent</span>}
+      {run.childThreadId && run.status === "running" && <button type="button" className="text-muted-foreground hover:text-foreground self-start underline" disabled={!client || stopping} onClick={() => void stop()} data-testid="subagent-stop">{stopping ? "Stopping…" : "Stop agent"}</button>}
+      {stopError && <p role="alert" className="text-destructive">{stopError}</p>}
       {run.status === "running" ? (
         titled ? (
           <span className="text-muted-foreground truncate">{run.summary ?? <Skeleton className="h-3 w-40" />}</span>
@@ -272,7 +294,11 @@ export function SubagentDetail({
   entry,
   onBack,
   renderWork,
+  parentRequest,
+  conversation,
 }: {
+  parentRequest?: string | null;
+  conversation?: ReactNode;
   entry: LineageEntry;
   onBack: () => void;
   renderWork: (message: ChatMessage) => ReactNode;
@@ -331,10 +357,13 @@ export function SubagentDetail({
       <section className="flex flex-col gap-1.5" aria-label="Prompt">
         <h3 className="text-muted-foreground text-xs font-medium">Prompt</h3>
         <div className="bg-muted/50 rounded-lg border px-3 py-2 text-sm" data-testid="subagent-prompt">
-          {run.prompt ? <Markdown>{run.prompt}</Markdown> : <span className="text-muted-foreground">Not recorded.</span>}
+          {run.prompt ? <Markdown>{run.prompt}</Markdown> : parentRequest ? (
+            <><p className="text-muted-foreground mb-2 text-xs">Parent request · this agent’s original task instructions are unavailable.</p><Markdown>{parentRequest}</Markdown></>
+          ) : <span className="text-muted-foreground">This agent’s original task instructions are unavailable.</span>}
         </div>
       </section>
 
+      {conversation ? <section aria-label="Subagent conversation" className="flex flex-col gap-4" data-testid="subagent-conversation">{conversation}</section> : <>
       {(work || recent || running) && (
         <section className="flex flex-col gap-1.5" aria-label="Work" data-testid="subagent-work">
           <h3 className="text-muted-foreground flex items-center gap-1.5 text-xs font-medium">
@@ -365,9 +394,10 @@ export function SubagentDetail({
         )}
       </section>
 
+      </>}
       <p className="text-muted-foreground border-t pt-3 text-xs">
-        This subagent ran inside its parent&apos;s harness, so it has no session of its own to chat with or rerun.
-        Subagents started with <code className="font-mono">ucch_agent</code> get one.
+        This view shows the activity reported by the parent harness. Follow-up work is controlled by that harness.
+        Subagents started with <code className="font-mono">ucch_agent</code> have a separate application session.
       </p>
     </div>
   );
@@ -396,4 +426,46 @@ function RecentActivity({ tools, output }: { tools: readonly string[]; output: r
       )}
     </div>
   );
+}
+
+export function AgentSessionMessage({ message }: { message: ChatMessage }) {
+  const meta = message.agentMessage!;
+  const href = useSessionHref(meta.hash ?? undefined);
+  return <div className="bg-muted/40 flex flex-col gap-2 rounded-lg border px-3 py-2 text-sm" data-testid="agent-session-message">
+    <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
+      <span>Agent message {meta.direction}</span>
+      {href ? <TransitionLink href={href} className="underline">Session {meta.sessionId.slice(0, 8)}</TransitionLink> : <span>Session {meta.sessionId.slice(0, 8)}</span>}
+      <span>{meta.delivered ? "Delivered" : meta.depth >= 8 ? "Pending · automatic conversation limit" : "Pending"}</span>
+    </div>
+    <Markdown>{message.text}</Markdown>
+  </div>;
+}
+
+
+/** An isolated draft: chatting with a worker never overwrites the parent composer. */
+export function SubagentComposer({ agent, busy, onSend }: { agent: string; busy: boolean; onSend: (text: string) => Promise<void> }) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || busy || sending) return;
+    setSending(true); setError(null);
+    try { await onSend(text); setDraft(current => current === draft ? "" : current); }
+    catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+    finally { setSending(false); }
+  };
+  return <div className="shrink-0 border-t p-3 @md:p-4" data-testid="subagent-composer">
+    <form className="mx-auto flex max-w-3xl flex-col gap-2" onSubmit={event => { event.preventDefault(); void send(); }}>
+      <p className="text-muted-foreground text-xs">Message {agent} about its task, or ask it to make changes.{busy ? " Available when the current run finishes." : ""}</p>
+      <div className="bg-card flex items-end gap-2 rounded-xl border p-2 focus-within:ring-2 focus-within:ring-ring">
+        <Textarea aria-label={`Message ${agent}`} placeholder={`Ask ${agent} about its task…`} value={draft} onChange={event => setDraft(event.target.value)}
+          className="max-h-48 min-h-20 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0" onKeyDown={event => {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); }
+          }} />
+        <Button type="submit" size="icon" disabled={busy || sending || !draft.trim()} aria-label={`Send to ${agent}`}><ArrowUpIcon className="size-4" /></Button>
+      </div>
+      {error && <p role="alert" className="text-destructive text-sm">{error}</p>}
+    </form>
+  </div>;
 }

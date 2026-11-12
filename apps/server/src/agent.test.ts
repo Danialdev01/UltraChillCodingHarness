@@ -617,7 +617,7 @@ describe("an OMP turn", () => {
         expect.objectContaining({ toolUseId: "call_1", name: "current_time", input: { timezone: "UTC" } }),
       ]);
       const result = events.find((e) => e.type === "agent.tool_result") as Extract<DomainEvent, { type: "agent.tool_result" }>;
-      expect(result).toMatchObject({ toolUseId: "call_1", isError: false });
+      expect(result, result.content).toMatchObject({ toolUseId: "call_1", isError: false });
       expect(result.content).toMatch(/ISO 8601 \(UTC\): \d{4}-\d{2}-\d{2}T/);
       expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
     });
@@ -1669,6 +1669,13 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     expect(run.appended.flat().find(done)?.type).toBe("agent.turn_completed");
     expect(run.errors).toEqual([]);
   }
+
+  it("passes a targeted worker message through the owning Codex parent session", async () => {
+    const run = bridgeReactor(keyed, {}, false, "codex", { ...thread, provider: "codex", providerSessionId: "parent-session" });
+    await turn(run, { type: "thread.send", threadId: THREAD, text: "Update the task", provider: "codex", subagentId: "parent-session:/root/alpha" },
+      { type: "user.message", threadId: THREAD, text: "Update the task", subagentId: "parent-session:/root/alpha" });
+    expect(run.seen[0]?.input).toMatchObject({ resumeToken: "parent-session", subagentId: "parent-session:/root/alpha", prompt: expect.stringContaining("Update the task") });
+  });
 
   it("hands Claude Code an MCP config with the bridge's environment, and keeps the key out of the CLI's own", async () => {
     const run = bridgeReactor(keyed, { ompBridge: { enabled: true } });

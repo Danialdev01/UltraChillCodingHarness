@@ -1,4 +1,6 @@
 import { toJsonSchema, type ToolSchema } from "./schema.js";
+import { coordinationTools } from "./tools/coordination.js";
+import type { ToolContext } from "./tool.js";
 import type { AnyTool } from "./tool.js";
 import { deleteFile, editFile, listDir, readFile, writeFile } from "./tools/fs.js";
 import { glob, grep } from "./tools/search.js";
@@ -65,6 +67,7 @@ export const ALL: readonly AnyTool[] = Object.freeze([
   // Inline widgets. At the end for the reason above; withheld when the
   // workspace turns widgets off (`RegistryOptions.widgets`).
   showWidget,
+  ...coordinationTools,
 ]);
 
 /**
@@ -146,7 +149,7 @@ const toolCache = new Map<string, readonly AnyTool[]>();
 const schemaCache = new Map<string, readonly ToolSchema[]>();
 
 const cacheKey = (preset: ToolPreset, options: RegistryOptions): string =>
-  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}`;
+  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}:${Boolean(options.coordination)}:${Boolean(options.subagents)}`;
 
 /**
  * Filters a tool list to a preset, in the list's own order.
@@ -200,6 +203,8 @@ const DOCUMENTATION_ONLY: readonly string[] = [
 const DOCUMENTATION_WRITES: readonly string[] = ["write_file", "edit_file", "delete_file", "attach_upload"];
 
 export interface RegistryOptions {
+  coordination?: ToolContext["coordination"];
+  subagents?: boolean;
   /**
    * Defaults to true, so the registry offers what the preset names unless
    * told otherwise. `apps/server` passes `shellPluginEnabled(config)`.
@@ -224,6 +229,10 @@ export function selectPreset(
   const widgets = options.widgets ?? true;
   return Object.freeze(
     tools.filter((tool) => {
+      if (tool.name.startsWith("ucch_")) {
+        if (!options.coordination || (tool.name === "ucch_agent" && !options.subagents)) return false;
+        return preset !== "readonly" && preset !== "minimal" || tool.permission === "read";
+      }
       if (!allowHostShell && HOST_SHELL.includes(tool.name)) return false;
       if (!widgets && WIDGET_TOOLS.includes(tool.name)) return false;
       if (preset !== "research" && RESEARCH_ONLY.includes(tool.name)) return false;
@@ -312,7 +321,7 @@ const HOST_PRESET_DENIED: Partial<Record<ToolPreset, readonly string[]>> = {
  */
 export function hostToolsFor(preset: ToolPreset, options: RegistryOptions = {}): readonly AnyTool[] {
   const denied = HOST_PRESET_DENIED[preset] ?? [];
-  return toolsFor(preset, options).filter((tool) => HOST_TOOLS.includes(tool.name) && !denied.includes(tool.name));
+  return toolsFor(preset, options).filter((tool) => (HOST_TOOLS.includes(tool.name) || tool.name.startsWith("ucch_")) && !denied.includes(tool.name));
 }
 
 /** A host tool as OMP's `set_host_tools` takes it. */

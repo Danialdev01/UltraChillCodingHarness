@@ -235,6 +235,7 @@ export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   "project.delete": "admin",
   "thread.create": "write",
   "thread.send": "exec",
+  "thread.agent_message": "exec",
   "thread.update": "write",
   "thread.cancel": "exec",
   "thread.permission_reply": "exec",

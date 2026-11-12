@@ -19,6 +19,7 @@ export interface SpawnRequest {
   description: string;
   task: string;
   model?: string | undefined;
+  background?: boolean | undefined;
 }
 
 export type SpawnOutcome = { text: string } | { error: string };
@@ -61,6 +62,7 @@ export function spawnSubagent(
           token,
           description: request.description,
           task: request.task,
+          ...(request.background ? { background: true } : {}),
           ...(request.model ? { model: request.model } : {}),
         })}\n`,
       );
@@ -81,5 +83,33 @@ export function spawnSubagent(
     });
     socket.on("error", (error) => finish({ error: `could not reach the UCCH server: ${error.message}` }));
     socket.on("close", () => finish({ error: "the UCCH server closed the connection before the subagent finished" }));
+  });
+}
+
+/** A short authenticated collaboration RPC, sharing the turn-bound bridge transport. */
+export function callCollaboration(config: Pick<BridgeConfig, "schedulerSock" | "leaseToken">, name: string, args: Record<string, unknown>): Promise<SpawnOutcome> {
+  if (!config.schedulerSock || !config.leaseToken) return Promise.resolve({ error: "project messaging needs a UCCH turn" });
+  return new Promise((resolve) => {
+    const socket = createConnection(config.schedulerSock!);
+    let buffer = "";
+    let settled = false;
+    const finish = (result: SpawnOutcome) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); socket.destroy(); resolve(result);
+    };
+    const timer = setTimeout(() => finish({ error: "collaboration request timed out" }), 30_000);
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(`${JSON.stringify({ type: "collaboration", token: config.leaseToken, name, args })}\n`));
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      if (buffer.length > 2_000_000) return finish({ error: "collaboration response too large" });
+      if (!buffer.includes("\n")) return;
+      try {
+        const result = JSON.parse(buffer.slice(0, buffer.indexOf("\n")));
+        finish(result.type === "result" ? { text: String(result.text ?? "") } : { error: String(result.reason ?? "request refused") });
+      } catch { finish({ error: "invalid collaboration response" }); }
+    });
+    socket.on("error", () => finish({ error: "could not reach the UCCH server" }));
+    socket.on("close", () => finish({ error: "UCCH connection closed" }));
   });
 }

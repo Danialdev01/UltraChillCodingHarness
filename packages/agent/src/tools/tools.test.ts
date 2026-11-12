@@ -865,7 +865,7 @@ describe("htmlToText", () => {
 });
 
 describe("the tool surface", () => {
-  it("registers all twenty-five, in the canonical order", () => {
+  it("registers the tools in canonical order", () => {
     expect(ALL.map((t) => t.name)).toEqual([
       "read_file",
       "list_dir",
@@ -892,6 +892,12 @@ describe("the tool surface", () => {
       "doc_chart",
       "doc_check",
       "show_widget",
+      "ucch_agent",
+      "ucch_sessions",
+      "ucch_message",
+      "ucch_inbox",
+      "ucch_agent_status",
+      "ucch_agent_cancel",
     ]);
   });
 
@@ -922,7 +928,7 @@ describe("the tool surface", () => {
     }
     // And the standard preset is exactly what it was before they existed.
     expect(toolsFor("standard").map((t) => t.name)).toEqual(
-      ALL.map((t) => t.name).filter((n) => !n.startsWith("research_") && !n.startsWith("doc_")),
+      ALL.map((t) => t.name).filter((n) => !n.startsWith("research_") && !n.startsWith("doc_") && !n.startsWith("ucch_")),
     );
   });
 

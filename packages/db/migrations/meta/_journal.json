@@ -253,6 +253,13 @@
       "when": 1794228286991,
       "tag": "0035_project_base_branch",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794300000000,
+      "tag": "0036_agent_collaboration",
+      "breakpoints": true
     }
   ]
 }

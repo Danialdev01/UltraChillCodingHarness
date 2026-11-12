@@ -61,7 +61,7 @@ export interface ClaudeCapabilities {
  * brief -- ask, as a command does; under Strict everything asks, and after
  * "Allow All" nothing does.
  */
-export const OMP_BRIDGE_READ_TOOLS = ["omp_symbols", "omp_recall", "omp_review", "omp_task", "ucch_agent", "show_widget"] as const;
+export const OMP_BRIDGE_READ_TOOLS = ["omp_symbols", "omp_recall", "omp_review", "omp_task", "ucch_agent", "ucch_sessions", "ucch_inbox", "ucch_message", "ucch_agent_status", "ucch_agent_cancel", "show_widget"] as const;
 
 /**
  * How long Claude Code waits on one MCP tool call (`MCP_TOOL_TIMEOUT`, ms):

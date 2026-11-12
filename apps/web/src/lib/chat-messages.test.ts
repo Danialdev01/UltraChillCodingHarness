@@ -1209,3 +1209,22 @@ describe("a built-in subagent's steps", () => {
     expect(run).toMatchObject({ steps: [], recentTools: ["read"], recentOutput: ["found it"] });
   });
 });
+
+describe("project agent messages", () => {
+  const id = "66666666-6666-4666-8666-666666666666";
+  it("shows agent attribution and delivery once, without a duplicate user prompt", () => {
+    const folded = log(
+      { type: "agent.session_message", threadId: THREAD, fromThreadId: id, fromHash: "abcdef123456", messageId: id, text: "Parser ready", depth: 1 },
+      { type: "user.message", threadId: THREAD, text: "Messages from project agents: Parser ready", agentMessageIds: [id] },
+    );
+    expect(folded.messages).toHaveLength(1);
+    expect(folded.messages[0]).toMatchObject({ text: "Parser ready", agentMessage: { direction: "from", sessionId: id, delivered: true } });
+  });
+  it("replays sender receipts even when they precede the sent mirror", () => {
+    const folded = log(
+      { type: "agent.message_delivered", threadId: THREAD, messageIds: [id] },
+      { type: "agent.session_message_sent", threadId: THREAD, toThreadId: id, toHash: "abcdef123456", messageId: id, text: "Review it", depth: 0 },
+    );
+    expect(folded.messages[0]).toMatchObject({ agentMessage: { direction: "to", delivered: true } });
+  });
+});

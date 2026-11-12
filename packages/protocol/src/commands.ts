@@ -91,8 +91,20 @@ export const ReasoningEffort = z.enum(["off", "low", "medium", "high", "xhigh", 
 export type ReasoningEffort = z.infer<typeof ReasoningEffort>;
 
 /** Queues an agent turn. The turn itself runs in `AgentTurnReactor`. */
+const AgentMessageSend = z.object({
+  type: z.literal("thread.agent_message"),
+  threadId: z.string().uuid(),
+  fromThreadId: z.string().uuid(),
+  text: z.string().trim().min(1).max(60_000),
+  replyTo: z.string().uuid().optional(),
+  depth: z.number().int().min(0).max(100).default(0),
+});
+
 const ThreadSend = z.object({
   type: z.literal("thread.send"),
+  /** Follow-up for an existing native worker in this thread. */
+  subagentId: z.string().min(1).max(500).optional(),
+  agentMessageIds: z.array(z.string().uuid()).min(1).max(100).optional(),
   threadId: z.string().uuid(),
   text: z.string().min(1),
   /** An OpenRouter model id. Falls back to the harness default when absent. */
@@ -391,6 +403,7 @@ export const Command = z.discriminatedUnion("type", [
   ProjectDelete,
   ThreadCreate,
   ThreadSend,
+  AgentMessageSend,
   ThreadUpdate,
   ThreadCancel,
   ThreadPermissionReply,

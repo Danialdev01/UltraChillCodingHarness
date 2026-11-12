@@ -208,7 +208,7 @@ export function AppHeader({
   )
 
   return (
-    <header className="bg-background flex h-16 shrink-0 items-center gap-2 border-b px-3 sm:px-4">
+    <header className="bg-background flex min-h-16 shrink-0 flex-wrap items-center gap-x-2 gap-y-0 border-b px-3 sm:px-4">
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-2 data-vertical:h-4 data-vertical:self-auto" />
       {/* `min-w-0` so a long project name truncates instead of pushing the
@@ -253,8 +253,6 @@ export function AppHeader({
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {/* Suspense because the button reads the search params, which
               Next wants fenced off from any static parent. */}
-          {/* The project's own command buttons, from `.agent/commands.json`. */}
-          {project && <CommandButtons project={project} />}
           {project && (
             <Suspense>
               <PreviewButton project={project} />
@@ -262,6 +260,11 @@ export function AppHeader({
           )}
           {/* The tree toggle lives inside this, at its right end. */}
           <ViewModeToggle session={sessionWorkspace && project !== undefined} />
+        </div>
+      )}
+      {project && !projectPage && (
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-1 border-t py-1.5" aria-label="Project commands">
+          <CommandButtons key={project.id} project={project} />
         </div>
       )}
     </header>

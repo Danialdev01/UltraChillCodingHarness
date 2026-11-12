@@ -6,6 +6,7 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   CheckIcon,
+  ChevronRightIcon,
   CopyIcon,
   PencilIcon,
   PinIcon,
@@ -21,6 +22,7 @@ import { FilterPopover } from "@/components/session-sidebar/filter-popover"
 import { ProjectGroupHeader } from "@/components/session-sidebar/project-group"
 import { ListRowsSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Segmented } from "@/components/ui/segmented"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { renameProject } from "@/lib/create-project"
@@ -109,7 +111,14 @@ export function SessionSidebar({
   const [filters, dispatchFilter] = React.useReducer(filterReducer, NO_FILTERS)
   const [collapsed, toggleCollapsed] = useCollapsedProjects(workspace.id)
 
-  const { data, dataUpdatedAt, isPending } = useWorkspaceSessions(workspace.id, filters.showArchived)
+  const [settledOpen, setSettledOpen] = React.useState(false)
+  const [archivedOpen, setArchivedOpen] = React.useState(false)
+  React.useEffect(() => {
+    setSettledOpen(false)
+    setArchivedOpen(false)
+  }, [workspace.id])
+
+  const { data, dataUpdatedAt, isPending } = useWorkspaceSessions(workspace.id, true)
   const live = useLiveTurns()
 
   const permissions = workspace.permissions
@@ -139,13 +148,18 @@ export function SessionSidebar({
     [live, dataUpdatedAt],
   )
 
-  const visible = React.useMemo(() => {
+  const matching = React.useMemo(() => {
     const sessions = data?.sessions ?? []
     return sessions.filter(
       (s) =>
-        passesFilters(s, filters, { userId: me?.userId ?? null, status: statusFor(s) }),
+        passesFilters(s, { ...filters, showArchived: true }, { userId: me?.userId ?? null, status: statusFor(s) }),
     )
   }, [data, filters, me?.userId, statusFor])
+
+  const visible = matching.filter((s) => !s.archivedAt && s.settleState !== "settled")
+  const settled = sortSessions(matching.filter((s) => !s.archivedAt && s.settleState === "settled"))
+  const archived = sortSessions(matching.filter((s) => Boolean(s.archivedAt)))
+  const navigable = [...visible, ...(settledOpen ? settled : []), ...(archivedOpen ? archived : [])]
 
   const narrowed = filtersActive(filters)
 
@@ -327,8 +341,8 @@ export function SessionSidebar({
   // -- Rendering ----------------------------------------------------------------
 
   const total = visible.length
-  const lazy = total > VIRTUALIZE_AFTER
-  const tabStop = focusedId ?? visible.find(isActive)?.id ?? visible[0]?.id
+  const lazy = navigable.length > VIRTUALIZE_AFTER
+  const tabStop = navigable.find((s) => s.id === focusedId)?.id ?? navigable.find(isActive)?.id ?? navigable[0]?.id
 
   function card(session: SidebarSession, hideProject: boolean) {
     const status = statusFor(session)
@@ -428,7 +442,7 @@ export function SessionSidebar({
             />
             {open &&
               (group.sessions.length === 0 ? (
-                <p className="text-muted-foreground py-1 pr-2 pl-8 text-xs">No sessions yet</p>
+                <p className="text-muted-foreground py-1 pr-2 pl-8 text-xs">No active sessions</p>
               ) : (
                 <ul className="flex flex-col gap-0.5 pl-3">{group.sessions.map((s) => card(s, true))}</ul>
               ))}
@@ -439,7 +453,7 @@ export function SessionSidebar({
   }
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {!sessionWorkspace && (
         <div className="flex items-center gap-1 px-2 pt-2 pb-1">
           <Segmented<SidebarMode>
@@ -464,9 +478,35 @@ export function SessionSidebar({
         role="navigation"
         aria-label="Sessions"
         onKeyDown={onListKeyDown}
-        className="flex flex-col gap-1 px-2 pb-2"
+        className="flex min-h-0 flex-1 flex-col px-2 pb-2"
       >
-        {body}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="flex flex-col gap-1">{body}</div>
+        </div>
+        {!isPending && (
+          <div className="shrink-0 border-t pt-2">
+            {[
+              { label: "Settled", sessions: settled, open: settledOpen, setOpen: setSettledOpen, icon: CheckIcon },
+              { label: "Archived", sessions: archived, open: archivedOpen, setOpen: setArchivedOpen, icon: ArchiveIcon },
+            ].map(({ label, sessions, open, setOpen, icon: Icon }) => (
+              <Collapsible key={label} open={open} onOpenChange={setOpen}>
+                <CollapsibleTrigger className="text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent focus-visible:ring-sidebar-ring flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-medium outline-none focus-visible:ring-2">
+                  <ChevronRightIcon aria-hidden className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+                  <Icon aria-hidden className="size-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1">{label}</span>
+                  <span className="tabular-nums">{sessions.length}</span>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="max-h-[25vh] overflow-y-auto">
+                  {open && (sessions.length > 0 ? (
+                    <ul className="mt-1 flex flex-col gap-0.5">{sessions.map((s) => card(s, false))}</ul>
+                  ) : (
+                    <p className="text-muted-foreground px-2 py-2 text-xs">No {label.toLowerCase()} sessions.</p>
+                  ))}
+                </CollapsibleContent>
+              </Collapsible>
+            ))}
+          </div>
+        )}
       </div>
 
       {newSessionFor && (
@@ -544,7 +584,7 @@ function EmptyState({
   return (
     <div className="flex flex-col items-start gap-2 px-2 py-3">
       <p className="text-muted-foreground text-sm">
-        {narrowed ? "No sessions match." : "No sessions yet. Start one to talk to an agent."}
+        {narrowed ? "No sessions match." : "No active sessions. Start one to talk to an agent."}
       </p>
       {narrowed ? (
         <Button size="sm" variant="outline" onClick={onClear}>

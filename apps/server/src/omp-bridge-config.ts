@@ -35,6 +35,7 @@ export interface BridgeServerInput {
   omp: { agentDir: string; overlay: string; openrouterKey: string } | null;
   /** `ucch_agent` is offered: subagents on any harness (never to a subagent). */
   subagents: boolean;
+  messaging?: boolean;
   /** The worktree the CLI works in; every call runs there. */
   worktree: string;
   /** The server's scheduler socket and this turn's token for it (`BridgeLeases`). */
@@ -63,6 +64,7 @@ export function bridgeServer(input: BridgeServerInput): BridgeServer {
             OPENROUTER_API_KEY: input.omp.openrouterKey,
           }
         : { UCCH_BRIDGE_OMP_TOOLS: "0" }),
+      ...(input.messaging ? { UCCH_BRIDGE_MESSAGING: "1" } : {}),
       ...(input.subagents ? { UCCH_BRIDGE_SUBAGENTS: "1" } : {}),
       UCCH_WORKTREE: input.worktree,
       UCCH_SCHEDULER_SOCK: input.schedulerSock,

@@ -349,6 +349,10 @@ const agentTurns = new AgentTurnReactor(
 );
 // A bridge's `ucch_agent` call arrives on the scheduler socket.
 bridgeLeases.setSpawner((holder, frame, signal) => agentTurns.spawnSubagent(holder, frame, signal));
+bridgeLeases.setCollaborator((holder, name, args) => agentTurns.collaboration(holder, name, args));
+bus.tap(({ event }) => {
+  if (event.type === "agent.session_message") agentTurns.messaging?.requestDelivery(event.threadId);
+});
 
 /**
  * What a project's owner brings to git: who to commit as, and what to
@@ -2369,6 +2373,35 @@ const notesService = new NotesService(db);
 
 /** `.agent/notes/`: the Knowledge notes as Markdown, rewritten after every save (live edits too). */
 const notesMirror = new NotesMirror({
+  changes: {
+    put: async (projectId, input, previous) => {
+      let note = previous ? await notesService.get(projectId, previous.id) : null;
+      if (!note) {
+        if (!input.parentId) throw new Error("A new Markdown page needs an existing parent");
+        note = await notesService.create(projectId, { parentId: input.parentId, title: input.title, id: input.id });
+      }
+      if (!note) throw new Error("Documentation parent was not found");
+      if (previous && note.updatedAt !== previous.updatedAt) throw new Error("Documentation changed during import");
+      if (input.parentId && (input.parentId !== note.parentId || input.position !== undefined && input.position !== note.position)) {
+        const moved = await notesService.move(projectId, note.id, { parentId: input.parentId, position: input.position ?? note.position });
+        if (!Array.isArray(moved)) throw new Error("Invalid documentation hierarchy");
+      }
+      // Keep open collaborative documents in step with disk imports.
+      if (collab && !(await collab.writeNote(note.id, input.content, note.content))) throw new Error("Collaboration unavailable; Markdown import will retry");
+      const result = await notesService.update(projectId, note.id, {
+        title: input.title, icon: input.icon, cover: input.cover,
+        ...(!collab ? { content: input.content, ifUpdatedAt: note.updatedAt } : {}),
+      });
+      if (!result || "conflict" in result) throw new Error("Documentation changed during import");
+      await store.append({ projectId, threadId: null }, [{ type: "note.changed", projectId, noteId: note.id, change: !previous ? "created" : input.parentId !== previous.parentId || input.position !== previous.position ? "moved" : "updated", updatedAt: result.note.updatedAt, fields: { title: input.title, icon: result.note.icon, cover: result.note.cover } }]);
+      return result.note;
+    },
+    remove: async (projectId, note) => {
+      const result = await notesService.remove(projectId, note.id);
+      if (!result || result === "root") throw new Error("Cannot delete documentation page");
+      await store.append({ projectId, threadId: null }, [{ type: "note.changed", projectId, noteId: note.id, change: "deleted", parentId: note.parentId ?? undefined, updatedAt: new Date().toISOString(), fields: {} }]);
+    },
+  },
   uploads,
   rootOf: (projectId) => projectRoot(config.WORKSPACE_ROOT, projectId),
   notes: async (projectId): Promise<MirroredNote[]> => {
@@ -2378,6 +2411,7 @@ const notesMirror = new NotesMirror({
         parentId: notes.parentId,
         title: notes.title,
         icon: notes.icon,
+        cover: notes.cover,
         position: notes.position,
         content: notes.content,
         updatedAt: notes.updatedAt,
@@ -2590,8 +2624,25 @@ function notifyCollab(projectId: string, worktreeId: string, path: string | null
 }
 bus.tap(({ projectId, event }) => {
   if (!projectId) return;
-  if (event.type === "file.changed") notifyCollab(projectId, event.worktreeId ?? "", event.path);
-  else if (event.type === "resource.changed" && event.resource === "files") notifyCollab(projectId, event.id ?? "", null);
+  if (event.type === "file.changed") {
+    notifyCollab(projectId, event.worktreeId ?? "", event.path);
+    if (!event.worktreeId && event.path.startsWith(".agent/notes/")) notesMirror.schedule(projectId);
+    if (!event.worktreeId && event.path === ".agent/commands.json") {
+      void store.append({ projectId, threadId: null }, [{ type: "resource.changed", projectId, resource: "commands" }]);
+    }
+  }
+  else if (event.type === "resource.changed" && event.resource === "files") { notifyCollab(projectId, event.id ?? "", null); if (!event.id) notesMirror.schedule(projectId); }
+});
+
+app.get<{ Params: { hash: string } }>("/api/projects/:hash/notes/sync-status", async (request, reply) => {
+  const project = await projectFor(request);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  const query = request.query as { noteId?: string };
+  if (collab && query.noteId && z.string().uuid().safeParse(query.noteId).success && await notesService.get(project.id, query.noteId)) {
+    if (!(await collab.flushNote(query.noteId))) return { error: "Could not persist collaborative documentation" };
+  }
+  await notesMirror.flush(project.id);
+  return { error: notesMirror.errors.get(project.id) ?? null };
 });
 
 registerNoteRoutes(app, {
@@ -4483,6 +4534,7 @@ await app.listen({ port: config.PORT, host: config.HOST });
 await bridgeLeases
   .listen(BRIDGE_SOCKET)
   .catch((error: unknown) => app.log.warn({ err: error, path: BRIDGE_SOCKET }, "could not open the OMP bridge's scheduler socket"));
+await agentTurns.messaging?.recover();
 
 // A base branch that does not exist in the project's repository -- the old
 // `"main"` default on a repository whose branch is `master`, or a clone that

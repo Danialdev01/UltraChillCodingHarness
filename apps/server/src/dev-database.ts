@@ -203,7 +203,7 @@ const FILES_END = "<!-- agent:files:end -->";
 const COLLAPSED: Record<string, string> = {
   "cache/": "the harness's cache; safe to delete",
   "doc-cache/": "documents converted for reading (PDF pages, sources); safe to delete",
-  "notes/": "the Knowledge section's notes as Markdown, one file per note, nested as in the app; generated -- read, do not edit",
+  "notes/": "the Knowledge section as editable Markdown, synchronized with the app; preserve ucch frontmatter and ucch-node rich blocks",
   "references/notes/": "images placed in the Knowledge notes, one folder per note, linked from `notes/`; generated -- read, do not edit",
   "references/todo/": "images and files attached to the todos in `todo.md`, one folder per task; generated -- read, do not edit",
 };
@@ -225,6 +225,10 @@ const PURPOSES: Record<string, string> = {
 /** What `.agent/` is for, said in the file every agent reads first. */
 const AGENT_GUIDE = [
   "## The .agent folder",
+  "",
+  "Documentation in `notes/` is editable and synchronized with the app. Each page has YAML frontmatter with a `ucch` JSON object (id, title, parentId, icon, cover, position). Preserve IDs; edit the title in frontmatter. New Markdown files without metadata become pages. Rich editor blocks use fenced `ucch-node` JSON; preserve their full content. Ordinary text uses Markdown. Do not edit `cache/`. Conflicts are reported in the documentation editor; preserve both versions before resolving them.",
+  "",
+  'When asked to create run buttons, inspect project scripts, then edit `.agent/commands.json`: {"commands":[{"id":"dev","label":"Run dev","command":"pnpm dev","cwd":".","icon":"play"}]}. Keep existing unrelated commands. IDs must be unique lowercase letters, digits, dashes or underscores (max 40 characters); cwd is relative to the project. Buttons refresh automatically. To run a saved command when asked, read the current file and execute its command in its cwd using your shell tool. Editing the file does not run it.',
   "",
   "`.agent/` is where this project keeps its application settings, context and knowledge",
   "for AI agents and the people working with them. Every agent the harness runs --",

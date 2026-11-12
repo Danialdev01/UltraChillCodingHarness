@@ -56,6 +56,8 @@ export interface RunContext {
 }
 
 export interface ProviderRunInput {
+  /** Continue this native worker through its owning harness session. */
+  subagentId?: string;
   ctx: RunContext;
   prompt: string;
   projectId: string;

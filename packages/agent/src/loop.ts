@@ -44,6 +44,7 @@ const CACHE_CANARY_MIN_TOKENS = 4_096;
 const CONTEXT_RESERVE_TOKENS = 24_000;
 
 export interface TurnInput {
+  instructions?: string;
   projectId: string;
   threadId: string;
   turnId: string;
@@ -192,6 +193,10 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
     })),
   );
 
+  if (input.instructions) {
+    prompt.segments.push({ type: "text", text: input.instructions });
+    await input.append([{ type: "context.injected", threadId, source: "omp_bridge", content: input.instructions }]);
+  }
   const images = await loadImages(input);
 
   const messages: ChatMessage[] = [

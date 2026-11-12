@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { FirstSession } from "@/components/first-session";
+import { ProjectSeed } from "@/lib/queries/project";
 import { projectHref } from "@/lib/sections";
 import { listProjectSessions } from "@/lib/session";
 import { isTaskThreadTitle } from "@/lib/tasks-api";
@@ -13,8 +14,8 @@ import { requireProject } from "@/lib/workspace-route";
  * so this only redirects -- to the newest session, passing over the Tasks
  * board's threads (those are the pipeline's work, not where the person left
  * off). `?thread=` names one by id, which is how the board links to the
- * thread a task runs in. A project with no session yet gets its first one
- * here, working in the project's main checkout.
+ * thread a task runs in. A project with no session shows an empty state;
+ * starting a session is an explicit action in the sidebar.
  *
  * In the `(chat)` route group with the session page, so the conversation
  * skeleton covers both the hop and the page it lands on.
@@ -44,5 +45,10 @@ export default async function ProjectPage({
     redirect(`${projectHref(workspaceHash, "project", projectHash, open.hash)}${search ? `?${search}` : ""}`);
   }
 
-  return <FirstSession project={project} />;
+  return (
+    <>
+      <ProjectSeed data={project} />
+      <FirstSession project={project} />
+    </>
+  );
 }

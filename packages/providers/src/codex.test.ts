@@ -34,8 +34,8 @@ describe("Codex model discovery", () => {
     }]);
     const env = { CODEX_HOME: "/credentials/account-a" };
     expect(await listCodexModels({ cwd: WORKSPACE, env, host }, "codex")).toEqual([
-      { id: "gpt-6-sol", name: "GPT-6 Sol" },
-      { id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
+      { id: "gpt-6-sol", name: "GPT-6 Sol", efforts: ["low", "medium", "high"] },
+      { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", efforts: ["low", "medium", "high"] },
     ]);
     expect(host.spawned[0]).toMatchObject({ env, holdStdin: true });
     expect(host.written.map((line) => JSON.parse(line))).toEqual([
@@ -55,6 +55,27 @@ describe("Codex model discovery", () => {
       expect(host.signals).toContain("SIGKILL");
     }
   });
+
+  it("exposes only supported effort levels in order, preserving an empty list", async () => {
+    const host = new FakeProcessHost([{
+      match: () => true,
+      lines: [
+        stdout(JSON.stringify({ id: 1, result: {} })),
+        stdout(JSON.stringify({ id: 2, result: { data: [
+          { model: "reasoner", supportedReasoningEfforts: [
+            { reasoningEffort: "xhigh" }, { reasoningEffort: "high" },
+            { reasoningEffort: "low" }, { reasoningEffort: "high" },
+            { reasoningEffort: "unknown" }, null,
+          ] },
+          { model: "no-reasoning", supportedReasoningEfforts: [] },
+        ] } })),
+      ],
+    }]);
+    expect(await listCodexModels({ cwd: WORKSPACE, env: {}, host }, "codex")).toEqual([
+      { id: "reasoner", name: "reasoner", efforts: ["low", "high", "xhigh"] },
+      { id: "no-reasoning", name: "no-reasoning", efforts: [] },
+    ]);
+  });
 });
 
 function feed(normaliser: CodexNormaliser, text: string): DomainEvent[] {
@@ -65,6 +86,22 @@ function feed(normaliser: CodexNormaliser, text: string): DomainEvent[] {
 
 describe("codexArgv", () => {
   const caps = { ignoreRules: true };
+
+  it("sets reasoning effort for new and resumed turns, leaving Default to the CLI", () => {
+    for (const resumeToken of [undefined, "th-1"]) {
+      for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+        const argv = codexArgv({ bin: "codex", isRepo: true, caps, effort, resumeToken });
+        const index = argv.indexOf(`model_reasoning_effort="${effort}"`);
+        expect(index).toBeGreaterThan(0);
+        expect(argv[index - 1]).toBe("-c");
+        if (resumeToken) expect(index).toBeLessThan(argv.indexOf("resume"));
+      }
+      for (const effort of [undefined, "off"] as const) {
+        expect(codexArgv({ bin: "codex", isRepo: true, caps, effort, resumeToken })
+          .some((arg) => arg.startsWith("model_reasoning_effort="))).toBe(false);
+      }
+    }
+  });
 
   it("asks for JSON and a writable sandbox", () => {
     const argv = codexArgv({ bin: "codex", isRepo: true, caps });
@@ -290,16 +327,49 @@ describe("CodexProvider.run", () => {
   it("feeds the prompt on stdin and refuses an API key", async () => {
     const host = new FakeProcessHost([{ match: (a) => a[1] === "exec", lines: fixture.trim().split("\n").map(stdout) }]);
     const provider = new CodexProvider("codex", () => false);
-    const run = provider.run({ ctx: { cwd: WORKSPACE, env: { PATH: "/usr/bin", CODEX_HOME: "/creds" }, host }, prompt: "fix it", ...ids });
+    const run = provider.run({ ctx: { cwd: WORKSPACE, env: { PATH: "/usr/bin", CODEX_HOME: "/creds" }, host }, prompt: "fix it", effort: "high", ...ids });
     const events: DomainEvent[] = [];
     for await (const event of run.events) events.push(event);
     expect(host.spawned[0]?.stdin).toContain("<image-output>");
     expect(host.spawned[0]?.stdin).toMatch(/fix it$/);
     expect(host.spawned[0]?.argv).toContain("--skip-git-repo-check");
+    expect(host.spawned[0]?.argv).toContain('model_reasoning_effort="high"');
     expect(events.at(-1)?.type).toBe("agent.turn_completed");
 
     expect(() =>
       provider.run({ ctx: { cwd: WORKSPACE, env: { OPENAI_API_KEY: "sk" }, host }, prompt: "x", ...ids }),
     ).toThrow(/OPENAI_API_KEY/);
+  });
+});
+
+describe("native collaboration replay", () => {
+  it("does not reopen a completed worker when its spawn item is replayed", () => {
+    const n = new CodexNormaliser({ projectId: "11111111-1111-4111-8111-111111111111", threadId: "22222222-2222-4222-8222-222222222222", turnId: "33333333-3333-4333-8333-333333333333", workspace: "/tmp" });
+    const spawn = JSON.stringify({ type: "item.completed", item: { id: "spawn", type: "collab_tool_call", tool: "spawn_agent", status: "completed", receiver_thread_ids: ["child"], agents_states: { child: { status: "running" } } } });
+    n.push(spawn);
+    const completed = n.push(JSON.stringify({ type: "item.completed", item: { id: "wait", type: "collab_tool_call", tool: "wait", agents_states: { child: { status: "completed", message: "Done" } } } }));
+    expect(completed).toContainEqual(expect.objectContaining({ type: "agent.subagent_finished", status: "completed" }));
+    expect(n.push(spawn)).toEqual([]);
+    expect(n.push(JSON.stringify({ type: "item.updated", item: JSON.parse(spawn).item }))).toEqual([]);
+  });
+});
+
+it("does not present an unidentified successful spawn call as a completed child", () => {
+  const n = new CodexNormaliser({ projectId: "11111111-1111-4111-8111-111111111111", threadId: "22222222-2222-4222-8222-222222222222", turnId: "33333333-3333-4333-8333-333333333333", workspace: "/tmp" });
+  const events = n.push(JSON.stringify({ type: "item.completed", item: { id: "unknown-spawn", type: "collab_tool_call", tool: "spawn_agent", status: "completed" } }));
+  expect(events).toContainEqual(expect.objectContaining({ type: "agent.tool_use", name: "codex:spawn_agent" }));
+  expect(events.some(event => event.type === "agent.subagent_started")).toBe(false);
+});
+
+describe("targeted native worker chat", () => {
+  it("resumes the parent and explicitly targets the existing worker", async () => {
+    const { codexSubagentPrompt } = await import("./codex.js");
+    const prompt = codexSubagentPrompt("Update your task", "parent:/root/alpha", "parent");
+    expect(prompt).toContain('"/root/alpha"');
+    expect(prompt).toContain("collaboration.followup_task");
+    expect(prompt).toContain("Update your task");
+    expect(prompt).toContain("Do not spawn a replacement");
+    expect(() => codexSubagentPrompt("hello", "other:/root/alpha", "parent")).toThrow();
+    expect(() => codexSubagentPrompt("hello", "parent:/root/alpha\nother", "parent")).toThrow();
   });
 });

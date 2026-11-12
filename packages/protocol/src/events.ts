@@ -211,8 +211,29 @@ export type MessageImage = z.infer<typeof MessageImage>;
 export const MessageMode = z.enum(["research", "documentation"]);
 export type MessageMode = z.infer<typeof MessageMode>;
 
+const AgentSessionMessage = z.object({
+  type: z.literal("agent.session_message"),
+  fromHash: z.string().nullable().optional(),
+  threadId: z.string().uuid(),
+  messageId: z.string().uuid(),
+  fromThreadId: z.string().uuid(),
+  text: z.string(),
+  replyTo: z.string().uuid().optional(),
+  depth: z.number().int().nonnegative(),
+});
+const AgentSessionMessageSent = z.object({
+  type: z.literal("agent.session_message_sent"), threadId: z.string().uuid(), messageId: z.string().uuid(),
+  toThreadId: z.string().uuid(), toHash: z.string().nullable(), text: z.string(), depth: z.number().int().nonnegative(),
+});
+const AgentMessageDelivered = z.object({
+  type: z.literal("agent.message_delivered"),
+  threadId: z.string().uuid(),
+  messageIds: z.array(z.string().uuid()),
+});
 const UserMessage = z.object({
   type: z.literal("user.message"),
+  subagentId: z.string().optional(),
+  agentMessageIds: z.array(z.string().uuid()).optional(),
   threadId: z.string().uuid(),
   text: z.string(),
   /**
@@ -714,6 +735,15 @@ const AgentTurnFailed = z.object({
 // card in the chat, keyed by `subagentId`, under the tool call that spawned
 // it (`parentToolUseId`).
 
+const AgentSubagentRouted = z.object({
+  type: z.literal("agent.subagent_routed"),
+  threadId: z.string().uuid(),
+  subagentId: z.string(),
+  provider: ProviderId,
+  model: z.string().nullable(),
+  routing: z.string(),
+});
+
 const AgentSubagentStarted = z.object({
   type: z.literal("agent.subagent_started"),
   threadId: z.string().uuid(),
@@ -736,6 +766,8 @@ const AgentSubagentStarted = z.object({
   childHash: ThreadHash.optional(),
   /** How its harness was chosen: "claude-opus-5-5 on Claude Code", … */
   routing: z.string().optional(),
+  background: z.boolean().optional(),
+  quota: z.object({ status: z.string(), checkedAt: z.string().optional(), usedPercent: z.number().optional() }).optional(),
 });
 
 /** How a running subagent is getting on. Transient, like `agent.text_delta`. */
@@ -779,6 +811,8 @@ const AgentSubagentFinished = z.object({
   turnId: z.string().uuid(),
   subagentId: z.string(),
   status: z.enum(["completed", "failed", "aborted"]),
+  /** The observed worker model, when resolved after start; retained for replay. */
+  model: z.string().optional(),
   /** What it reported, truncated. */
   result: z.string().nullable(),
   usage: TokenUsage.optional(),
@@ -1239,6 +1273,10 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ThreadSettled,
   ThreadUpdated,
   UserMessage,
+  AgentSessionMessage,
+  AgentSessionMessageSent,
+  AgentMessageDelivered,
+  AgentSubagentRouted,
   ThreadCancelRequested,
   ThreadContextCleared,
   ThreadCompactionRequested,

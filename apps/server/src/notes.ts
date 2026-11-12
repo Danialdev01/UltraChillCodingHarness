@@ -99,7 +99,7 @@ export class NotesService {
    */
   async create(
     projectId: string,
-    input: { parentId: string; title?: string; afterId?: string },
+    input: { parentId: string; title?: string; afterId?: string; id?: string },
   ): Promise<NoteRecord | null> {
     return this.db.transaction(async (tx) => {
       const [parent] = await tx
@@ -122,6 +122,7 @@ export class NotesService {
         .insert(notes)
         .values({
           projectId,
+          ...(input.id ? { id: input.id } : {}),
           parentId: input.parentId,
           title: (input.title ?? "Untitled").slice(0, NOTE_TITLE_MAX) || "Untitled",
           position,

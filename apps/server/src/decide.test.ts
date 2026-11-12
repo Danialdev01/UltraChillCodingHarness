@@ -920,3 +920,41 @@ describe("thread.create for a subagent", () => {
     expect(d).toMatchObject({ ok: false, error: { code: "invalid" } });
   });
 });
+
+describe("agent session messages", () => {
+  const source = { id: NEW_ID, projectId: PROJECT, hash: "abcdef123456" };
+  const command: Command = { type: "thread.agent_message", threadId: THREAD, fromThreadId: NEW_ID, text: "Please review the parser", depth: 0 };
+  const state = { workspace: workspace(), project: project(), thread: thread(), messageSource: source };
+  it("records an authenticated same-project agent message", () => {
+    expect(decide(state, command, { ...ctx, internal: true })).toMatchObject({ ok: true, events: [{ type: "agent.session_message", fromThreadId: NEW_ID, threadId: THREAD, text: command.text }] });
+  });
+  it("refuses forged senders and cross-project sources", () => {
+    expect(decide(state, command, ctx)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+    expect(decide({ ...state, messageSource: { ...source, projectId: WORKSPACE } }, command, { ...ctx, internal: true })).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(decide({ ...state, messageSource: undefined }, command, { ...ctx, internal: true })).toMatchObject({ ok: false });
+  });
+  it("requires execution rights even for internal deliveries", () => {
+    expect(decide({ ...state, workspace: workspace({ membership: member({ role: "viewer" }) }) }, command, { ...ctx, internal: true })).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+  it("refuses client-supplied delivery receipts", () => {
+    expect(decide(state, { type: "thread.send", threadId: THREAD, text: "x", agentMessageIds: [NEW_ID] }, ctx)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+  it("allows stopping children after the parent's turn has ended", () => {
+    expect(decide({ ...state, thread: thread({ hasActiveChildren: true }) }, { type: "thread.cancel", threadId: THREAD }, ctx)).toMatchObject({ ok: true, events: [{ type: "thread.cancel_requested" }] });
+  });
+});
+
+describe("native subagent follow-up", () => {
+  const state = { workspace: workspace(), project: project(), thread: thread({ provider: "codex" }), subagent: { id: "parent:/root/alpha", provider: "codex" } };
+  const command = { type: "thread.send", threadId: THREAD, text: "Edit your current task", subagentId: "parent:/root/alpha", provider: "codex" } as const;
+  it("records the recipient with the message", () => {
+    expect(run(state, command)).toMatchObject({ ok: true, events: [{ type: "user.message", subagentId: command.subagentId, text: command.text }] });
+  });
+  it("rejects other-thread IDs and independent sessions", () => {
+    expect(run(state, { ...command, subagentId: "other:/root/alpha" })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(run({ ...state, subagent: { ...state.subagent, childThreadId: NEW_ID } }, command)).toMatchObject({ ok: false });
+  });
+  it("uses the normal busy guard rather than racing the parent harness", () => {
+    expect(run({ ...state, thread: thread({ provider: "codex", status: "running" }) }, command)).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+});

@@ -101,7 +101,7 @@ describe("renderNotes", () => {
     ]);
     expect(files.get("index.md")).toContain("[Deep](guide/deep.md)");
     expect(files.get("guide/deep.md")).toContain("[Home](../index.md)");
-    expect(files.get("guide/deep.md")).toMatch(/^# Deep\n/);
+    expect(files.get("guide/deep.md")).toContain('"title":"Deep"');
   });
 
   it("points an image at its copy when there is one, and keeps the URL when not", () => {

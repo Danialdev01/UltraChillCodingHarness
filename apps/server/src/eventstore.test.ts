@@ -169,3 +169,27 @@ describe("EventStore.threadHistory", () => {
     expect(store.cachedHistoryEvents).toBe(0);
   });
 });
+
+it("publishes native Codex starts immediately and durably replays lifecycle/output while progress stays ephemeral", async () => {
+  const { CodexNormaliser } = await import("@ucch/providers");
+  const { readFileSync } = await import("node:fs");
+  const turnId = "55555555-5555-4555-8555-555555555555";
+  const agents = new CodexNormaliser({ projectId: PROJECT, threadId: THREAD, turnId, workspace: "/tmp" }).subagents;
+  const rows = readFileSync(new URL("../../../tests/fixtures/codex-0.167.0/parent.jsonl", import.meta.url), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  const { db } = recorder(null);
+  const bus = new EventBus();
+  const store = new EventStore(db, bus);
+  const published: Publication[] = [];
+  bus.subscribe({ name: "thread", threadId: THREAD }, publication => published.push(publication));
+  const starts = rows.filter(row => row.ordinal < 34).flatMap(row => agents.parentRollout(JSON.stringify(row)));
+  const durableStarts = await store.append({ projectId: PROJECT, threadId: THREAD }, starts);
+  expect(published.filter(row => row.event.type === "agent.subagent_started")).toHaveLength(2);
+  expect(published.some(row => row.event.type === "agent.turn_completed")).toBe(false);
+  const finish = rows.filter(row => row.ordinal >= 34).flatMap(row => agents.parentRollout(JSON.stringify(row)));
+  const durableFinish = await store.append({ projectId: PROJECT, threadId: THREAD }, finish);
+  const stored = [...durableStarts, ...durableFinish];
+  expect(stored.some(row => row.event.type === "agent.subagent_progress")).toBe(false);
+  expect(published.some(row => row.event.type === "agent.subagent_progress" && row.seq === null)).toBe(true);
+  const outcomes = new Map(stored.flatMap(row => row.event.type === "agent.subagent_finished" ? [[row.event.subagentId, row.event] as const] : []));
+  expect([...outcomes.values()]).toMatchObject([{ status: "completed", result: "ALPHA_AGAIN" }, { status: "completed", result: "BETA_OK" }]);
+});
