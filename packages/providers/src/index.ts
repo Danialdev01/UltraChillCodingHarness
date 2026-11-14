@@ -30,6 +30,8 @@ export {
   ClaudeNormaliser,
   CLAUDE_MODELS,
   claudeArgv,
+  claudeRateLimit,
+  type ClaudeRateLimitInfo,
   OMP_BRIDGE_READ_TOOLS,
   ompBridgeToolName,
   maskEmail,
@@ -43,7 +45,9 @@ export {
   CODEX_SUBSCRIPTION_WARNING,
   codexArgv,
   codexMcpArgs,
+  codexRateLimits,
   probeCodex,
+  readCodexRateLimits,
 } from "./codex.js";
 export { VERIFIER_CONTEXT, VERIFIER_REPLY_FORMAT, ompVerifierPrompt, parseVerifierReply, type OmpVerdict } from "./omp-roles.js";
 export { createProviders, isCliProviderId, PROVIDER_LABELS, type CliProviders } from "./registry.js";

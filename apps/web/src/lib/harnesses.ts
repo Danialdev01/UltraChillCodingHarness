@@ -3,7 +3,7 @@ import type { ComponentType } from "react"
 import { ClaudeMark } from "@/components/icons/harness/claude"
 import { CodexMark } from "@/components/icons/harness/codex"
 import type { HarnessIconProps } from "@/components/icons/harness/types"
-import { UcchMark } from "@/components/icons/harness/ucch"
+import { OmpMark } from "@/components/icons/harness/omp"
 import { UnknownMark } from "@/components/icons/harness/unknown"
 
 /**
@@ -12,8 +12,8 @@ import { UnknownMark } from "@/components/icons/harness/unknown"
  * harness's name, mark and how its models read.
  *
  * `native` (the built-in OpenRouter loop) and `omp` are both UCCH's own
- * agent to the person using it -- the picker calls either "Custom" -- so they
- * share a harness. A new one (Gemini CLI, OpenCode) is a row here and a mark
+ * agent to the person using it -- the picker calls either "Default", with
+ * OMP's mark, since OMP serves it -- so they share a harness. A new one (Gemini CLI, OpenCode) is a row here and a mark
  * in `components/icons/harness/`.
  */
 export type HarnessId = "claude" | "codex" | "ucch"
@@ -68,9 +68,9 @@ export const HARNESSES: Record<HarnessId, HarnessDef> = {
   codex: { id: "codex", name: "Codex", icon: CodexMark, modelLabel: codexModelLabel },
   ucch: {
     id: "ucch",
-    name: "UCCH Agent",
-    icon: UcchMark,
-    modelLabel: (model) => `UCCH Agent · ${lastSegment(model)}`,
+    name: "Default",
+    icon: OmpMark,
+    modelLabel: (model) => `Default · ${lastSegment(model)}`,
   },
 }
 
@@ -106,6 +106,6 @@ export function sessionModelLabel(
   const harness = getHarness(provider)
   if (!model) return harness.name
   const named = names?.get(model)
-  if (named) return harness.id === "ucch" ? `UCCH Agent · ${named}` : named
+  if (named) return harness.id === "ucch" ? `Default · ${named}` : named
   return harness.modelLabel(model)
 }

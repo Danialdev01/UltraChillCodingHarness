@@ -72,8 +72,8 @@ describe("components use semantic colour tokens", () => {
         // The mark's teal dot is the brand, fixed on purpose; its navy
         // follows the theme through `currentColor`.
         ["logo-mark.tsx", 'fill="#377876"'],
-        // Claude's mark is its brand terracotta in either theme.
-        ["icons/harness/claude.tsx", 'fill="#D97757"'],
+        // Claude Code's generic mark keeps one warm tone in either theme.
+        ["icons/harness/claude.tsx", 'stroke="#D97757"'],
       ]),
     ).toEqual([])
   })

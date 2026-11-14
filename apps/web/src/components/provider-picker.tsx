@@ -8,8 +8,11 @@ import { Button } from "@/components/ui/button"
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
+  accountStatus,
+  fetchAccounts,
   fetchProviders,
   providerBlocker,
+  type AgentAccount,
   type ProviderCard,
   type ProviderId,
 } from "@/lib/providers-api"
@@ -39,6 +42,34 @@ export function useProviders(): ProvidersState {
   return state
 }
 
+/** The caller's own subscription accounts, fetched once per mount. Null until they land. */
+export function useAccounts(): { accounts: AgentAccount[] | null; reload: () => void } {
+  const [accounts, setAccounts] = React.useState<AgentAccount[] | null>(null)
+  const [generation, setGeneration] = React.useState(0)
+  React.useEffect(() => {
+    let cancelled = false
+    void fetchAccounts()
+      .then((list) => {
+        if (!cancelled) setAccounts(list)
+      })
+      .catch(() => {
+        // No accounts to pick from: every turn runs on the Default one.
+        if (!cancelled) setAccounts([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [generation])
+  return { accounts, reload: React.useCallback(() => setGeneration((g) => g + 1), []) }
+}
+
+/** Why an account cannot be picked now, or null. */
+function accountBlocker(account: AgentAccount): string | null {
+  if (account.limitedUntil) return accountStatus(account).label
+  if (account.authStatus !== "signed_in") return "Sign in to it in Settings -> Harness"
+  return null
+}
+
 const ORDER: ProviderId[] = ["native", "claude", "codex"]
 
 /**
@@ -59,6 +90,9 @@ export function ProviderSelect({
   locked,
   onChange,
   onSwitch,
+  accounts,
+  currentProfileId,
+  onAccount,
   disabled,
   look = "field",
 }: {
@@ -69,6 +103,16 @@ export function ProviderSelect({
   onChange: (id: ProviderId) => void
   /** Picking another harness on a bound thread switches the session to it. */
   onSwitch?: (id: ProviderId) => void
+  /**
+   * The person's subscription accounts. With more than one for the
+   * harness in use, the list offers them: on a bound session picking one
+   * moves it there (a person's choice, never the server's); before the
+   * first turn it is the account new turns here start on.
+   */
+  accounts?: AgentAccount[] | null
+  /** The account in use, when one is known. */
+  currentProfileId?: string | null
+  onAccount?: (account: AgentAccount) => void
   disabled?: boolean
   look?: PickerLook
 }) {
@@ -91,7 +135,7 @@ export function ProviderSelect({
               locked
                 ? onSwitch
                   ? `This session runs on ${cards?.[locked]?.label ?? locked}. Pick another harness to switch it, with a brief of the work so far.`
-                  : `This thread runs on ${cards?.[locked]?.label ?? locked}. Clear the context to switch.`
+                  : `This thread runs on ${cards?.[locked]?.label ?? locked}.`
                 : (blocker ?? `Harness: ${current?.label ?? value}`)
             }
           />
@@ -150,6 +194,35 @@ export function ProviderSelect({
                 )
               })}
             </CommandGroup>
+            {onAccount && (() => {
+              const own = (accounts ?? []).filter((a) => a.provider === value)
+              if (own.length < 2) return null
+              const current = currentProfileId ?? own.find((a) => a.isDefault)?.id
+              return (
+                <CommandGroup heading={locked ? "Move this session to account" : "Account"}>
+                  {own.map((account) => {
+                    const why = account.id === current ? null : accountBlocker(account)
+                    return (
+                      <CommandItem
+                        key={account.id}
+                        value={`account:${account.id}`}
+                        data-checked={account.id === current}
+                        disabled={why !== null}
+                        title={why ?? undefined}
+                        onSelect={() => {
+                          if (account.id !== current) onAccount(account)
+                          setOpen(false)
+                        }}
+                      >
+                        <span className="min-w-0 truncate">{account.label}</span>
+                        <span className="text-muted-foreground shrink-0 text-[10px] capitalize">{account.context}</span>
+                        {why && <span className="text-muted-foreground ml-auto min-w-0 truncate text-[10px]">{why}</span>}
+                      </CommandItem>
+                    )
+                  })}
+                </CommandGroup>
+              )
+            })()}
           </CommandList>
         </Command>
       </PopoverContent>

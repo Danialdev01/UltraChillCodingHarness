@@ -1,105 +1,88 @@
 "use client"
 
 import * as React from "react"
-import { EraserIcon, Loader2Icon } from "lucide-react"
+import { HandIcon, Loader2Icon } from "lucide-react"
 
-import { ConfirmDialog } from "@/components/confirm-dialog"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { contextPercent, contextUsage, formatContextTokens } from "@/lib/context-window"
+import { Button } from "@/components/ui/button"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import {
+  contextPercent,
+  contextUsage,
+  formatContextTokens,
+  HANDOVER_RATIO,
+} from "@/lib/context-window"
 
 /**
- * How full this conversation's context window is, and a way to empty it.
+ * How full this conversation's context window is, and a way to hand it over.
  *
- * The number is measured rather than guessed -- the last completed turn's
- * prompt plus its reply, as the provider counted them -- so it lags by one
- * turn and is right rather than live and approximate. The tooltip says so;
- * a meter that quietly showed an estimate would be worse than one that
- * admits when it last looked.
+ * One ring at every width: the share used, drawn round a circle with the
+ * percentage inside. Pressing it opens the reading and a hand -- a handover,
+ * which replaces the history with a brief of the work so far, on the same
+ * harness. There is no clearing: a handover keeps the work and drops the
+ * bloat, and the server makes one by itself once a turn ends past the
+ * handover line, so the session stays under it.
  *
- * A provider that measures its own session (OMP, `context.usage`) is read
- * live instead: after each model call, so the bar moves while the turn
- * runs and drops when the session compacts. Its compaction threshold, when
- * known, is a tick on the bar.
- *
- * In a narrow panel the bar and the eraser fold into one ring: the share
- * used, drawn round a circle with the percentage inside, and pressing it
- * asks whether to clear. A phone has no hover for the tooltip, and no room
- * for two controls where one will do.
+ * The number is the provider's own reading where it sends one (OMP, Claude
+ * Code: after each model call, so the ring moves while the turn runs) and
+ * otherwise the last completed turn's usage, which lags by one turn.
  */
 export function ContextMeter({
   tokens,
   limit,
   threshold = null,
   live = false,
-  onClear,
-  clearing,
+  onHandover,
+  handingOver,
   disabled,
+  disabledReason,
 }: {
   tokens: number | null
   limit: number | null
-  /** Where the provider compacts, in tokens, or null when it did not say. */
+  /** Where the session hands over or compacts, in tokens, or null when unknown. */
   threshold?: number | null
   /** The provider measured it after its last model call, not a turn's usage. */
   live?: boolean
-  onClear: () => void
-  clearing: boolean
-  /** No turn may start, so there is nothing to clear either. */
+  onHandover: () => void
+  /** A handover is being written. */
+  handingOver: boolean
+  /** No handover may start now. */
   disabled: boolean
+  /** Why, for the popover. */
+  disabledReason?: string | null
 }) {
-  const usage = contextUsage(tokens, limit, threshold)
+  const handoverAt = threshold ?? (limit ? Math.floor(limit * HANDOVER_RATIO) : null)
+  const usage = contextUsage(tokens, limit, handoverAt)
+  const [open, setOpen] = React.useState(false)
 
-  // Clearing loses the visible conversation, so the button asks once. A
-  // second click within a few seconds does it; anything else puts it back.
-  // Cheaper than a dialog for something that destroys nothing on the server.
-  const [armed, setArmed] = React.useState(false)
-  React.useEffect(() => {
-    if (!armed) return
-    const timer = setTimeout(() => setArmed(false), 4000)
-    return () => clearTimeout(timer)
-  }, [armed])
-
-  const fill =
-    usage.tone === "full"
-      ? "bg-destructive"
-      : usage.tone === "warn"
-        ? "bg-warning"
-        : "bg-ucch-active"
   const stroke =
     usage.tone === "full"
       ? "text-destructive"
       : usage.tone === "warn"
         ? "text-warning"
         : "text-ucch-active"
-
-  const [confirming, setConfirming] = React.useState(false)
   const percent = usage.ratio === null ? null : contextPercent(usage.ratio)
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={() => setConfirming(true)}
-        disabled={disabled || clearing}
-        title={
-          usage.ratio === null
-            ? `Context: ${usage.label}. Press to clear.`
-            : `Context ${percent}% full (${usage.label} tokens). Press to clear.`
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            title={
+              usage.ratio === null
+                ? `Context: ${usage.label}`
+                : `Context ${percent}% full (${usage.label} tokens)`
+            }
+            className="hover:bg-muted relative flex size-7 shrink-0 items-center justify-center rounded-full"
+          />
         }
-        className="hover:bg-muted relative flex size-7 shrink-0 items-center justify-center rounded-full disabled:opacity-50 @md:hidden"
       >
-        {clearing ? (
+        {handingOver ? (
           <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
         ) : (
           <>
             <svg viewBox="0 0 24 24" className="size-6 -rotate-90" aria-hidden>
-              <circle
-                cx="12"
-                cy="12"
-                r="10"
-                fill="none"
-                strokeWidth="2.5"
-                className="stroke-muted"
-              />
+              <circle cx="12" cy="12" r="10" fill="none" strokeWidth="2.5" className="stroke-muted" />
               {/* Nothing drawn at zero: a round cap on an empty arc is a stray dot. */}
               {(percent ?? 0) > 0 && (
                 <circle
@@ -124,107 +107,52 @@ export function ContextMeter({
             </span>
           </>
         )}
-        <span className="sr-only">Clear the context window</span>
-      </button>
+        <span className="sr-only">Context window</span>
+      </PopoverTrigger>
 
-      <ConfirmDialog
-        open={confirming}
-        onOpenChange={setConfirming}
-        title="Do you want to clear your context?"
-        description="The next message starts a fresh conversation with no history. The current one is kept in the project's log."
-        confirmLabel="Yes"
-        onConfirm={async () => onClear()}
-      />
+      <PopoverContent align="end" side="top" className="w-72 p-3">
+        <p className="text-sm font-medium">Context window</p>
+        <p className="text-muted-foreground mt-1 text-xs">
+          {usage.tokens === null
+            ? "Nothing measured yet — the first reply will fill this in."
+            : usage.limit === null
+              ? `${formatContextTokens(usage.tokens)} tokens in this conversation. This model publishes no window size.`
+              : `${usage.label} tokens used (${percent}%).`}
+        </p>
+        {handoverAt !== null && usage.limit !== null && (
+          <p className="text-muted-foreground text-xs">
+            Hands over by itself at {formatContextTokens(handoverAt)} tokens (
+            {Math.round((handoverAt / usage.limit) * 100)}%).
+          </p>
+        )}
+        {usage.tokens !== null && (
+          <p className="text-muted-foreground text-xs">
+            {live
+              ? "Measured by the session after the model's last call."
+              : "Counted at the last completed turn, so it lags the newest message."}
+          </p>
+        )}
 
-      <div className="hidden items-center gap-1.5 @md:flex">
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              // A div, not a button: there is nothing to press here, and a
-              // button would take a tab stop for a readout.
-              <div className="flex cursor-default items-center gap-1.5" />
-            }
-          >
-            <div className="bg-muted relative h-1.5 w-6 overflow-hidden rounded-full @md:w-16">
-              <div
-                className={`h-full rounded-full transition-[width] duration-500 ${fill}`}
-                style={{ width: `${(usage.ratio ?? 0) * 100}%` }}
-              />
-              {usage.thresholdRatio !== null && (
-                <div
-                  aria-hidden
-                  className="bg-foreground/50 absolute inset-y-0 w-px"
-                  style={{ left: `${usage.thresholdRatio * 100}%` }}
-                />
-              )}
-            </div>
-            <span className="text-muted-foreground hidden font-mono text-[10px] tabular-nums @md:inline">
-              {usage.ratio === null ? usage.label : `${contextPercent(usage.ratio)}%`}
-            </span>
-          </TooltipTrigger>
-
-          <TooltipContent>
-            <p className="font-medium">Context window</p>
-            <p className="text-xs">
-              {usage.tokens === null
-                ? "Nothing measured yet — the first reply will fill this in."
-                : usage.limit === null
-                  ? `${formatContextTokens(usage.tokens)} tokens in this conversation. This model publishes no window size.`
-                  : `${usage.label} tokens used.`}
-            </p>
-            {threshold !== null && usage.limit !== null && (
-              <p className="text-xs">Compacts at {formatContextTokens(threshold)} tokens.</p>
-            )}
-            {usage.tokens !== null && (
-              <p className="text-xs">
-                {live
-                  ? "Measured by the session after the model's last call."
-                  : "Counted at the last completed turn, so it lags the newest message."}
-              </p>
-            )}
-          </TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                onClick={() => {
-                  if (armed) {
-                    setArmed(false)
-                    onClear()
-                  } else {
-                    setArmed(true)
-                  }
-                }}
-                disabled={disabled || clearing}
-                className={`flex h-7 items-center gap-1 rounded-md px-1.5 text-xs disabled:opacity-50 ${
-                  armed
-                    ? "text-destructive bg-danger-soft"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                }`}
-              />
-            }
-          >
-            {clearing ? (
-              <Loader2Icon className="size-3.5 animate-spin" />
-            ) : (
-              <EraserIcon className="size-3.5" />
-            )}
-            {armed && <span>Clear</span>}
-            <span className="sr-only">Clear the context window</span>
-          </TooltipTrigger>
-
-          <TooltipContent>
-            <p className="font-medium">Clear the context window</p>
-            <p className="text-xs">
-              Starts a fresh conversation, so the next message goes to the model with no history.
-              The current one is kept in the project&apos;s log, but leaves this view.
-            </p>
-          </TooltipContent>
-        </Tooltip>
-      </div>
-    </>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-3 w-full justify-start gap-2"
+          disabled={disabled || handingOver}
+          onClick={() => {
+            setOpen(false)
+            onHandover()
+          }}
+        >
+          {handingOver ? <Loader2Icon className="size-4 animate-spin" /> : <HandIcon className="size-4" />}
+          Create a handover
+        </Button>
+        <p className="text-muted-foreground mt-1.5 text-xs">
+          {disabled && disabledReason
+            ? disabledReason
+            : "Replaces the history with a brief of the work so far, on the same harness. The transcript stays on screen."}
+        </p>
+      </PopoverContent>
+    </Popover>
   )
 }

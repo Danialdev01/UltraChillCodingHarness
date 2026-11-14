@@ -64,7 +64,7 @@ export function Segmented<T extends string>({
       aria-labelledby={labelledBy}
       data-slot="segmented"
       className={cn(
-        "bg-muted/60 inline-flex max-w-full items-center gap-0.5 rounded-lg border p-0.5",
+        "bg-muted/60 light:bg-sidebar inline-flex max-w-full items-center gap-0.5 rounded-lg border p-0.5",
         className,
       )}
     >
@@ -90,7 +90,7 @@ export function Segmented<T extends string>({
               "focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
               size === "sm" ? "h-6 px-2 text-xs" : "h-7 px-2.5 text-xs",
               checked
-                ? "bg-background text-foreground border-border shadow-xs"
+                ? "bg-background text-foreground border-border shadow-xs light:border-border-strong light:shadow-rest light:font-semibold light:[&>svg]:text-primary"
                 : "text-muted-foreground hover:text-foreground border-transparent",
             )}
           >

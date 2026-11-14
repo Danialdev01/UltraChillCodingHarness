@@ -54,19 +54,19 @@ export type SyntaxTheme = Record<SyntaxRole, string>
 export const DEFAULT_SYNTAX_LIGHT: SyntaxTheme = {
   keyword: "#7c3aed",
   string: "#a31515",
-  number: "#0f766e",
-  comment: "#626977",
+  number: "#007068",
+  comment: "#5e6573",
   function: "#1d4ed8",
   variable: "#1f2937",
-  property: "#0e7490",
-  type: "#ad4e00",
+  property: "#006e8a",
+  type: "#a44a00",
   operator: "#374151",
-  punctuation: "#626977",
+  punctuation: "#5e6573",
   tag: "#166534",
   attribute: "#92400e",
   heading: "#1d4ed8",
   link: "#0369a1",
-  invalid: "#d1141b",
+  invalid: "#cc0515",
 }
 
 export const DEFAULT_SYNTAX_DARK: SyntaxTheme = {

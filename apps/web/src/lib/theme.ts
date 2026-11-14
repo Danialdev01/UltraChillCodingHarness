@@ -27,6 +27,7 @@ import {
   clampHue,
   contrast,
   DEFAULT_ACCENT,
+  DEFAULT_ACCENT_LIGHT,
   defaultTokens,
   hexToOklch,
   luminance,
@@ -128,7 +129,7 @@ export function resolveMode(mode: ThemeMode, prefersDark: boolean): Mode {
 }
 
 /** The accent a seed or slider choice resolves to. */
-export function accentOf(source: ThemeSource): { hue: number; chroma: number } {
+export function accentOf(source: ThemeSource, mode: Mode = "dark"): { hue: number; chroma: number } {
   if (source.kind === "seed") {
     const fromSeed = seedToAccent(source.seed)
     return source.hue === undefined ? fromSeed : { hue: clampHue(source.hue), chroma: fromSeed.chroma }
@@ -137,7 +138,8 @@ export function accentOf(source: ThemeSource): { hue: number; chroma: number } {
     const { h, c } = hexToOklch(normalizeHex(source.accent, DEFAULT_THEME.accent))
     return { hue: h, chroma: c }
   }
-  return DEFAULT_ACCENT
+  // The shipped light accent is the light guideline's teal; dark keeps its blue.
+  return mode === "light" ? DEFAULT_ACCENT_LIGHT : DEFAULT_ACCENT
 }
 
 const tokenCache = new Map<string, BuiltTokens>()

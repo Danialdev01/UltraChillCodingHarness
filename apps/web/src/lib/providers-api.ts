@@ -24,7 +24,6 @@ export interface ProviderCard {
   enabled: boolean;
   /** `efforts`: the levels the model takes. Absent, it offers no effort control. */
   models: { id: string; name: string; efforts?: ReasoningEffort[] }[];
-  token?: { configured: boolean; issuedAt: string | null; expiresSoon: boolean };
 }
 
 export interface ProvidersResponse {
@@ -60,17 +59,6 @@ export async function fetchProviders(fresh = false, workspaceId?: string): Promi
   return check(
     await fetch(scoped("/api/providers", { fresh: fresh ? "1" : undefined, workspace: workspaceId }), {
       credentials: "include",
-    }),
-  );
-}
-
-export async function saveClaudeToken(token: string | null, workspaceId?: string): Promise<void> {
-  await check(
-    await fetch(workspaceId ? `/api/workspaces/${workspaceId}/credentials/claude-token` : "/api/settings/claude-token", {
-      method: "PUT",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(workspaceId ? { value: token } : { token }),
     }),
   );
 }
@@ -142,4 +130,138 @@ export async function clearOmpMemory(projectId: string, workspaceId?: string): P
       credentials: "include",
     }),
   );
+}
+
+// -- Subscription accounts (profiles) ----------------------------------------
+
+export type AccountProvider = "claude" | "codex"
+export type AccountContext = "personal" | "work"
+
+/** One Claude Code or Codex login, as Settings → Harness lists it. */
+export interface AgentAccount {
+  id: string
+  provider: AccountProvider
+  label: string
+  context: AccountContext
+  isDefault: boolean
+  authStatus: "unknown" | "signed_in" | "signed_out"
+  /** ISO while the plan's limit holds; null otherwise. */
+  limitedUntil: string | null
+  /** The reset time is a guess: the CLI gave none. */
+  limitEstimated: boolean
+  lastUsedAt: string | null
+  installed: boolean
+  authenticated: boolean
+  authMode: ProviderCard["authMode"]
+  account?: string
+  error?: string
+  warnings?: string[]
+  quota: { status: string; windows?: { id: string; label: string; usedPercent: number; resetsAt: string | null }[]; checkedAt?: string } | null
+}
+
+export async function fetchAccounts(workspaceId?: string, fresh = false): Promise<AgentAccount[]> {
+  const body = await check<{ profiles: AgentAccount[] }>(
+    await fetch(scoped("/api/agent-profiles", { workspace: workspaceId, fresh: fresh ? "1" : undefined }), {
+      credentials: "include",
+      cache: "no-store",
+    }),
+  )
+  return body.profiles
+}
+
+export async function createAccount(
+  input: { provider: AccountProvider; label: string; context: AccountContext },
+  workspaceId?: string,
+): Promise<AgentAccount> {
+  const body = await check<{ profile: AgentAccount }>(
+    await fetch(scoped("/api/agent-profiles", { workspace: workspaceId }), {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  )
+  return body.profile
+}
+
+export async function updateAccount(
+  id: string,
+  patch: { label?: string; context?: AccountContext },
+  workspaceId?: string,
+): Promise<void> {
+  await check(
+    await fetch(scoped(`/api/agent-profiles/${encodeURIComponent(id)}`, { workspace: workspaceId }), {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  )
+}
+
+export async function deleteAccount(id: string, workspaceId?: string): Promise<void> {
+  await check(
+    await fetch(scoped(`/api/agent-profiles/${encodeURIComponent(id)}`, { workspace: workspaceId }), {
+      method: "DELETE",
+      credentials: "include",
+    }),
+  )
+}
+
+export async function signOutAccount(id: string, workspaceId?: string): Promise<void> {
+  await check(
+    await fetch(scoped(`/api/agent-profiles/${encodeURIComponent(id)}/credentials`, { workspace: workspaceId }), {
+      method: "DELETE",
+      credentials: "include",
+    }),
+  )
+}
+
+/** A project's account settings: the caller's defaults, and which context it requires. */
+export interface ProjectAccounts {
+  requiredContext: AccountContext | null
+  defaults: Partial<Record<AccountProvider, string>>
+  canManage: boolean
+}
+
+export async function fetchProjectAccounts(projectHash: string): Promise<ProjectAccounts> {
+  return check(
+    await fetch(`/api/projects/${encodeURIComponent(projectHash)}/accounts`, { credentials: "include", cache: "no-store" }),
+  )
+}
+
+export async function saveProjectDefaultAccount(projectHash: string, provider: AccountProvider, profileId: string | null): Promise<void> {
+  await check(
+    await fetch(`/api/projects/${encodeURIComponent(projectHash)}/accounts/default/${provider}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileId }),
+    }),
+  )
+}
+
+export async function saveProjectRequiredContext(projectHash: string, context: AccountContext | null): Promise<void> {
+  await check(
+    await fetch(`/api/projects/${encodeURIComponent(projectHash)}/accounts/required-context`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ context }),
+    }),
+  )
+}
+
+/** "Signed in", "Limited until 14:05", "Signed out": an account's state in a few words. */
+export function accountStatus(account: Pick<AgentAccount, "authStatus" | "limitedUntil" | "limitEstimated">): {
+  label: string
+  tone: "ok" | "warn" | "muted"
+} {
+  if (account.limitedUntil) {
+    const at = new Date(account.limitedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    return { label: `Limited until ${account.limitEstimated ? "~" : ""}${at}`, tone: "warn" }
+  }
+  if (account.authStatus === "signed_in") return { label: "Signed in", tone: "ok" }
+  if (account.authStatus === "signed_out") return { label: "Signed out", tone: "warn" }
+  return { label: "Not checked", tone: "muted" }
 }

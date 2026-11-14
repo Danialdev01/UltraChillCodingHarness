@@ -16,6 +16,7 @@ import { BootstrapSeed } from "@/lib/queries/bootstrap"
 import { QueryProvider } from "@/lib/query-client"
 import { getBootstrap } from "@/lib/session"
 import { ActiveWorkspaceProvider } from "@/lib/workspace-context"
+import { ResourcesPanelProvider } from "@/lib/resources-panel"
 
 /**
  * The authenticated chrome every page inside the app renders into: the
@@ -78,6 +79,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
         <RealtimeProvider>
           <ViewerProvider name={session.name ?? session.login ?? "User"}>
             <FilesPanelProvider>
+              <ResourcesPanelProvider>
               <AppSidebar
                 user={{
                   name: session.name ?? session.login ?? "User",
@@ -120,6 +122,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
                   <RightSidebar />
                 </div>
               </SidebarInset>
+              </ResourcesPanelProvider>
             </FilesPanelProvider>
           </ViewerProvider>
         </RealtimeProvider>

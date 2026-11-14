@@ -58,6 +58,8 @@ export interface RunContext {
 export interface ProviderRunInput {
   /** Continue this native worker through its owning harness session. */
   subagentId?: string;
+  /** Claude Code: the agentId that worker is continued by (`SendMessage`). */
+  subagentHandle?: string;
   ctx: RunContext;
   prompt: string;
   projectId: string;
@@ -193,6 +195,13 @@ export interface ProviderModel {
   efforts?: readonly ReasoningEffort[];
 }
 
+/** A plan's usage windows, 0-100, as the CLI reported them. */
+export interface ProviderRateLimits {
+  windows: { id: "session" | "weekly"; usedPercent: number; resetsAt: string | null; minutes?: number }[];
+  /** The CLI says the plan's limit is reached. */
+  limited: boolean;
+}
+
 export interface AgentProvider {
   readonly id: CliProviderId;
   readonly label: string;
@@ -202,6 +211,12 @@ export interface AgentProvider {
   listModels?(ctx: RunContext): Promise<readonly ProviderModel[]>;
   /** Is this provider usable in this context for this user right now? */
   probe(ctx: RunContext): Promise<ProviderHealth>;
+  /**
+   * The account's plan usage, asked of the CLI itself (never of the vendor
+   * with the login's token). Absent: the CLI has no way to say outside a
+   * turn, and the reading comes from the turn's own stream instead.
+   */
+  rateLimits?(ctx: RunContext): Promise<ProviderRateLimits>;
   /** Start or resume a turn. */
   run(input: ProviderRunInput): AgentRun;
 }

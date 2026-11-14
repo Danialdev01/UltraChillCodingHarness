@@ -112,15 +112,6 @@ export const users = pgTable("users", {
    */
   agentPermissionMode: text("agent_permission_mode"),
   /**
-   * A `claude setup-token` OAuth token, encrypted at rest. The headless
-   * alternative to signing the CLI in from a terminal: injected as
-   * `CLAUDE_CODE_OAUTH_TOKEN` for exactly one spawn and never read otherwise.
-   * One-year lifetime, hence the issue date beside it -- the settings page
-   * warns at eleven months.
-   */
-  claudeOauthTokenEncrypted: text("claude_oauth_token_encrypted"),
-  claudeTokenIssuedAt: timestamp("claude_token_issued_at", { withTimezone: true }),
-  /**
    * `sessions` or `projects`: how the sidebar lists a project workspace's
    * sessions. Null is `projects`. Mirrored in the browser's localStorage so
    * the first paint does not wait on it.
@@ -171,13 +162,12 @@ export const workspaces = pgTable(
      */
     credentialPolicy: text("credential_policy").notNull().default("member"),
     /**
-     * The workspace's dedicated OpenRouter key and `claude setup-token`
-     * token, encrypted at rest the way the per-user columns are and never
-     * returned to a client. CLI logins live under `CREDS_ROOT/ws-<id>/`.
+     * The workspace's dedicated OpenRouter key, encrypted at rest the way
+     * the per-user columns are and never returned to a client. CLI logins
+     * live under `CREDS_ROOT/ws-<id>/`, written only by the CLIs' own
+     * sign-in: the server holds no Claude token (migration 0038).
      */
     openrouterKeyEncrypted: text("openrouter_key_encrypted"),
-    claudeOauthTokenEncrypted: text("claude_oauth_token_encrypted"),
-    claudeTokenIssuedAt: timestamp("claude_token_issued_at", { withTimezone: true }),
     /**
      * How the workspace's agents run beyond who pays: `WorkspaceAgentSettings`
      * (automatic handoff, and the OMP toggles as they arrive). Read with
@@ -327,6 +317,11 @@ export const projects = pgTable(
      * the debugger. Off for every clone until someone says otherwise.
      */
     ompTrusted: boolean("omp_trusted").notNull().default(false),
+    /**
+     * `work` or `personal`: only a subscription account tagged so may run
+     * this project's turns. Null accepts any account.
+     */
+    requiredContext: text("required_context"),
     lastActiveAt: timestamp("last_active_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -374,6 +369,12 @@ export const threads = pgTable(
      * run on the workspace owner's account as they always did.
      */
     credentialSource: text("credential_source"),
+    /**
+     * The subscription account (`agent_profiles`) this thread's Claude Code
+     * or Codex turns sign in as. Null: the project's default for the person,
+     * else the subject's Default account.
+     */
+    profileId: uuid("profile_id").references((): AnyPgColumn => agentProfiles.id, { onDelete: "set null" }),
     /** The session's address in the web app, `/{ws}/p/{project}/{hash}`. */
     hash: text("hash").notNull().unique(),
     /**
@@ -659,6 +660,39 @@ export const databaseConnections = pgTable(
 );
 
 /**
+ * An S3 bucket (or any S3-compatible service) the workspace keeps shared
+ * Resources in, beside its own disk storage -- which is built in and has no
+ * row. The secret key is stored like a database password: AES-256-GCM under
+ * `SECRET_KEY`, decrypted only for the moment a request is signed.
+ */
+export const resourceStores = pgTable(
+  "resource_stores",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** `s3`; the route validates, the column does not. */
+    kind: text("kind").notNull(),
+    name: text("name").notNull(),
+    config: jsonb("config")
+      .$type<{
+        endpoint: string | null;
+        region: string;
+        bucket: string;
+        prefix: string;
+        forcePathStyle: boolean;
+        accessKeyId: string;
+      }>()
+      .notNull(),
+    secretEncrypted: text("secret_encrypted").notNull(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("resource_stores_workspace_idx").on(t.workspaceId)],
+);
+
+/**
  * A project's notes: a tree of pages, Notion-style.
  *
  * Plain state rather than a projection of `events`: a note is edited in place
@@ -856,6 +890,62 @@ export const accountKeys = pgTable(
 
 export type AccountKey = typeof accountKeys.$inferSelect;
 
+/**
+ * A named Claude Code or Codex subscription login: several per subject (a
+ * user, or `ws-<id>`) and provider, e.g. "Work" and "Personal". Each is its
+ * own folder under `CREDS_ROOT/<subject>/<dir_name>`, written only by the
+ * CLI's own sign-in; this row holds nothing the CLI wrote, only the label
+ * and what the harness observed (signed in or not, when a limit lifts).
+ *
+ * The Default account's folder is `<provider>` itself, the one every login
+ * used before profiles; its row is made the first time it is listed.
+ */
+export const agentProfiles = pgTable(
+  "agent_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    subject: text("subject").notNull(),
+    /** `claude` or `codex`. */
+    provider: text("provider").notNull(),
+    label: text("label").notNull(),
+    /** `personal` or `work`. */
+    context: text("context").notNull().default("personal"),
+    dirName: text("dir_name").notNull(),
+    /** unknown | signed_in | signed_out, from the CLI's own status check. */
+    authStatus: text("auth_status").notNull().default("unknown"),
+    /** Set when a turn hit the plan limit; limited while it is in the future. */
+    limitResetsAt: timestamp("limit_resets_at", { withTimezone: true }),
+    /** True when the CLI gave no reset time and `limit_resets_at` is a guess. */
+    limitEstimated: boolean("limit_estimated").notNull().default(false),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("agent_profiles_label_idx").on(t.subject, t.provider, t.label),
+    uniqueIndex("agent_profiles_dir_idx").on(t.subject, t.dirName),
+  ],
+);
+
+export type AgentProfile = typeof agentProfiles.$inferSelect;
+
+/** The account a person's new sessions in a project use, per provider. */
+export const projectProfileDefaults = pgTable(
+  "project_profile_defaults",
+  {
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    profileId: uuid("profile_id")
+      .notNull()
+      .references(() => agentProfiles.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.projectId, t.userId, t.provider] })],
+);
+
 /** Server-side sessions for the web UI; WebSocket tickets are derived from these. */
 export const sessions = pgTable(
   "sessions",
@@ -928,6 +1018,7 @@ export type Preview = typeof previews.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type DatabaseConnection = typeof databaseConnections.$inferSelect;
+export type ResourceStoreRow = typeof resourceStores.$inferSelect;
 
 /**
  * What people changed in a project, newest first on its Activity page.

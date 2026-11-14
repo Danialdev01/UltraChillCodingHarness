@@ -9,7 +9,7 @@ describe("getHarness", () => {
     // The native loop and OMP are both UCCH's own agent.
     expect(getHarness("native").id).toBe("ucch")
     expect(getHarness("omp").id).toBe("ucch")
-    expect(getHarness("ucch").name).toBe("UCCH Agent")
+    expect(getHarness("ucch").name).toBe("Default")
   })
 
   it("falls back to a generic agent for anything else", () => {
@@ -40,8 +40,8 @@ describe("model labels", () => {
 
   it("names a session's model with its harness", () => {
     expect(sessionModelLabel("claude", "claude-opus-5-5")).toBe("Opus 5.5")
-    expect(sessionModelLabel("omp", "openrouter/qwen/qwen3-coder")).toBe("UCCH Agent · qwen3-coder")
-    expect(sessionModelLabel("native", "x/y", new Map([["x/y", "Qwen3 Coder"]]))).toBe("UCCH Agent · Qwen3 Coder")
+    expect(sessionModelLabel("omp", "openrouter/qwen/qwen3-coder")).toBe("Default · qwen3-coder")
+    expect(sessionModelLabel("native", "x/y", new Map([["x/y", "Qwen3 Coder"]]))).toBe("Default · Qwen3 Coder")
     expect(sessionModelLabel("codex", null)).toBe("Codex")
     expect(sessionModelLabel(null, null)).toBe("Agent")
   })

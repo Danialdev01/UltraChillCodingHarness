@@ -11,7 +11,6 @@ import {
   ExternalLinkIcon,
   EyeIcon,
   EyeOffIcon,
-  KeyRoundIcon,
   Loader2Icon,
   LogInIcon,
   RotateCcwIcon,
@@ -33,14 +32,12 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { XtermPane } from "@/components/xterm-pane"
 import {
   checkAuthCode,
-  checkSetupToken,
   detectOutcome,
   extractOAuthUrl,
   hasCodePrompt,
   sanitizeSecret,
 } from "@/lib/claude-login"
 import { copyText } from "@/lib/clipboard"
-import { saveClaudeToken } from "@/lib/providers-api"
 import { cn } from "@/lib/utils"
 
 /** A sign-in left open this long is given up on: the CLI is killed. */
@@ -81,8 +78,9 @@ interface Failure {
  * PTY itself. The terminal is still there, folded away, for when the CLI
  * says something the parser does not expect.
  *
- * The other way in is a setup token from `claude setup-token`, saved through
- * the same route as the field on the provider card.
+ * This is the only way in: the server holds no Claude token of its own
+ * (Claude Code legal and compliance). The CLI writes its login into its
+ * config directory, and the server never reads it.
  *
  * Neither the address nor the code is ever logged: they live in React state
  * and the PTY, nowhere else.
@@ -90,7 +88,7 @@ interface Failure {
 export function ClaudeLoginDialog({
   projectId,
   credentialWorkspaceId,
-  encryptionAvailable,
+  profileId,
   open,
   onOpenChange,
   onSignedIn,
@@ -98,14 +96,13 @@ export function ClaudeLoginDialog({
   projectId: string
   /** Sign in this workspace's dedicated subscription instead of your own. */
   credentialWorkspaceId?: string
-  /** Without SECRET_KEY the server refuses to store a token. */
-  encryptionAvailable: boolean
+  /** Which of the subject's subscription accounts to sign in; absent, its Default. */
+  profileId?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Signed in, or the CLI exited: time to look at the provider card again. */
   onSignedIn: () => void
 }) {
-  const [mode, setMode] = React.useState<"login" | "token">("login")
   // Focus starts on the dialog itself, not its first field: on a phone a
   // focused input opens the keyboard before there is anything to type.
   const popupRef = React.useRef<HTMLDivElement>(null)
@@ -117,24 +114,14 @@ export function ClaudeLoginDialog({
         initialFocus={popupRef}
         className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl [&>*]:min-w-0"
       >
-        {mode === "login" ? (
-          <BrowserSignIn
-            projectId={projectId}
-            credentialWorkspaceId={credentialWorkspaceId}
-            open={open}
-            onClose={() => onOpenChange(false)}
-            onSignedIn={onSignedIn}
-            onUseToken={() => setMode("token")}
-          />
-        ) : (
-          <TokenSignIn
-            workspaceId={credentialWorkspaceId}
-            encryptionAvailable={encryptionAvailable}
-            onClose={() => onOpenChange(false)}
-            onSignedIn={onSignedIn}
-            onUseBrowser={() => setMode("login")}
-          />
-        )}
+        <BrowserSignIn
+          projectId={projectId}
+          credentialWorkspaceId={credentialWorkspaceId}
+          profileId={profileId}
+          open={open}
+          onClose={() => onOpenChange(false)}
+          onSignedIn={onSignedIn}
+        />
       </DialogContent>
     </Dialog>
   )
@@ -143,17 +130,18 @@ export function ClaudeLoginDialog({
 function BrowserSignIn({
   projectId,
   credentialWorkspaceId,
+  profileId,
   open,
   onClose,
   onSignedIn,
-  onUseToken,
 }: {
   projectId: string
   credentialWorkspaceId?: string
+  /** Which of the subject's subscription accounts to sign in; absent, its Default. */
+  profileId?: string
   open: boolean
   onClose: () => void
   onSignedIn: () => void
-  onUseToken: () => void
 }) {
   const [generation, setGeneration] = React.useState(0)
   const [phase, setPhaseState] = React.useState<Phase>("starting")
@@ -256,6 +244,7 @@ function BrowserSignIn({
     program: "claude-login",
     projectId,
     credentialWorkspaceId,
+    profileId,
     active: open,
     generation,
     onData,
@@ -585,13 +574,7 @@ function BrowserSignIn({
       )}
 
       <div className="flex flex-col gap-3 border-t pt-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <Button variant="link" className="h-auto min-h-9 px-0" onClick={onUseToken}>
-            <KeyRoundIcon />
-            Use a setup token instead
-          </Button>
-          <p className="text-muted-foreground text-xs">Closing this window ends the sign-in.</p>
-        </div>
+        <p className="text-muted-foreground text-xs">Closing this window ends the sign-in.</p>
         <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
           <CollapsibleTrigger
             render={<Button variant="ghost" size="sm" className="text-muted-foreground -ml-2" />}
@@ -614,189 +597,6 @@ function BrowserSignIn({
             </div>
           </CollapsibleContent>
         </Collapsible>
-      </div>
-    </>
-  )
-}
-
-function TokenSignIn({
-  workspaceId,
-  encryptionAvailable,
-  onClose,
-  onSignedIn,
-  onUseBrowser,
-}: {
-  workspaceId?: string
-  encryptionAvailable: boolean
-  onClose: () => void
-  onSignedIn: () => void
-  onUseBrowser: () => void
-}) {
-  const [token, setToken] = React.useState("")
-  const [show, setShow] = React.useState(false)
-  const [busy, setBusy] = React.useState(false)
-  const [saved, setSaved] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
-  const [clipboardNote, setClipboardNote] = React.useState<string | null>(null)
-  const busyRef = React.useRef(false)
-  const inputRef = React.useRef<HTMLInputElement>(null)
-
-  React.useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
-
-  React.useEffect(() => {
-    if (!saved) return
-    const timer = setTimeout(onClose, SUCCESS_CLOSE_MS)
-    return () => clearTimeout(timer)
-  }, [saved, onClose])
-
-  async function paste() {
-    setClipboardNote(null)
-    try {
-      if (!globalThis.navigator?.clipboard?.readText) throw new Error("unavailable")
-      const clean = sanitizeSecret(await globalThis.navigator.clipboard.readText())
-      if (!clean) setClipboardNote("The clipboard is empty.")
-      else setToken(clean)
-    } catch {
-      setClipboardNote("Your browser didn't allow reading the clipboard. Click the field and press Ctrl+V (⌘V on a Mac).")
-    }
-    inputRef.current?.focus()
-  }
-
-  async function save(event: React.FormEvent) {
-    event.preventDefault()
-    if (!token || busyRef.current || saved || !encryptionAvailable) return
-    busyRef.current = true
-    setBusy(true)
-    setError(null)
-    try {
-      await saveClaudeToken(token, workspaceId)
-      setSaved(true)
-      onSignedIn()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save the token.")
-    } finally {
-      busyRef.current = false
-      setBusy(false)
-    }
-  }
-
-  const check = checkSetupToken(token)
-
-  return (
-    <>
-      <DialogHeader>
-        <DialogTitle>Sign in with a setup token</DialogTitle>
-        <DialogDescription>
-          Run <code className="font-mono">claude setup-token</code> on your own machine and paste the long-lived
-          token it prints. The server stores it encrypted and uses it for each run. It lasts a year.
-        </DialogDescription>
-      </DialogHeader>
-
-      <p role="status" aria-live="polite" className="sr-only">
-        {saved ? "Token saved. Signed in to Claude Code." : busy ? "Saving the token…" : (error ?? "")}
-      </p>
-
-      {saved ? (
-        <div className="flex flex-col items-center gap-2 rounded-lg border px-4 py-8 text-center">
-          <CheckCircle2Icon className="text-ucch-active size-8" aria-hidden />
-          <p className="text-base font-medium">Token saved</p>
-          <p className="text-muted-foreground text-sm">Closing…</p>
-        </div>
-      ) : !encryptionAvailable ? (
-        <p className="text-muted-foreground text-sm">
-          <code className="font-mono">SECRET_KEY</code> is not configured on this server, so a token cannot be stored.
-          Sign in with the browser instead.
-        </p>
-      ) : (
-        <form onSubmit={save} className="flex flex-col gap-2">
-          <label htmlFor="claude-setup-token" className="text-sm font-medium">
-            Setup token
-          </label>
-          <div className="relative">
-            <Input
-              ref={inputRef}
-              id="claude-setup-token"
-              name="claude-setup-token"
-              type={show ? "text" : "password"}
-              value={token}
-              onChange={(e) => {
-                setToken(sanitizeSecret(e.target.value))
-                setClipboardNote(null)
-                setError(null)
-              }}
-              placeholder="sk-ant-oat01-…"
-              autoComplete="off"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              enterKeyHint="done"
-              data-1p-ignore
-              data-lpignore="true"
-              aria-describedby="claude-setup-token-hint"
-              readOnly={busy}
-              className="h-11 pr-11 font-mono text-base md:text-base"
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="absolute top-1/2 right-1.5 size-8 -translate-y-1/2"
-              onClick={() => setShow((s) => !s)}
-              aria-label={show ? "Hide token" : "Show token"}
-              aria-pressed={show}
-              aria-controls="claude-setup-token"
-            >
-              {show ? <EyeOffIcon /> : <EyeIcon />}
-            </Button>
-          </div>
-          <div id="claude-setup-token-hint" className="flex min-h-5 flex-wrap items-center gap-x-3 text-xs">
-            {clipboardNote ? (
-              <span className="text-warning">{clipboardNote}</span>
-            ) : token && check.hint ? (
-              <span className="text-warning">{check.hint}</span>
-            ) : token ? (
-              <span className="text-ucch-active flex items-center gap-1">
-                <CheckIcon className="size-3.5" aria-hidden />
-                Looks like a setup token
-              </span>
-            ) : (
-              <span className="text-muted-foreground">Starts with sk-ant-oat01-.</span>
-            )}
-            {token && <span className="text-muted-foreground tabular-nums">{token.length} characters</span>}
-          </div>
-          {error && (
-            <p className="text-destructive flex gap-2 text-sm">
-              <AlertCircleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-              {error}
-            </p>
-          )}
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Button type="submit" size="lg" className="h-11 px-4 sm:h-9" disabled={!token || busy}>
-              {busy ? <Loader2Icon className="animate-spin" /> : <KeyRoundIcon />}
-              {busy ? "Saving…" : "Save token"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="lg"
-              className="h-11 px-4 sm:h-9"
-              onClick={() => void paste()}
-              disabled={busy}
-            >
-              <ClipboardPasteIcon />
-              Paste from clipboard
-            </Button>
-          </div>
-        </form>
-      )}
-
-      <div className="border-t pt-3">
-        <Button variant="link" className="h-auto min-h-9 px-0" onClick={onUseBrowser}>
-          <LogInIcon />
-          Sign in with the browser instead
-        </Button>
       </div>
     </>
   )

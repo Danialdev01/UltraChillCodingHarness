@@ -20,6 +20,7 @@ import {
   projectUrl,
   ProviderId,
   readAgentSettings,
+  ResourceCopy,
   ThreadHash,
   WorkspaceHash,
   type ChangeOrigin,
@@ -38,6 +39,7 @@ import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.j
 import { WorktreeReactor } from "./worktrees.js";
 import { ProjectGit, SettleRefusedError } from "./project-git.js";
 import { projectDeletionCheck } from "./project-deletion.js";
+import { sessionFilesBeyondAgent } from "./session-settle.js";
 import { projectOf, projectRoot, sessionTree, sessionTreesOf, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
 import {
   ConflictError,
@@ -83,11 +85,13 @@ import { registerNoteRoutes } from "./notes-routes.js";
 import { registerTimelineRoutes } from "./timeline-routes.js";
 import { registerEnvRoutes } from "./env-routes.js";
 import { registerAccountKeyRoutes } from "./account-keys-routes.js";
+import { AgentProfiles, toRef } from "./agent-profiles.js";
+import { registerAgentProfileRoutes } from "./agent-profiles-routes.js";
 import { backfillSessionTitles } from "./session-titles.js";
 import { registerSessionRoutes } from "./session-routes.js";
 import { DbAccountKeys, KeyUsage, backfillAccountKeyMetadata, checkKeyLive } from "./account-keys.js";
 import { DbStepUpStore } from "./step-up.js";
-import { LOG_REDACT } from "./log-redact.js";
+import { LOG_REDACT, LOG_SCRUB } from "./log-redact.js";
 import { EnvVarService } from "./env-vars.js";
 import { TimelineService } from "./timeline.js";
 import { TasksService } from "./tasks.js";
@@ -95,12 +99,15 @@ import { TodoMirror } from "./agent-todo.js";
 import { NotesMirror, type MirroredNote } from "./agent-notes.js";
 import { registerTaskRoutes } from "./tasks-routes.js";
 import { registerCommandRoutes } from "./commands-routes.js";
+import { registerTranscribeRoutes } from "./transcribe-routes.js";
 import { registerRuntimeRoutes } from "./runtimes-routes.js";
 import { RuntimeManager } from "./runtimes/manager.js";
 import { createRuntimeProviders } from "./runtimes/registry.js";
 import { TaskPipeline } from "./task-pipeline.js";
 import { TaskScheduler } from "./task-scheduler.js";
 import { registerDatabaseRoutes } from "./database-routes.js";
+import { registerResourceRoutes, resourceFailure } from "./resource-routes.js";
+import { ResourceStoreService, keyOf, readAll, resourceName } from "./resource-stores.js";
 import { WorkspaceMemberService } from "./workspace-members.js";
 import { registerWorkspaceMemberRoutes } from "./workspace-members-routes.js";
 import { registerOmpMemoryRoutes } from "./omp-memory-routes.js";
@@ -137,15 +144,7 @@ import { isLoopback, LATENCY_BUCKETS, metricsAccess, recordVitals, registry, sta
 import { recomputeProjectStats } from "./project-stats.js";
 import { ProjectActivityPublisher } from "./project-activity.js";
 import { ResourceSampler } from "./resource-sampler.js";
-import {
-  fetchClaudeUsage,
-  fetchCodexUsage,
-  openRouterWindows,
-  readClaudeAccessToken,
-  readCodexTokens,
-  type SessionQuota,
-  type SessionQuotas,
-} from "./quotas.js";
+import { openRouterWindows, type SessionQuota, type SessionQuotas } from "./quotas.js";
 
 const config = loadConfig();
 setOpenRouterBase(config.OPENROUTER_BASE_URL);
@@ -184,7 +183,10 @@ await ensureWorkspaceRoot(config.WORKSPACE_ROOT);
 await mkdir(config.CREDS_ROOT, { recursive: true, mode: 0o700 });
 
 const bus = new EventBus();
-const store = new EventStore(db, bus, { historyCacheEvents: config.HISTORY_CACHE_EVENTS });
+const store = new EventStore(db, bus, {
+  historyCacheEvents: config.HISTORY_CACHE_EVENTS,
+  historyCacheBytes: config.HISTORY_CACHE_MB * 1024 * 1024,
+});
 
 /**
  * Per-project runtime versions (PHP today): installed once under
@@ -280,6 +282,14 @@ const providerService = new ProviderService(
   (cwd) => runtimes.pathFor(cwd),
 );
 
+/** Named Claude Code and Codex subscription accounts, each its own login folder. */
+const agentProfiles = new AgentProfiles(
+  db,
+  (subject, provider, profile) => void providerService.ensureCredsDir(subject, provider, profile),
+  (subject, provider, profile) => providerService.removeProfileDir(subject, provider, profile),
+);
+
+const memoryAdmission = Boolean(config.AGENT_MEMORY_BUDGET_MB || config.AGENT_MEMORY_PAUSE_PERCENT);
 /** Where agent turns wait when the server runs as many as it allows. */
 const turnScheduler = new TurnScheduler({
   cliPerUser: config.AGENT_MAX_CONCURRENT_PER_USER,
@@ -290,8 +300,10 @@ const turnScheduler = new TurnScheduler({
     budgetMb: config.AGENT_MEMORY_BUDGET_MB,
     estimatesMb: { cli: config.AGENT_CLI_MEMORY_MB, omp: config.AGENT_OMP_MEMORY_MB, native: config.AGENT_NATIVE_MEMORY_MB },
   } } : {}),
-  maxWaiting: config.AGENT_MAX_WAITING ?? (config.AGENT_MEMORY_BUDGET_MB ? 256 : undefined),
-  waitTimeoutMs: config.AGENT_WAIT_TIMEOUT_MS ?? (config.AGENT_MEMORY_BUDGET_MB ? 300_000 : undefined),
+  // Memory-based admission can hold turns back indefinitely under sustained
+  // pressure, so either kind bounds the queue and the wait by default.
+  maxWaiting: config.AGENT_MAX_WAITING ?? (memoryAdmission ? 256 : undefined),
+  waitTimeoutMs: config.AGENT_WAIT_TIMEOUT_MS ?? (memoryAdmission ? 300_000 : undefined),
 });
 
 /**
@@ -327,6 +339,7 @@ const agentTurns = new AgentTurnReactor(
     // it has been asked for explicitly.
     registry: { allowHostShell: shellPluginEnabled(config) },
     providers: providerService,
+    profiles: agentProfiles,
     cliEnabled: cliProvidersEnabled(config),
     scheduler: turnScheduler,
     streamFlushMs: config.STREAM_FLUSH_MS,
@@ -401,6 +414,8 @@ async function ownerCredentials(
  * appended against the project alone.
  */
 const databaseConnections = new DatabaseConnectionService(db);
+/** The workspace's shared Resources: its own disk storage plus any S3 buckets it adds. */
+const resourceStores = new ResourceStoreService(db, config.WORKSPACE_ROOT, config.SECRET_KEY);
 
 const clones = new CloneReactor(
   async (event) => {
@@ -498,12 +513,15 @@ const terminals = new TerminalReactor(
     }),
     // A sign-in terminal: the CLI's own login flow, in the user's credential
     // directory, so what it writes is what every later turn reads.
-    login: (userId, program) => {
-      const env = providerService.loginEnv(userId, program);
+    profile: async (subject, profileId, provider) => {
+      const row = await agentProfiles.owned(profileId, subject);
+      return row && row.provider === provider ? toRef(row) : null;
+    },
+    login: (userId, program, profile) => {
+      const env = providerService.loginEnv(userId, program, profile);
       // The login lands in the credential directory; probes are cached, so
       // forget this user's until the next look.
-      providerService.invalidate(userId);
-      sessionQuotaCache.delete(userId);
+      providerService.invalidate(userId, program === "claude-login" ? "claude" : "codex", profile);
       return program === "claude-login"
         ? { argv: [config.CLAUDE_BIN, "auth", "login"], cwd: env.CLAUDE_CONFIG_DIR!, env }
         : { argv: [config.CODEX_BIN, "login", "--device-auth"], cwd: env.CODEX_HOME!, env };
@@ -687,9 +705,6 @@ async function auditCommand(
     case "thread.fork":
       entry = thread("chat.fork", "Forked the conversation");
       break;
-    case "thread.clear_context":
-      entry = thread("chat.clear", "Cleared the conversation's context");
-      break;
     case "thread.compact":
       entry = thread("chat.compact", "Compacted the conversation", command.focus ? { focus: command.focus } : undefined);
       break;
@@ -819,8 +834,10 @@ const web = config.WEB_UPSTREAM
 const app = Fastify({
   logger: {
     level: logLevel(config),
-    // Secrets by field name, wherever they appear (log-redact.ts).
+    // Secrets by field name, wherever they appear, and by their look in
+    // messages and errors (log-redact.ts).
     redact: LOG_REDACT,
+    ...LOG_SCRUB,
   },
   // One line per request drowned the log; the slow ones and the failures
   // are logged below, and /metrics counts every one.
@@ -926,6 +943,14 @@ const SESSION_COOKIE = "ucch_session";
 const OAUTH_STATE_COOKIE = "ucch_oauth_state";
 const secureCookies = config.PUBLIC_SCHEME === "https";
 
+// Without the bundle Claude Code and Codex turns get no `ucch_agent`: their
+// built-in subagents can run only their own vendor's models.
+if (!existsSync(config.OMP_BRIDGE_BIN)) {
+  app.log.warn(
+    { path: config.OMP_BRIDGE_BIN },
+    "ucch_agent unavailable: omp-bridge bundle not found; run `pnpm --filter @ucch/omp-bridge build` or set OMP_BRIDGE_BIN",
+  );
+}
 if (recovered.length > 0) {
   app.log.warn({ threads: recovered.length }, "reset threads left running by a previous process");
 }
@@ -1000,13 +1025,19 @@ registry.gauge("agent_turns_active", "Agent turns in flight", [], (gauge) => {
 });
 registry.gauge("agent_turns_scheduled", "Agent turns running and waiting for a slot, by kind", ["state", "kind"], (gauge) => {
   const { running, waiting } = turnScheduler.stats();
-  for (const kind of ["cli", "native"] as const) {
+  for (const kind of ["cli", "native", "omp"] as const) {
     gauge.set({ state: "running", kind }, running[kind]);
     gauge.set({ state: "waiting", kind }, waiting[kind]);
   }
 });
+registry.gauge("agent_admission_memory_paused", "1 while new agent turns are held back by measured memory pressure", [], (gauge) => {
+  gauge.set(undefined, turnScheduler.pressurePaused ? 1 : 0);
+});
 registry.gauge("history_cache_events", "Thread events held in memory for agent context", [], (gauge) => {
   gauge.set(undefined, store.cachedHistoryEvents);
+});
+registry.gauge("history_cache_bytes", "Approximate JSON bytes of thread events held in memory for agent context", [], (gauge) => {
+  gauge.set(undefined, store.cachedHistoryBytes);
 });
 registry.gauge("terminals_open", "Open terminal sessions", [], (gauge) => {
   gauge.set(undefined, terminals.openTerminals);
@@ -1047,8 +1078,28 @@ registry.gauge("pg_connections", "This database's server connections, by state",
 // Not there (macOS in development) is no figures rather than an error.
 const resources = new ResourceSampler({
   log: config.LOG_RESOURCE_SAMPLES ? (sample) => app.log.info(sample, "resource sample") : undefined,
+  onSample: () => turnScheduler.recheck(),
 });
-resources.start().catch((error) => app.log.warn({ err: error }, "could not start the resource sampler"));
+resources
+  .start()
+  .then((started) => {
+    const pause = config.AGENT_MEMORY_PAUSE_PERCENT;
+    if (pause === undefined) return;
+    // Without figures the gate would hold every turn back forever; stay
+    // count-only and say so instead.
+    if (!started || !resources.memoryReading) {
+      app.log.warn("AGENT_MEMORY_PAUSE_PERCENT is set but no memory figures are readable; admission stays count-only");
+      return;
+    }
+    turnScheduler.setMemoryPressure({
+      read: () => resources.memoryReading,
+      pauseRatio: pause / 100,
+      resumeRatio: (config.AGENT_MEMORY_RESUME_PERCENT ?? Math.max(1, pause - 5)) / 100,
+      staleMs: config.AGENT_MEMORY_STALE_MS,
+      estimatesMb: { cli: config.AGENT_CLI_MEMORY_MB, omp: config.AGENT_OMP_MEMORY_MB, native: config.AGENT_NATIVE_MEMORY_MB },
+    });
+  })
+  .catch((error) => app.log.warn({ err: error }, "could not start the resource sampler"));
 
 // Somebody hears about memory near the limit, a lagging event loop, an OOM
 // kill or a backed-up engine, without a monitoring stack (watchdog.ts).
@@ -1767,30 +1818,153 @@ app.delete<{ Params: { hash: string }; Body: unknown }>("/api/projects/:hash", a
     app.log.error({ err: error }, "could not re-check access"),
   );
 
-  // After the row, not before: a failed delete must not leave a project
-  // pointing at a directory that is already gone. The id is a uuid from the
-  // database rather than anything the caller supplied, so it cannot climb out
-  // of the workspace root.
-  const workspace = join(config.WORKSPACE_ROOT, result.projectId);
-  try {
-    await terminals.closeProject(result.projectId);
-    // Worktrees, runtime links and attachment staging live outside the
-    // checkout and must be removed separately.
-    const cleanup = await Promise.allSettled([
-      rm(workspace, { recursive: true, force: true }),
-      rm(sessionTreesOf(config.WORKSPACE_ROOT, result.projectId), { recursive: true, force: true }),
-      runtimes.removeProject(result.projectId),
-      uploads.discardAll(result.projectId),
-    ]);
-    const failed = cleanup.find((result) => result.status === "rejected");
-    if (failed?.status === "rejected") throw failed.reason;
-  } catch (error) {
+  if (!(await removeProjectFiles(result.projectId))) {
     // Do not report complete deletion if any project files remain.
-    app.log.error({ err: error, workspace }, "could not remove the project workspace");
     return reply.code(500).send({ error: "The project was deleted, but some files could not be removed. Contact the server administrator to finish cleanup." });
   }
 
   return { ok: true };
+});
+
+/**
+ * A deleted project's files: its checkout, worktrees, runtime links and
+ * attachment staging. After the row, not before: a failed delete must not
+ * leave a project pointing at a directory that is already gone. The id is a
+ * uuid from the database rather than anything the caller supplied, so it
+ * cannot climb out of the workspace root. False when something was left.
+ */
+async function removeProjectFiles(projectId: string): Promise<boolean> {
+  const workspace = join(config.WORKSPACE_ROOT, projectId);
+  try {
+    await terminals.closeProject(projectId);
+    // Worktrees, runtime links and attachment staging live outside the
+    // checkout and must be removed separately.
+    const cleanup = await Promise.allSettled([
+      rm(workspace, { recursive: true, force: true }),
+      rm(sessionTreesOf(config.WORKSPACE_ROOT, projectId), { recursive: true, force: true }),
+      runtimes.removeProject(projectId),
+      uploads.discardAll(projectId),
+    ]);
+    const failed = cleanup.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    return true;
+  } catch (error) {
+    app.log.error({ err: error, workspace }, "could not remove the project workspace");
+    return false;
+  }
+}
+
+// -- Settling in a session workspace -------------------------------------------
+//
+// There a session is its own project, so settling it is not a merge: it is
+// marked settled (it moves under the sidebar's Settled divider) and its data
+// stays until "Delete settled session data" in Workspace Settings removes
+// every settled session at once. No name to type: the dialog asks only when
+// the session holds files besides `.agent/`.
+
+/** Whether settling this session would put files at stake, for its dialog. Reads only. */
+app.get<{ Params: { hash: string } }>("/api/projects/:hash/session-settle", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  if (project.workspaceKind !== "session") return reply.code(400).send({ error: "not a session workspace's session" });
+  const [files, [busy]] = await Promise.all([
+    sessionFilesBeyondAgent(config.WORKSPACE_ROOT, project.id),
+    db
+      .select({ id: threads.id })
+      .from(threads)
+      .where(and(eq(threads.projectId, project.id), inArray(threads.status, ["queued", "running", "cancelling"])))
+      .limit(1),
+  ]);
+  return { files: files.count, names: files.names, running: Boolean(busy) };
+});
+
+app.post<{ Params: { hash: string } }>("/api/projects/:hash/session-settle", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  if (project.workspaceKind !== "session") return reply.code(400).send({ error: "not a session workspace's session" });
+  if (!can(project.membership, "project.write")) return reply.code(403).send({ error: "you cannot settle this session" });
+
+  const rows = await db
+    .select({ id: threads.id, hash: threads.hash, status: threads.status })
+    .from(threads)
+    .where(eq(threads.projectId, project.id));
+  if (rows.some((row) => row.status === "queued" || row.status === "running" || row.status === "cancelling")) {
+    return reply.code(409).send({ error: "the agent is still working in this session -- stop it, then settle" });
+  }
+  await db
+    .update(threads)
+    .set({ settleState: "settled", settleError: null, settleConflicts: null, mergeCommitSha: null, settledAt: new Date() })
+    .where(eq(threads.projectId, project.id));
+  for (const row of rows) {
+    await store
+      .append({ projectId: project.id, threadId: null }, [
+        {
+          type: "thread.settled",
+          projectId: project.id,
+          threadId: row.id,
+          ...(row.hash ? { hash: row.hash } : {}),
+          state: "settled",
+          baseBranch: project.defaultBranch ?? "",
+          mergeCommitSha: null,
+          conflicts: [],
+          error: null,
+        },
+      ])
+      .catch((error) => app.log.error({ err: error }, "could not announce a settled session"));
+  }
+  return { settled: true };
+});
+
+/**
+ * Deletes every settled session of a session workspace, data and all: the
+ * projects whose every session is settled. Unsettled ones are never touched,
+ * nor is one with a turn in flight. A workspace admin's, like deleting one.
+ */
+app.delete<{ Params: { id: string } }>("/api/workspaces/:id/settled-sessions", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  if (!z.string().uuid().safeParse(request.params.id).success) return reply.code(404).send({ error: "workspace not found" });
+  const membership = await workspaceService.membership(request.params.id, principal.userId);
+  if (!membership) return reply.code(404).send({ error: "workspace not found" });
+  if (!can(membership, "workspace.manage")) {
+    return reply.code(403).send({ error: "only a workspace admin can delete session data" });
+  }
+  const [workspace] = await db
+    .select({ kind: workspaces.kind })
+    .from(workspaces)
+    .where(eq(workspaces.id, request.params.id))
+    .limit(1);
+  if (workspace?.kind !== "session") return reply.code(400).send({ error: "not a session workspace" });
+
+  // Every thread settled (and at least one): `bool_and` over the project's threads.
+  const settled = await db
+    .select({ id: projects.id, hash: projects.hash })
+    .from(projects)
+    .innerJoin(threads, eq(threads.projectId, projects.id))
+    .where(eq(projects.workspaceId, request.params.id))
+    .groupBy(projects.id, projects.hash)
+    .having(sql`bool_and(${threads.settleState} is not distinct from 'settled')`);
+
+  let deleted = 0;
+  let skipped = 0;
+  let leftFiles = 0;
+  for (const project of settled) {
+    const result = await workspaceService.deleteProject(project.hash, principal.userId);
+    if ("error" in result) {
+      skipped += 1;
+      continue;
+    }
+    deleted += 1;
+    void gateway.revalidate({ projectId: result.projectId }).catch((error) =>
+      app.log.error({ err: error }, "could not re-check access"),
+    );
+    if (!(await removeProjectFiles(result.projectId))) leftFiles += 1;
+  }
+  return { deleted, skipped, leftFiles };
 });
 
 // -- Repositories ------------------------------------------------------------
@@ -2741,6 +2915,24 @@ registerRuntimeRoutes(app, {
 // The newest stable PHP, in the background, when none is installed yet.
 runtimes.ensureDefaults();
 
+registerTranscribeRoutes(app, {
+  projectFor,
+  openrouterKeyFor: async (request) => {
+    const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+    if (!principal) return null;
+    const [row] = await db
+      .select({ openrouter: users.openrouterKeyEncrypted })
+      .from(users)
+      .where(eq(users.id, principal.userId))
+      .limit(1);
+    const key = decryptOrNull(row?.openrouter ?? null);
+    if (key) keyUsage.touch(principal.userId, "openrouter");
+    return key;
+  },
+  baseUrl: config.OPENROUTER_BASE_URL,
+  model: config.TRANSCRIBE_MODEL,
+});
+
 registerCommandRoutes(app, {
   projectFor,
   rootOf: (projectId) => projectRoot(config.WORKSPACE_ROOT, projectId),
@@ -2845,7 +3037,6 @@ registerAccountKeyRoutes(app, {
     // A new key has a new balance; the old one's must not show for a minute.
     if (provider === "openrouter") {
       quotaCache.delete(userId);
-      sessionQuotaCache.delete(userId);
     }
     bus.publishToUser(userId, { type: "resource.changed", projectId: null, resource: "account_settings" });
   },
@@ -2879,6 +3070,15 @@ registerDatabaseRoutes(app, {
   adapterFor,
 });
 
+registerResourceRoutes(app, {
+  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  workspaceAllows: (workspaceId, userId, permission) =>
+    workspaceService.allows(workspaceId, userId, permission),
+  stores: resourceStores,
+  secretKey: config.SECRET_KEY,
+  maxUploadBytes: config.UPLOAD_MAX_BYTES,
+});
+
 registerWorkspaceMemberRoutes(app, {
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
   members: new WorkspaceMemberService(db, workspaceService, config.SECRET_KEY),
@@ -2902,6 +3102,29 @@ async function providerSubject(
   if (!z.string().uuid().safeParse(workspaceId).success) return null;
   return (await workspaceService.allows(workspaceId, userId, permission)) ? workspaceSubject(workspaceId) : null;
 }
+
+registerAgentProfileRoutes(app, {
+  principal: (request) => auth.resolveSession(request.cookies[SESSION_COOKIE]),
+  subjectFor: providerSubject,
+  profiles: agentProfiles,
+  health: (subject, provider, profile, fresh) => providerService.profileHealth(subject, provider, profile, { fresh }),
+  quota: (subject, provider, profile) => providerService.quotas.get(subject, provider, profile),
+  signOut: (subject, provider, profile) => providerService.signOut(subject, provider, profile),
+  project: async (hash, userId) => {
+    const found = await workspaceService.findByHash(hash, userId);
+    if (!found) return null;
+    const [row] = await db
+      .select({ id: projects.id, workspaceId: projects.workspaceId, requiredContext: projects.requiredContext })
+      .from(projects)
+      .where(eq(projects.id, found.id))
+      .limit(1);
+    return row ?? null;
+  },
+  allows: (workspaceId, userId, permission) => workspaceService.allows(workspaceId, userId, permission),
+  setRequiredContext: async (projectId, context) => {
+    await db.update(projects).set({ requiredContext: context }).where(eq(projects.id, projectId));
+  },
+});
 
 registerOmpMemoryRoutes(app, {
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
@@ -3619,6 +3842,106 @@ app.post<{ Params: { hash: string; id: string } }>(
   },
 );
 
+/** At most this many files come along when a Resources folder is dropped on the tree. */
+const RESOURCE_COPY_MAX_FILES = 500;
+/** And at most this many bytes, all told. */
+const RESOURCE_COPY_MAX_BYTES = 512 * 1024 * 1024;
+
+/**
+ * The backend for a resource the caller is copying out, when they can see
+ * that workspace; the reply is sent otherwise.
+ */
+async function resourceSource(
+  request: { cookies: Record<string, string | undefined> },
+  reply: FastifyReply,
+  copy: ResourceCopy,
+) {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal || !(await workspaceService.allows(copy.workspaceId, principal.userId, "workspace.view"))) {
+    void reply.code(404).send({ error: "resource not found" });
+    return null;
+  }
+  const backend = await resourceStores.backend(copy.workspaceId, copy.storeId);
+  if (!backend) void reply.code(404).send({ error: "store not found" });
+  return backend;
+}
+
+/** `name.ext`, else `name (1).ext`, `name (2).ext`... -- whichever is free first. */
+async function freePath(tree: TreeTarget, dir: string, name: string): Promise<string> {
+  const at = (n: string) => (dir ? `${dir}/${n}` : n);
+  if (!(await workspaceFiles.has(tree, at(name)))) return at(name);
+  const dot = name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let i = 1; i < 1000; i++) {
+    const candidate = at(`${stem} (${i})${ext}`);
+    if (!(await workspaceFiles.has(tree, candidate))) return candidate;
+  }
+  throw new ConflictError(`${name} already exists`);
+}
+
+/**
+ * A Resources file or folder copied into the project's tree: what dropping
+ * it on a folder in the file panel does. Never overwrites -- a name already
+ * taken becomes `name (1)` -- and a folder is copied whole, within limits.
+ */
+app.post<{ Params: { hash: string } }>("/api/projects/:hash/file/from-resource", async (request, reply) => {
+  const project = await projectFor(request);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  const tree = await sessionTarget(request, project);
+  if (!tree) return reply.code(404).send({ error: "session not found" });
+  const parsed = ResourceCopy.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "a workspace, store and key are required" });
+  const backend = await resourceSource(request, reply, parsed.data);
+  if (!backend) return reply;
+
+  try {
+    const key = keyOf(parsed.data.key);
+    const dir = (parsed.data.dir ?? "").replace(/^\/+|\/+$/g, "");
+    if (dir) workspaceFiles.resolve(tree, dir);
+    const kind = await backend.kindOf(key);
+    if (!kind) return reply.code(404).send({ error: "resource not found" });
+
+    const origin = await originOf(request);
+    const target = await freePath(tree, dir, resourceName(key));
+    const files =
+      kind === "file"
+        ? [{ key, path: target }]
+        : (await backend.walk(key, RESOURCE_COPY_MAX_FILES)).map((f) => ({
+            key: f.key,
+            path: `${target}/${f.key.slice(key.length + 1)}`,
+            size: f.size,
+          }));
+    if (files.length > RESOURCE_COPY_MAX_FILES) {
+      return reply.code(413).send({ error: `that folder holds more than ${RESOURCE_COPY_MAX_FILES} files` });
+    }
+    if (kind === "folder" && files.length === 0) {
+      await workspaceFiles.create(tree, target, "directory");
+    }
+    let total = 0;
+    for (const f of files) {
+      const read = await backend.read(f.key);
+      if (!read) continue;
+      const bytes = await readAll(read.stream, RESOURCE_COPY_MAX_BYTES - total);
+      total += bytes.length;
+      await workspaceFiles.createBytes(tree, f.path, bytes);
+      await announceFileChange(tree, f.path, "added", origin);
+    }
+    void audit.record({
+      projectId: project.id,
+      userId: origin?.userId ?? null,
+      clientId: origin?.clientId ?? null,
+      action: "file.create",
+      targetType: kind === "file" ? "file" : "directory",
+      targetId: target,
+      summary: `Copied ${resourceName(key)} from Resources to ${target}`,
+    });
+    return reply.code(201).send({ path: target, files: files.length });
+  } catch (error) {
+    if (error instanceof PathError || error instanceof ConflictError) return fileFailure(error, reply);
+    return resourceFailure(error, reply);
+  }
+});
+
 app.delete<{ Params: { hash: string; id: string } }>(
   "/api/projects/:hash/uploads/:id",
   async (request, reply) => {
@@ -3674,57 +3997,26 @@ app.get("/api/account/openrouter/quota", async (request, reply) => {
  *
  * One request for all three rather than one each, and each provider fails
  * on its own -- a Codex that is not signed in does not blank the Claude
- * bar. Cached per account for a minute, the same as the OpenRouter card:
- * the meters poll, and neither vendor wants to be asked every few seconds.
- * OpenRouter's figure comes through the same cache the Dashboard fills.
+ * bar. Claude Code and Codex readings are the CLIs' own, through
+ * `providerService.quotas` (`quotas.ts`), which caches them; OpenRouter's
+ * figure comes through the same cache the Dashboard fills.
  */
-const sessionQuotaCache = new Map<string, { at: number; quotas: SessionQuotas }>();
-
 app.get("/api/account/quotas", async (request, reply) => {
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
   return sessionQuotasFor(principal.userId);
 });
 
-/**
- * One account's usage of each provider, through the same minute-long cache
- * the meters read -- the Tasks board's auto-run checks it before starting.
- */
+/** One account's usage of each provider -- the Tasks board's auto-run checks it before starting. */
 async function sessionQuotasFor(userId: string): Promise<SessionQuotas> {
-  const cached = sessionQuotaCache.get(userId);
-  if (cached && Date.now() - cached.at < QUOTA_TTL_MS) return cached.quotas;
-
   const checkedAt = new Date().toISOString();
   const failed = (provider: ProviderId, error: unknown): SessionQuota => {
     app.log.warn({ err: error, provider }, "session quota lookup failed");
     return { provider, status: "unavailable", error: error instanceof Error ? error.message : String(error) };
   };
 
-  const claude = (async (): Promise<SessionQuota> => {
-    // The CLI's own login first; a pasted setup-token is the fallback,
-    // since the usage endpoint does not always honour its narrower scope.
-    const token =
-      (await readClaudeAccessToken(providerService.credsDir(userId, "claude"))) ??
-      (await providerService.claudeToken(userId));
-    if (!token) return { provider: "claude", status: "no_auth" };
-    try {
-      const windows = await fetchClaudeUsage(token, AbortSignal.timeout(10_000));
-      return { provider: "claude", status: "ok", windows, checkedAt };
-    } catch (error) {
-      return failed("claude", error);
-    }
-  })();
-
-  const codex = (async (): Promise<SessionQuota> => {
-    const tokens = await readCodexTokens(providerService.credsDir(userId, "codex"));
-    if (!tokens) return { provider: "codex", status: "no_auth" };
-    try {
-      const windows = await fetchCodexUsage(tokens, AbortSignal.timeout(10_000));
-      return { provider: "codex", status: "ok", windows, checkedAt };
-    } catch (error) {
-      return failed("codex", error);
-    }
-  })();
+  const claude = providerService.quotas.get(userId, "claude");
+  const codex = providerService.quotas.get(userId, "codex");
 
   const native = (async (): Promise<SessionQuota> => {
     const hit = quotaCache.get(userId);
@@ -3757,7 +4049,6 @@ async function sessionQuotasFor(userId: string): Promise<SessionQuotas> {
     native: openRouter,
     omp: { ...openRouter, provider: "omp" },
   };
-  sessionQuotaCache.set(userId, { at: Date.now(), quotas });
   return quotas;
 }
 
@@ -3905,48 +4196,7 @@ app.get<{ Querystring: { fresh?: string; workspace?: string } }>("/api/providers
   };
 });
 
-const ClaudeTokenBody = z.object({
-  /** null clears the stored token. */
-  token: z.string().trim().min(1).max(4000).nullable(),
-});
-
-/**
- * The pasted `claude setup-token`: the headless alternative to signing in
- * from a terminal. Same treatment as every other key -- write-only,
- * encrypted, refused without `SECRET_KEY` -- plus the issue date, because
- * it expires in a year and the page warns at eleven months.
- */
-app.put("/api/settings/claude-token", async (request, reply) => {
-  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
-  if (!principal) return reply.code(401).send({ error: "unauthorized" });
-
-  const parsed = ClaudeTokenBody.safeParse(request.body);
-  if (!parsed.success) return reply.code(400).send({ error: "a token or null is required" });
-
-  if (parsed.data.token && !config.SECRET_KEY) {
-    return reply
-      .code(409)
-      .send({ error: "SECRET_KEY is not configured, so a token cannot be stored safely" });
-  }
-
-  await db
-    .update(users)
-    .set(
-      parsed.data.token
-        ? {
-            claudeOauthTokenEncrypted: encryptSecret(parsed.data.token, config.SECRET_KEY!),
-            claudeTokenIssuedAt: new Date(),
-          }
-        : { claudeOauthTokenEncrypted: null, claudeTokenIssuedAt: null },
-    )
-    .where(eq(users.id, principal.userId));
-  providerService.invalidate(principal.userId);
-  sessionQuotaCache.delete(principal.userId);
-
-  return { configured: Boolean(parsed.data.token) };
-});
-
-/** Signs a CLI provider out: credential directory emptied, stored token gone. */
+/** Signs a CLI provider out: its credential directory emptied. */
 app.delete<{ Params: { id: string }; Querystring: { workspace?: string } }>(
   "/api/providers/:id/credentials",
   async (request, reply) => {
@@ -3959,7 +4209,6 @@ app.delete<{ Params: { id: string }; Querystring: { workspace?: string } }>(
     if (!subject) return reply.code(403).send({ error: "only a workspace admin can sign its subscription out" });
 
     await providerService.signOut(subject, id);
-    sessionQuotaCache.delete(subject);
     return reply.code(204).send();
   },
 );
@@ -4104,6 +4353,7 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
       title: threads.title,
       status: threads.status,
       provider: threads.provider,
+      profileId: threads.profileId,
       baseBranch: threads.baseBranch,
       branch: threads.branch,
       worktreeState: threads.worktreeState,

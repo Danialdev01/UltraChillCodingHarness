@@ -28,6 +28,12 @@ export interface AppendTarget {
 export interface EventStoreOptions {
   /** Events `threadHistory` keeps in memory, across all threads. */
   historyCacheEvents?: number;
+  /**
+   * Approximate serialized bytes `threadHistory` keeps in memory, across all
+   * threads. The event count alone hides a few huge tool outputs; this
+   * bounds those too. Unlimited when absent.
+   */
+  historyCacheBytes?: number;
 }
 
 export class EventStore {
@@ -175,17 +181,21 @@ export class EventStore {
    */
   async threadHistory(threadId: string): Promise<readonly StoredEvent[]> {
     const run = async () => {
-      const cached = this.#history.get(threadId);
+      const cached = this.#history.get(threadId)?.events;
       const since = cached?.at(-1)?.seq ?? -1;
       const fresh = await this.readThread(threadId, since);
       const all = cached ? (fresh.length ? [...cached, ...fresh] : cached) : fresh;
+      // Sized once, as each event first arrives: the cached part's size is kept.
+      const bytes = (this.#history.get(threadId)?.bytes ?? 0) + fresh.reduce((sum, e) => sum + eventBytes(e), 0);
       this.#forget(threadId);
       const cap = this.options.historyCacheEvents ?? HISTORY_CACHE_EVENTS;
-      if (all.length <= cap / 2) {
+      const byteCap = this.options.historyCacheBytes ?? Infinity;
+      if (all.length <= cap / 2 && bytes <= byteCap / 2) {
         // Re-inserted, so iteration order is least-recently-used first.
-        this.#history.set(threadId, all);
+        this.#history.set(threadId, { events: all, bytes });
         this.#historyEvents += all.length;
-        while (this.#historyEvents > cap) this.#forget(this.#history.keys().next().value!);
+        this.#historyBytes += bytes;
+        while (this.#historyEvents > cap || this.#historyBytes > byteCap) this.#forget(this.#history.keys().next().value!);
       }
       return all;
     };
@@ -206,20 +216,36 @@ export class EventStore {
     return this.#historyEvents;
   }
 
+  /** Approximate serialized bytes `threadHistory` holds in memory now, for `/metrics`. */
+  get cachedHistoryBytes(): number {
+    return this.#historyBytes;
+  }
+
   #forget(threadId: string): void {
     const kept = this.#history.get(threadId);
     if (!kept) return;
     this.#history.delete(threadId);
-    this.#historyEvents -= kept.length;
+    this.#historyEvents -= kept.events.length;
+    this.#historyBytes -= kept.bytes;
   }
 
-  #history = new Map<string, readonly StoredEvent[]>();
+  #history = new Map<string, { events: readonly StoredEvent[]; bytes: number }>();
   #historyEvents = 0;
+  #historyBytes = 0;
   #historyReads = new Map<string, Promise<readonly StoredEvent[]>>();
 }
 
 /** Events `threadHistory` keeps in memory by default; `HISTORY_CACHE_EVENTS`. */
 const HISTORY_CACHE_EVENTS = 20_000;
+
+/** An event's payload size as JSON: a proxy for what it holds in memory, not the heap figure. */
+function eventBytes(event: StoredEvent): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(event.event) ?? "");
+  } catch {
+    return 0;
+  }
+}
 
 function toStored(row: typeof events.$inferSelect): StoredEvent {
   return {

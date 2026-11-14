@@ -35,6 +35,7 @@ export type LineageEntry = {
     | "costUsd"
     | "provider"
     | "childHash"
+    | "resumeHandle"
     | "result"
     | "steps"
     | "recentTools"
@@ -127,6 +128,7 @@ export function lineageOf(messages: readonly ChatMessage[]): LineageEntry[] {
             ...(run.recentOutput ? { recentOutput: run.recentOutput } : {}),
             ...(run.provider ? { provider: run.provider } : {}),
             ...(run.childHash ? { childHash: run.childHash } : {}),
+            ...(run.resumeHandle ? { resumeHandle: run.resumeHandle } : {}),
           },
         })
     }
@@ -229,6 +231,20 @@ export function subagentHref(
   return `/${ws}/p/${projectHash}/${parentHash}?agent=${encodeURIComponent(lineageKey(entry))}`
 }
 
+/**
+ * The harness a person's follow-up to a CLI's built-in subagent goes
+ * through, from its page: Codex's workers, or a Claude Code agent its
+ * parent can continue (it has a handle). Null for the rest -- a `ucch_agent`
+ * one is talked to in its own session, and OMP cannot continue its own.
+ */
+export function followUpHarness(entry: LineageEntry): "codex" | "claude" | null {
+  if (entry.run.childHash) return null
+  const harness = entry.run.provider ?? entry.harness
+  if (harness === "codex") return "codex"
+  if (!entry.run.provider && entry.harness === "claude" && entry.run.resumeHandle) return "claude"
+  return null
+}
+
 /** The DOM id of a subagent call's card in the thread. */
 export function subagentAnchor(callId: string): string {
   return `subagent-${callId.replace(/[^a-zA-Z0-9_-]/g, "_")}`
@@ -251,6 +267,7 @@ function sameEntries(a: readonly LineageEntry[], b: readonly LineageEntry[]): bo
       x.run.costUsd === y.run.costUsd &&
       x.run.provider === y.run.provider &&
       x.run.childHash === y.run.childHash &&
+      x.run.resumeHandle === y.run.resumeHandle &&
       sameSteps(x.run.steps, y.run.steps) &&
       sameLines(x.run.recentTools, y.run.recentTools) &&
       sameLines(x.run.recentOutput, y.run.recentOutput) &&

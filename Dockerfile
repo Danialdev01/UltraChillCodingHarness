@@ -287,7 +287,10 @@ ENV DATA_DIR=/data \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     S6_CMD_WAIT_FOR_SERVICES_MAXTIME=300000 \
     S6_VERBOSITY=1
-VOLUME /data
+# No `VOLUME /data` on purpose: with no mount configured it would give every
+# new container an empty anonymous volume, and a redeploy would silently
+# start from nothing. deploy/s6/scripts/init-dirs refuses to start unless
+# /data is a real mount (ALLOW_EPHEMERAL_DATA=true overrides).
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=120s --retries=5 \
   CMD curl -fsS http://127.0.0.1:3000/health >/dev/null || exit 1

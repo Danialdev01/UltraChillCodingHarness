@@ -129,7 +129,7 @@ export interface InvitePreview {
 
 export interface WorkspaceHarnessSettings {
   credentialPolicy: CredentialPolicy;
-  credentials: { openrouter: boolean; claudeToken: boolean; claudeTokenIssuedAt: string | null };
+  credentials: { openrouter: boolean };
   /** How the workspace's agents run; see `WorkspaceAgentSettings`. */
   agent: WorkspaceAgentSettings;
 }
@@ -217,7 +217,7 @@ export function setAgentSettings(
 /** Stores, or with `null` clears, one of the workspace's dedicated credentials. */
 export function setWorkspaceCredential(
   workspaceId: string,
-  kind: "openrouter" | "claude-token",
+  kind: "openrouter",
   value: string | null,
 ): Promise<WorkspaceHarnessSettings> {
   return json(`/api/workspaces/${workspaceId}/credentials/${kind}`, {

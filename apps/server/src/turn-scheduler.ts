@@ -40,6 +40,44 @@ export interface TurnLimits {
   waitTimeoutMs?: number;
 }
 
+/** One reading of how much memory is in use, from the resource sampler. */
+export interface MemoryReading {
+  /** Bytes in use, reclaimable page cache excluded. */
+  usedBytes: number;
+  /** Bytes there are to use: the cgroup's limit, or the host's total. */
+  limitBytes: number;
+  /** When it was read (ms, the same clock as `now`). */
+  at: number;
+}
+
+/**
+ * Admission by measured memory, beside the counts and the estimate budget:
+ * no new turn starts while the container is near its limit. Turns already
+ * running carry on -- this only holds back new ones.
+ *
+ * Starts pause once use reaches `pauseRatio` of the limit and resume only
+ * below `resumeRatio`, so admission does not flap around one threshold. A
+ * turn started shortly before the latest reading has not fully shown up in
+ * it yet, so its estimate counts on top until a reading `settleMs` after its
+ * start arrives -- conservative: for a while it counts twice. A
+ * reading older than `staleMs` (or none at all) holds starts back too: with
+ * no figures, nothing says there is room.
+ */
+export interface MemoryPressure {
+  read(): MemoryReading | null;
+  pauseRatio: number;
+  resumeRatio: number;
+  staleMs: number;
+  estimatesMb: Record<TurnKind, number>;
+  /**
+   * How long after its start a turn's estimate keeps counting on top of the
+   * readings: a CLI takes a while to grow to its working set, so the first
+   * reading after it starts does not yet show all of it. Default 30 s.
+   */
+  settleMs?: number;
+  now?: () => number;
+}
+
 export interface TurnRequest {
   /** The account the turn is billed to: what the per-account limit and the round-robin count by. */
   ownerId: string;
@@ -74,6 +112,11 @@ export class TurnScheduler {
   readonly #waiting = new Map<string, Waiting[]>();
   readonly #running: Record<TurnKind, number> = { cli: 0, native: 0, omp: 0 };
   readonly #cliByOwner = new Map<string, number>();
+  #pressure: MemoryPressure | null = null;
+  /** Under pressure: starts stay paused until use drops below `resumeRatio`. */
+  #pressurePaused = false;
+  /** Turns started recently, and their estimates: not yet in any reading. */
+  #recentStarts: { at: number; bytes: number }[] = [];
 
   constructor(limits: TurnLimits) {
     if (limits.memory && (!Number.isFinite(limits.memory.budgetMb) || limits.memory.budgetMb <= 0 ||
@@ -135,6 +178,31 @@ export class TurnScheduler {
     }
   }
 
+  /**
+   * Turns admission by measured memory on (or off, with null). Set once the
+   * sampler is known to have figures; a server without `/proc` keeps
+   * count-only scheduling rather than waiting forever for a reading.
+   */
+  setMemoryPressure(pressure: MemoryPressure | null): void {
+    if (pressure && !(pressure.resumeRatio > 0 && pressure.resumeRatio <= pressure.pauseRatio && pressure.pauseRatio <= 1)) {
+      throw new Error("Memory pressure ratios must satisfy 0 < resume <= pause <= 1.");
+    }
+    this.#pressure = pressure;
+    this.#pressurePaused = false;
+    this.#recentStarts = [];
+    this.#pump();
+  }
+
+  /** Looks again at the waiting turns: call it when a new memory reading arrives. */
+  recheck(): void {
+    this.#pump();
+  }
+
+  /** Whether new starts are held back by measured memory right now. */
+  get pressurePaused(): boolean {
+    return this.#pressurePaused;
+  }
+
   /** How many turns are ahead of the thread's waiting turn; null when it has none waiting. */
   aheadOf(threadId: string): number | null {
     for (const queue of this.#waiting.values()) {
@@ -155,8 +223,9 @@ export class TurnScheduler {
   #pump(): void {
     for (;;) {
       let started = false;
+      if (this.#waiting.size === 0) break;
       for (const [ownerId, queue] of this.#waiting) {
-        const at = queue.findIndex((entry) => this.#fits(entry));
+        const at = queue.findIndex((entry) => this.#fits(entry) && this.#pressureAllows(entry.kind));
         if (at < 0) continue;
         const [entry] = queue.splice(at, 1);
         // To the back of the rotation, or out of it with nothing left.
@@ -190,8 +259,37 @@ export class TurnScheduler {
     );
   }
 
+  /**
+   * Whether measured memory leaves room for one more turn of this kind.
+   * Updates the pause state as a side effect, so the hysteresis holds
+   * across calls.
+   */
+  #pressureAllows(kind: TurnKind): boolean {
+    const pressure = this.#pressure;
+    if (!pressure) return true;
+    const now = (pressure.now ?? Date.now)();
+    const reading = pressure.read();
+    if (!reading || reading.limitBytes <= 0 || now - reading.at > pressure.staleMs) return false;
+    this.#recentStarts = this.#recentStarts.filter((start) => start.at + (pressure.settleMs ?? 30_000) > reading.at);
+    const pending = this.#recentStarts.reduce((sum, start) => sum + start.bytes, 0);
+    const share = (reading.usedBytes + pending) / reading.limitBytes;
+    if (this.#pressurePaused) {
+      if (share >= pressure.resumeRatio) return false;
+      this.#pressurePaused = false;
+    } else if (share >= pressure.pauseRatio) {
+      this.#pressurePaused = true;
+      return false;
+    }
+    // The turn itself must fit under the pause line too.
+    const after = (reading.usedBytes + pending + pressure.estimatesMb[kind] * MB) / reading.limitBytes;
+    return after < pressure.pauseRatio;
+  }
+
   #start(entry: Waiting): void {
     clearTimeout(entry.timer);
+    if (this.#pressure) {
+      this.#recentStarts.push({ at: (this.#pressure.now ?? Date.now)(), bytes: this.#pressure.estimatesMb[entry.kind] * MB });
+    }
     if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
     this.#running[entry.kind]++;
     if (entry.kind === "cli") this.#cliByOwner.set(entry.ownerId, (this.#cliByOwner.get(entry.ownerId) ?? 0) + 1);
@@ -245,6 +343,8 @@ export class TurnScheduler {
     }
   }
 }
+
+const MB = 1024 * 1024;
 
 function abortError(): Error {
   const error = new Error("The turn was cancelled while it waited for a slot.");

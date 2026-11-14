@@ -235,7 +235,7 @@ function OpenRouterSection({
 const FALLBACKS: { id: ProviderId; label: string }[] = [
   { id: "claude", label: "Claude Code" },
   { id: "codex", label: "Codex" },
-  { id: "omp", label: "Custom" },
+  { id: "omp", label: "Default" },
 ]
 
 /**

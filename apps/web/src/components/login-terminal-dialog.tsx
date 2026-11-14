@@ -41,6 +41,7 @@ export function useLoginTerminal({
   program,
   projectId,
   credentialWorkspaceId,
+  profileId,
   active,
   generation = 0,
   onData,
@@ -50,6 +51,8 @@ export function useLoginTerminal({
   projectId: string
   /** Sign in this workspace's dedicated subscription instead of your own. */
   credentialWorkspaceId?: string
+  /** Which of the subject's subscription accounts to sign in; absent, its Default. */
+  profileId?: string
   active: boolean
   generation?: number
   /** Every chunk of output, as it arrives, unbatched. */
@@ -115,6 +118,7 @@ export function useLoginTerminal({
         rows: 28,
         program,
         ...(credentialWorkspaceId ? { credentialWorkspaceId } : {}),
+        ...(profileId ? { profileId } : {}),
       })
       if (cancelled) {
         // Cleaned up while the create was in flight: close it now it exists.
@@ -139,7 +143,7 @@ export function useLoginTerminal({
       clientRef.current = null
       terminalRef.current = null
     }
-  }, [active, generation, program, projectId, credentialWorkspaceId, shared])
+  }, [active, generation, program, projectId, credentialWorkspaceId, profileId, shared])
 
   const send = React.useCallback((data: string) => {
     const id = terminalRef.current
@@ -171,12 +175,14 @@ export function useLoginTerminal({
 export function LoginTerminalDialog({
   projectId,
   credentialWorkspaceId,
+  profileId,
   open,
   onOpenChange,
   onExited,
 }: {
   projectId: string
   credentialWorkspaceId?: string
+  profileId?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The CLI has exited: time to look at the provider card again. */
@@ -186,6 +192,7 @@ export function LoginTerminalDialog({
     program: "codex-login",
     projectId,
     credentialWorkspaceId,
+    profileId,
     active: open,
     onExited,
   })

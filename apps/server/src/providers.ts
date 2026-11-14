@@ -16,7 +16,10 @@ import {
 } from "@ucch/providers";
 import type { Config } from "./config.js";
 import { cliProvidersEnabled } from "./config.js";
-import { decryptSecret } from "./crypto.js";
+import { isDefaultProfile, profileKey, type ProfileRef } from "./profile-ref.js";
+import { SubscriptionQuotaService } from "./quotas.js";
+
+export { isDefaultProfile, profileKey, type ProfileRef };
 import { terminalEnv } from "./terminals.js";
 
 /**
@@ -33,8 +36,10 @@ import { terminalEnv } from "./terminals.js";
  *   login; two people never share one unless a workspace says so.
  * - `0700`, and the server never reads what is in them. Its job is to name
  *   the directory, not to parse it.
- * - The pasted token is decrypted for one spawn's environment and nowhere
- *   else. It is never logged and never put in an event.
+ * - The server never reads, copies or forwards what a CLI's sign-in wrote,
+ *   and never holds a Claude token of its own: a login happens only in the
+ *   CLI's own flow, in a terminal (Claude Code legal and compliance). Usage
+ *   is asked of the CLI too (`quotas.ts`).
  */
 
 /** A probe is cached this long per user, so the settings page is cheap to refresh. */
@@ -57,9 +62,6 @@ function writeIfChanged(path: string, content: string): void {
   writeFileSync(path, content, { mode: 0o600 });
 }
 
-/** A `setup-token` lives a year; the settings page warns from here on. */
-export const TOKEN_WARN_AFTER_MS = 11 * 30 * 24 * 3600_000;
-
 export type LoginProgram = "claude-login" | "codex-login";
 
 export interface ProviderCard extends ProviderHealth {
@@ -69,8 +71,6 @@ export interface ProviderCard extends ProviderHealth {
   /** False when the server refuses this provider outright, whatever its health. */
   enabled: boolean;
   models: readonly { id: string; name: string; efforts?: readonly ReasoningEffort[] }[];
-  /** Claude only: the pasted-token state. */
-  token?: { configured: boolean; issuedAt: string | null; expiresSoon: boolean };
 }
 
 /**
@@ -95,6 +95,23 @@ interface Cached {
 
 export class ProviderService {
   readonly #cache = new Map<string, Cached>();
+  /** A named (non-Default) account's probe, by `profileKey`. */
+  readonly #profileCache = new Map<string, { at: number; card: ProviderCard }>();
+  /** Each subject's plan usage, as its CLIs report it. */
+  readonly quotas = new SubscriptionQuotaService({
+    rateLimits: async (subject, id, profile) => {
+      const provider = this.providers[id];
+      if (!provider?.rateLimits) throw new Error(`${PROVIDER_LABELS[id]} cannot report its usage`);
+      const { ctx } = await this.resolve(subject, id, profile ? { profile } : {});
+      return provider.rateLimits(ctx(this.config.WORKSPACE_ROOT));
+    },
+    signedIn: async (subject, id, profile) => {
+      const card = isDefaultProfile(id, profile)
+        ? (await this.health(subject))[id]
+        : await this.profileHealth(subject, id, profile!);
+      return card.authenticated && card.authMode !== "api-key";
+    },
+  });
 
   constructor(
     private readonly db: Database,
@@ -117,8 +134,13 @@ export class ProviderService {
     return id === "native" ? null : (this.providers[id] ?? null);
   }
 
-  credsDir(userId: string, id: CliProviderId): string {
-    return join(this.config.CREDS_ROOT, userId, id);
+  /**
+   * A CLI's login folder: the subject's, and inside it the named account's
+   * (`profile`) or the Default one. OMP has no accounts, only the one
+   * folder, billed to an API key.
+   */
+  credsDir(userId: string, id: CliProviderId, profile?: ProfileRef | null): string {
+    return join(this.config.CREDS_ROOT, userId, id === "omp" || !profile ? id : profile.dirName);
   }
 
   /**
@@ -128,8 +150,8 @@ export class ProviderService {
    * Synchronous because `TerminalReactor.#open` is: a login terminal must
    * exist before the first keystroke arrives, and this is one local mkdir.
    */
-  ensureCredsDir(userId: string, id: CliProviderId): string {
-    const dir = this.credsDir(userId, id);
+  ensureCredsDir(userId: string, id: CliProviderId, profile?: ProfileRef | null): string {
+    const dir = this.credsDir(userId, id, profile);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (id === "codex") {
       // The default `auto` store tries the OS keyring first, and a server
@@ -172,8 +194,8 @@ export class ProviderService {
    * config that offers the OMP bridge (`omp-bridge-config.ts`) -- made
    * `0700` on first use, beside the CLI's login.
    */
-  cliRunDir(userId: string, id: "claude" | "codex"): string {
-    const dir = join(this.ensureCredsDir(userId, id), "run");
+  cliRunDir(userId: string, id: "claude" | "codex", profile?: ProfileRef | null): string {
+    const dir = join(this.ensureCredsDir(userId, id, profile), "run");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     return dir;
   }
@@ -205,8 +227,8 @@ export class ProviderService {
    *
    * The operator's own, minus the harness's secrets (`terminalEnv`), which
    * is what makes the CLI resolve through a version manager the way it does
-   * in the terminal. Then the one variable that relocates the CLI's config,
-   * and, in token mode, the token itself. `terminalEnv` already strips every
+   * in the terminal. Then the one variable that relocates the CLI's config.
+   * `terminalEnv` already strips every
    * `*_API_KEY`, which is the assertion the spec asks for: nothing here can
    * put a run onto API billing.
    *
@@ -220,7 +242,7 @@ export class ProviderService {
   providerEnv(
     userId: string,
     id: CliProviderId,
-    options: { token?: string; openrouterKey?: string; ompPreset?: string } = {},
+    options: { openrouterKey?: string; ompPreset?: string; profile?: ProfileRef | null } = {},
   ): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(terminalEnv())) if (value !== undefined) env[name] = value;
@@ -228,11 +250,12 @@ export class ProviderService {
     // "nobody is here to answer a prompt".
     env.TERM = "dumb";
     env.CI = "1";
+    // A token the server was started with would sign every run in as
+    // whoever minted it; a login is only ever the CLI's own.
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
-    const dir = this.ensureCredsDir(userId, id);
+    const dir = this.ensureCredsDir(userId, id, options.profile);
     if (id === "claude") {
       env.CLAUDE_CONFIG_DIR = dir;
-      if (options.token) env.CLAUDE_CODE_OAUTH_TOKEN = options.token;
     } else if (id === "codex") {
       env.CODEX_HOME = dir;
     } else {
@@ -249,9 +272,9 @@ export class ProviderService {
   }
 
   /** The env a login terminal runs the CLI's own sign-in flow under. */
-  loginEnv(userId: string, program: LoginProgram): Record<string, string> {
+  loginEnv(userId: string, program: LoginProgram, profile?: ProfileRef | null): Record<string, string> {
     const id: CliProviderId = program === "claude-login" ? "claude" : "codex";
-    const env = this.providerEnv(userId, id);
+    const env = this.providerEnv(userId, id, profile ? { profile } : {});
     // A real terminal after all: the login flow draws a prompt.
     env.TERM = "xterm-256color";
     delete env.CI;
@@ -266,13 +289,12 @@ export class ProviderService {
   async resolve(
     userId: string,
     id: CliProviderId,
-    options: { openrouterKey?: string; ompPreset?: string } = {},
+    options: { openrouterKey?: string; ompPreset?: string; profile?: ProfileRef | null } = {},
   ): Promise<{ provider: AgentProvider; ctx: (cwd: string) => RunContext }> {
     const provider = this.providers[id];
     if (!provider) throw new Error(`The ${id} provider is not available on this server.`);
-    const token = id === "claude" ? await this.claudeToken(userId) : null;
     const env = this.providerEnv(userId, id, {
-      ...(token ? { token } : {}),
+      ...(id !== "omp" && options.profile ? { profile: options.profile } : {}),
       ...(id === "omp" && options.openrouterKey ? { openrouterKey: options.openrouterKey } : {}),
       ...(id === "omp" && options.ompPreset ? { ompPreset: options.ompPreset } : {}),
     });
@@ -317,8 +339,6 @@ export class ProviderService {
     };
 
     const [claude, codex] = await Promise.all([probe("claude"), probe("codex")]);
-    const tokenSet = Boolean(row?.token) && Boolean(this.config.SECRET_KEY);
-    const issuedAt = tokenSet ? (row?.issuedAt ?? null) : null;
 
     const cards: Record<ProviderId, ProviderCard> = {
       native: {
@@ -336,11 +356,6 @@ export class ProviderService {
         ...claude,
         enabled,
         models: this.providers.claude.models,
-        token: {
-          configured: tokenSet,
-          issuedAt: issuedAt ? issuedAt.toISOString() : null,
-          expiresSoon: issuedAt ? Date.now() - issuedAt.getTime() > TOKEN_WARN_AFTER_MS : false,
-        },
       },
       codex: {
         id: "codex",
@@ -366,65 +381,83 @@ export class ProviderService {
     return cards;
   }
 
-  /** Forgets a probe: after a login, a sign-out or a token change. */
-  invalidate(userId: string): void {
-    this.#cache.delete(userId);
+  /**
+   * One named account's card: the CLI's own status check, in that
+   * account's folder. The Default account's is `health`'s.
+   */
+  async profileHealth(
+    subject: string,
+    id: "claude" | "codex",
+    profile: ProfileRef,
+    options: { fresh?: boolean } = {},
+  ): Promise<ProviderCard> {
+    if (isDefaultProfile(id, profile)) return (await this.health(subject, options))[id];
+    const key = profileKey(subject, id, profile);
+    const cached = this.#profileCache.get(key);
+    if (cached && !options.fresh && Date.now() - cached.at < HEALTH_TTL_MS) return cached.card;
+    let health: ProviderHealth;
+    try {
+      const { provider, ctx } = await this.resolve(subject, id, { profile });
+      health = await provider.probe(ctx(this.config.WORKSPACE_ROOT));
+    } catch (error) {
+      health = { installed: false, authenticated: false, authMode: "none", error: error instanceof Error ? error.message : String(error) };
+    }
+    const card: ProviderCard = {
+      id,
+      label: PROVIDER_LABELS[id],
+      ...health,
+      enabled: cliProvidersEnabled(this.config),
+      models: this.providers[id].models,
+    };
+    this.#profileCache.set(key, { at: Date.now(), card });
+    return card;
   }
 
   /**
-   * Signs a provider out: the credential directory's contents go, and for
-   * Claude the stored token with them. The directory itself stays, mode
+   * Forgets a probe: after a login, a sign-out or a token change. Every
+   * account of the subject, unless one is named.
+   */
+  invalidate(userId: string, id?: CliProviderId, profile?: ProfileRef | null): void {
+    if (id && profile && !isDefaultProfile(id, profile)) {
+      const key = profileKey(userId, id, profile);
+      this.#profileCache.delete(key);
+      this.quotas.forget(key);
+      return;
+    }
+    this.#cache.delete(userId);
+    for (const key of this.#profileCache.keys()) if (key.startsWith(`${userId}/`)) this.#profileCache.delete(key);
+    this.quotas.forget(userId);
+  }
+
+  /**
+   * Signs a provider out: the credential directory's contents go. The
+   * directory itself stays, mode
    * intact, so the next login has somewhere to land.
    */
-  async signOut(userId: string, id: CliProviderId): Promise<void> {
-    const dir = this.credsDir(userId, id);
+  async signOut(userId: string, id: CliProviderId, profile?: ProfileRef | null): Promise<void> {
+    const dir = this.credsDir(userId, id, profile);
     // Async, unlike `ensureCredsDir`: a CLI's credential folder can hold a
     // cache of thousands of files, and a recursive delete of that on the
     // event loop stalls every other request while it runs.
     const entries = await readdir(dir).catch(() => [] as string[]);
     await Promise.all(entries.map((entry) => rm(join(dir, entry), { recursive: true, force: true })));
-    if (id === "claude") {
-      const workspaceId = workspaceOfSubject(userId);
-      if (workspaceId) {
-        await this.db
-          .update(workspaces)
-          .set({ claudeOauthTokenEncrypted: null, claudeTokenIssuedAt: null })
-          .where(eq(workspaces.id, workspaceId));
-      } else {
-        await this.db
-          .update(users)
-          .set({ claudeOauthTokenEncrypted: null, claudeTokenIssuedAt: null })
-          .where(eq(users.id, userId));
-      }
-    }
-    this.invalidate(userId);
+    this.invalidate(userId, id, profile);
   }
 
-  /** The pasted setup-token, decrypted, or null when there is none usable. */
-  async claudeToken(userId: string): Promise<string | null> {
-    if (!this.config.SECRET_KEY) return null;
-    const row = await this.#storedKeys(userId);
-    if (!row?.token) return null;
-    try {
-      return decryptSecret(row.token, this.config.SECRET_KEY);
-    } catch {
-      // Encrypted under a key that has since changed. Not usable, and the
-      // settings page already says so through `describeKey`.
-      return null;
-    }
+  /** Deletes a named account's folder outright, login and all. */
+  async removeProfileDir(userId: string, id: "claude" | "codex", profile: ProfileRef): Promise<void> {
+    if (isDefaultProfile(id, profile)) throw new Error("The Default account's folder is not removed; sign it out instead.");
+    await rm(this.credsDir(userId, id, profile), { recursive: true, force: true });
+    this.invalidate(userId, id, profile);
   }
 
-  /** A subject's stored OpenRouter key and Claude token, from its user or workspace row. */
-  async #storedKeys(
-    subject: string,
-  ): Promise<{ openrouter: string | null; token: string | null; issuedAt: Date | null } | undefined> {
+  /** A subject's stored OpenRouter key, from its user or workspace row. */
+  async #storedKeys(subject: string): Promise<{ openrouter: string | null } | undefined> {
     const workspaceId = workspaceOfSubject(subject);
     const table = workspaceId ? workspaces : users;
     const [row] = await this.db
       .select({
         openrouter: table.openrouterKeyEncrypted,
-        token: table.claudeOauthTokenEncrypted,
-        issuedAt: table.claudeTokenIssuedAt,
       })
       .from(table)
       .where(eq(table.id, workspaceId ?? subject))

@@ -164,13 +164,3 @@ export function checkAuthCode(code: string): { ok: boolean; hint: string | null 
   }
   return { ok: true, hint: null }
 }
-
-/** Setup tokens are `sk-ant-oat01-…`; this is a hint, not a gate. */
-export function checkSetupToken(token: string): { ok: boolean; hint: string | null } {
-  if (!token) return { ok: false, hint: null }
-  if (!/^sk-ant-oat\d+-/.test(token)) {
-    return { ok: true, hint: "This doesn't look like a setup token (they start with sk-ant-oat01-)." }
-  }
-  if (token.length < 40) return { ok: true, hint: "This looks too short to be a whole token." }
-  return { ok: true, hint: null }
-}

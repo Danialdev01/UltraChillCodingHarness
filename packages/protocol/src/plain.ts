@@ -27,6 +27,7 @@ export * from "./project-command-limits.js";
 export * from "./runtime-names.js";
 export * from "./model-routing.js";
 export * from "./widgets.js";
+export * from "./context-budget.js";
 
 // --- Projects ----------------------------------------------------------------
 
@@ -162,3 +163,26 @@ export function canAssignRole(actor: Membership | null | undefined, role: Worksp
   if (!actor || !can(actor, "members.manage") || role === "owner") return false;
   return actor.role === "owner" || role !== "admin";
 }
+
+// --- Resources (see resources.ts) ---
+
+/** The id of the store every workspace has: its own disk storage on the server. */
+export const WORKSPACE_STORE_ID = "workspace";
+
+/**
+ * A key a person may name: relative, `/`-separated, no empty, `.` or `..`
+ * segments, no NUL or backslash. "" is the store's root and is only valid
+ * where a folder is meant.
+ */
+export function normalizeResourceKey(key: string): string | null {
+  if (key.includes("\0") || key.includes("\\")) return null;
+  const trimmed = key.replace(/^\/+|\/+$/g, "");
+  if (trimmed === "") return "";
+  const parts = trimmed.split("/");
+  if (parts.some((p) => p === "" || p === "." || p === ".." || p.length > 255)) return null;
+  if (trimmed.length > 1024) return null;
+  return parts.join("/");
+}
+
+/** The drag data type a resource row sets; the chat and the file tree accept it. */
+export const RESOURCE_DRAG_TYPE = "application/x-ucch-resource";

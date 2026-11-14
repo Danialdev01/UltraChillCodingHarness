@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
-import { DomainEvent, WIDGET_PROMPT, WIDGET_TURN_NUDGE, type Command } from "@ucch/protocol";
+import { DomainEvent, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
 import {
   ClaudeNormaliser,
   createProviders,
@@ -1434,7 +1434,7 @@ describe("automatic switch on a usage limit (OM4.6)", () => {
     expect(run.appended.flat().find((e) => e.type === "agent.turn_failed")).toMatchObject({ limit: true });
     expect(run.dispatched).toEqual([
       // The same session, switched: not a new thread.
-      { type: "thread.switch_harness", threadId: THREAD, targetProvider: "codex", message: "Add the retry test", reason: "limit" },
+      { type: "thread.switch_harness", threadId: THREAD, targetProvider: "codex", message: "Add the retry test", reason: "limit", auto: true },
     ]);
     expect(run.errors).toEqual([]);
   });
@@ -1452,7 +1452,7 @@ describe("automatic switch on a usage limit (OM4.6)", () => {
     const cards = {
       claude: card("claude", "Claude Code", true),
       codex: card("codex", "Codex", false),
-      native: { ...card("native", "Custom (legacy)", true), authMode: "api-key" },
+      native: { ...card("native", "Default", true), authMode: "api-key" },
       omp: card("omp", "Custom", false),
     };
     const log: DomainEvent[] = [];
@@ -1579,7 +1579,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     withBridge = true,
     id: "claude" | "codex" = "claude",
     threadRow: Record<string, unknown> = thread,
-    extra: { omp?: AgentProvider; messages?: unknown[][]; trusted?: boolean } = {},
+    extra: { omp?: AgentProvider; messages?: unknown[][]; trusted?: boolean; subagents?: boolean; bridgeBin?: string } = {},
   ) {
     const seen: Seen[] = [];
     const claude: AgentProvider = {
@@ -1622,13 +1622,8 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
         };
       },
     };
-    class NoToken extends ProviderService {
-      override async claudeToken(): Promise<string | null> {
-        return null;
-      }
-    }
     const real = createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: "omp" });
-    const providers = new NoToken({} as Database, { CREDS_ROOT: join(root, "creds") } as Config, new HostProcessHost(), {
+    const providers = new ProviderService({} as Database, { CREDS_ROOT: join(root, "creds") } as Config, new HostProcessHost(), {
       ...real,
       ...(extra.omp ? { omp: extra.omp } : {}),
       [id]: claude,
@@ -1650,7 +1645,9 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
         defaultModel: "anthropic/claude-sonnet-4.5",
         cliEnabled: true,
         providers,
-        ...(withBridge ? { ompBridge: { bin: "/opt/ucch/omp-bridge.mjs", ompBin: "/usr/bin/omp", socket: "/c/omp-scheduler.sock", maxSeconds: 240, leases } } : {}),
+        ...(withBridge ? { ompBridge: { bin: extra.bridgeBin ?? "/opt/ucch/omp-bridge.mjs", ompBin: "/usr/bin/omp", socket: "/c/omp-scheduler.sock", maxSeconds: 240, leases } } : {}),
+        // `ucch_agent` is offered only with a bus to follow its sessions on.
+        ...(extra.subagents ? { bus: { subscribe: () => () => {} }, dispatch: async () => ({ ok: true, events: [] }) } : {}),
       },
       [threadRow],
       [{ stack: null, agent: agentSettings, ...(extra.trusted ? { ompTrusted: true } : {}) }],
@@ -1675,6 +1672,13 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     await turn(run, { type: "thread.send", threadId: THREAD, text: "Update the task", provider: "codex", subagentId: "parent-session:/root/alpha" },
       { type: "user.message", threadId: THREAD, text: "Update the task", subagentId: "parent-session:/root/alpha" });
     expect(run.seen[0]?.input).toMatchObject({ resumeToken: "parent-session", subagentId: "parent-session:/root/alpha", prompt: expect.stringContaining("Update the task") });
+  });
+
+  it("passes a follow-up to a Claude Code subagent through its parent session, with the recorded handle", async () => {
+    const run = bridgeReactor(keyed, {}, false, "claude", { ...thread, provider: "claude", providerSessionId: "parent-session" });
+    await turn(run, { type: "thread.send", threadId: THREAD, text: "Check the auth routes too", provider: "claude", subagentId: "toolu_agent" },
+      { type: "user.message", threadId: THREAD, text: "Check the auth routes too", subagentId: "toolu_agent", subagentHandle: "a454c450ac8feab62" });
+    expect(run.seen[0]?.input).toMatchObject({ resumeToken: "parent-session", subagentId: "toolu_agent", subagentHandle: "a454c450ac8feab62" });
   });
 
   it("hands Claude Code an MCP config with the bridge's environment, and keeps the key out of the CLI's own", async () => {
@@ -1874,6 +1878,17 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     const off = bridgeReactor(keyed, { widgets: { enabled: false } });
     await turn(off, { ...ask, text }, said);
     expect(off.seen[0]!.input.prompt).toBe(text);
+  });
+
+  it("says ucch_agent is unavailable when the bridge bundle is missing, so a named model is not swapped", async () => {
+    for (const id of ["claude", "codex"] as const) {
+      const run = bridgeReactor(keyed, { widgets: { enabled: false } }, true, id, thread, { subagents: true, bridgeBin: "/nonexistent/omp-bridge.mjs" });
+      await turn(run, { ...ask, provider: id });
+      expect(run.seen[0]!.input.mcpConfigPath).toBeUndefined();
+      expect(run.seen[0]!.input.codexMcp).toBeUndefined();
+      expect(run.seen[0]!.input.instructions).toBe(UCCH_AGENT_UNAVAILABLE_NOTE);
+      expect(guides(run)).toEqual([{ type: "context.injected", threadId: THREAD, source: "omp_bridge", content: UCCH_AGENT_UNAVAILABLE_NOTE }]);
+    }
   });
 
   it("does not claim the guide for a resumed Codex session, which is not handed instructions", async () => {

@@ -252,6 +252,31 @@ export class WorkspaceFiles {
     await writeFile(absolute, "", { encoding: "utf8", flag: "wx" });
   }
 
+  /**
+   * Writes bytes to a file that must not exist yet -- a copy brought in from
+   * the workspace's Resources. Parents are created; a clash is a
+   * `ConflictError`, so the caller can pick another name rather than
+   * overwrite someone's file.
+   */
+  async createBytes(projectId: TreeTarget, path: string, bytes: Buffer): Promise<void> {
+    const absolute = this.resolve(projectId, path);
+    await this.#refuseEscapingSymlink(projectId, absolute);
+    await mkdir(dirname(absolute), { recursive: true });
+    // Checked again now the parents exist: one of them may have been a link.
+    await this.#refuseEscapingSymlink(projectId, absolute);
+    try {
+      await writeFile(absolute, bytes, { flag: "wx" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ConflictError(`${path} already exists`);
+      throw error;
+    }
+  }
+
+  /** Whether anything is at a path, without following it anywhere. */
+  async has(projectId: TreeTarget, path: string): Promise<boolean> {
+    return exists(this.resolve(projectId, path));
+  }
+
   /** Removes a file, or a directory and everything under it. */
   async remove(projectId: TreeTarget, path: string): Promise<boolean> {
     const absolute = this.resolve(projectId, path);

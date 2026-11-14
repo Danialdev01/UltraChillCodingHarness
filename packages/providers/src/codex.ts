@@ -9,6 +9,7 @@ import type {
   AgentRun,
   ProviderHealth,
   ProviderModel,
+  ProviderRateLimits,
   CodexMcpServer,
   ProviderRunInput,
   RunContext,
@@ -97,6 +98,73 @@ export async function listCodexModels(ctx: RunContext, bin: string): Promise<Pro
         return [...models.values()];
       }
       throw new Error("Codex exited before returning its model catalogue");
+    })()]);
+  } finally {
+    clearTimeout(timer!);
+    child.endStdin();
+    child.signal("SIGKILL");
+    await child.exited;
+  }
+}
+
+interface CodexRateWindow {
+  usedPercent?: number;
+  windowDurationMins?: number;
+  /** Epoch seconds. */
+  resetsAt?: number;
+}
+
+/** `account/rateLimits/read`'s answer as windows: a day or longer is the weekly one. */
+export function codexRateLimits(result: unknown): ProviderRateLimits {
+  const limits = (result as { rateLimits?: { primary?: CodexRateWindow | null; secondary?: CodexRateWindow | null; rateLimitReachedType?: unknown } } | null)?.rateLimits;
+  const windows: ProviderRateLimits["windows"] = [];
+  for (const window of [limits?.primary, limits?.secondary]) {
+    if (typeof window?.usedPercent !== "number" || !Number.isFinite(window.usedPercent)) continue;
+    const minutes = typeof window.windowDurationMins === "number" ? window.windowDurationMins : undefined;
+    const id = minutes !== undefined && minutes >= 24 * 60 ? "weekly" : "session";
+    // Two windows of one length would draw the same bar twice.
+    if (windows.some((w) => w.id === id)) continue;
+    windows.push({
+      id,
+      usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
+      resetsAt: typeof window.resetsAt === "number" ? new Date(window.resetsAt * 1000).toISOString() : null,
+      ...(minutes !== undefined ? { minutes } : {}),
+    });
+  }
+  return { windows, limited: limits?.rateLimitReachedType != null };
+}
+
+/**
+ * The plan's usage, asked of Codex's own app server (`account/rateLimits/read`):
+ * the CLI reads its login and asks OpenAI, the harness never sees the token.
+ */
+export async function readCodexRateLimits(ctx: RunContext, bin: string): Promise<ProviderRateLimits> {
+  const child = ctx.host.spawn({
+    argv: [bin, "app-server"], cwd: ctx.cwd, env: ctx.env, holdStdin: true,
+    stdin: JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "ucch", version: "1.0.0" } } }) + "\n",
+  });
+  const send = (message: object) => child.write(JSON.stringify(message) + "\n");
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Codex usage lookup timed out")), 15_000);
+  });
+  try {
+    return await Promise.race([timeout, (async () => {
+      for await (const { stream, line } of child.lines) {
+        if (stream !== "stdout") continue;
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.id === 1) {
+          if (message.error) throw new Error("Codex app server refused to start");
+          send({ method: "initialized", params: {} });
+          send({ id: 2, method: "account/rateLimits/read", params: {} });
+          continue;
+        }
+        if (message.id !== 2) continue;
+        if (message.error) throw new Error("Codex could not read its usage");
+        return codexRateLimits(message.result);
+      }
+      throw new Error("Codex exited before reporting its usage");
     })()]);
   } finally {
     clearTimeout(timer!);
@@ -557,6 +625,9 @@ export class CodexProvider implements AgentProvider {
   readonly models = CODEX_MODELS;
   listModels(ctx: RunContext): Promise<ProviderModel[]> {
     return listCodexModels(ctx, this.bin);
+  }
+  rateLimits(ctx: RunContext): Promise<ProviderRateLimits> {
+    return readCodexRateLimits(ctx, this.bin);
   }
   #caps: CodexCapabilities | null = null;
 

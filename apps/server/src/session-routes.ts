@@ -73,6 +73,7 @@ export async function listWorkspaceSessions(
       title: threads.title,
       status: threads.status,
       provider: threads.provider,
+      profileId: threads.profileId,
       model: latestModel,
       lastTurn,
       branch: threads.branch,

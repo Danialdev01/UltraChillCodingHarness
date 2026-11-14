@@ -360,6 +360,49 @@ describe("a login terminal", () => {
     login.closeAll();
   });
 
+  it("signs in a named account in its own folder, and refuses one that is not the subject's", async () => {
+    const { calls, spawn } = fakeSpawn();
+    const sink: string[] = [];
+    const asked: unknown[] = [];
+    const login = new TerminalReactor(
+      {
+        workspaceRoot: root,
+        allowHostShell: true,
+        spawn,
+        profile: async (subject, profileId, provider) => {
+          asked.push([subject, profileId, provider]);
+          return profileId === WORK_ID ? { id: WORK_ID, dirName: "claude-abc" } : null;
+        },
+        login: (userId, _program, profile) => ({
+          argv: ["claude", "auth", "login"],
+          cwd: `/creds/${userId}/${profile?.dirName ?? "claude"}`,
+          env: { PATH: "/usr/bin" },
+        }),
+      },
+      (_project, event) => {
+        if (event.type === "terminal.output") sink.push(event.data);
+      },
+    );
+    const WORK_ID = "33333333-3333-3333-3333-333333333333";
+    const OTHER_ID = "44444444-4444-4444-4444-444444444444";
+    login.react(
+      { type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24, program: "claude-login", profileId: WORK_ID },
+      USER,
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(asked).toEqual([[USER, WORK_ID, "claude"]]);
+    expect(calls.map((c) => c.cwd)).toEqual([`/creds/${USER}/claude-abc`]);
+    login.closeAll();
+
+    login.react(
+      { type: "terminal.create", projectId: PROJECT, terminalId: OTHER_ID, cols: 80, rows: 24, program: "claude-login", profileId: OTHER_ID },
+      USER,
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toHaveLength(1);
+    expect(sink.join("")).toMatch(/not one of yours/);
+  });
+
   it("still starts the shell in the workspace when no program is named", () => {
     const { calls, spawn } = fakeSpawn();
     const plain = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, spawn }, () => {});

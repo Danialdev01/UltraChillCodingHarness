@@ -213,7 +213,8 @@ export function registerWorkspaceMemberRoutes(app: FastifyInstance, deps: Worksp
       if (!principal) return reply.code(401).send(unauthorized);
       if (!Uuid.safeParse(request.params.id).success) return reply.code(404).send(notFound);
       const kind = request.params.kind;
-      if (kind !== "openrouter" && kind !== "claude-token") {
+      // Never a Claude token: a subscription signs in only through the CLI.
+      if (kind !== "openrouter") {
         return reply.code(404).send({ error: "unknown credential" });
       }
       const parsed = CredentialBody.safeParse(request.body);

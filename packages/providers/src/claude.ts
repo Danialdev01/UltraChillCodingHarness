@@ -1,5 +1,7 @@
 import { isAbsolute, join, relative } from "node:path";
 import {
+  CONTEXT_HANDOVER_RATIO,
+  cliContextWindow,
   normalizeWorkspacePath,
   type AgentPermissionMode,
   type DomainEvent,
@@ -256,6 +258,36 @@ interface ClaudeSubagent {
   lastProgressAt: number;
   /** Its latest prose: the result when the CLI's own is a summary. */
   lastText: string | null;
+  /** The agentId it is continued by (`SendMessage`), once the CLI says it. */
+  handle?: string;
+  /** Whether `agent.subagent_started` already carried the handle. */
+  handleSent?: boolean;
+}
+
+/** Claude Code's agentId: a plain token, as `SubagentHandle` holds it. */
+const AGENT_HANDLE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The agentId an `Agent` call's result names ("agentId: a6d8… (…SendMessage…)"). */
+export function agentHandleFrom(result: string): string | undefined {
+  const named = /(?:^|\n)agentId: ([A-Za-z0-9_-]{1,64})\b/.exec(result)?.[1];
+  return named && AGENT_HANDLE.test(named) ? named : undefined;
+}
+
+/**
+ * The prompt for a person's follow-up to one of a Claude Code session's own
+ * subagents, sent through the resumed parent (only it can reach the agent).
+ * Their words are data inside the delimiters; the handle is checked here
+ * as well as where it was recorded.
+ */
+export function claudeSubagentPrompt(text: string, handle: string): string {
+  if (!AGENT_HANDLE.test(handle)) throw new Error("This Claude Code subagent cannot be continued from this session.");
+  return [
+    `The user is chatting directly with your existing subagent ${JSON.stringify(handle)} about its task.`,
+    `Use SendMessage with to: ${JSON.stringify(handle)} to pass the user message below to that exact agent verbatim, then wait for its reply and end your turn with it.`,
+    "The agent may answer questions or carry on its task in the existing workspace. Do not start a replacement agent, ask another agent, answer for it, or do its work yourself.",
+    "If the agent cannot be reached, say so clearly. Do not silently substitute another agent.",
+    "<subagent-user-message>", text.replaceAll("</subagent-user-message>", "<\\/subagent-user-message>"), "</subagent-user-message>",
+  ].join("\n\n");
 }
 
 /** Tools whose successful result means a file in the workspace changed. */
@@ -295,13 +327,15 @@ interface Line {
   };
   parent_tool_use_id?: string | null;
   event?: { type?: string; delta?: { type?: string; text?: string; thinking?: string } };
-  message?: { id?: string; content?: Block[] };
+  message?: { id?: string; content?: Block[]; usage?: Record<string, unknown> };
+  /** `system` `init`: the model the session runs, as the CLI resolved it. */
+  model?: string;
   tool_use_result?: { type?: string };
   attempt?: number;
   max_retries?: number;
   retry_delay_ms?: number;
   error?: unknown;
-  rate_limit_info?: { status?: string; rateLimitType?: string; resetsAt?: number };
+  rate_limit_info?: ClaudeRateLimitInfo;
   /** The API's own error type, on a response it refused: `usage_limit_reached` for the plan's limit. */
   api_error?: string;
   /** `system` `task_*` lines: a background task's id, its spawning call, and how it is going. */
@@ -348,6 +382,12 @@ export class ClaudeNormaliser implements Normaliser {
   #agentCalls = new Map<string, { agent: string | null; description: string | null }>();
   /** Subagents started and not yet finished, by the spawning call's id (solution §6.2). */
   #subagents = new Map<string, ClaudeSubagent>();
+  /**
+   * Subagents by the CLI's task id (its agentId). A `SendMessage` that
+   * continues one reports under its own call's id with the same task id,
+   * so that, not the call, says whose card it is.
+   */
+  #tasks = new Map<string, string>();
   /** Finished ones, so a late line does not start them again. */
   #finishedSubagents = new Set<string>();
   /**
@@ -359,6 +399,10 @@ export class ClaudeNormaliser implements Normaliser {
   #backgroundTasks = new Set<string>();
   /** A `result` held back for the background tasks, with its cost so far. */
   #heldResult: { costUsd: number } | null = null;
+  /** The model the CLI said it runs (`system` `init`), for its window. */
+  #model: string | null = null;
+  /** The last context reading sent, so a response's every block does not repeat it. */
+  #contextKey: string | null = null;
   #usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -372,9 +416,15 @@ export class ClaudeNormaliser implements Normaliser {
       threadId: string;
       turnId: string;
       workspace: string;
+      /** The model asked for, for the context window until the CLI names its own. */
+      model?: string;
       now?: () => number;
+      /** A follow-up turn to this subagent: its card, and the agentId the CLI continues it by. */
+      followup?: { subagentId: string; handle: string };
     },
-  ) {}
+  ) {
+    if (ctx.followup) this.#tasks.set(ctx.followup.handle, ctx.followup.subagentId);
+  }
 
   get sessionId(): string | null {
     return this.#sessionId;
@@ -418,6 +468,33 @@ export class ClaudeNormaliser implements Normaliser {
     ];
   }
 
+  /**
+   * How full the session is after this model call: what it was sent --
+   * fresh input, and the cached prefix read or written -- plus what it
+   * wrote. Per call, unlike the turn's usage, which sums every call of the
+   * turn and so counts the same history many times over.
+   */
+  #contextReading(usage: Record<string, unknown> | undefined): DomainEvent[] {
+    if (!usage) return [];
+    const u = mapUsage(usage);
+    const usedTokens = u.inputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens + u.outputTokens;
+    if (usedTokens <= 0) return [];
+    const windowTokens = cliContextWindow("claude", this.#model ?? this.ctx.model ?? null);
+    const key = `${usedTokens}/${windowTokens}`;
+    if (key === this.#contextKey) return [];
+    this.#contextKey = key;
+    return [
+      {
+        type: "context.usage",
+        threadId: this.ctx.threadId,
+        turnId: this.ctx.turnId,
+        usedTokens,
+        windowTokens,
+        thresholdTokens: windowTokens ? Math.floor(windowTokens * CONTEXT_HANDOVER_RATIO) : null,
+      },
+    ];
+  }
+
   push(raw: string): DomainEvent[] {
     // After the turn's end nothing more is the turn's: a stray line must not
     // end it twice.
@@ -432,6 +509,7 @@ export class ClaudeNormaliser implements Normaliser {
 
     switch (line.type) {
       case "system": {
+        if (line.subtype === "init" && line.model) this.#model = line.model;
         if (line.subtype === "init" && line.session_id) {
           // A model woken by a finished background task starts with another
           // init for the same session: one session, one announcement.
@@ -474,7 +552,7 @@ export class ClaudeNormaliser implements Normaliser {
         // `allowed`, `allowed_warning` or `rejected` (2.1.316's SDK schema);
         // only a refusal says this turn met the limit.
         if (line.rate_limit_info?.status === "rejected") this.#limited = true;
-        return [];
+        return line.rate_limit_info ? [{ type: "agent.rate_limit", ...ids, provider: "claude", ...claudeRateLimit(line.rate_limit_info) }] : [];
 
       case "stream_event": {
         // Subagent prose is not this turn's prose; its lines arrive whole
@@ -503,6 +581,7 @@ export class ClaudeNormaliser implements Normaliser {
         const events: DomainEvent[] = [];
         const id = line.message?.id ?? "";
         if (this.#message && this.#message.id !== id) events.push(...this.#flushMessage());
+        events.push(...this.#contextReading(line.message?.usage));
         if (!this.#message) this.#message = { id, content: [] };
         for (const block of blocks) {
           this.#message.content.push(block);
@@ -562,10 +641,13 @@ export class ClaudeNormaliser implements Normaliser {
           // call only says it was launched, and `task_notification` ends it.
           const subagent = this.#subagents.get(block.tool_use_id);
           const content = flattenContent(block.content);
+          const handle = this.#agentCalls.has(block.tool_use_id) ? agentHandleFrom(content) : undefined;
+          if (handle && !this.#tasks.has(handle)) this.#tasks.set(handle, block.tool_use_id);
+          if (subagent && handle && !subagent.handle) subagent.handle = handle;
           if (subagent && !subagent.background && !content.startsWith("Async agent launched")) {
-            events.push(...this.#subagentFinished(block.tool_use_id, isError ? "failed" : "completed", content));
+            events.push(...this.#subagentFinished(block.tool_use_id, isError ? "failed" : "completed", content, handle));
           } else if (!subagent && this.#agentCalls.has(block.tool_use_id) && !content.startsWith("Async agent launched")) {
-            events.push(...this.#subagentStarted(block.tool_use_id, {}));
+            events.push(...this.#subagentStarted(block.tool_use_id, handle ? { handle } : {}));
             events.push(...this.#subagentFinished(block.tool_use_id, isError ? "failed" : "completed", content));
           }
         }
@@ -751,12 +833,16 @@ export class ClaudeNormaliser implements Normaliser {
 
   /** `task_started` / `task_progress` / `task_notification`, for a subagent this turn spawned. */
   #taskLine(line: Line): DomainEvent[] {
-    const parent = line.tool_use_id;
-    if (!parent || (!this.#agentCalls.has(parent) && line.task_type !== "local_agent")) return [];
+    const known = line.task_id ? this.#tasks.get(line.task_id) : undefined;
+    const parent = known ?? line.tool_use_id;
+    if (!parent || (!known && !this.#agentCalls.has(parent) && line.task_type !== "local_agent")) return [];
+    const handle = line.task_id && AGENT_HANDLE.test(line.task_id) ? line.task_id : undefined;
+    if (handle && !known) this.#tasks.set(handle, parent);
     const usage = (line.usage ?? {}) as { tool_uses?: unknown; duration_ms?: unknown };
     const events = this.#subagentStarted(parent, {
       ...(line.subagent_type ? { agent: line.subagent_type } : {}),
       ...(line.description ? { description: line.description } : {}),
+      ...(handle ? { handle } : {}),
     });
     const subagent = this.#subagents.get(parent);
     if (!subagent) return events;
@@ -773,10 +859,15 @@ export class ClaudeNormaliser implements Normaliser {
   }
 
   /** `agent.subagent_started`, the first time the turn hears of a subagent. */
-  #subagentStarted(parent: string, seen: { agent?: string; description?: string }): DomainEvent[] {
-    if (this.#subagents.has(parent) || this.#finishedSubagents.has(parent)) return [];
+  #subagentStarted(parent: string, seen: { agent?: string; description?: string; handle?: string }): DomainEvent[] {
+    const running = this.#subagents.get(parent);
+    if (running && seen.handle && !running.handle) running.handle = seen.handle;
+    if (running || this.#finishedSubagents.has(parent)) return [];
     const call = this.#agentCalls.get(parent);
-    this.#subagents.set(parent, { background: false, toolCalls: 0, lastProgressAt: -Infinity, lastText: null });
+    // A follow-up's subagent was started by an earlier turn: its handle is known.
+    const handle = seen.handle ?? (this.ctx.followup?.subagentId === parent ? this.ctx.followup.handle : undefined);
+    this.#subagents.set(parent, { background: false, toolCalls: 0, lastProgressAt: -Infinity, lastText: null,
+      ...(handle ? { handle, handleSent: true } : {}) });
     return [
       {
         type: "agent.subagent_started",
@@ -787,6 +878,7 @@ export class ClaudeNormaliser implements Normaliser {
         agent: call?.agent ?? seen.agent ?? "general-purpose",
         description: call?.description ?? seen.description ?? null,
         model: null,
+        ...(handle ? { resumeHandle: handle } : {}),
       },
     ];
   }
@@ -813,9 +905,11 @@ export class ClaudeNormaliser implements Normaliser {
   }
 
   /** `agent.subagent_finished`, once per subagent. */
-  #subagentFinished(parent: string, status: "completed" | "failed" | "aborted", result: string | null): DomainEvent[] {
+  #subagentFinished(parent: string, status: "completed" | "failed" | "aborted", result: string | null, handle?: string): DomainEvent[] {
     const subagent = this.#subagents.get(parent);
     if (!subagent) return [];
+    if (handle && !subagent.handle) subagent.handle = handle;
+    const lateHandle = subagent.handle && !subagent.handleSent ? subagent.handle : undefined;
     this.#subagents.delete(parent);
     this.#finishedSubagents.add(parent);
     const text = result?.trim() || subagent.lastText || null;
@@ -827,6 +921,7 @@ export class ClaudeNormaliser implements Normaliser {
         subagentId: parent,
         status,
         result: text && text.length > SUBAGENT_RESULT_CHARS ? `${text.slice(0, SUBAGENT_RESULT_CHARS)}\n[… truncated]` : text,
+        ...(lateHandle ? { resumeHandle: lateHandle } : {}),
         toolCalls: subagent.toolCalls,
         ...(subagent.durationMs !== undefined ? { durationMs: subagent.durationMs } : {}),
       },
@@ -898,6 +993,45 @@ function flattenContent(content: unknown): string {
  */
 const AUTH_FAILURE =
   /OAuth session expired|could not be refreshed|OAuth token (has )?expired|invalid_grant|authentication_error|Failed to authenticate|Invalid API key|Please run \/login/i;
+
+/** One window of a `rate_limit_event`, as 2.1.316 writes it. */
+interface ClaudeRateWindow {
+  /** 0-1. */
+  utilization?: number;
+  /** Epoch seconds. */
+  resetsAt?: number;
+}
+
+/** `rate_limit_event.rate_limit_info`: only the fields that are read. */
+export interface ClaudeRateLimitInfo {
+  status?: string;
+  rateLimitType?: string;
+  resetsAt?: number;
+  unifiedWindows?: { five_hour?: ClaudeRateWindow; seven_day?: ClaudeRateWindow };
+}
+
+const epochIso = (seconds: unknown) =>
+  typeof seconds === "number" && Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null;
+
+/**
+ * A `rate_limit_event` as the usage the CLI reported: the plan's two
+ * windows, 0-100, and when the limit in question resets. The CLI's own
+ * reading of its own account -- the only usage figure the harness has for
+ * Claude, since it never asks Anthropic with the login's token.
+ */
+export function claudeRateLimit(info: ClaudeRateLimitInfo): {
+  status: string;
+  resetsAt: string | null;
+  windows: { id: "session" | "weekly"; usedPercent: number; resetsAt: string | null }[];
+} {
+  const windows: { id: "session" | "weekly"; usedPercent: number; resetsAt: string | null }[] = [];
+  for (const [key, id] of [["five_hour", "session"], ["seven_day", "weekly"]] as const) {
+    const window = info.unifiedWindows?.[key];
+    if (typeof window?.utilization !== "number" || !Number.isFinite(window.utilization)) continue;
+    windows.push({ id, usedPercent: Math.min(100, Math.max(0, window.utilization * 100)), resetsAt: epochIso(window.resetsAt) });
+  }
+  return { status: info.status ?? "allowed", resetsAt: epochIso(info.resetsAt), windows };
+}
 
 /**
  * Claude Code's words for a usage limit, as 2.1.316 writes them (read from
@@ -986,11 +1120,20 @@ export class ClaudeProvider implements AgentProvider {
     // Assume the modern flags when nothing has probed yet: they exist on the
     // pinned version, and the settings page probes long before a turn runs.
     const caps = this.#caps ?? { permissionPrompts: true, settingSources: true, mcpConfig: true };
+    // A follow-up to one of its own subagents reaches it through the
+    // resumed parent session; there is no other way to it.
+    if (input.subagentId && (!input.subagentHandle || !input.resumeToken)) {
+      throw new Error("This Claude Code subagent cannot be continued from this session.");
+    }
+    const followup = input.subagentId && input.subagentHandle ? { subagentId: input.subagentId, handle: input.subagentHandle } : undefined;
+    const prompt = followup ? claudeSubagentPrompt(input.prompt, followup.handle) : input.prompt;
     const normaliser = new ClaudeNormaliser({
       projectId: input.projectId,
       threadId: input.threadId,
       turnId: input.turnId,
       workspace: input.ctx.cwd,
+      ...(input.model ? { model: input.model } : {}),
+      ...(followup ? { followup } : {}),
     });
     return runCli({
       provider: "claude",
@@ -1008,7 +1151,7 @@ export class ClaudeProvider implements AgentProvider {
           ...(input.mcpConfigPath ? { mcpConfigPath: input.mcpConfigPath } : {}),
           caps,
         }),
-        stdin: `${JSON.stringify(userLine(input.prompt))}\n`,
+        stdin: `${JSON.stringify(userLine(prompt))}\n`,
         holdStdin: true,
       },
       normaliser,

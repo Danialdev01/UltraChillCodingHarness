@@ -260,6 +260,27 @@
       "when": 1794300000000,
       "tag": "0036_agent_collaboration",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794611631624,
+      "tag": "0037_resource_stores",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794631988592,
+      "tag": "0038_remove_claude_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1794632791672,
+      "tag": "0039_agent_profiles",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ChatMessage, ToolPart } from "./chat-messages.js";
 import {
+  followUpHarness,
   lineageKey,
   lineageOf,
   partitionLineage,
@@ -133,3 +134,21 @@ describe("subagentHref", () => {
     expect(subagentHref(entry("s1", "completed"), { ...where, kind: "session" })).toBeNull();
   });
 });
+
+describe("followUpHarness", () => {
+  const on = (harness: string, run: Partial<LineageEntry["run"]> = {}): LineageEntry => {
+    const base = entry("s1", "completed")
+    return { ...base, harness, run: { ...base.run, ...run } }
+  }
+  it("routes a Codex worker and a continuable Claude Code agent through their parent", () => {
+    expect(followUpHarness(on("codex"))).toBe("codex")
+    expect(followUpHarness(on("claude", { resumeHandle: "a454c450ac8feab62" }))).toBe("claude")
+  })
+  it("offers no chat box where the parent cannot reach the agent", () => {
+    // No handle reported, OMP's own, or a ucch_agent one with a session of its own.
+    expect(followUpHarness(on("claude"))).toBeNull()
+    expect(followUpHarness(on("omp"))).toBeNull()
+    expect(followUpHarness(on("claude", { provider: "claude", childHash: "abc", resumeHandle: "x" }))).toBeNull()
+    expect(followUpHarness(on("codex", { provider: "claude", resumeHandle: "x" }))).toBeNull()
+  })
+})

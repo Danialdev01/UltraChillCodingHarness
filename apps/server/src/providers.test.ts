@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createProviders, forbiddenEnvFor, ompGuardHookSource } from "@ucch/providers";
 import { FakeProcessHost, stdout } from "@ucch/providers/testing";
 import { loadConfig } from "./config.js";
-import { encryptSecret } from "./crypto.js";
 import { ProviderService } from "./providers.js";
 import { terminalEnv } from "./terminals.js";
 
@@ -53,7 +52,7 @@ const config = (over: Record<string, string> = {}) =>
 
 const service = (host: FakeProcessHost, row: Record<string, unknown> = {}, over = {}) =>
   new ProviderService(
-    fakeDb({ openrouter: null, token: null, issuedAt: null, ...row }).db,
+    fakeDb({ openrouter: null, ...row }).db,
     config(over),
     host,
     createProviders({ claudeBin: "claude", codexBin: "codex" }),
@@ -115,11 +114,13 @@ describe("the environment a provider gets", () => {
     expect(env.TERM).toBe("dumb");
   });
 
-  it("carries the pasted token only when asked", () => {
+  it("never carries a Claude token, not even one the server was started with", () => {
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-host");
     const svc = service(new FakeProcessHost([]));
     expect(svc.providerEnv(USER, "claude").CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    expect(svc.providerEnv(USER, "claude", { token: "tok" }).CLAUDE_CODE_OAUTH_TOKEN).toBe("tok");
-    expect(svc.providerEnv(USER, "codex", { token: "tok" }).CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(svc.providerEnv(USER, "codex").CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(svc.loginEnv(USER, "claude-login").CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    vi.unstubAllEnvs();
   });
 
   describe("for omp", () => {
@@ -178,7 +179,7 @@ describe("the environment a provider gets", () => {
 
     it("carries no OpenRouter key unless given one, and none of the CLIs' variables", () => {
       const svc = service(new FakeProcessHost([]));
-      const env = svc.providerEnv(USER, "omp", { token: "tok" });
+      const env = svc.providerEnv(USER, "omp");
       expect(env.OPENROUTER_API_KEY).toBeUndefined();
       expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
       expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
@@ -194,11 +195,11 @@ describe("the environment a provider gets", () => {
     expect(env.CI).toBeUndefined();
   });
 
-  it("decrypts the stored token for a run, and only for a run", async () => {
-    const host = new FakeProcessHost([]);
-    const svc = service(host, { token: encryptSecret("tok-123", SECRET) });
+  it("resolves a run onto the CLI's own login, with no token of the server's", async () => {
+    const svc = service(new FakeProcessHost([]));
     const { ctx } = await svc.resolve(USER, "claude");
-    expect(ctx("/w").env.CLAUDE_CODE_OAUTH_TOKEN).toBe("tok-123");
+    expect(ctx("/w").env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(ctx("/w").env.CLAUDE_CONFIG_DIR).toBe(join(root, USER, "claude"));
     expect(ctx("/w").cwd).toBe("/w");
   });
 });
@@ -259,7 +260,6 @@ describe("health", () => {
     expect(cards.native).toMatchObject({ id: "native", installed: true, authenticated: false });
     expect(cards.claude).toMatchObject({ installed: true, authenticated: false, authMode: "none", enabled: true });
     expect(cards.codex).toMatchObject({ installed: false, authenticated: false });
-    expect(cards.claude.token).toEqual({ configured: false, issuedAt: null, expiresSoon: false });
   });
 
   it("masks the account and never repeats the email", async () => {
@@ -267,17 +267,6 @@ describe("health", () => {
     const cards = await svc.health(USER);
     expect(cards.claude.account).toBe("d***@x.io");
     expect(JSON.stringify(cards)).not.toContain("d@x.io");
-  });
-
-  it("warns about a token nearing the end of its year", async () => {
-    const eleven = new Date(Date.now() - 340 * 24 * 3600_000);
-    const svc = service(new FakeProcessHost(scripts(true)), {
-      token: encryptSecret("tok", SECRET),
-      issuedAt: eleven,
-    });
-    const cards = await svc.health(USER);
-    expect(cards.claude.token).toMatchObject({ configured: true, expiresSoon: true });
-    expect(cards.claude.authMode).toBe("token");
   });
 
   it("marks the CLI providers disabled in production without the shell flag", async () => {
@@ -306,14 +295,71 @@ describe("health", () => {
 });
 
 describe("sign out", () => {
-  it("empties the directory, keeps it, and clears the stored token", async () => {
-    const { db, updates } = fakeDb({ openrouter: null, token: "enc", issuedAt: new Date() });
+  it("empties the directory, keeps it, and writes nothing to the database", async () => {
+    const { db, updates } = fakeDb({ openrouter: null });
     const svc = new ProviderService(db, config(), new FakeProcessHost([]), createProviders({ claudeBin: "claude", codexBin: "codex" }));
     const dir = svc.ensureCredsDir(USER, "claude");
     await writeFile(join(dir, ".credentials.json"), "{}");
     await svc.signOut(USER, "claude");
     expect(existsSync(dir)).toBe(true);
     expect(existsSync(join(dir, ".credentials.json"))).toBe(false);
-    expect(updates).toEqual([{ claudeOauthTokenEncrypted: null, claudeTokenIssuedAt: null }]);
+    expect(updates).toEqual([]);
+  });
+});
+
+describe("subscription accounts (profiles)", () => {
+  const WORK = { id: "22222222-2222-2222-2222-222222222222", dirName: "claude-0a1b2c3d4e5f" };
+
+  it("keep the Default account in the folder logins always used", () => {
+    const svc = service(new FakeProcessHost([]));
+    expect(svc.credsDir(USER, "claude")).toBe(join(root, USER, "claude"));
+    expect(svc.credsDir(USER, "claude", { id: "x", dirName: "claude" })).toBe(join(root, USER, "claude"));
+  });
+
+  it("give a named account its own private folder beside the Default one", async () => {
+    const svc = service(new FakeProcessHost([]));
+    const dir = svc.ensureCredsDir(USER, "claude", WORK);
+    expect(dir).toBe(join(root, USER, WORK.dirName));
+    expect((await stat(dir)).mode & 0o777).toBe(0o700);
+    expect(svc.providerEnv(USER, "claude", { profile: WORK }).CLAUDE_CONFIG_DIR).toBe(dir);
+    expect(svc.loginEnv(USER, "claude-login", WORK).CLAUDE_CONFIG_DIR).toBe(dir);
+    expect(svc.cliRunDir(USER, "claude", WORK)).toBe(join(dir, "run"));
+  });
+
+  it("never move OMP into an account folder", () => {
+    const svc = service(new FakeProcessHost([]));
+    expect(svc.credsDir(USER, "omp", WORK)).toBe(join(root, USER, "omp"));
+  });
+
+  it("sign out one account without touching the other", async () => {
+    const svc = service(new FakeProcessHost([]));
+    const work = svc.ensureCredsDir(USER, "claude", WORK);
+    const personal = svc.ensureCredsDir(USER, "claude");
+    await writeFile(join(work, ".credentials.json"), "{}");
+    await writeFile(join(personal, ".credentials.json"), "{}");
+    await svc.signOut(USER, "claude", WORK);
+    expect(existsSync(join(work, ".credentials.json"))).toBe(false);
+    expect(existsSync(join(personal, ".credentials.json"))).toBe(true);
+  });
+
+  it("remove a named account's folder, and refuse to remove the Default one", async () => {
+    const svc = service(new FakeProcessHost([]));
+    const work = svc.ensureCredsDir(USER, "claude", WORK);
+    await svc.removeProfileDir(USER, "claude", WORK);
+    expect(existsSync(work)).toBe(false);
+    await expect(svc.removeProfileDir(USER, "claude", { id: "d", dirName: "claude" })).rejects.toThrow(/Default/);
+  });
+
+  it("keep each account's Claude usage reading apart", async () => {
+    const svc = service(new FakeProcessHost([]));
+    svc.quotas.record(USER, [{ id: "session", usedPercent: 40, resetsAt: null }], WORK);
+    const work = await svc.quotas.get(USER, "claude", WORK);
+    expect(work).toMatchObject({ status: "ok", windows: [{ usedPercent: 40 }] });
+    svc.quotas.record(USER, [{ id: "session", usedPercent: 90, resetsAt: null }]);
+    expect(await svc.quotas.get(USER, "claude", WORK)).toMatchObject({ windows: [{ usedPercent: 40 }] });
+    expect(await svc.quotas.get(USER, "claude")).toMatchObject({ windows: [{ usedPercent: 90 }] });
+    // Forgetting the subject forgets every account of it.
+    svc.invalidate(USER);
+    expect((await svc.quotas.get(USER, "claude", WORK)).status).not.toBe("ok");
   });
 });

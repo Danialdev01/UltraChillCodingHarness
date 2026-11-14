@@ -3,6 +3,7 @@ import { ChatViewSettings, WidgetPromptSettings } from "@/components/chat-view-s
 import { DefaultSettings } from "@/components/default-settings"
 import { FontSizeSettings, TreeFontSizeSettings } from "@/components/font-size-settings"
 import { KeybindingSettings } from "@/components/keybinding-settings"
+import { SettledSessionsSettings } from "@/components/settled-sessions-settings"
 import { WorkspaceHarnessSettings } from "@/components/workspace-harness-settings"
 import { WorkspaceMembersSettings } from "@/components/workspace-members-settings"
 import { WorkspaceSharingSettings } from "@/components/workspace-sharing-settings"
@@ -40,6 +41,7 @@ export function WorkspaceSettingsPage({
           <KeybindingSettings />
           <FontSizeSettings />
           <TreeFontSizeSettings />
+          <SettledSessionsSettings workspace={workspace} />
         </div>
       )
     case "members":

@@ -4,6 +4,7 @@ import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as pty from "@lydell/node-pty";
 import type { Command, DomainEvent } from "@ucch/protocol";
+import type { ProfileRef } from "./profile-ref.js";
 import type { ArgvWrapper } from "./child-priority.js";
 import { commandCwd, findCommand } from "./project-commands.js";
 import { sessionTree } from "./trees.js";
@@ -100,7 +101,13 @@ export interface TerminalOptions {
    * arguments, and the environment that points it at the user's own
    * credential directory. Absent means login terminals are refused.
    */
-  login?: (userId: string, program: Exclude<TerminalProgram, "shell" | "command">) => LoginLaunch;
+  login?: (userId: string, program: Exclude<TerminalProgram, "shell" | "command">, profile?: ProfileRef) => LoginLaunch;
+  /**
+   * The subject's own account by id, for a sign-in terminal that names one;
+   * null when it is not the subject's (or not that provider's), and the
+   * terminal is refused.
+   */
+  profile?: (subject: string, profileId: string, provider: "claude" | "codex") => Promise<ProfileRef | null>;
   /** The pty spawner. Injected by tests; the real one otherwise. */
   spawn?: typeof pty.spawn;
   /** Rewrites a shell's argv just before it starts: its priority (child-priority.ts). */
@@ -176,21 +183,31 @@ export class TerminalReactor {
 
   react(command: Command, userId: string): void {
     switch (command.type) {
-      case "terminal.create":
-        try {
-          this.#open(
-            command.terminalId,
-            command.projectId,
-            userId,
-            command.program ?? "shell",
-            command.credentialWorkspaceId ? `ws-${command.credentialWorkspaceId}` : userId,
-            command.sessionHash,
-            command.commandId,
-          );
-        } catch (error) {
-          this.onError(error);
+      case "terminal.create": {
+        const program = command.program ?? "shell";
+        const subject = command.credentialWorkspaceId ? `ws-${command.credentialWorkspaceId}` : userId;
+        const open = (profile?: ProfileRef) => {
+          try {
+            this.#open(command.terminalId, command.projectId, userId, program, subject, command.sessionHash, command.commandId, profile);
+          } catch (error) {
+            this.onError(error);
+          }
+        };
+        if (command.profileId && (program === "claude-login" || program === "codex-login")) {
+          // Looked up before the shell starts; what is typed meanwhile waits
+          // in `#early`, as it does for any terminal still starting.
+          const provider = program === "claude-login" ? "claude" : "codex";
+          void (this.options.profile?.(subject, command.profileId, provider) ?? Promise.resolve(null))
+            .then((profile) => {
+              if (profile) open(profile);
+              else this.#say(command.projectId, command.terminalId, "That account is not one of yours, or it was deleted.\r\n");
+            })
+            .catch((error: unknown) => this.onError(error));
+          return;
         }
+        open();
         return;
+      }
 
       case "terminal.input":
         this.input(command.terminalId, userId, command.data);
@@ -332,6 +349,7 @@ export class TerminalReactor {
     credentialSubject: string = userId,
     sessionHash?: string,
     commandId?: string,
+    profile?: ProfileRef,
   ): void {
     if (this.#sessions.has(terminalId)) return;
     // An id somebody else is already watching would hand them this shell.
@@ -353,7 +371,7 @@ export class TerminalReactor {
       return;
     }
 
-    const launch = this.#launch(projectId, credentialSubject, program, sessionHash, commandId);
+    const launch = this.#launch(projectId, credentialSubject, program, sessionHash, commandId, profile);
     if (!launch) {
       this.#say(
         projectId,
@@ -439,9 +457,10 @@ export class TerminalReactor {
     program: TerminalProgram,
     sessionHash?: string,
     commandId?: string,
+    profile?: ProfileRef,
   ): LoginLaunch | null {
     if (program !== "shell" && program !== "command") {
-      return this.options.login?.(userId, program) ?? null;
+      return this.options.login?.(userId, program, profile) ?? null;
     }
     // The command line comes from the project's own file, read now: the
     // client named a button, nothing more. Read from the main checkout,

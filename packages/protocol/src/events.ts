@@ -125,6 +125,8 @@ const ThreadCreated = z.object({
   treeHash: ThreadHash.optional(),
   /** A subagent's session (`thread.create` with `parentThreadId`): the thread whose agent started it. */
   parentThreadId: z.string().uuid().optional(),
+  /** The subscription account its Claude Code or Codex turns sign in as. */
+  profileId: z.string().uuid().optional(),
 });
 
 /** The session's worktree exists and is checked out on its branch. */
@@ -225,6 +227,13 @@ const AgentSessionMessageSent = z.object({
   type: z.literal("agent.session_message_sent"), threadId: z.string().uuid(), messageId: z.string().uuid(),
   toThreadId: z.string().uuid(), toHash: z.string().nullable(), text: z.string(), depth: z.number().int().nonnegative(),
 });
+/**
+ * The id a CLI continues one of its built-in subagents by (Claude Code's
+ * `agentId`). Harness output, spliced into a prompt on a follow-up: a
+ * plain token only.
+ */
+export const SubagentHandle = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+
 const AgentMessageDelivered = z.object({
   type: z.literal("agent.message_delivered"),
   threadId: z.string().uuid(),
@@ -233,6 +242,8 @@ const AgentMessageDelivered = z.object({
 const UserMessage = z.object({
   type: z.literal("user.message"),
   subagentId: z.string().optional(),
+  /** A follow-up to a CLI's built-in subagent: the id its harness resumes it by, from the subagent's own events (never the client). */
+  subagentHandle: SubagentHandle.optional(),
   agentMessageIds: z.array(z.string().uuid()).optional(),
   threadId: z.string().uuid(),
   text: z.string(),
@@ -445,7 +456,11 @@ const ThreadHarnessSwitchRequested = z.object({
   focus: z.string().max(2_000).optional(),
   /** Sent once the switch is made: the message a limit stopped. */
   message: z.string().optional(),
-  reason: z.enum(["limit", "manual"]).optional(),
+  reason: z.enum(["limit", "manual", "context"]).optional(),
+  /** The account it ran on (null: the Default or none) and the one it moves to. */
+  fromProfileId: z.string().uuid().nullable().optional(),
+  toProfileId: z.string().uuid().nullable().optional(),
+  auto: z.boolean().optional(),
 });
 
 /**
@@ -460,7 +475,11 @@ const ThreadHarnessSwitched = z.object({
   toProvider: ProviderId,
   model: z.string().optional(),
   brief: z.string(),
-  reason: z.enum(["limit", "manual"]).optional(),
+  reason: z.enum(["limit", "manual", "context"]).optional(),
+  fromProfileId: z.string().uuid().nullable().optional(),
+  toProfileId: z.string().uuid().nullable().optional(),
+  /** The commit the work so far was saved in before the switch; absent without a worktree or a change. */
+  checkpointSha: z.string().optional(),
 });
 
 const ThreadHarnessSwitchFailed = z.object({
@@ -531,6 +550,31 @@ const AgentRetry = z.object({
   maxRetries: z.number().int().nonnegative(),
   delayMs: z.number().int().nonnegative(),
   category: z.string(),
+});
+
+/**
+ * A subscription's usage, as the CLI itself reported it during a turn
+ * (Claude Code's `rate_limit_event`). Never looked up by the server with
+ * the login's token: the CLI's own words are the only source. Transient,
+ * like `context.usage`: the server keeps the latest reading per account
+ * for the usage meters, and the next one supersedes it.
+ */
+const AgentRateLimit = z.object({
+  type: z.literal("agent.rate_limit"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  provider: CliProviderId,
+  /** `allowed`, `allowed_warning` or `rejected`, as the CLI says. */
+  status: z.string(),
+  /** When the limit this reading is about resets, ISO. */
+  resetsAt: z.string().nullable(),
+  windows: z.array(
+    z.object({
+      id: z.enum(["session", "weekly"]),
+      usedPercent: z.number().min(0).max(100),
+      resetsAt: z.string().nullable(),
+    }),
+  ),
 });
 
 /**
@@ -618,6 +662,8 @@ export const ChoiceOption = z.object({
   pickModel: z.boolean().optional(),
   /** Why it cannot be picked now: not signed in, no key, … */
   blocker: z.string().optional(),
+  /** Another subscription account of `provider` to carry on as. */
+  profileId: z.string().uuid().optional(),
 });
 export type ChoiceOption = z.infer<typeof ChoiceOption>;
 
@@ -768,6 +814,8 @@ const AgentSubagentStarted = z.object({
   routing: z.string().optional(),
   background: z.boolean().optional(),
   quota: z.object({ status: z.string(), checkedAt: z.string().optional(), usedPercent: z.number().optional() }).optional(),
+  /** A CLI's built-in subagent its harness can continue: the id it does so by (Claude Code's agentId). */
+  resumeHandle: SubagentHandle.optional(),
 });
 
 /** How a running subagent is getting on. Transient, like `agent.text_delta`. */
@@ -815,6 +863,8 @@ const AgentSubagentFinished = z.object({
   model: z.string().optional(),
   /** What it reported, truncated. */
   result: z.string().nullable(),
+  /** As on `agent.subagent_started`, when it is learned only from the result. */
+  resumeHandle: SubagentHandle.optional(),
   usage: TokenUsage.optional(),
   costUsd: z.number().nonnegative().optional(),
   toolCalls: z.number().int().nonnegative().optional(),
@@ -1293,6 +1343,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   TurnStarted,
   AgentSessionStarted,
   AgentRetry,
+  AgentRateLimit,
   ContextUsage,
   AgentThinkingDelta,
   AgentTextDelta,
@@ -1358,6 +1409,7 @@ const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "agent.text_delta",
   "agent.subagent_progress",
   "agent.retry",
+  "agent.rate_limit",
   "context.usage",
   "agent.queued",
   "note.changed",

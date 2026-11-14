@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cliProvidersEnabled, loadConfig, logLevel, shellPluginEnabled, webOrigin } from "./config.js";
+import { CHECKOUT_BRIDGE_BIN, IMAGE_BRIDGE_BIN, cliProvidersEnabled, loadConfig, logLevel, resolveBridgeBin, shellPluginEnabled, webOrigin } from "./config.js";
 
 const base = {
   DATABASE_URL: "postgres://u:p@localhost:5432/ucch",
@@ -27,6 +27,17 @@ describe("agent configuration", () => {
     expect(load({ AGENT_ALLOW_HOST_SHELL: "yes" }).AGENT_ALLOW_HOST_SHELL).toBe(false);
     expect(load({ AGENT_ALLOW_HOST_SHELL: "true" }).AGENT_ALLOW_HOST_SHELL).toBe(true);
     expect(load({ AGENT_ALLOW_HOST_SHELL: "1" }).AGENT_ALLOW_HOST_SHELL).toBe(true);
+  });
+});
+
+describe("memory pressure admission", () => {
+  it("is off by default and checks the resume line against the pause line", () => {
+    expect(load().AGENT_MEMORY_PAUSE_PERCENT).toBeUndefined();
+    expect(load().AGENT_MEMORY_STALE_MS).toBe(60_000);
+    expect(load({ AGENT_MEMORY_PAUSE_PERCENT: "85", AGENT_MEMORY_RESUME_PERCENT: "75" }).AGENT_MEMORY_RESUME_PERCENT).toBe(75);
+    expect(() => load({ AGENT_MEMORY_PAUSE_PERCENT: "101" })).toThrow(/AGENT_MEMORY_PAUSE_PERCENT/);
+    expect(() => load({ AGENT_MEMORY_PAUSE_PERCENT: "70", AGENT_MEMORY_RESUME_PERCENT: "80" })).toThrow(/RESUME/);
+    expect(() => load({ AGENT_MEMORY_RESUME_PERCENT: "80" })).toThrow(/RESUME/);
   });
 });
 
@@ -74,6 +85,13 @@ describe("provider configuration", () => {
     expect(() => load({ OPENROUTER_BASE_URL: "not a url" })).toThrow(/OPENROUTER_BASE_URL/);
   });
 
+  it("transcribes dictation with an audio-capable OpenRouter model", () => {
+    expect(load({ TRANSCRIBE_MODEL: "" }).TRANSCRIBE_MODEL).toBe("google/gemini-2.5-flash");
+    expect(load({ TRANSCRIBE_MODEL: "openai/gpt-4o-audio-preview" }).TRANSCRIBE_MODEL).toBe(
+      "openai/gpt-4o-audio-preview",
+    );
+  });
+
   it("resolves the CLIs through PATH unless pinned", () => {
     expect(load().CLAUDE_BIN).toBe("claude");
     expect(load({ CODEX_BIN: "/opt/codex/bin/codex" }).CODEX_BIN).toBe("/opt/codex/bin/codex");
@@ -92,11 +110,21 @@ describe("provider configuration", () => {
     expect(load({ NATIVE_LOOP_FALLBACK: "0" }).NATIVE_LOOP_FALLBACK).toBe(false);
   });
 
+  it("finds the bridge bundle in the image, then in this checkout", () => {
+    expect(resolveBridgeBin("/set/by/env.mjs", () => false)).toBe("/set/by/env.mjs");
+    expect(resolveBridgeBin(undefined, (path) => path === IMAGE_BRIDGE_BIN)).toBe(IMAGE_BRIDGE_BIN);
+    expect(resolveBridgeBin(undefined, (path) => path === CHECKOUT_BRIDGE_BIN)).toBe(CHECKOUT_BRIDGE_BIN);
+    expect(resolveBridgeBin("packages/omp-bridge/dist/omp-bridge.mjs", () => false)).toBe(CHECKOUT_BRIDGE_BIN);
+    expect(CHECKOUT_BRIDGE_BIN).toMatch(/packages\/omp-bridge\/dist\/omp-bridge\.mjs$/);
+    // Nothing found: the image's path, which the startup check reports missing.
+    expect(resolveBridgeBin(undefined, () => false)).toBe(IMAGE_BRIDGE_BIN);
+  });
+
   it("caps OMP processes, subagents and bridge calls", () => {
     expect(load().OMP_TURN_TOTAL).toBe(6);
     expect(load().OMP_WORKERS_PER_TURN).toBe(4);
     expect(load().OMP_BRIDGE_MAX_SECONDS).toBe(300);
-    expect(load().OMP_BRIDGE_BIN).toBe("/opt/ucch/omp-bridge.mjs");
+    expect(load({ OMP_BRIDGE_BIN: "/x/bridge.mjs" }).OMP_BRIDGE_BIN).toBe("/x/bridge.mjs");
     expect(load({ OMP_TURN_TOTAL: "3" }).OMP_TURN_TOTAL).toBe(3);
     expect(() => load({ OMP_TURN_TOTAL: "0" })).toThrow(/OMP_TURN_TOTAL/);
     expect(() => load({ OMP_WORKERS_PER_TURN: "1.5" })).toThrow(/OMP_WORKERS_PER_TURN/);

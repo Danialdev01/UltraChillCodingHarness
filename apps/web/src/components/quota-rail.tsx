@@ -99,7 +99,18 @@ export function QuotaRail() {
     // side, each bar gets the rail's height to draw in instead of what is
     // left of its width after a label, and 28px shows a tenth where 12px
     // showed nothing. The tags sit under the bars, one glance to the three.
-    <div className="flex items-end justify-center gap-1.5 px-1 py-2" aria-label="Session quotas">
+    //
+    // Light mode follows the light theme guideline (§5.12) instead: a
+    // "Usage" group label, then one horizontal bar per harness with its tag
+    // as a readable label above it -- no tiny captions under bare bars.
+    <div
+      className="light:flex-col light:items-stretch light:gap-2 light:px-1.5 flex items-end justify-center gap-1.5 px-1 py-2"
+      role="group"
+      aria-label="Session quotas"
+    >
+      <span className="light:block light:-mx-1.5 text-muted-foreground hidden text-center text-[12px] leading-none font-semibold tracking-[0.04em] uppercase select-none">
+        Usage
+      </span>
       {QUOTA_PROVIDERS.map((provider) => (
         <QuotaBar
           key={provider.id}
@@ -114,7 +125,7 @@ export function QuotaRail() {
 
 const FILL: Record<ReturnType<typeof quotaTone>, string> = {
   idle: "bg-transparent",
-  normal: "bg-ucch-active",
+  normal: "bg-ucch-active light:bg-primary",
   warn: "bg-warning",
   full: "bg-destructive",
 }
@@ -153,7 +164,7 @@ function QuotaBar({
           // the context meter. Still a tab stop, so the words in the tooltip
           // are not for mouse users only.
           <div
-            className="flex cursor-default flex-col items-center gap-1 rounded-sm focus-visible:outline-offset-0"
+            className="light:items-stretch light:flex-col-reverse flex cursor-default flex-col items-center gap-1 rounded-sm focus-visible:outline-offset-0"
             role="meter"
             tabIndex={0}
             aria-label={`${label} session quota`}
@@ -169,22 +180,25 @@ function QuotaBar({
             in the ink colour, so "nearly out" does not rest on red alone. */}
         <div
           className={cn(
-            "flex h-7 w-1.5 items-end overflow-hidden rounded-full",
-            signedOut ? "border-border-strong border border-dashed" : "bg-muted ring-border-strong ring-1",
+            "light:h-1.5 light:w-full light:items-stretch flex h-7 w-1.5 items-end overflow-hidden rounded-full",
+            signedOut
+              ? "border-border-strong border border-dashed"
+              : "bg-muted ring-border-strong light:bg-border light:ring-0 ring-1",
             // Not measured yet: the empty track pulses, the way a skeleton does.
             !quota && "animate-pulse",
           )}
         >
           <div
             className={cn(
-              "w-full rounded-full transition-[height] duration-500",
+              "light:h-full light:w-(--quota) light:transition-[width] h-(--quota) w-full rounded-full transition-[height] duration-500",
               FILL[tone],
-              (tone === "warn" || tone === "full") && "border-foreground border-t-2",
+              (tone === "warn" || tone === "full") &&
+                "border-foreground light:border-t-0 light:border-r-2 border-t-2",
             )}
-            style={{ height: `${percent ?? 0}%` }}
+            style={{ "--quota": `${percent ?? 0}%` } as React.CSSProperties}
           />
         </div>
-        <span className="text-muted-foreground font-mono text-[10px] leading-none tracking-tight select-none">
+        <span className="text-muted-foreground light:text-foreground light:text-[12.5px] light:font-semibold light:tracking-normal light:text-left font-mono text-[10px] leading-none tracking-tight select-none">
           {tag}
         </span>
       </TooltipTrigger>

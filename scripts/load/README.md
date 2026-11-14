@@ -27,7 +27,7 @@ Mount this directory into the container, start the mock inside it and point both
 
 ```bash
 docker run -d --name ucch-load --network none \
-  -v "$PWD/scripts/load:/load:ro" \
+  -v ucch-load-data:/data -v "$PWD/scripts/load:/load:ro" \
   -e ROOT_DOMAIN=localhost -e PUBLIC_SCHEME=http \
   -e DEFAULT_USER_EMAIL=load@example.com -e DEFAULT_USER_PASSWORD=load-password-123 \
   -e AGENT_ALLOW_HOST_SHELL=true \

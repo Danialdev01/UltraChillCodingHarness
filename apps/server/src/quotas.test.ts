@@ -1,73 +1,18 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  openRouterWindows,
-  parseClaudeUsage,
-  parseCodexUsage,
-  readClaudeAccessToken,
-  readCodexTokens,
-} from "./quotas.js";
+import { cliWindows, openRouterWindows } from "./quotas.js";
 
-describe("Claude usage", () => {
-  it("reads the session and weekly windows as percents", () => {
-    const windows = parseClaudeUsage({
-      five_hour: { utilization: 47.0, resets_at: "2026-09-14T05:00:00.313171+00:00" },
-      seven_day: { utilization: 49.0, resets_at: "2026-09-15T22:00:00+00:00" },
-      seven_day_opus: null,
-    });
-    expect(windows).toEqual([
-      { id: "session", label: "Session (5h)", usedPercent: 47, resetsAt: "2026-09-14T05:00:00.313Z" },
-      { id: "weekly", label: "Weekly", usedPercent: 49, resetsAt: "2026-09-15T22:00:00.000Z" },
+describe("CLI usage readings", () => {
+  it("labels the windows and clamps them to the bar", () => {
+    expect(cliWindows([
+      { id: "session", usedPercent: 130, resetsAt: "2026-09-14T05:00:00.313Z", minutes: 300 },
+      { id: "weekly", usedPercent: 49, resetsAt: null },
+    ])).toEqual([
+      { id: "session", label: "Session (5h)", usedPercent: 100, resetsAt: "2026-09-14T05:00:00.313Z" },
+      { id: "weekly", label: "Weekly", usedPercent: 49, resetsAt: null },
     ]);
-  });
-
-  it("clamps to the bar and tolerates a missing window", () => {
-    expect(parseClaudeUsage({ five_hour: { utilization: 130 } })).toEqual([
-      { id: "session", label: "Session (5h)", usedPercent: 100, resetsAt: null },
-    ]);
-    expect(parseClaudeUsage({ five_hour: null, seven_day: { utilization: -2 } })).toEqual([
-      { id: "weekly", label: "Weekly", usedPercent: 0, resetsAt: null },
-    ]);
-    expect(parseClaudeUsage(null)).toEqual([]);
-    expect(parseClaudeUsage({ five_hour: { utilization: "47" } })).toEqual([]);
-  });
-});
-
-describe("Codex usage", () => {
-  const now = Date.parse("2026-09-14T10:00:00Z");
-
-  it("sorts the two windows by length and dates the reset from now", () => {
-    const windows = parseCodexUsage(
-      {
-        rate_limit: {
-          primary_window: { used_percent: 12, limit_window_seconds: 5 * 3600, reset_after_seconds: 3600 },
-          secondary_window: { used_percent: 30, limit_window_seconds: 7 * 24 * 3600, reset_at: 1789000000 },
-        },
-      },
-      now,
-    );
-    expect(windows).toEqual([
-      { id: "session", label: "Session (5h)", usedPercent: 12, resetsAt: "2026-09-14T11:00:00.000Z" },
-      { id: "weekly", label: "Weekly", usedPercent: 30, resetsAt: new Date(1789000000 * 1000).toISOString() },
-    ]);
-  });
-
-  it("does not draw the same window twice, and nothing for no rate limit", () => {
-    expect(
-      parseCodexUsage(
-        {
-          rate_limit: {
-            primary_window: { used_percent: 1, limit_window_seconds: 3600 },
-            secondary_window: { used_percent: 2, limit_window_seconds: 7200 },
-          },
-        },
-        now,
-      ),
-    ).toEqual([{ id: "session", label: "Session (1h)", usedPercent: 1, resetsAt: null }]);
-    expect(parseCodexUsage({ rate_limit: null }, now)).toEqual([]);
-    expect(parseCodexUsage({}, now)).toEqual([]);
+    expect(cliWindows([{ id: "session", usedPercent: 1, resetsAt: null, minutes: 60 }])[0]?.label).toBe("Session (1h)");
   });
 });
 
@@ -90,32 +35,11 @@ describe("OpenRouter spend", () => {
   });
 });
 
-describe("credential files", () => {
-  it("reads only the token, and null for anything missing or malformed", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "ucch-quota-"));
-    expect(await readClaudeAccessToken(dir)).toBeNull();
-    expect(await readCodexTokens(dir)).toBeNull();
-
-    await writeFile(join(dir, ".credentials.json"), "{not json");
-    expect(await readClaudeAccessToken(dir)).toBeNull();
-
-    await writeFile(
-      join(dir, ".credentials.json"),
-      JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-x", refreshToken: "r" } }),
-    );
-    expect(await readClaudeAccessToken(dir)).toBe("sk-ant-oat01-x");
-
-    await writeFile(join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "" } }));
-    expect(await readCodexTokens(dir)).toBeNull();
-    await writeFile(
-      join(dir, "auth.json"),
-      JSON.stringify({ tokens: { access_token: "eyJ", account_id: "acct_1" } }),
-    );
-    expect(await readCodexTokens(dir)).toEqual({ accessToken: "eyJ", accountId: "acct_1" });
-  });
-});
-
-it("keeps model-specific Claude buckets for routing", () => {
-  expect(parseClaudeUsage({ five_hour: { utilization: 25 }, seven_day: { utilization: 40 }, seven_day_opus: { utilization: 95 }, seven_day_sonnet: { utilization: 20 } }))
-    .toEqual(expect.arrayContaining([expect.objectContaining({ model: "opus", usedPercent: 95 }), expect.objectContaining({ model: "sonnet", usedPercent: 20 })]));
+// The compliance rule (Claude Code legal and compliance): the harness never
+// reads a CLI's sign-in, and never calls a vendor with its token.
+it("never reads a CLI's credentials or calls a vendor's usage endpoint", async () => {
+  const source = await readFile(join(import.meta.dirname, "quotas.ts"), "utf8");
+  for (const forbidden of [".credentials.json", "auth.json", "api.anthropic.com", "chatgpt.com", "accessToken", "access_token"]) {
+    expect(source).not.toContain(forbidden);
+  }
 });

@@ -1,4 +1,4 @@
-import { can, normalizeWorkspacePath, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
+import { can, effectiveCredentialSource, normalizeWorkspacePath, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
 import type {
   Command,
   ContainerState,
@@ -32,6 +32,18 @@ export interface ProjectSnapshot {
   workspaceId: string;
   containerState: ContainerState;
   defaultBranch: string;
+  /** `work` or `personal`: the only accounts its turns may run on. Null: any. */
+  requiredContext?: string | null;
+}
+
+/** A subscription account a command names (`agent_profiles`). */
+export interface ProfileSnapshot {
+  id: string;
+  /** A user id, or `ws-<workspace id>`. */
+  subject: string;
+  provider: string;
+  context: string;
+  isDefault: boolean;
 }
 
 export interface WorkspaceSnapshot {
@@ -60,6 +72,9 @@ export interface ThreadSnapshot {
   treeHash?: string | null;
   /** A subagent's session: the thread whose agent started it. */
   parentThreadId?: string | null;
+  /** The subscription account it is bound to; null: the default. */
+  profileId?: string | null;
+  createdByUserId?: string | null;
   hasActiveChildren?: boolean;
 }
 
@@ -76,8 +91,9 @@ export interface DecisionState {
   project?: ProjectSnapshot;
   thread?: ThreadSnapshot;
   turn?: TurnSnapshot;
-  subagent?: { id: string; provider?: string; childThreadId?: string };
+  subagent?: { id: string; provider?: string; childThreadId?: string; resumeHandle?: string };
   messageSource?: { id: string; projectId: string; hash?: string | null };
+  profile?: ProfileSnapshot;
 }
 
 /** Non-deterministic inputs, injected so decisions stay pure. */
@@ -222,6 +238,8 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
             hash,
             worktreeOf: parent.value.id,
             parentThreadId: parent.value.id,
+            // A subagent bills the account its parent runs on.
+            ...(parent.value.profileId ? { profileId: parent.value.profileId } : {}),
             ...(tree
               ? {
                   ...(parent.value.baseBranch ? { baseBranch: parent.value.baseBranch } : {}),
@@ -241,6 +259,11 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
         const refused = worktreeRefusal(source.value);
         if (refused) return refused;
         const tree = source.value.branch && source.value.worktreeState === "ready";
+        const credentialSource = resolveCredentialSource(state.workspace!.credentialPolicy, command.credentialSource);
+        if (command.profileId) {
+          const refused = profileRefusal(state, command.profileId, { source: credentialSource, personId: ctx.userId });
+          if (refused) return refused;
+        }
         return ok([
           {
             type: "thread.created",
@@ -248,12 +271,10 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
             projectId: project.value.id,
             title: command.title?.trim() || "Untitled",
             createdByUserId: ctx.userId,
-            credentialSource: resolveCredentialSource(
-              state.workspace!.credentialPolicy,
-              command.credentialSource,
-            ),
+            credentialSource,
             hash,
             worktreeOf: source.value.id,
+            ...(command.profileId ? { profileId: command.profileId } : {}),
             ...(tree
               ? {
                   ...(source.value.baseBranch ? { baseBranch: source.value.baseBranch } : {}),
@@ -265,6 +286,11 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
         ]);
       }
 
+      const credentialSource = resolveCredentialSource(state.workspace!.credentialPolicy, command.credentialSource);
+      if (command.profileId) {
+        const refused = profileRefusal(state, command.profileId, { source: credentialSource, personId: ctx.userId });
+        if (refused) return refused;
+      }
       return ok([
         {
           type: "thread.created",
@@ -272,11 +298,9 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           projectId: project.value.id,
           title: command.title?.trim() || "Untitled",
           createdByUserId: ctx.userId,
-          credentialSource: resolveCredentialSource(
-            state.workspace!.credentialPolicy,
-            command.credentialSource,
-          ),
+          credentialSource,
           hash,
+          ...(command.profileId ? { profileId: command.profileId } : {}),
           // A parallel session: its own worktree, on its own branch, so two
           // sessions forked from the same base never share a checkout.
           ...(command.baseBranch ? { baseBranch: command.baseBranch, branch: sessionBranch(hash) } : {}),
@@ -302,8 +326,14 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       const project = requireProject(state, ctx, "project.write");
       if ("error" in project) return project.decision;
 
-      if (command.subagentId && (state.subagent?.id !== command.subagentId ||
-        state.subagent.provider !== "codex" || state.subagent.childThreadId || thread.value.provider !== "codex")) {
+      // A follow-up to a built-in subagent goes through the parent harness
+      // that runs it: Codex's workers, or a Claude Code agent with the
+      // handle it is continued by. A `ucch_agent` one has a session of its own.
+      const follow = command.subagentId ? state.subagent : undefined;
+      const followable = follow !== undefined && follow.id === command.subagentId && !follow.childThreadId && (
+        (follow.provider === "codex" && thread.value.provider === "codex") ||
+        (!follow.provider && Boolean(follow.resumeHandle) && thread.value.provider === "claude"));
+      if (command.subagentId && !followable) {
         return fail("invalid", "This native subagent is not available for follow-up in this session.");
       }
       if (command.subagentId && command.mode) return fail("invalid", "A subagent follow-up uses its existing task mode");
@@ -347,6 +377,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           threadId: thread.value.id,
           text: command.text,
           ...(command.subagentId ? { subagentId: command.subagentId } : {}),
+          ...(command.subagentId && follow?.provider !== "codex" && follow?.resumeHandle ? { subagentHandle: follow.resumeHandle } : {}),
           ...(command.agentMessageIds ? { agentMessageIds: command.agentMessageIds } : {}),
           // Only when there are some: an ordinary message keeps the shape it
           // has always had, and so does the log.
@@ -454,25 +485,35 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       ]);
     }
 
-    case "thread.clear_context": {
-      const thread = requireThread(state, ctx, "project.write");
-      if ("error" in thread) return thread.decision;
-      // Clearing under a running turn would leave it writing a session the
-      // next turn no longer resumes.
-      if (thread.value.status !== "idle" && thread.value.status !== "error") {
-        return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
-      }
-      return ok([{ type: "thread.context_cleared", threadId: thread.value.id }]);
-    }
-
     case "thread.compact":
     case "thread.handoff": {
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
       const method = command.type === "thread.compact" ? "compact" : "handoff";
-      // OMP's own commands on OMP's own session: no other runtime keeps a
-      // session UCCH can fold, and a thread that has never run has nothing
-      // to fold yet (solution §5.3).
+      // The session is the running turn's while it runs: a second process
+      // on it would write the same session file.
+      const busy = thread.value.status !== "idle" && thread.value.status !== "error";
+      // A handover on any other harness: the server writes the brief from
+      // the log and the thread's next turn opens a fresh session with it,
+      // as a harness switch does -- only to the harness it is already on.
+      if (method === "handoff" && thread.value.provider && thread.value.provider !== "omp") {
+        if (busy) return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
+        const unready = worktreeRefusal(thread.value);
+        if (unready) return unready;
+        return ok([
+          {
+            type: "thread.harness_switch_requested",
+            threadId: thread.value.id,
+            fromProvider: thread.value.provider,
+            targetProvider: thread.value.provider,
+            ...(command.focus ? { focus: command.focus } : {}),
+            reason: "context",
+          },
+        ]);
+      }
+      // Compacting is OMP's own command on OMP's own session: no other
+      // runtime keeps a session UCCH can fold, and a thread that has never
+      // run has nothing to fold yet (solution §5.3).
       if (thread.value.provider !== "omp") {
         return fail(
           "conflict",
@@ -481,11 +522,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
             : "this thread has no conversation to compact yet",
         );
       }
-      // The session is the running turn's while it runs: a second process
-      // on it would write the same session file.
-      if (thread.value.status !== "idle" && thread.value.status !== "error") {
-        return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
-      }
+      if (busy) return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
       return ok([
         {
           type: "thread.compaction_requested",
@@ -535,8 +572,28 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if (!from) return fail("conflict", "this thread has not run yet; pick its harness in the composer instead");
       // Custom is one choice whichever runtime serves it (see `thread.send`).
       const custom = (p: ProviderId) => (p === "native" ? "omp" : p);
-      if (custom(command.targetProvider) === custom(from)) {
-        return fail("conflict", `this thread already runs on ${from}`);
+      const sameProvider = custom(command.targetProvider) === custom(from);
+      if (sameProvider) {
+        // Another account of the same provider: a person's choice only.
+        // Plan limits assume one person's use of one account, so the server
+        // never rotates between two of them by itself (Claude Code legal and
+        // compliance) -- this is the one place that holds.
+        if (command.auto) return fail("forbidden", "an automatic switch never moves to another account of the same provider");
+        if (!command.targetProfileId) return fail("conflict", `this thread already runs on ${from}`);
+        const current = thread.value.profileId ?? null;
+        if (current === command.targetProfileId || (!current && state.profile?.isDefault)) {
+          return fail("conflict", "this thread already runs on that account");
+        }
+      }
+      if (command.targetProfileId) {
+        const source = effectiveCredentialSource(state.workspace!.credentialPolicy, thread.value.credentialSource);
+        const refused = profileRefusal(
+          state,
+          command.targetProfileId,
+          { source, personId: thread.value.createdByUserId ?? ctx.userId },
+          command.targetProvider,
+        );
+        if (refused) return refused;
       }
       // The brief is of the work so far, as a handoff's is.
       if (thread.value.status !== "idle" && thread.value.status !== "error") {
@@ -555,6 +612,11 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           ...(command.focus ? { focus: command.focus } : {}),
           ...(command.message ? { message: command.message } : {}),
           ...(command.reason ? { reason: command.reason } : {}),
+          // Only when an account is named: a switch that names none leaves
+          // the binding as it was, for when the session comes back.
+          ...(thread.value.profileId ? { fromProfileId: thread.value.profileId } : {}),
+          ...(command.targetProfileId ? { toProfileId: command.targetProfileId } : {}),
+          ...(command.auto ? { auto: true } : {}),
         },
       ]);
     }
@@ -583,6 +645,9 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if ("error" in project) return project.decision;
       if ((command.program === "command") !== (command.commandId !== undefined)) {
         return fail("invalid", "a command terminal names one command, and only a command terminal does");
+      }
+      if (command.profileId && command.program !== "claude-login" && command.program !== "codex-login") {
+        return fail("invalid", "only a sign-in terminal names a subscription account");
       }
       if (command.credentialWorkspaceId) {
         // Signing in the workspace's own subscription writes the login every
@@ -719,6 +784,38 @@ function requireProject(
 }
 
 /** Why a session's folder cannot be worked in yet, or null when it can. */
+/**
+ * Why a session may not run on the account a command names, or null when it
+ * may: the account must exist, be `provider`'s when one is given, belong to
+ * the subject the session bills -- the person who started it, or the
+ * workspace under its subscription -- and fit the project's required
+ * context.
+ */
+function profileRefusal(
+  state: DecisionState,
+  profileId: string,
+  billing: { source: "member" | "workspace"; personId: string },
+  provider?: string,
+): Decision | null {
+  const profile = state.profile;
+  if (!profile || profile.id !== profileId) return fail("not_found", "that subscription account was not found");
+  if (provider && profile.provider !== provider) return fail("invalid", `that account is not a ${provider} account`);
+  const subject = billing.source === "workspace" ? `ws-${state.project!.workspaceId}` : billing.personId;
+  if (profile.subject !== subject) {
+    return fail(
+      "forbidden",
+      billing.source === "workspace"
+        ? "this session runs on the workspace's subscription; pick one of the workspace's accounts"
+        : "that account is not one of the session owner's",
+    );
+  }
+  const required = state.project?.requiredContext;
+  if (required && profile.context !== required) {
+    return fail("forbidden", `this project runs only on ${required} accounts, and that one is tagged ${profile.context}`);
+  }
+  return null;
+}
+
 function worktreeRefusal(thread: ThreadSnapshot): Decision | null {
   if (thread.worktreeState === "creating") return fail("conflict", "this session's worktree is still being created");
   if (thread.worktreeState === "error") {

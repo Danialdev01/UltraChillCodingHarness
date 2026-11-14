@@ -341,6 +341,10 @@ export const ACTIVE_BG_ALPHA = { light: 0.12, dark: 0.18 } as const
  * step by step. Does not validate; `buildTokens` does that.
  */
 export function generateTokens(spec: TokenSpec): Tokens {
+  // Light mode follows the light theme guideline: fixed neutrals and status
+  // colours, the hue driving only the three accent tokens. Custom colours
+  // (an exact page colour) keep the generated path, since they pick neutrals.
+  if (spec.mode === "light" && !spec.bgExact) return generateLightTokens(spec)
   const { mode } = spec
   const L = ROLE_L[mode]
   const hc = spec.highContrast ?? false
@@ -494,6 +498,194 @@ export function generateTokens(spec: TokenSpec): Tokens {
     "accent-soft": accentSoft,
     "ucch-active": accentText,
     "ucch-active-bg": activeBg,
+    // The light guideline's extra roles, mapped onto this mode's own steps.
+    "accent-strong": accentText,
+    sunken: mode === "dark" ? bg : bgSubtle,
+    "bubble-user": bgHover,
+    "switch-off": borderStrong,
+    ...semantic,
+    ...charts,
+    ...notes,
+  }
+}
+
+// -- Light theme (the light theme guideline) ---------------------------------
+
+/**
+ * The light theme's fixed neutrals (guideline §2.1-2.3). Slightly cool, and
+ * the same whatever the accent: the hue colours meaning, not structure.
+ */
+export const LIGHT_NEUTRALS = {
+  canvas: "#eef2f3",
+  surface: "#ffffff",
+  sunken: "#f5f7f8",
+  hover: "#e2e8ea",
+  bubbleUser: "#e2ecee",
+  text: "#0f1b1f",
+  textSecondary: "#42525a",
+  textTertiary: "#5a6a71",
+  border: "#cdd5d9",
+  borderStrong: "#7f8d93",
+  switchOff: "#6b7a80",
+} as const
+
+/** High contrast (guideline §6): darker secondary text, every border strong. */
+export const LIGHT_NEUTRALS_HC = {
+  textSecondary: "#2c3a40",
+  border: "#7f8d93",
+  borderStrong: "#4a585e",
+} as const
+
+/** Status colours (guideline §2.5): fixed, never following the accent. */
+export const LIGHT_STATUS = {
+  danger: { fg: "#a8200f", bg: "#fce8e5" },
+  warning: { fg: "#7a4300", bg: "#ffefcf" },
+  success: { fg: "#0e6335", bg: "#dff3e7" },
+  info: { fg: "#17549c", bg: "#e3eefb" },
+} as const
+
+/** The shipped light accent (guideline §2.4). */
+export const LIGHT_DEFAULT_ACCENT = { accent: "#0b6b75", strong: "#07505a", subtle: "#d5ecef" } as const
+
+export interface LightAccent {
+  accent: string
+  strong: string
+  subtle: string
+}
+
+/** The accent's targets (guideline §7). */
+const ACCENT_ON_WHITE = { min: 4.5, target: 5.8 } as const
+const ACCENT_STRONG_ON_SUBTLE = 7
+const SUBTLE_TEXT_MIN = 12
+
+/**
+ * The three accent tokens for a hue (guideline §7): `accent` darkened until
+ * white text on it reaches the target, `accent-strong` darker still until it
+ * reads at 7:1 on `accent-subtle`, and `accent-subtle` a very light,
+ * low-chroma tint that keeps body text above 12:1. Lightness moves; hue holds.
+ */
+export function lightAccent(hue: number, chroma: number, highContrast = false): LightAccent {
+  const onWhite = highContrast ? Math.max(7, ACCENT_ON_WHITE.target) : ACCENT_ON_WHITE.target
+  let l = 0.75
+  let accent = oklchToHex({ l, c: chroma, h: hue })
+  while (l > 0.2 && contrast(accent, WHITE) < onWhite) {
+    l -= 0.005
+    accent = oklchToHex({ l, c: chroma, h: hue })
+  }
+
+  let subtleL = 0.94
+  let subtle = oklchToHex({ l: subtleL, c: 0.03, h: hue })
+  while (subtleL < 0.99 && contrast(LIGHT_NEUTRALS.text, subtle) < SUBTLE_TEXT_MIN) {
+    subtleL += 0.005
+    subtle = oklchToHex({ l: subtleL, c: 0.03, h: hue })
+  }
+
+  let strongL = l
+  let strong = accent
+  const strongMin = highContrast ? Math.max(ACCENT_STRONG_ON_SUBTLE, 8) : ACCENT_STRONG_ON_SUBTLE
+  while (strongL > 0.1 && (contrast(strong, subtle) < strongMin || strongL > l - 0.08)) {
+    strongL -= 0.005
+    strong = oklchToHex({ l: strongL, c: chroma * 0.9, h: hue })
+  }
+  return { accent, strong, subtle }
+}
+
+/** The light theme's token set. Every value is checked by `validate`. */
+function generateLightTokens(spec: TokenSpec): Tokens {
+  const mode: Mode = "light"
+  const hc = spec.highContrast ?? false
+  const textTarget = hc ? 7 : 4.5
+  const N = LIGHT_NEUTRALS
+  const canvas = N.canvas
+  const surface = N.surface
+  const hover = N.hover
+  const sunken = N.sunken
+
+  const a =
+    spec.accentHue === DEFAULT_ACCENT_LIGHT.hue && spec.accentChroma === DEFAULT_ACCENT_LIGHT.chroma && !hc
+      ? LIGHT_DEFAULT_ACCENT
+      : lightAccent(spec.accentHue, spec.accentChroma, hc)
+
+  // Every text colour is measured on every surface it can sit on; the fixed
+  // values pass at AA as shipped, and repair darkens them only for 7:1.
+  const textSurfaces = [surface, canvas, hover, sunken, N.bubbleUser, a.subtle]
+  const fix = (hex: string, against: readonly string[], ratio: number) =>
+    repair(hexToOklch(hex), against, ratio, mode)
+  const text = fix(N.text, textSurfaces, textTarget)
+  const textSecondary = fix(hc ? LIGHT_NEUTRALS_HC.textSecondary : N.textSecondary, textSurfaces, textTarget)
+  // Tertiary is for placeholders and disabled labels; in high contrast it
+  // still has to meet the text target, so it joins secondary.
+  const textTertiary = fix(hc ? LIGHT_NEUTRALS_HC.textSecondary : N.textTertiary, textSurfaces, textTarget)
+  const borderStrong = fix(hc ? LIGHT_NEUTRALS_HC.borderStrong : N.borderStrong, [surface, canvas, sunken], 3)
+  const border = hc ? fix(LIGHT_NEUTRALS_HC.border, [surface, canvas, sunken], 3) : N.border
+
+  const semantic: Tokens = {}
+  for (const [name, { fg, bg }] of Object.entries(LIGHT_STATUS)) {
+    semantic[`${name}-soft`] = bg
+    semantic[name] = fix(fg, [surface, canvas, hover, sunken, bg], textTarget)
+  }
+
+  const charts: Tokens = {}
+  for (let i = 0; i < 6; i++) {
+    charts[`chart-${i + 1}`] = repair(
+      { l: ROLE_L.light.chart, c: CHART_CHROMA, h: (spec.accentHue + i * GOLDEN_ANGLE) % 360 },
+      [surface, canvas, sunken],
+      3,
+      mode,
+    )
+  }
+
+  const notes: Tokens = {}
+  for (const [name, hue] of Object.entries(NOTE_HUES)) {
+    notes[`ucch-note-${name}`] = repair(
+      { l: ROLE_L.light.semantic, c: hue === null ? 0 : SEMANTIC_CHROMA, h: hue ?? 0 },
+      [surface, canvas, sunken],
+      textTarget,
+      mode,
+    )
+  }
+  notes["ucch-note-highlight"] = oklchToHex({ l: 0.92, c: 0.12, h: 95 })
+
+  return {
+    background: surface,
+    foreground: text,
+    card: surface,
+    "card-foreground": text,
+    popover: surface,
+    "popover-foreground": text,
+    primary: a.accent,
+    "primary-foreground": WHITE,
+    secondary: hover,
+    "secondary-foreground": text,
+    muted: hover,
+    "muted-foreground": textSecondary,
+    accent: hover,
+    "accent-foreground": text,
+    destructive: semantic.danger!,
+    border,
+    input: borderStrong,
+    ring: a.accent,
+    sidebar: canvas,
+    "sidebar-foreground": text,
+    "sidebar-primary": a.accent,
+    "sidebar-primary-foreground": WHITE,
+    "sidebar-accent": hover,
+    "sidebar-accent-foreground": text,
+    "sidebar-border": border,
+    "sidebar-ring": a.accent,
+
+    "text-subtle": textTertiary,
+    "border-strong": borderStrong,
+    "focus-ring": a.accent,
+    "accent-soft": a.subtle,
+    "accent-strong": a.strong,
+    // Selection is a solid tint with dark accent text (guideline §5.2), not
+    // a translucent wash of light accent text.
+    "ucch-active": a.strong,
+    "ucch-active-bg": a.subtle,
+    sunken,
+    "bubble-user": N.bubbleUser,
+    "switch-off": N.switchOff,
     ...semantic,
     ...charts,
     ...notes,
@@ -547,6 +739,8 @@ export interface ContrastFailure extends ContrastCheck {
 /** Resolves a check's surface, compositing the translucent selection wash. */
 function surfaceOf(tokens: Tokens, name: string, mode: Mode): string {
   if (name.startsWith("@active-bg:")) {
+    const solid = tokens["ucch-active-bg"]
+    if (solid && parseHex(solid)) return solid
     return composite(tokens["ucch-active"]!, ACTIVE_BG_ALPHA[mode], tokens[name.slice(11)]!)
   }
   return tokens[name]!
@@ -573,6 +767,12 @@ export function validate(tokens: Tokens, mode: Mode, highContrast = false): Cont
 /** The shipped accent: the blue the app has always had. */
 export const DEFAULT_ACCENT = { hue: 266, chroma: 0.17 } as const
 
+/** The shipped light accent's hue and chroma: the guideline's teal, #0b6b75. */
+export const DEFAULT_ACCENT_LIGHT = (() => {
+  const { h, c } = hexToOklch(LIGHT_DEFAULT_ACCENT.accent)
+  return { hue: h, chroma: c }
+})()
+
 const defaultCache = new Map<string, Tokens>()
 
 /** The shipped palette for a mode -- what every failing theme falls back to. */
@@ -580,10 +780,11 @@ export function defaultTokens(mode: Mode, highContrast = false): Tokens {
   const key = `${mode}:${highContrast}`
   let tokens = defaultCache.get(key)
   if (!tokens) {
+    const accent = mode === "light" ? DEFAULT_ACCENT_LIGHT : DEFAULT_ACCENT
     tokens = generateTokens({
       mode,
-      accentHue: DEFAULT_ACCENT.hue,
-      accentChroma: DEFAULT_ACCENT.chroma,
+      accentHue: accent.hue,
+      accentChroma: accent.chroma,
       highContrast,
     })
     defaultCache.set(key, tokens)

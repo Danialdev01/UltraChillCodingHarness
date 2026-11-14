@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 /**
@@ -84,6 +87,14 @@ const Env = z.object({
    * made a single search cost about as much as a turn of real work.
    */
   SEARCH_MODEL: z.string().default("google/gemini-2.5-flash"),
+
+  /**
+   * The model behind the composer's dictation fallback, for browsers with no
+   * speech recognition of their own (Firefox). OpenRouter has no
+   * transcription endpoint, so the clip goes to an audio-capable chat model,
+   * billed to the user's own OpenRouter key.
+   */
+  TRANSCRIBE_MODEL: z.preprocess((v) => (v === "" ? undefined : v), z.string().default("google/gemini-2.5-flash")),
 
   /**
    * The research pipeline behind the composer's Research toggle.
@@ -176,12 +187,6 @@ const Env = z.object({
    */
   AGENT_MAX_CONCURRENT_PER_USER: z.coerce.number().int().positive().default(2),
 
-  /**
-   * CLI-provider turns running at once on the whole server. Each is a
-   * process of about 400 MB; five fit the memory left beside Postgres, the
-   * API and Next.js in a 7 GB container. A turn over the limit waits for a
-   * slot, and the thread says how many are ahead (`turn-scheduler.ts`).
-   */
   /** Opt-in shared estimate budget, excluding API/web/databases and unmanaged project servers. */
   AGENT_MEMORY_BUDGET_MB: z.coerce.number().int().positive().optional(),
   AGENT_CLI_MEMORY_MB: z.coerce.number().int().positive().default(512),
@@ -190,6 +195,24 @@ const Env = z.object({
   AGENT_MAX_WAITING: z.coerce.number().int().positive().optional(),
   AGENT_WAIT_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
 
+  /**
+   * Opt-in admission by measured memory: no new agent turn starts once the
+   * container (or host, whichever is fuller) has this percentage of its
+   * memory in use, counting the estimates above for turns too new to show
+   * in a sample. Starts resume below `AGENT_MEMORY_RESUME_PERCENT` (default
+   * five points lower). Running turns are never stopped by it.
+   */
+  AGENT_MEMORY_PAUSE_PERCENT: z.coerce.number().int().min(1).max(100).optional(),
+  AGENT_MEMORY_RESUME_PERCENT: z.coerce.number().int().min(1).max(100).optional(),
+  /** A memory sample older than this holds new starts back: no figures, no room. */
+  AGENT_MEMORY_STALE_MS: z.coerce.number().int().positive().default(60_000),
+
+  /**
+   * CLI-provider turns running at once on the whole server. Each is a
+   * process of about 400 MB; five fit the memory left beside Postgres, the
+   * API and Next.js in a 7 GB container. A turn over the limit waits for a
+   * slot, and the thread says how many are ahead (`turn-scheduler.ts`).
+   */
   AGENT_MAX_CONCURRENT_TOTAL: z.coerce.number().int().positive().default(5),
 
   /** Native turns running at once on the whole server, diagram jobs included; likewise. */
@@ -229,10 +252,11 @@ const Env = z.object({
 
   /**
    * The bundled `omp-bridge` MCP server Claude Code and Codex turns are
-   * given (run with `node`). The image's path by default; in development,
-   * `packages/omp-bridge/dist/omp-bridge.mjs`.
+   * given (run with `node`). Unset: the image's path when it exists, else
+   * this checkout's `packages/omp-bridge/dist/omp-bridge.mjs`
+   * (`resolveBridgeBin`). Without it no turn is offered `ucch_agent`.
    */
-  OMP_BRIDGE_BIN: z.string().default("/opt/ucch/omp-bridge.mjs"),
+  OMP_BRIDGE_BIN: z.string().optional(),
 
   /**
    * OMP processes running at once on the whole server: OMP turns plus bridge
@@ -378,6 +402,11 @@ const Env = z.object({
    * than half of this is read from the database each turn instead.
    */
   HISTORY_CACHE_EVENTS: z.coerce.number().int().min(0).default(20_000),
+  /**
+   * The same cache bounded by size: approximate JSON megabytes across all
+   * threads. A thread over half of it is read whole each turn instead of kept.
+   */
+  HISTORY_CACHE_MB: z.coerce.number().int().min(0).default(128),
 
   /**
    * Terminals open at once: in one project, for one person, and on the
@@ -390,7 +419,7 @@ const Env = z.object({
   TERMINAL_IDLE_MINUTES: z.coerce.number().int().positive().default(15),
 });
 
-export type Config = Readonly<z.infer<typeof Env>>;
+export type Config = Readonly<Omit<z.infer<typeof Env>, "OMP_BRIDGE_BIN"> & { OMP_BRIDGE_BIN: string }>;
 
 function csvLower(value: string | undefined): string[] {
   return (value ?? "")
@@ -409,6 +438,25 @@ export function webOrigin(config: Config): string {
   return config.PUBLIC_WEB_ORIGIN ?? `${config.PUBLIC_SCHEME}://${config.ROOT_DOMAIN}`;
 }
 
+/** Where the image puts the bridge bundle. */
+export const IMAGE_BRIDGE_BIN = "/opt/ucch/omp-bridge.mjs";
+/** This checkout's root, from `src/` or `dist/` alike (both sit at apps/server/<dir>). */
+const CHECKOUT_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+/** This checkout's build of the bundle. */
+export const CHECKOUT_BRIDGE_BIN = resolve(CHECKOUT_ROOT, "packages/omp-bridge/dist/omp-bridge.mjs");
+
+/**
+ * The bridge bundle to hand Claude Code and Codex. A path that was set is
+ * used existing or not (the startup check says so), a relative one from the
+ * checkout's root, as the dev example once wrote it, not the server's working
+ * directory; unset, the image's, then this checkout's, whichever exists.
+ */
+export function resolveBridgeBin(explicit: string | undefined, exists: (path: string) => boolean = existsSync): string {
+  if (explicit) return isAbsolute(explicit) ? explicit : resolve(CHECKOUT_ROOT, explicit);
+  for (const candidate of [IMAGE_BRIDGE_BIN, CHECKOUT_BRIDGE_BIN]) if (exists(candidate)) return candidate;
+  return IMAGE_BRIDGE_BIN;
+}
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   // An empty value is an unset one. Compose files and hosting dashboards
   // pass every declared variable, blank or not, and `DEFAULT_USER_EMAIL=""`
@@ -419,7 +467,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     const issues = parsed.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`);
     throw new Error(`invalid configuration:\n${issues.join("\n")}`);
   }
-  const config = parsed.data;
+  const config = { ...parsed.data, OMP_BRIDGE_BIN: resolveBridgeBin(parsed.data.OMP_BRIDGE_BIN) };
 
   // Checked against the environments that may have it rather than the one
   // that may not: `NODE_ENV` defaults to development, so a server started
@@ -434,6 +482,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(
       `ENGINE_MAX_PARALLEL (${config.ENGINE_MAX_PARALLEL}) must be at most DB_POOL_MAX - 4 (${config.DB_POOL_MAX - 4})`,
     );
+  }
+  if (
+    config.AGENT_MEMORY_RESUME_PERCENT !== undefined &&
+    (config.AGENT_MEMORY_PAUSE_PERCENT === undefined || config.AGENT_MEMORY_RESUME_PERCENT > config.AGENT_MEMORY_PAUSE_PERCENT)
+  ) {
+    throw new Error("AGENT_MEMORY_RESUME_PERCENT needs AGENT_MEMORY_PAUSE_PERCENT, and must be at most it");
   }
   // The server needs at least one way to authenticate somebody. Password
   // login, GitHub, or the development bypass all qualify; none of them does

@@ -25,12 +25,13 @@ import {
   EraserIcon,
   FileTextIcon,
   FoldVerticalIcon,
-  ForwardIcon,
   GaugeIcon,
-  ImageIcon,
+  HandIcon,
   Loader2Icon,
   PaperclipIcon,
   PencilIcon,
+  MicIcon,
+  MicOffIcon,
   PlusIcon,
   RotateCcwIcon,
   SparklesIcon,
@@ -79,9 +80,13 @@ import {
   type PreviewableAttachment,
 } from "@/components/attachment-preview";
 import { ImageEditorDialog } from "@/components/image-editor-dialog";
+import { useVoiceInput, type VoiceState } from "@/lib/use-voice-input";
+import { insertTranscript } from "@/lib/voice-transcribe";
 import { discardUpload, stageUpload, uploadContentUrl } from "@/lib/uploads-api";
+import { carriesResource, readResourceDrag, resourceAsFile, type ResourceDragPayload } from "@/lib/resources-api";
 import { AccessSelect } from "@/components/access-select";
 import { ContextMeter } from "@/components/context-meter";
+import { HarnessIcon } from "@/components/harness-icon";
 import { InlineError } from "@/components/layout/inline-error";
 import { Markdown, StreamingMarkdown } from "@/components/markdown";
 import { ToolWidget } from "@/components/widget-frame";
@@ -89,7 +94,7 @@ import { ChatImageHostProvider } from "@/components/chat-image";
 import { targetOf } from "@/lib/project-target";
 import { WidgetHostProvider, type WidgetHost } from "@/lib/widget-host";
 import { fetchHarnessSettings } from "@/lib/workspace-api";
-import { isShowWidgetTool } from "@ucch/protocol/plain";
+import { cliContextWindow, isShowWidgetTool } from "@ucch/protocol/plain";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
 import { subagentConversation, subagentParentRequest } from "@/lib/subagent-chat";
@@ -100,6 +105,7 @@ import { useActiveTurn, useTurnShortcuts } from "@/hooks/use-active-turn";
 import { turnPreview } from "@/lib/turn-spy";
 import { useChatViewMode, type ChatViewMode } from "@/lib/chat-view-mode";
 import {
+  followUpHarness,
   lineageKey,
   lineageOf,
   publishLineage,
@@ -115,10 +121,17 @@ import {
   rememberLastModel,
   rememberLastProvider,
 } from "@/lib/model-preference";
-import { ProviderSelect, useProviders } from "@/components/provider-picker";
+import { ProviderSelect, useAccounts, useProviders } from "@/components/provider-picker";
 import { ChoicePromptCard } from "@/components/choice-prompt";
 import { useProjectSessions } from "@/lib/project-sessions";
-import { billingLabel, providerBlocker, type ProviderId } from "@/lib/providers-api";
+import {
+  billingLabel,
+  fetchProjectAccounts,
+  providerBlocker,
+  saveProjectDefaultAccount,
+  type AgentAccount,
+  type ProviderId,
+} from "@/lib/providers-api";
 import { readCredentialChoice } from "@/lib/credential-choice";
 import { composerMaxLines, MIN_COMPOSER_LINES } from "@/lib/composer-size";
 import { historyDirection, idleCursor, step, type HistoryCursor } from "@/lib/prompt-history";
@@ -210,7 +223,6 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   const [reference, setReference] = useState<CodeReference | null>(null);
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
    * The attachment being looked at, or null.
@@ -307,6 +319,22 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   const provider: ProviderId =
     boundProvider ?? chosenProvider ?? providers.defaultProvider ?? "native";
   const cli = provider !== "native";
+  // The subscription account: the session's own once bound to one, else
+  // the person's default for this project (the account a first turn uses).
+  const { accounts } = useAccounts();
+  const [boundProfileId, setBoundProfileId] = useState<string | null>(session?.profileId ?? null);
+  const [projectDefaults, setProjectDefaults] = useState<Partial<Record<string, string>>>({});
+  useEffect(() => {
+    let live = true;
+    fetchProjectAccounts(project.hash).then(
+      (value) => live && setProjectDefaults(value.defaults),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [project.hash]);
+  const currentProfileId = boundProfileId ?? projectDefaults[provider] ?? null;
 
   /**
    * The mode the next message runs in, or null for an ordinary coding turn.
@@ -527,16 +555,16 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       // workspace's session, which is a project of its own -- the
       // conversation is the project's newest thread, so a reload continues
       // where it left off; only create when there is none.
-      let opened: { id: string; provider?: string | null } | undefined;
+      let opened: { id: string; provider?: string | null; profileId?: string | null } | undefined;
       if (sessionId) {
-        opened = { id: sessionId, provider: sessionProvider };
+        opened = { id: sessionId, provider: sessionProvider, profileId: session?.profileId ?? null };
       } else {
         const response = await fetch(`/api/projects/${project.hash}/threads`, {
           credentials: "include",
         });
         const listed = response.ok
           ? ((await response.json()) as {
-              threads: Array<{ id: string; title?: string; provider?: string | null; parentThreadId?: string | null }>
+              threads: Array<{ id: string; title?: string; provider?: string | null; profileId?: string | null; parentThreadId?: string | null }>
             }).threads
           : [];
         // The newest conversation, passing over the Tasks board's own
@@ -557,6 +585,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       // A thread that has run is bound to its provider; the picker shows it
       // locked rather than offering a switch the server would refuse.
       setBoundProvider(isProviderId(opened?.provider) ? opened.provider : null);
+      setBoundProfileId(opened?.profileId ?? null);
       await openThread(client, id);
       if (!cancelled) setHistoryLoaded(true);
     })().catch(() => {
@@ -788,6 +817,14 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   useEffect(() => {
     if (switchedTo) setBoundProvider(switchedTo);
   }, [switchedTo]);
+  // A switch that named an account rebinds the session to it.
+  const switchedProfile = useMemo(() => {
+    const last = messages.findLast((m) => m.switched && m.switched.toProfileId !== undefined)?.switched;
+    return last ? (last.toProfileId ?? null) : undefined;
+  }, [messages]);
+  useEffect(() => {
+    if (switchedProfile !== undefined) setBoundProfileId(switchedProfile);
+  }, [switchedProfile]);
   // A turn waiting for a slot is the agent's as much as one running: the
   // composer offers Stop, and the server refuses a second message either way.
   const running = turnRunning || queuedAhead !== null;
@@ -801,6 +838,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     () => (agentParam ? (lineageOf(messages).find((entry) => lineageKey(entry) === agentParam) ?? null) : null),
     [agentParam, messages],
   );
+  const detailHarness = detail ? followUpHarness(detail) : null;
   const detailMessages = useMemo(() => detail ? subagentConversation(durableEvents, detail.run.id) : [], [detail, durableEvents]);
   const detailParentRequest = useMemo(() => detail ? subagentParentRequest(messages, detail.callId) : null, [detail, messages]);
   const closeDetail = useCallback(() => transitionRouter.replace(pathname ?? "."), [pathname, transitionRouter]);
@@ -926,6 +964,35 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    * treated as new typing, not as a position in the walk.
    */
   const history = useRef<HistoryCursor>(idleCursor);
+
+  /**
+   * Dictation. The draft and caret as they were when the mic went on, so
+   * each transcript (the whole session so far, guesses included) is set
+   * in place of the last one rather than added to it.
+   */
+  const dictation = useRef<{ base: string; caret: number } | null>(null);
+  const voice = useVoiceInput({
+    hash: project.hash,
+    onTranscript: (text) => {
+      const at = dictation.current;
+      if (!at) return;
+      history.current = idleCursor;
+      setDraft(insertTranscript(at.base, at.caret, text));
+    },
+    onError: (message) => setError(message),
+  });
+  const abortVoice = voice.abort;
+  const toggleDictation = useCallback(() => {
+    if (voice.state === "listening") {
+      voice.stop();
+      return;
+    }
+    if (voice.state !== "idle") return;
+    const box = draftRef.current;
+    dictation.current = { base: draft, caret: box?.selectionStart ?? draft.length };
+    setError(null);
+    void voice.start();
+  }, [draft, voice]);
   // From the settled messages: what streams changes no prompt, and these
   // stay the same objects while a turn streams.
   const promptHistory = useMemo(
@@ -1068,6 +1135,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     // The server empties the box for every window once the message is in;
     // nothing typed here should race that.
     syncRef.current?.discard();
+    abortVoice();
+    dictation.current = null;
     setSending(true);
     setError(null);
     setDraft("");
@@ -1089,7 +1158,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     } finally {
       setSending(false);
     }
-  }, [attachments, dispatchMessage, draft, reference, sending, threadId, vision, worktreeBlocked]);
+  }, [abortVoice, attachments, dispatchMessage, draft, reference, sending, threadId, vision, worktreeBlocked]);
 
   /** A subagent's session: its task again, as a new turn here. */
   const rerun = useCallback(async () => {
@@ -1245,7 +1314,41 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    */
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
-  const carriesFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files");
+  // A row dragged out of the sidebar's Resources counts too: it is attached
+  // as a copy, the same as a file from the desktop.
+  const carriesFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files") || carriesResource(e.dataTransfer);
+
+  /**
+   * A Resources file dropped on the chat: fetched as a `File` and attached
+   * through `addFiles`, so it is staged, inlined and shown exactly as a
+   * desktop file would be. A folder, or a fetch that fails, leaves a failed
+   * chip that says why rather than nothing at all.
+   */
+  const addResource = useCallback(
+    async (payload: ResourceDragPayload) => {
+      const failed = (error: string) =>
+        setAttachments((current) => [
+          ...current,
+          {
+            id: `${Date.now()}-resource-${payload.name}`,
+            name: payload.name,
+            size: 0,
+            type: "",
+            text: null,
+            uploadId: null,
+            status: "failed" as const,
+            error,
+          },
+        ]);
+      if (payload.kind === "folder") return failed("drop files, not folders, into the chat");
+      try {
+        await addFiles([await resourceAsFile(payload)]);
+      } catch (e) {
+        failed(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [addFiles],
+  );
 
   /**
    * Drops a chip, and the staged file with it.
@@ -1351,6 +1454,37 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     [threadId, project.id],
   );
 
+  /**
+   * Picks a subscription account. On a bound session it moves the session
+   * there -- the same as switching harness, a brief of the work so far,
+   * only to another account; before the first turn it is the person's
+   * default for this project, which that turn will start on.
+   */
+  const chooseAccount = useCallback(
+    async (account: AgentAccount) => {
+      setError(null);
+      try {
+        if (boundProvider) {
+          const client = clientRef.current;
+          if (!client || !threadId) return;
+          await client.dispatch({
+            type: "thread.switch_harness",
+            threadId,
+            targetProvider: account.provider,
+            targetProfileId: account.id,
+            reason: "manual",
+          });
+        } else {
+          await saveProjectDefaultAccount(project.hash, account.provider, account.id);
+          setProjectDefaults((current) => ({ ...current, [account.provider]: account.id }));
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [boundProvider, threadId, project.hash],
+  );
+
   /** Answers a choice card (`thread.choice_reply`); the card goes when `agent.choice_resolved` lands. */
   const replyChoice = useCallback(
     async (requestId: string, optionId: string, model?: string) => {
@@ -1401,28 +1535,6 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     [threadId],
   );
 
-  /**
-   * Empties the context window, in place.
-   *
-   * The same thread -- the same session, branch and worktree -- but the
-   * agent's next turn starts from nothing: the server drops the provider's
-   * session, and the native loop replays only what follows the clear. The
-   * conversation before it stays in the log and on screen, above a divider.
-   */
-  const clearContext = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client || !threadId || clearing || running) return;
-
-    setClearing(true);
-    setError(null);
-    try {
-      await client.dispatch({ type: "thread.clear_context", threadId });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setClearing(false);
-    }
-  }, [clearing, running, threadId]);
 
   /**
    * What the open menu lists, each row with what picking it does.
@@ -1462,8 +1574,6 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           const step = () => replaceDraft(`/${command.name} `, command.name.length + 2);
           const row = { key: command.name, label: `/${command.name}`, detail: command.description };
           switch (command.name) {
-            case "clear":
-              return { row: { ...row, icon: icon(EraserIcon) }, pick: () => (done(), void clearContext()) };
             case "research":
               return {
                 row: { ...row, icon: icon(TelescopeIcon), detail: `Research is ${research ? "on" : "off"}` },
@@ -1494,11 +1604,14 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
               return { row: { ...row, icon: icon(GaugeIcon) }, pick: step };
             case "compact":
             case "handoff": {
-              const Icon = command.name === "compact" ? FoldVerticalIcon : ForwardIcon;
+              const Icon = command.name === "compact" ? FoldVerticalIcon : HandIcon;
               // Disabled rather than hidden, as /harness is: why not is
-              // worth saying.
-              const why = !ompThread
-                ? "Only on a Custom thread that has run"
+              // worth saying. A handover works on any harness; compacting
+              // is OMP's own.
+              const why = !(command.name === "handoff" ? hasRun : ompThread)
+                ? command.name === "handoff"
+                  ? "Only on a thread that has run"
+                  : "Only on a Default thread that has run"
                 : running
                   ? "Wait for the agent to finish"
                   : null;
@@ -1539,15 +1652,15 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           };
         });
       case "focus": {
-        if (!ompThread || running) return [];
         const method = slash.name === "handoff" ? "handoff" : "compact";
+        if (!(method === "handoff" ? hasRun : ompThread) || running) return [];
         const focus = slash.arg.trim();
         return [
           {
             row: {
               key: method,
-              icon: icon(method === "compact" ? FoldVerticalIcon : ForwardIcon),
-              label: method === "compact" ? "Compact now" : "Hand off now",
+              icon: icon(method === "compact" ? FoldVerticalIcon : HandIcon),
+              label: method === "compact" ? "Compact now" : "Hand over now",
               detail: focus ? `Keeping: ${focus}` : "Type what to keep, or pick to go on",
             },
             pick: () => (done(), void compactThread(method, focus)),
@@ -1582,7 +1695,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           return {
             row: {
               key: card.id,
-              icon: icon(BotIcon),
+              icon: <HarnessIcon harness={card.id} size={16} />,
               label: switches ? `Switch to ${card.label}` : card.label,
               detail: blocker ?? (switches ? "Same session, from a brief of the work so far" : undefined),
               disabled: blocker !== null,
@@ -1634,7 +1747,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
         e.preventDefault();
         dragDepth.current = 0;
         setDragging(false);
-        void addFiles(e.dataTransfer.files);
+        const resource = readResourceDrag(e.dataTransfer);
+        if (resource) void addResource(resource);
+        else void addFiles(e.dataTransfer.files);
       }}
     >
       {/* Over everything, and deaf to the pointer so the drag events keep
@@ -1802,11 +1917,11 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           way, so a long conversation can never squeeze the box you type in. */}
       {/* The safe-area inset is what keeps the composer clear of a phone's
           home indicator, which otherwise sits on top of the send button. */}
-      {detail && (detail.run.provider ?? detail.harness) === "codex" && <SubagentComposer key={detailKey} agent={detail.run.agent} busy={running || sending || worktreeBlocked || !threadId}
+      {detail && detailHarness && <SubagentComposer key={detailKey} agent={detail.run.agent} busy={running || sending || worktreeBlocked || !threadId}
         onSend={async text => {
           const client = clientRef.current;
           if (!client || !threadId) throw new Error("The conversation is not connected.");
-          await client.dispatch({ type: "thread.send", threadId, subagentId: detail.run.id, text, provider: "codex" });
+          await client.dispatch({ type: "thread.send", threadId, subagentId: detail.run.id, text, provider: detailHarness });
           scrollToEnd();
         }} />}
       <div
@@ -1851,7 +1966,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           {switching && (
             <p className="text-muted-foreground flex items-center gap-2 px-1 text-xs" data-testid="switching-harness">
               <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
-              Switching to {providerLabel(switching)}: writing a brief of the work so far…
+              {switching === boundProvider
+                ? "Handing over: writing a brief of the work so far…"
+                : `Switching to ${providerLabel(switching)}: writing a brief of the work so far…`}
             </p>
           )}
           {/* A limit's question: the thread's own, or one of its subagents'. */}
@@ -1875,7 +1992,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
           <form
             className={cn(
               "border-border relative bg-background focus-within:ring-ring/50 flex flex-col rounded-2xl border shadow-sm focus-within:ring-2",
-              empty && "@2xl:shadow-md",
+              "light:border-border-strong light:shadow-raised light:rounded-[14px] light:focus-within:border-ring light:focus-within:ring-ring light:focus-within:ring-1",
+              empty && "@2xl:shadow-md light:@2xl:shadow-raised",
             )}
             onSubmit={(e) => {
               e.preventDefault();
@@ -2000,6 +2118,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                 onChange={(e) => {
                   // Typing leaves the history walk: the text is yours again.
                   history.current = idleCursor;
+                  // Typing takes the draft back from the mic.
+                  if (voice.state !== "idle") voice.abort();
+                  dictation.current = null;
                   setDraft(e.target.value);
                 }}
                 onPaste={(e) => {
@@ -2127,6 +2248,12 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                     : "Create, edit and read PDF, DOCX and DOC files: fixed templates, diagrams and charts, then a layout check of every page"
                 }
               />
+              <MicButton
+                state={voice.state}
+                unavailable={voice.unavailable}
+                disabled={!threadId || sending || running}
+                onClick={toggleDictation}
+              />
               {/* The mode, shown where it was switched on. A toggle buried
                   in a menu needs something visible saying it is still on,
                   and this is also the fastest way to turn it off. */}
@@ -2190,10 +2317,31 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   disabled={sending}
                 />
               )}
-              {/* What the agent may do before it asks: the account's setting,
-                  changeable here where it matters. */}
+              {/* How full the context window is, and the handover when it nears the limit. */}
               <ComposerDivider />
-              <AccessSelect disabled={sending} />
+              <ContextMeter
+                tokens={measuredContext?.usedTokens ?? contextTokens}
+                limit={
+                  measuredContext?.windowTokens ??
+                  (cli ? cliContextWindow(provider, activeModel) : null) ??
+                  models.find((m) => m.id === model)?.contextLength ??
+                  null
+                }
+                threshold={measuredContext?.thresholdTokens ?? null}
+                live={measuredContext !== null}
+                onHandover={() => void compactThread("handoff", "")}
+                handingOver={compacting !== null || switching !== null}
+                disabledReason={
+                  !hasRun
+                    ? "Nothing to hand over until the agent has replied."
+                    : running || sending
+                      ? "Wait for the agent to finish."
+                      : null
+                }
+                // Mid-turn the history is still being written: the brief
+                // would leave out what the running turn adds.
+                disabled={running || sending || !threadId || !hasRun}
+              />
               <div className="ml-auto flex min-w-0 shrink items-center gap-0.5">
                 <ProviderSelect
                   providers={providers}
@@ -2201,23 +2349,15 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   locked={boundProvider}
                   onChange={chooseProvider}
                   onSwitch={(id) => void switchHarness(id)}
+                  accounts={accounts}
+                  currentProfileId={currentProfileId}
+                  onAccount={(account) => void chooseAccount(account)}
                   look="inline"
                   disabled={sending || running}
                 />
-                <ContextMeter
-                  tokens={measuredContext?.usedTokens ?? contextTokens}
-                  limit={
-                    measuredContext?.windowTokens ?? models.find((m) => m.id === model)?.contextLength ?? null
-                  }
-                  threshold={measuredContext?.thresholdTokens ?? null}
-                  live={measuredContext !== null}
-                  onClear={() => void clearContext()}
-                  clearing={clearing}
-                  // Mid-turn the history is still being written; clearing under
-                  // the running loop would leave it appending to a thread nobody
-                  // is watching.
-                  disabled={running || sending || !threadId}
-                />
+                {/* What the agent may do before it asks: the account's setting,
+                    changeable here where it matters. */}
+                <AccessSelect disabled={sending} />
                 {running ? (
                   // The same button position, so the reader does not have to
                   // look for it: while a turn runs, Send is Stop. The server
@@ -2429,8 +2569,8 @@ function AttachMenu({
           menu dropping from it would open off-screen. */}
       <DropdownMenuContent side="top" align="start" className="w-56">
         <DropdownMenuItem onClick={onAddFiles}>
-          <ImageIcon />
-          Add files or photos
+          <PaperclipIcon />
+          Upload or add files
         </DropdownMenuItem>
         <DropdownMenuItem disabled>
           <SparklesIcon />
@@ -2458,6 +2598,56 @@ function AttachMenu({
         </DropdownMenuCheckboxItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * The mic beside the plus. One click starts dictation into the draft at
+ * the caret, and a second stops it. Where the browser cannot recognise
+ * speech itself, the clip is sent to the server after stop, and a spinner
+ * shows until the text comes back.
+ */
+function MicButton({
+  state,
+  unavailable,
+  disabled,
+  onClick,
+}: {
+  state: VoiceState;
+  /** Why dictation cannot work here. The button stays, and a click says why. */
+  unavailable: string | null;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const listening = state === "listening";
+  const label = listening
+    ? "Stop dictating"
+    : state === "transcribing"
+      ? "Transcribing…"
+      : unavailable
+        ? `Dictation unavailable: ${unavailable}`
+        : "Dictate";
+  return (
+    <Button
+      type="button"
+      size="icon"
+      variant="ghost"
+      className={cn(
+        "text-muted-foreground hover:text-foreground relative size-8 rounded-full",
+        listening && "bg-ucch-active-bg text-ucch-active hover:text-ucch-active",
+      )}
+      disabled={(disabled && !listening) || state === "transcribing"}
+      onClick={onClick}
+      aria-pressed={listening}
+      title={label}
+    >
+      {state === "transcribing" ? (
+        <Loader2Icon className="animate-spin" />
+      ) : (
+        unavailable ? <MicOffIcon /> : <MicIcon className={cn(listening && "animate-pulse")} />
+      )}
+      <span className="sr-only">{label}</span>
+    </Button>
   );
 }
 
@@ -2566,7 +2756,7 @@ const Message = memo(function Message({
         {message.text &&
           (message.subagentTask ? (
             <div
-              className="bg-ucch-active-bg text-foreground max-w-[92%] rounded-lg px-3 py-2 text-sm @md:max-w-[85%]"
+              className="bg-ucch-active-bg light:bg-bubble-user light:border-border light:border text-foreground max-w-[92%] rounded-lg px-3 py-2 text-sm @md:max-w-[85%]"
               data-testid="subagent-task"
             >
               <Markdown>{message.text}</Markdown>
@@ -2825,9 +3015,15 @@ function HandoffRow({ direction, href, label }: { direction: "in" | "from"; href
  * what, and the brief the new harness started from a click away.
  */
 function HarnessSwitchRow({ ref, change }: { ref: Ref<HTMLDivElement>; change: HarnessSwitch }) {
-  const label = `${change.limit ? "Usage limit reached. " : ""}Switched from ${HARNESS_NAMES[change.from] ?? change.from} to ${
-    HARNESS_NAMES[change.to] ?? change.to
-  }${change.model ? ` · ${change.model}` : ""}`;
+  const name = (id: string) => HARNESS_NAMES[id] ?? id;
+  const move = change.context
+    ? "Handed over to a brief of the work so far"
+    : change.from === change.to
+      ? `Moved to another ${name(change.to)} account`
+      : `Switched from ${name(change.from)} to ${name(change.to)}`;
+  const label = `${change.limit ? "Usage limit reached. " : ""}${move}${change.model ? ` · ${change.model}` : ""}${
+    change.checkpointSha ? ` · checkpoint ${change.checkpointSha.slice(0, 7)}` : ""
+  }`;
   return (
     <div ref={ref}>
       <details className="group/switch text-muted-foreground text-xs" data-testid="harness-switched">
@@ -2879,8 +3075,8 @@ function ContextClearedRow({ ref }: { ref: Ref<HTMLDivElement> }) {
 const HARNESS_NAMES: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
-  omp: "Custom",
-  native: "Custom",
+  omp: "Default",
+  native: "Default",
 };
 
 /**

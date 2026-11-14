@@ -405,6 +405,8 @@ export interface ProjectSession {
   title: string;
   status: string;
   provider: string | null;
+  /** The subscription account it is bound to; absent or null: the default. */
+  profileId?: string | null;
   baseBranch: string | null;
   branch: string | null;
   /** `settled`: merged into the base and its worktree removed. */

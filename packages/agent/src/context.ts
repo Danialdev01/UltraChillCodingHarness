@@ -1,4 +1,4 @@
-import { CHARS_PER_TOKEN, estimateTokens, type TokenUsage } from "@ucch/protocol";
+import { CHARS_PER_TOKEN, CONTEXT_HANDOVER_RATIO, estimateTokens, type TokenUsage } from "@ucch/protocol";
 import type { ChatMessage, Complete } from "./completion.js";
 
 /**
@@ -34,10 +34,14 @@ import type { ChatMessage, Complete } from "./completion.js";
 const IMAGE_TOKENS = 1_100;
 
 /** Where pruning starts, as a fraction of the usable window. */
-export const PRUNE_RATIO = 0.7;
+export const PRUNE_RATIO = 0.45;
 
-/** Where compaction starts. Above pruning, because it costs a model call. */
-export const COMPACT_RATIO = 0.85;
+/**
+ * Where compaction starts. Above pruning, because it costs a model call;
+ * at the handover line (`CONTEXT_HANDOVER_RATIO`), so a session never
+ * carries more than that share of its window into the next call.
+ */
+export const COMPACT_RATIO = CONTEXT_HANDOVER_RATIO;
 
 /**
  * Tool results younger than this are not pruned on the ordinary pass.

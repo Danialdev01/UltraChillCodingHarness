@@ -39,6 +39,18 @@ export default async function Page({ params }: { params: Promise<{ page: string 
       ])
     : [null, null, []];
 
+  if (page === "providers") {
+    // Its own frame: the providers card lays a list beside a detail panel,
+    // which needs more room than a form column gives it.
+    return (
+      <div className="flex flex-1 flex-col">
+        <div className="mx-auto flex w-full max-w-[960px] flex-col gap-7 px-4 pt-6 pb-16 sm:px-8 sm:pt-7">
+          <SettingsPage page={page} usage={usage} storage={storage} projects={projects.map((p) => ({ id: p.id, name: p.name }))} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     // Bounded so the forms inside do not stretch to the width of a large
     // monitor -- a label and a field a metre apart is not a form.

@@ -404,23 +404,6 @@ describe("thread.cancel", () => {
   });
 });
 
-describe("thread.clear_context", () => {
-  it.each(["claude", "codex", "omp", "native", null] as const)("clears an idle thread on %s", (provider) => {
-    const d = run({ project: project(), thread: thread({ provider }) }, { type: "thread.clear_context", threadId: THREAD });
-    expect(d).toEqual({ ok: true, events: [{ type: "thread.context_cleared", threadId: THREAD }] });
-  });
-
-  it("clears a thread whose last turn failed", () => {
-    const d = run({ project: project(), thread: thread({ provider: "claude", status: "error" }) }, { type: "thread.clear_context", threadId: THREAD });
-    expect(d).toMatchObject({ ok: true });
-  });
-
-  it.each(["queued", "running", "cancelling"] as const)("refuses while the thread is %s", (status) => {
-    const d = run({ project: project(), thread: thread({ provider: "claude", status }) }, { type: "thread.clear_context", threadId: THREAD });
-    expect(d).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("busy") } });
-  });
-});
-
 describe("thread.compact and thread.handoff", () => {
   it.each([
     ["thread.compact", "compact"],
@@ -443,6 +426,33 @@ describe("thread.compact and thread.handoff", () => {
   it.each(["queued", "running", "cancelling"] as const)("refuses while the thread is %s", (status) => {
     const d = run({ project: project(), thread: thread({ provider: "omp", status }) }, { type: "thread.handoff", threadId: THREAD });
     expect(d).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("busy") } });
+  });
+
+  it.each(["claude", "codex", "native"] as const)("hands a thread on %s over on its own harness", (provider) => {
+    const d = run({ project: project(), thread: thread({ provider }) }, { type: "thread.handoff", threadId: THREAD, focus: "the parser" });
+    expect(d).toEqual({
+      ok: true,
+      events: [
+        {
+          type: "thread.harness_switch_requested",
+          threadId: THREAD,
+          fromProvider: provider,
+          targetProvider: provider,
+          focus: "the parser",
+          reason: "context",
+        },
+      ],
+    });
+  });
+
+  it("refuses a handover on a thread that has never run, or is busy", () => {
+    expect(run({ project: project(), thread: thread({ provider: null }) }, { type: "thread.handoff", threadId: THREAD })).toMatchObject({
+      ok: false,
+      error: { code: "conflict" },
+    });
+    expect(
+      run({ project: project(), thread: thread({ provider: "claude", status: "running" }) }, { type: "thread.handoff", threadId: THREAD }),
+    ).toMatchObject({ ok: false, error: { code: "conflict", message: expect.stringContaining("busy") } });
   });
 });
 
@@ -956,5 +966,122 @@ describe("native subagent follow-up", () => {
   });
   it("uses the normal busy guard rather than racing the parent harness", () => {
     expect(run({ ...state, thread: thread({ provider: "codex", status: "running" }) }, command)).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+});
+
+describe("Claude Code subagent follow-up", () => {
+  const state = { workspace: workspace(), project: project(), thread: thread({ provider: "claude" }), subagent: { id: "toolu_agent", resumeHandle: "a454c450ac8feab62" } };
+  const command = { type: "thread.send", threadId: THREAD, text: "Now check the auth routes", subagentId: "toolu_agent", provider: "claude" } as const;
+  it("records the handle from the subagent's own events with the message", () => {
+    const decided = run(state, command);
+    expect(decided).toMatchObject({ ok: true, events: [{ type: "user.message", subagentId: "toolu_agent", subagentHandle: "a454c450ac8feab62", text: command.text }] });
+  });
+  it("rejects a subagent with no handle, a ucch_agent one, another subagent, or a thread now on another harness", () => {
+    expect(run({ ...state, subagent: { id: "toolu_agent" } }, command)).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(run({ ...state, subagent: { ...state.subagent, childThreadId: NEW_ID } }, command)).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(run({ ...state, subagent: { ...state.subagent, provider: "claude" } }, command)).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(run(state, { ...command, subagentId: "toolu_other" })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(run({ ...state, thread: thread({ provider: "codex" }) }, { ...command, provider: "codex" })).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
+  it("never takes a handle from the client", () => {
+    const forged = { ...command, subagentHandle: "evil" } as unknown as typeof command;
+    const decided = run(state, forged);
+    expect(decided).toMatchObject({ ok: true, events: [{ subagentHandle: "a454c450ac8feab62" }] });
+  });
+});
+
+describe("subscription accounts", () => {
+  const WORK = "88888888-8888-8888-8888-888888888888";
+  const OTHER_USER = "99999999-9999-9999-9999-999999999999";
+  const profile = (over: Partial<NonNullable<DecisionState["profile"]>> = {}): NonNullable<DecisionState["profile"]> => ({
+    id: WORK,
+    subject: USER,
+    provider: "claude",
+    context: "work",
+    isDefault: false,
+    ...over,
+  });
+  const switching = (over: Partial<Extract<Command, { type: "thread.switch_harness" }>> = {}): Command => ({
+    type: "thread.switch_harness",
+    threadId: THREAD,
+    targetProvider: "claude",
+    targetProfileId: WORK,
+    ...over,
+  });
+  const bound = thread({ provider: "claude", createdByUserId: USER });
+
+  it("never lets an automatic switch move to another account of the same provider", () => {
+    expect(run({ project: project(), thread: bound, profile: profile() }, switching({ auto: true }))).toMatchObject({
+      ok: false,
+      error: { code: "forbidden" },
+    });
+  });
+
+  it("lets a person move the session to another account of the same provider", () => {
+    const d = run({ project: project(), thread: bound, profile: profile() }, switching({ reason: "limit" }));
+    expect(d).toMatchObject({
+      ok: true,
+      events: [{ type: "thread.harness_switch_requested", fromProvider: "claude", targetProvider: "claude", toProfileId: WORK }],
+    });
+  });
+
+  it("refuses a move to the account the session is already on", () => {
+    expect(run({ project: project(), thread: { ...bound, profileId: WORK }, profile: profile() }, switching())).toMatchObject({
+      ok: false,
+      error: { code: "conflict" },
+    });
+    // Unbound runs on the Default account.
+    expect(run({ project: project(), thread: bound, profile: profile({ isDefault: true }) }, switching())).toMatchObject({
+      ok: false,
+      error: { code: "conflict" },
+    });
+  });
+
+  it("still lets an automatic switch go to another provider", () => {
+    const d = run({ project: project(), thread: bound }, switching({ targetProvider: "codex", targetProfileId: undefined, auto: true }));
+    expect(d).toMatchObject({ ok: true, events: [{ type: "thread.harness_switch_requested", targetProvider: "codex", auto: true }] });
+  });
+
+  it("refuses another person's account, the workspace's account on a member session, and the wrong provider", () => {
+    expect(run({ project: project(), thread: bound, profile: profile({ subject: OTHER_USER }) }, switching())).toMatchObject({
+      ok: false,
+      error: { code: "forbidden" },
+    });
+    expect(run({ project: project(), thread: bound, profile: profile({ subject: `ws-${WORKSPACE}` }) }, switching())).toMatchObject({
+      ok: false,
+      error: { code: "forbidden" },
+    });
+    expect(run({ project: project(), thread: bound, profile: profile({ provider: "codex" }) }, switching())).toMatchObject({
+      ok: false,
+      error: { code: "invalid" },
+    });
+    expect(run({ project: project(), thread: bound }, switching())).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  it("takes the workspace's accounts for a session on its subscription", () => {
+    const state = {
+      project: project(),
+      workspace: workspace({ credentialPolicy: "workspace" }),
+      thread: bound,
+      profile: profile({ subject: `ws-${WORKSPACE}` }),
+    };
+    expect(run(state, switching())).toMatchObject({ ok: true });
+  });
+
+  it("refuses an account whose context the project does not accept", () => {
+    const state = { project: project({ requiredContext: "work" }), thread: bound, profile: profile({ context: "personal" }) };
+    expect(run(state, switching())).toMatchObject({ ok: false, error: { code: "forbidden" } });
+    const create: Command = { type: "thread.create", projectId: PROJECT, profileId: WORK };
+    expect(run(state, create)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("starts a session bound to the starter's account", () => {
+    const d = run({ project: project(), profile: profile() }, { type: "thread.create", projectId: PROJECT, profileId: WORK });
+    expect(d).toMatchObject({ ok: true, events: [{ type: "thread.created", profileId: WORK, createdByUserId: USER }] });
+  });
+
+  it("only lets a sign-in terminal name an account", () => {
+    const shell: Command = { type: "terminal.create", projectId: PROJECT, terminalId: NEW_ID, cols: 80, rows: 24, profileId: WORK };
+    expect(run({ project: project() }, shell)).toMatchObject({ ok: false, error: { code: "invalid" } });
   });
 });

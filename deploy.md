@@ -91,6 +91,7 @@ In the **Environment** tab:
 2. **Advanced → Volumes → Add Volume**
    - Type **Volume Mount**, **Mount Path**: **`/data`** (any volume name, e.g. `ucch-data`).
    - Everything stateful lives here: databases, project files, CLI logins, secrets, backups. Without it, every redeploy starts from nothing.
+   - **Required.** Use a *Volume Mount* (a named Docker volume), not a bind mount into the repository checkout, which Dokploy re-clones. Without a mount at `/data` the container refuses to start and logs `/data is not a mounted volume`. (`ALLOW_EPHEMERAL_DATA=true` overrides this, for throwaway test runs only.)
 3. **Advanced → Swarm Settings → Update Config**: set **`Order` to `stop-first`**.
    > **Don't skip this one.** The default `start-first` briefly runs the old and new containers side by side, which means two PostgreSQL servers on one data directory, and that corrupts it.
    >
@@ -167,7 +168,9 @@ Under the application's **General** tab, turn on **Auto Deploy**, so every push 
 | Build gets killed partway through / runs out of memory     | Too little RAM for the Next.js build. Add swap, or move to a 4 GB+ VPS.                                                           |
 | `502 Bad Gateway` right after a deploy                   | The container is still starting (allow up to 2 minutes). Otherwise check that the domain's **Container Port** is `3000`.  |
 | Certificate never issues                                   | DNS doesn't point at the VPS yet, the Cloudflare proxy is on (orange cloud), or ports 80/443 are closed.                          |
-| Data is gone after a redeploy                              | No volume at `/data`. Add it (step 7.2).                                                                                        |
+| Data is gone after a redeploy                              | No named volume at `/data`. Add it (step 7.2). Older images created an anonymous volume per container; to recover, on the VPS find the newest with `docker volume ls` and `docker run --rm -v <id>:/d alpine ls /d`, then copy it into the new volume: `docker run --rm -v <id>:/from -v ucch-data:/to alpine cp -a /from/. /to/` (with the app stopped). |
+| Deploy fails: `/data is not a mounted volume`              | Same cause, caught at startup. Add the volume (step 7.2) and redeploy.                                                            |
+| Logs show `NEW EMPTY DATA VOLUME` on an existing install   | The container got a different or empty volume. Check the mount in **Advanced → Volumes**.                                         |
 | PostgreSQL errors about the data directory after an update | The update order is `start-first`. Set it to `stop-first` (step 7.3) and restore from a backup if needed.                     |
 | Stored API keys stop working                               | `SECRET_KEY` changed. Restore the original from `/data/secrets/secret_key` or a backup.                                       |
 | Changing a `NEXT_PUBLIC_*` value has no effect           | It's a build-time argument. Set it under Build-time Arguments and redeploy, which rebuilds.                                       |

@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { contextAllowed, toRef, toView, type AgentProfiles } from "./agent-profiles.js";
+import type { ProfileRef } from "./profile-ref.js";
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { count, desc, eq } from "drizzle-orm";
-import { projects, threads, turns, users, workspaces, type Database } from "@ucch/db";
+import { projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
 import {
   DOCUMENTATION_RULES,
   HostExecutor,
@@ -20,6 +22,7 @@ import {
 } from "@ucch/agent";
 import {
   AgentPermissionMode,
+  cliContextWindow,
   DEFAULT_AGENT_PERMISSION_MODE,
   effectiveCredentialSource,
   isTransient,
@@ -27,9 +30,11 @@ import {
   isOpenRouterLimit,
   isUcchAgentTool,
   limitFallback,
+  needsHandover,
   UCCH_AGENT_ARGS,
   UCCH_AGENT_DESCRIPTION,
   UCCH_AGENT_GUIDE,
+  UCCH_AGENT_UNAVAILABLE_NOTE,
   UCCH_AGENT_TOOL,
   SHOW_WIDGET_TOOL,
   WIDGET_PROMPT,
@@ -83,9 +88,8 @@ import type { ArgvWrapper } from "./child-priority.js";
 import { registry as metrics } from "./metrics.js";
 import type { EventBus } from "./bus.js";
 import { catalogue } from "./openrouter.js";
-import { ChoiceWaiters, harnessAvailability, harnessLabel, limitOptions } from "./choices.js";
+import { ChoiceWaiters, accountBlocker, harnessAvailability, harnessLabel, limitOptions, type LimitAccount } from "./choices.js";
 import { AgentMessaging, COLLABORATION_GUIDE } from "./agent-messaging.js";
-import { SubscriptionQuotaService } from "./quotas.js";
 import { SubagentRunner, type SubagentCall, type SubagentRequest } from "./subagents.js";
 
 export interface AgentOptions {
@@ -135,6 +139,11 @@ export interface AgentOptions {
    * alone; a turn that asks for one then fails with a message saying so.
    */
   providers?: ProviderService;
+  /**
+   * Named subscription accounts. Absent: every Claude Code and Codex turn
+   * runs on the subject's Default account, as before profiles.
+   */
+  profiles?: AgentProfiles;
   /** False refuses `claude` and `codex` outright: see `cliProvidersEnabled`. */
   cliEnabled?: boolean;
   /**
@@ -183,6 +192,8 @@ export interface OmpBridgeOptions {
 /** How a turn was asked for: carried on the command, not the event. */
 interface TurnOptions {
   subagentId?: string;
+  /** The handle a Claude Code subagent is continued by, from its own events. */
+  subagentHandle?: string | undefined;
   model?: string | undefined;
   effort?: ReasoningEffort | undefined;
   provider?: ProviderId | undefined;
@@ -192,6 +203,8 @@ interface TurnOptions {
 /** The account a turn is billed to; see `#owner`. */
 interface TurnOwner {
   id: string;
+  /** The person behind the turn, even when `id` is the workspace's subject. */
+  personId: string;
   openrouterKeyEncrypted: string | null;
   defaultModel: string | null;
   defaultProvider: string | null;
@@ -316,6 +329,13 @@ export class AgentTurnReactor {
 
   /** The CLI run per thread, for delivering a permission answer to it. */
   readonly #cliByThread = new Map<string, AgentRun>();
+  /**
+   * How full each Claude Code or Codex thread's session was at its last
+   * turn's end, for the handover after it (`#handOverIfFull`). Claude's is
+   * its last model call (`context.usage`); Codex reports none, so its
+   * turn's usage stands in.
+   */
+  readonly #contextAtEnd = new Map<string, { usedTokens: number; windowTokens: number | null }>();
 
   /**
    * Threads whose prompt someone answered with "Allow All": every later
@@ -340,7 +360,6 @@ export class AgentTurnReactor {
   /** `ucch_agent` subagents: absent without a bus and a dispatcher. */
   readonly #subagents: SubagentRunner | null;
   readonly messaging: AgentMessaging | null;
-  readonly #subscriptionQuotas: SubscriptionQuotaService | null;
   #ompProbe: { at: number; value: Promise<boolean> } | null = null;
 
   /**
@@ -360,7 +379,6 @@ export class AgentTurnReactor {
       options.scheduler ?? new TurnScheduler({ cliPerUser: 2, cliTotal: Infinity, nativeTotal: Infinity });
     const { bus, dispatch } = options;
     this.messaging = dispatch ? new AgentMessaging(db, store, dispatch, onError) : null;
-    this.#subscriptionQuotas = options.providers ? new SubscriptionQuotaService(options.providers) : null;
     this.#subagents =
       bus && dispatch
         ? new SubagentRunner({
@@ -413,7 +431,7 @@ export class AgentTurnReactor {
         return { ...h, usable: installed, blocker: installed ? null : "OMP is not installed on this server" };
       }
       const provider = h.provider as "claude" | "codex";
-      const quota = await this.#subscriptionQuotas?.get(subject, provider);
+      const quota = await this.options.providers?.quotas.get(subject, provider);
       const windows = quota?.status === "ok" ? quota.windows.filter((w) => !w.model || model?.toLowerCase().includes(w.model)) : [];
       return { ...h, usable: h.usable && cards?.[provider].authMode !== "api-key",
         quota: { status: quota?.status ?? "unavailable", ...(quota?.status === "ok" ? { checkedAt: quota.checkedAt } : {}), ...(windows.length ? { usedPercent: Math.max(...windows.map((w) => w.usedPercent)) } : {}) },
@@ -544,6 +562,7 @@ export class AgentTurnReactor {
         event.text,
         {
           subagentId: event.subagentId,
+          subagentHandle: event.subagentHandle,
           model: sent?.model,
           effort: sent?.effort,
           provider: sent?.provider,
@@ -687,6 +706,34 @@ export class AgentTurnReactor {
     }
     // After the turn has let go of the thread: the handoff claims it anew.
     if (limited) await this.#handOffOnLimit(threadId, limited, text, principal);
+    else if (!controller.signal.aborted) await this.#handOverIfFull(threadId, principal).catch(this.onError);
+    else this.#contextAtEnd.delete(threadId);
+  }
+
+  /**
+   * A handover when the session ended its turn past the handover line
+   * (`CONTEXT_HANDOVER_RATIO`): a brief of the work so far replaces the
+   * history, on the same harness, before the next message is sent. OMP and
+   * the native loop keep under it themselves -- OMP's overlay sets its
+   * compaction threshold there, the native loop compacts there -- so this
+   * is for Claude Code and Codex, whose sessions UCCH cannot fold.
+   *
+   * A thread sent another message meanwhile refuses it (busy): the turn
+   * after that one tries again.
+   */
+  async #handOverIfFull(threadId: string, principal: Principal | undefined): Promise<void> {
+    const reading = this.#contextAtEnd.get(threadId);
+    this.#contextAtEnd.delete(threadId);
+    const dispatch = this.options.dispatch;
+    if (!reading || !dispatch || !principal || !needsHandover(reading.usedTokens, reading.windowTokens)) return;
+    const [thread] = await this.db
+      .select({ provider: threads.provider, parentThreadId: threads.parentThreadId })
+      .from(threads)
+      .where(eq(threads.id, threadId))
+      .limit(1);
+    if (!thread || thread.parentThreadId || (thread.provider !== "claude" && thread.provider !== "codex")) return;
+    const result = await dispatch(principal, { type: "thread.handoff", threadId });
+    if (!result.ok) this.onError(new Error(`automatic handover of ${threadId} refused: ${result.message}`));
   }
 
   /**
@@ -734,6 +781,8 @@ export class AgentTurnReactor {
         targetProvider: target,
         message: text,
         reason: "limit",
+        // The server's own pick: refused if it would stay on the provider.
+        auto: true,
       });
       if (result.ok) return;
       // Refused -- the thread was sent another message meanwhile, or its
@@ -746,7 +795,14 @@ export class AgentTurnReactor {
       credentialSource: row.credentialSource ?? null,
     });
     if (!owner) return;
-    const options = limitOptions(await this.#harnesses(owner.id), provider);
+    const options = limitOptions(
+      await this.#harnesses(owner.id),
+      provider,
+      await this.#otherAccounts(row.projectId, owner, threadId, provider).catch((error: unknown) => {
+        this.onError(error);
+        return [];
+      }),
+    );
     const events: DomainEvent[] = [
       {
         type: "agent.choice_requested",
@@ -761,6 +817,32 @@ export class AgentTurnReactor {
       },
     ];
     await this.store.append({ projectId: row.projectId, threadId }, events, (tx) => applyProjection(tx, events, null));
+  }
+
+  /**
+   * The subject's other accounts of `provider`, for a limit card: every one
+   * but the account the thread ran on, with why it cannot be picked when
+   * it cannot. Whether it is signed in is the CLI's own status check.
+   */
+  async #otherAccounts(projectId: string, owner: TurnOwner, threadId: string, provider: ProviderId): Promise<LimitAccount[]> {
+    const profiles = this.options.profiles;
+    const providers = this.options.providers;
+    if (!profiles || !providers || (provider !== "claude" && provider !== "codex")) return [];
+    const [thread] = await this.db.select({ profileId: threads.profileId }).from(threads).where(eq(threads.id, threadId)).limit(1);
+    const current = await this.#profileFor(projectId, owner, thread?.profileId, provider).catch(() => null);
+    const [project] = await this.db
+      .select({ requiredContext: projects.requiredContext })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    const rows = (await profiles.list(owner.id, provider)).filter((row) => row.id !== current?.id);
+    return Promise.all(
+      rows.map(async (row) => {
+        const card = await providers.profileHealth(owner.id, provider, toRef(row)).catch(() => null);
+        const view = toView({ ...row, authStatus: card?.authenticated ? "signed_in" : "signed_out" });
+        return { id: row.id, label: row.label, blocker: accountBlocker(view, project?.requiredContext) };
+      }),
+    );
   }
 
   /**
@@ -807,6 +889,7 @@ export class AgentTurnReactor {
       ...((answer.model ?? option.model) ? { model: answer.model ?? option.model } : {}),
       ...(request.message ? { message: request.message } : {}),
       reason: "limit",
+      ...(option.profileId ? { targetProfileId: option.profileId } : {}),
     });
     if (!result.ok) {
       const failed: DomainEvent[] = [{ type: "thread.harness_switch_failed", threadId, error: result.message.slice(0, 2_000) }];
@@ -817,7 +900,7 @@ export class AgentTurnReactor {
   async #turn(
     threadId: string,
     text: string,
-    { model, effort, provider: requestedProvider, mode, subagentId }: TurnOptions,
+    { model, effort, provider: requestedProvider, mode, subagentId, subagentHandle }: TurnOptions,
     controller: AbortController,
   ): Promise<ProviderId | undefined> {
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
@@ -872,13 +955,28 @@ export class AgentTurnReactor {
 
     // The turn failed on its plan's usage limit (OM4.6): `#run` may hand it off.
     let limited = false;
+    // The subscription account a CLI turn runs on, once it is known, and
+    // when the CLI last said its limit resets.
+    let profile: ProfileRef | null = null;
+    let limitResetsAt: string | null = null;
     // Who runs it, once resolved below: the subagent count's label.
     let runsOn: ProviderId = "native";
     const write = (batch: readonly DomainEvent[]) => {
       if (batch.length === 0) return Promise.resolve([]);
-      if (batch.some((event) => event.type === "agent.turn_failed" && event.limit)) limited = true;
+      if (batch.some((event) => event.type === "agent.turn_failed" && event.limit)) {
+        limited = true;
+        if (profile && this.options.profiles) {
+          const at = limitResetsAt ? new Date(limitResetsAt) : null;
+          void this.options.profiles.markLimited(profile.id, at && !Number.isNaN(at.getTime()) ? at : null).catch(this.onError);
+        }
+      }
       for (const event of batch) {
         if (event.type === "agent.subagent_finished") subagentsTotal.inc({ provider: runsOn, status: event.status });
+        // The CLI's own usage reading: the meters' only source for Claude.
+        if (event.type === "agent.rate_limit" && owner) {
+          if (event.resetsAt) limitResetsAt = event.resetsAt;
+          if (event.provider === "claude") this.options.providers?.quotas?.record(owner.id, event.windows, profile);
+        }
         if (event.type === "agent.tool_use" && isUcchAgentTool(event.name)) {
           const task = (event.input as { task?: unknown } | null)?.task;
           spawnCalls.calls.push({ toolUseId: event.toolUseId, task: typeof task === "string" ? task : null });
@@ -976,6 +1074,11 @@ export class AgentTurnReactor {
         await append([
           { type: "turn.started", threadId, turnId, provider, ...(cliModel ? { model: cliModel } : {}) },
         ]);
+        // After the turn opens, so an account the project refuses shows as
+        // this turn's failure, in the conversation.
+        const account = await this.#profileFor(thread.projectId, owner, thread.profileId, provider);
+        profile = account ? toRef(account) : null;
+        if (account) void this.options.profiles?.touch(account.id).catch(this.onError);
 
         // A research turn on a CLI is two phases under one turn id: the
         // pipeline runs first on OpenRouter -- the CLI has its own tools and
@@ -1054,12 +1157,14 @@ export class AgentTurnReactor {
         await this.#runCli(provider, {
           ownerId: owner.id,
           owner,
+          profile,
           threadId,
           turnId,
           projectId: thread.projectId,
           workspace,
           text: prompt,
           ...(subagentId ? { subagentId } : {}),
+          ...(subagentId && subagentHandle ? { subagentHandle } : {}),
           subagent: Boolean(thread.parentThreadId),
           resumeToken: thread.providerSessionId,
           model: cliModel,
@@ -1461,6 +1566,13 @@ export class AgentTurnReactor {
     let switched: Extract<DomainEvent, { type: "thread.harness_switched" }> | undefined;
     let error: string | undefined;
     try {
+      // The work so far, committed on the session's branch before anyone
+      // else picks it up: the new harness or account starts from a commit
+      // that can be gone back to, whatever it does next.
+      const checkpointSha = await this.#checkpoint(thread, event).catch((caught: unknown) => {
+        this.onError(caught);
+        return null;
+      });
       const brief = await this.#writeBrief(thread, event.focus, controller.signal);
       if (controller.signal.aborted) throw new Error("Stopped.");
       switched = {
@@ -1471,6 +1583,9 @@ export class AgentTurnReactor {
         ...(event.model ? { model: event.model } : {}),
         brief,
         ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.fromProfileId !== undefined ? { fromProfileId: event.fromProfileId } : {}),
+        ...(event.toProfileId !== undefined ? { toProfileId: event.toProfileId } : {}),
+        ...(checkpointSha ? { checkpointSha } : {}),
       };
     } catch (caught) {
       error = controller.signal.aborted ? "Stopped." : caught instanceof Error ? caught.message : String(caught);
@@ -1495,6 +1610,27 @@ export class AgentTurnReactor {
       ...(event.effort && isEffort(event.effort) ? { effort: event.effort } : {}),
     });
     if (!sent.ok) this.onError(new Error(`the message after switching ${threadId} could not be sent: ${sent.message}`));
+  }
+
+  /**
+   * Commits everything in a session's worktree before a switch, and returns
+   * the commit. Null -- nothing to do -- for a thread with no worktree of
+   * its own (it shares the project's checkout, whose history is the
+   * person's), or a tree that is not ready. `--allow-empty`, so the switch
+   * is marked on the branch even when nothing changed since the last one.
+   */
+  async #checkpoint(
+    thread: { projectId: string; branch: string | null; worktreeState: string | null; hash: string; treeHash: string | null },
+    event: Extract<DomainEvent, { type: "thread.harness_switch_requested" }>,
+  ): Promise<string | null> {
+    if (!thread.branch || thread.worktreeState !== "ready") return null;
+    const tree = treeFor(this.options.workspaceRoot, thread.projectId, thread);
+    const who = ["-c", "user.name=UltraChillCodingHarness", "-c", "user.email=harness@localhost"];
+    const reason = event.reason === "limit" ? "usage limit" : event.reason === "context" ? "context handover" : "switch";
+    const message = `ucch: checkpoint before handoff (${reason}, ${harnessLabel(event.fromProvider)} -> ${harnessLabel(event.targetProvider)})`;
+    await runGit(["add", "-A"], tree, 60_000);
+    await runGit([...who, "commit", "--allow-empty", "--no-verify", "-m", message], tree, 60_000);
+    return (await runGit(["rev-parse", "HEAD"], tree, 10_000, { read: true })).trim() || null;
   }
 
   /**
@@ -1656,12 +1792,15 @@ export class AgentTurnReactor {
     input: {
       ownerId: string;
       owner: { agentPermissionMode: string | null; openrouterKeyEncrypted: string | null; defaultModel: string | null };
+      /** The subscription account a Claude Code or Codex turn signs in as; null for its Default. */
+      profile?: ProfileRef | null;
       threadId: string;
       turnId: string;
       projectId: string;
       workspace: string;
       text: string;
       subagentId?: string;
+      subagentHandle?: string;
       resumeToken: string | null;
       model: string | undefined;
       effort: ReasoningEffort | undefined;
@@ -1723,12 +1862,16 @@ export class AgentTurnReactor {
       // instructions only at the start of a session (`codexPrompt`), so a
       // resumed Codex turn is not handed it, and the log does not say so.
       const fresh = !(provider === "codex" && input.resumeToken);
+      // No bridge (its bundle is missing): no `ucch_agent` either. Said in
+      // the instructions, so a named model is reported rather than swapped
+      // for one the CLI's own subagents can run.
+      const unavailable = provider !== "omp" && offersSubagents && !bridge && fresh ? UCCH_AGENT_UNAVAILABLE_NOTE : null;
       const guide =
         bridge && fresh
           ? [bridge.omp ? ompBridgeGuide() : null, offersSubagents ? UCCH_AGENT_GUIDE : null, this.messaging ? COLLABORATION_GUIDE : null]
               .filter((part): part is string => Boolean(part))
               .join("\n\n") || null
-          : null;
+          : unavailable;
       // OMP is handed the knowledge inside its own section of the system
       // prompt (solution §3.8). It reads the worktree's AGENTS.md itself, so
       // that is never added here.
@@ -1773,11 +1916,10 @@ export class AgentTurnReactor {
       // The mode's tools and rules (solution §3.7); the guard hook reads it
       // too, to keep a documentation turn's writes under docs/.
       const preset: OmpPreset = input.mode ?? "standard";
-      const resolved = await this.options.providers.resolve(
-        input.ownerId,
-        provider,
-        openrouterKey ? { openrouterKey, ompPreset: preset } : {},
-      );
+      const resolved = await this.options.providers.resolve(input.ownerId, provider, {
+        ...(openrouterKey ? { openrouterKey, ompPreset: preset } : {}),
+        ...(input.profile ? { profile: input.profile } : {}),
+      });
       const permissionMode = this.#modeFor(input.threadId, input.owner);
       let omp: OmpRunFiles | undefined;
       let host: Pick<ProviderRunInput, "hostTools" | "onHostToolCall"> = {};
@@ -1833,7 +1975,8 @@ export class AgentTurnReactor {
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
         ...(input.subagentId ? { subagentId: input.subagentId } : {}),
-        prompt: !fresh && this.messaging ? `${input.text}\n\n${COLLABORATION_GUIDE}\n\n${offersSubagents ? UCCH_AGENT_GUIDE : ""}` : input.text,
+        ...(input.subagentHandle ? { subagentHandle: input.subagentHandle } : {}),
+        prompt: !fresh && this.messaging ? `${input.text}\n\n${COLLABORATION_GUIDE}\n\n${offersSubagents ? (bridge ? UCCH_AGENT_GUIDE : UCCH_AGENT_UNAVAILABLE_NOTE) : ""}` : input.text,
         projectId: input.projectId,
         threadId: input.threadId,
         turnId: input.turnId,
@@ -1870,6 +2013,16 @@ export class AgentTurnReactor {
         for await (const event of run.events) {
           if (event.type === "agent.message") answer = messageText(event.content) ?? answer;
           else if (event.type === "agent.turn_completed") completed = true;
+          if (!input.subagent && (provider === "claude" || provider === "codex")) {
+            if (event.type === "context.usage") {
+              this.#contextAtEnd.set(input.threadId, { usedTokens: event.usedTokens, windowTokens: event.windowTokens });
+            } else if (event.type === "agent.turn_completed" && provider === "codex") {
+              this.#contextAtEnd.set(input.threadId, {
+                usedTokens: event.usage.inputTokens + event.usage.outputTokens,
+                windowTokens: cliContextWindow(provider, input.model),
+              });
+            }
+          }
           if (event.type === "agent.permission_requested") {
             const mode = this.#modeFor(input.threadId, input.owner);
             const needsPerson =
@@ -1997,6 +2150,7 @@ export class AgentTurnReactor {
     input: {
       ownerId: string;
       owner: { openrouterKeyEncrypted: string | null; defaultModel: string | null };
+      profile?: ProfileRef | null;
       projectId: string;
       threadId: string;
       turnId: string;
@@ -2074,7 +2228,7 @@ export class AgentTurnReactor {
         trusted: input.trusted === true,
         memory: Boolean(overlay) && memory.enabled,
       });
-      const runDir = providers.cliRunDir(input.ownerId, provider);
+      const runDir = providers.cliRunDir(input.ownerId, provider, input.profile);
       if (provider === "codex") {
         const codex = await writeCodexBridge(runDir, input.turnId, server, options.maxSeconds, offer.subagents);
         disposers.push(() => codex.dispose());
@@ -2405,18 +2559,60 @@ export class AgentTurnReactor {
       .where(eq(users.id, personId))
       .limit(1);
     if (!person) return null;
+    const owner = { ...person, personId: person.id };
 
     const bound = thread?.credentialSource === "workspace" || thread?.credentialSource === "member"
       ? thread.credentialSource
       : null;
     if (effectiveCredentialSource(toPolicy(project.policy), bound) === "workspace") {
       return {
-        ...person,
+        ...owner,
         id: workspaceSubject(project.workspaceId),
         openrouterKeyEncrypted: project.workspaceKey,
       };
     }
-    return person;
+    return owner;
+  }
+
+  /**
+   * The subscription account a Claude Code or Codex turn signs in as.
+   * Narrowest first: the one the session was bound to, then the person's
+   * default for the project, then the subject's Default account -- each
+   * only if it is the subject's own and the provider's. Null for OMP and
+   * when the server keeps no accounts.
+   *
+   * A project that asks for `work` (or `personal`) accounts refuses any
+   * other: the turn fails saying so, rather than quietly billing the
+   * wrong subscription.
+   */
+  async #profileFor(
+    projectId: string,
+    owner: TurnOwner,
+    boundProfileId: string | null | undefined,
+    provider: CliProviderId,
+  ): Promise<AgentProfile | null> {
+    const profiles = this.options.profiles;
+    if (!profiles || (provider !== "claude" && provider !== "codex")) return null;
+    const usable = (row: AgentProfile | null) => (row && row.provider === provider ? row : null);
+    let row = boundProfileId ? usable(await profiles.owned(boundProfileId, owner.id)) : null;
+    if (!row) {
+      const chosen = await profiles.projectDefault(projectId, owner.personId, provider);
+      row = chosen ? usable(await profiles.owned(chosen, owner.id)) : null;
+    }
+    row ??= await profiles.defaultFor(owner.id, provider);
+    const [project] = await this.db
+      .select({ requiredContext: projects.requiredContext })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    const required = project?.requiredContext ?? null;
+    if (!contextAllowed(required, row.context)) {
+      throw new Error(
+        `This project runs only on ${required} accounts, and the ${harnessLabel(provider)} account "${row.label}" is tagged ${row.context}. ` +
+          `Pick a ${required} account from the session header, or change the account's tag in Settings -> Harness.`,
+      );
+    }
+    return row;
   }
 
   /** The stored key in the clear, for exactly this turn. */

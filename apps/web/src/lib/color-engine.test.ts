@@ -12,6 +12,8 @@ import {
   hexToOklch,
   HUE_EXCLUSION,
   isExcludedHue,
+  LIGHT_NEUTRALS,
+  lightAccent,
   oklchToHex,
   seedToAccent,
   validate,
@@ -190,3 +192,28 @@ function accentSpec(seed: number) {
   const { hue, chroma } = seedToAccent(seed)
   return { accentHue: hue, accentChroma: chroma }
 }
+
+// Light theme guideline §7 and the pre-release checklist: the hue drives only
+// the three accent tokens, and each passes at every hue the checklist names.
+describe("light accent generator", () => {
+  const HUES = { yellow: 95, lime: 125, cyan: 200, blue: 260, purple: 300, pink: 345 }
+  for (const [name, hue] of Object.entries(HUES)) {
+    for (const chroma of [0.08, 0.15, 0.25]) {
+      it(`${name} (${hue}°, chroma ${chroma}) passes all three ratios`, () => {
+        const a = lightAccent(hue, chroma)
+        expect(contrast("#ffffff", a.accent)).toBeGreaterThanOrEqual(4.5)
+        expect(contrast(a.strong, a.subtle)).toBeGreaterThanOrEqual(7)
+        expect(contrast(LIGHT_NEUTRALS.text, a.subtle)).toBeGreaterThanOrEqual(12)
+      })
+    }
+  }
+
+  it("keeps text, surfaces and borders fixed whatever the hue", () => {
+    const fixed = ["background", "foreground", "muted-foreground", "text-subtle", "sidebar", "border", "border-strong", "sunken", "bubble-user"]
+    const a = generateTokens({ mode: "light", accentHue: 95, accentChroma: 0.15 })
+    const b = generateTokens({ mode: "light", accentHue: 300, accentChroma: 0.15 })
+    for (const name of fixed) expect([name, a[name]]).toEqual([name, b[name]])
+    expect(a.primary).not.toBe(b.primary)
+  })
+})
+

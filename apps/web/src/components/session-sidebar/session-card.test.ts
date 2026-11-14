@@ -50,8 +50,8 @@ describe("SessionCard", () => {
   it.each([
     ["claude", "Claude Code"],
     ["codex", "Codex"],
-    ["omp", "UCCH Agent"],
-    ["native", "UCCH Agent"],
+    ["omp", "Default"],
+    ["native", "Default"],
     ["gemini", "Agent"],
     [null, "Agent"],
   ])("shows the %s harness's mark, named for screen readers", (provider, name) => {

@@ -5,29 +5,35 @@ import { InlineError } from "@/components/layout/inline-error"
 import dynamic from "next/dynamic"
 import {
   AlertTriangleIcon,
-  BotIcon,
   BrainIcon,
-  CheckIcon,
+  BracesIcon,
   KeyRoundIcon,
   Loader2Icon,
-  LogInIcon,
-  LogOutIcon,
+  MoreHorizontalIcon,
   RefreshCwIcon,
+  StarIcon,
   TerminalIcon,
   TrashIcon,
 } from "lucide-react"
 
 import type { LoginProgram } from "@/components/login-terminal-dialog"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Button, buttonVariants } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { NativeSelect } from "@/components/ui/native-select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { AccountsList } from "@/components/agent-accounts"
 import {
   clearOmpMemory,
+  fetchAccounts,
   fetchOmpMemory,
   fetchProviders,
-  saveClaudeToken,
   saveDefaultProvider,
-  signOutProvider,
+  type AgentAccount,
   type OmpMemoryStats,
   type ProviderCard,
   type ProviderId,
@@ -35,7 +41,7 @@ import {
 } from "@/lib/providers-api"
 import { formatBytes } from "@/lib/attachments"
 import { cn } from "@/lib/utils"
-import { SettingsSection } from "@/components/layout/settings-section"
+import { TransitionLink } from "@/lib/view-transitions"
 
 // xterm comes with the sign-in dialogs, which most visits to settings never open.
 const LoginTerminalDialog = dynamic(
@@ -50,19 +56,99 @@ const ClaudeLoginDialog = dynamic(
 /** Where the Codex warning acknowledgement is remembered. */
 const CODEX_ACK_KEY = "ucch:codex-warning-ack"
 
+/** The providers this page lists. OMP is configured under the workspace's Harness settings. */
+type ListedId = Exclude<ProviderId, "omp">
+
+/** What the list shows of each provider: its tile, and a line saying what it is. */
+const PROVIDER_META: Record<ListedId, { name: string; subtitle: string; tile: React.ReactNode }> = {
+  claude: {
+    name: "Claude Code",
+    subtitle: "Runs the claude CLI on your Claude subscription.",
+    tile: <span className="text-[11px] font-semibold tracking-tight">CC</span>,
+  },
+  codex: {
+    name: "Codex",
+    subtitle: "Runs the codex CLI on your ChatGPT subscription.",
+    tile: <span className="text-[11px] font-semibold tracking-tight">Cx</span>,
+  },
+  native: {
+    name: "Custom",
+    subtitle: "The harness's own agent loop, billed to your OpenRouter key.",
+    tile: <BracesIcon className="size-3.5" aria-hidden />,
+  },
+}
+
+type Tone = "ok" | "warn" | "muted"
+
+/** A provider's state in a word, and the longer line under it. */
+function providerStatus(card: ProviderCard): { badge: string; detail: string; tone: Tone } {
+  if (!card.enabled) return { badge: "Disabled", detail: "Turned off on this server.", tone: "muted" }
+  if (!card.installed) {
+    return card.id === "native"
+      ? { badge: "Unavailable", detail: card.error ?? "The built-in loop is not available.", tone: "muted" }
+      : { badge: "Not installed", detail: "The CLI was not found on this server.", tone: "muted" }
+  }
+  if (!card.authenticated) {
+    return card.id === "native"
+      ? { badge: "No key", detail: "Add an OpenRouter key under API keys.", tone: "warn" }
+      : { badge: "Not signed in", detail: "Sign in an account below.", tone: "warn" }
+  }
+  const how =
+    card.authMode === "subscription" ? "subscription" : card.authMode === "token" ? "token" : "API key"
+  return {
+    badge: "Ready",
+    detail: card.id === "native" ? "OpenRouter API key" : `Signed in · ${how}`,
+    tone: card.authMode === "api-key" && card.id !== "native" ? "warn" : "ok",
+  }
+}
+
+const DOT: Record<Tone, string> = {
+  ok: "bg-ucch-active",
+  warn: "bg-warning",
+  muted: "bg-muted-foreground/50",
+}
+
+/**
+ * A signed-in CLI provider's list line: its default account's context, or
+ * for Codex how much of the session window that account has used.
+ */
+function accountLine(provider: "claude" | "codex", accounts: AgentAccount[] | null): string | null {
+  const own = accounts?.filter((a) => a.provider === provider) ?? []
+  const account = own.find((a) => a.isDefault && a.authenticated) ?? own.find((a) => a.authenticated)
+  if (!account) return null
+  const session = account.quota?.status === "ok" ? account.quota.windows?.find((w) => w.id === "session") : undefined
+  if (provider === "codex" && session) return `Signed in · ${Math.round(session.usedPercent)}% used`
+  return `Signed in · ${account.context === "work" ? "Work" : "Personal"}`
+}
+
+/** Width of an element, kept current: the card lays out by its own width, not the window's. */
+function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number | null] {
+  const ref = React.useRef<T>(null)
+  const [width, setWidth] = React.useState<number | null>(null)
+  React.useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const observer = new ResizeObserver(([entry]) => setWidth(entry?.contentRect.width ?? null))
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+  return [ref, width]
+}
+
 /**
  * The agent providers: which backend answers a turn, and whether each one
  * is ready to.
  *
- * Three cards. The native loop needs an OpenRouter key from the API tab.
- * Claude Code and Codex need the vendor's CLI signed in on the server, and
- * this page is where that happens -- in a terminal, running the CLI's own
- * login flow, so the server never handles the credential. Claude also takes
- * a pasted `setup-token` for the headless case; that one the server does
- * hold, encrypted, and it says so.
+ * A header with the last check, the default for new threads, then one card
+ * holding the providers as a list on the left and the chosen one's details
+ * on the right (stacked when the card is narrow). Claude Code and Codex need
+ * the vendor's CLI signed in on the server, and this is where that happens
+ * -- in a terminal, running the CLI's own login flow, so the server never
+ * handles the credential. The Custom loop needs an OpenRouter key from the
+ * API tab.
  *
- * What the cards show comes from probing the CLIs themselves. A masked
- * account label is the most any of it reveals.
+ * What it shows comes from probing the CLIs themselves. A masked account
+ * label is the most any of it reveals.
  */
 export function ProviderSettings({
   projects,
@@ -82,14 +168,20 @@ export function ProviderSettings({
   const [data, setData] = React.useState<ProvidersResponse | null>(null)
   const [loadError, setLoadError] = React.useState<string | null>(null)
   const [refreshing, setRefreshing] = React.useState(false)
-  const [login, setLogin] = React.useState<LoginProgram | null>(null)
+  const [checkedAt, setCheckedAt] = React.useState<Date | null>(null)
+  const [login, setLogin] = React.useState<{ program: LoginProgram; profileId?: string } | null>(null)
+  const [accounts, setAccounts] = React.useState<AgentAccount[] | null>(null)
   const [projectId, setProjectId] = React.useState<string>(projects[0]?.id ?? "")
+  const [selected, setSelected] = React.useState<ListedId | null>(null)
 
   const load = React.useCallback(async (fresh: boolean) => {
     setRefreshing(true)
     try {
-      setData(await fetchProviders(fresh, workspaceId))
+      const [providers, list] = await Promise.all([fetchProviders(fresh, workspaceId), fetchAccounts(workspaceId, fresh)])
+      setData(providers)
+      setAccounts(list)
       setLoadError(null)
+      setCheckedAt(new Date())
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Could not load providers.")
     } finally {
@@ -102,97 +194,110 @@ export function ProviderSettings({
   }, [load])
 
   if (loadError && !data) {
-    return (
-      <InlineError>{loadError}</InlineError>
-    )
+    return <InlineError>{loadError}</InlineError>
   }
 
-  const cards = data?.providers
+  const cards = data?.providers ?? null
+  // The workspace's subscription has no Custom loop: that one is billed to an account's own key.
+  const order: ListedId[] = workspaceId ? ["claude", "codex"] : ["claude", "codex", "native"]
+  const defaultProvider = workspaceId ? null : (data?.defaultProvider ?? null)
+  const listedDefault = order.find((id) => id === defaultProvider) ?? null
+  const current: ListedId = selected ?? listedDefault ?? order[0]!
+  const Heading = workspaceId ? "h2" : "h1"
+
+  async function makeDefault(provider: ProviderId) {
+    await saveDefaultProvider(provider === "native" ? null : provider)
+    setData((was) => (was ? { ...was, defaultProvider: provider } : was))
+  }
 
   return (
-    <div className="flex flex-col gap-4">
-      {data && !data.cliEnabled && (
-        <p className="border-warning/40 bg-warning-soft text-warning flex gap-2 rounded-lg border px-4 py-3 text-sm">
-          <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span>
-            The Claude Code and Codex providers are disabled on this server. Until the container
-            runtime lands they run the CLI on the host, so production needs{" "}
-            <code className="font-mono">AGENT_ALLOW_HOST_SHELL=true</code>, the same flag the
-            terminal needs.
-          </span>
-        </p>
-      )}
+    <div className="flex flex-col gap-7">
+      <section aria-labelledby="providers-heading" className="flex w-full flex-col gap-3">
+        {/* A: header row */}
+        <div className="flex items-center justify-between gap-3">
+          <Heading id="providers-heading" className={cn("font-semibold", workspaceId ? "text-sm" : "text-lg")}>
+            Providers
+          </Heading>
+          <Button
+            variant="ghost"
+            className="text-muted-foreground h-[30px] gap-1.5 px-2.5 text-xs"
+            onClick={() => void load(true)}
+            disabled={refreshing}
+            title="Check every provider again"
+          >
+            <RefreshCwIcon className={cn("size-[13px]", refreshing && "animate-spin")} />
+            {refreshing
+              ? "Checking…"
+              : checkedAt
+                ? `Checked ${checkedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                : "Check again"}
+          </Button>
+        </div>
 
-      {!workspaceId && (
-        <>
+        {data && !data.cliEnabled && (
+          <p className="border-warning/40 bg-warning-soft text-warning flex gap-2 rounded-[10px] border px-4 py-3 text-sm">
+            <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <span>
+              The Claude Code and Codex providers are disabled on this server. Until the container
+              runtime lands they run the CLI on the host, so production needs{" "}
+              <code className="font-mono">AGENT_ALLOW_HOST_SHELL=true</code>, the same flag the
+              terminal needs.
+            </span>
+          </p>
+        )}
+
+        {/* B: default-provider card */}
+        {!workspaceId && (
           <DefaultProviderCard
             value={data?.defaultProvider ?? "native"}
-            cards={cards ?? null}
-            onChange={(provider) =>
-              setData((current) => (current ? { ...current, defaultProvider: provider } : current))
-            }
+            cards={cards}
+            order={order}
+            onChoose={makeDefault}
           />
+        )}
 
-          <NativeCard card={cards?.native ?? null} />
-        </>
-      )}
-
-      <ClaudeCard
-        card={cards?.claude ?? null}
-        encryptionAvailable={data?.encryptionAvailable ?? true}
-        canLogin={projects.length > 0 && !readOnly}
-        readOnly={readOnly}
-        workspaceId={workspaceId}
-        onLogin={() => setLogin("claude-login")}
-        onChanged={() => void load(true)}
-      />
-
-      <CodexCard
-        card={cards?.codex ?? null}
-        canLogin={projects.length > 0 && !readOnly}
-        readOnly={readOnly}
-        workspaceId={workspaceId}
-        onLogin={() => setLogin("codex-login")}
-        onChanged={() => void load(true)}
-      />
+        {/* C: list and detail card */}
+        <ProvidersCard
+          cards={cards}
+          order={order}
+          current={current}
+          defaultProvider={listedDefault}
+          onSelect={setSelected}
+          onMakeDefault={workspaceId || readOnly ? undefined : makeDefault}
+          onRefresh={() => void load(true)}
+          lines={{ claude: accountLine("claude", accounts), codex: accountLine("codex", accounts) }}
+          footer={
+            <SignInFooter projects={projects} projectId={projectId} onProjectChange={setProjectId} />
+          }
+          renderDetail={(id, compact) => {
+            const card = cards?.[id] ?? null
+            if (id === "native") return <NativeRows card={card} />
+            const list = accounts?.filter((a) => a.provider === id) ?? null
+            const props = {
+              card,
+              accounts: list,
+              canLogin: projects.length > 0 && !readOnly,
+              readOnly,
+              workspaceId,
+              compact,
+              onChanged: () => void load(true),
+            }
+            return id === "claude" ? (
+              <ClaudeRows {...props} onLogin={(account) => setLogin({ program: "claude-login", profileId: account.id })} />
+            ) : (
+              <CodexRows {...props} onLogin={(account) => setLogin({ program: "codex-login", profileId: account.id })} />
+            )
+          }}
+        />
+      </section>
 
       {projects.length > 0 && <MemoryCard projects={projects} workspaceId={workspaceId} readOnly={readOnly} />}
 
-      <div className="flex items-center gap-3">
-        <Button variant="outline" size="sm" onClick={() => void load(true)} disabled={refreshing}>
-          {refreshing ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />}
-          Check again
-        </Button>
-        {projects.length > 1 && (
-          // A sign-in terminal is published on a project's channel, so one
-          // has to be named. Which one changes nothing about the login.
-          <label className="text-muted-foreground flex items-center gap-2 text-xs">
-            Sign in via
-            <select
-              value={projectId}
-              onChange={(e) => setProjectId(e.target.value)}
-              className="border-input bg-background h-7 rounded-md border px-2 text-xs"
-            >
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        {projects.length === 0 && (
-          <span className="text-muted-foreground text-xs">
-            Create a project first to sign in from a terminal, or paste a token.
-          </span>
-        )}
-      </div>
-
-      {login === "claude-login" && projectId && (
+      {login?.program === "claude-login" && projectId && (
         <ClaudeLoginDialog
           projectId={projectId}
           credentialWorkspaceId={workspaceId}
-          encryptionAvailable={data?.encryptionAvailable ?? true}
+          profileId={login.profileId}
           open
           onOpenChange={(open) => {
             if (!open) {
@@ -203,10 +308,11 @@ export function ProviderSettings({
           onSignedIn={() => void load(true)}
         />
       )}
-      {login === "codex-login" && projectId && (
+      {login?.program === "codex-login" && projectId && (
         <LoginTerminalDialog
           projectId={projectId}
           credentialWorkspaceId={workspaceId}
+          profileId={login.profileId}
           open
           onOpenChange={(open) => {
             if (!open) {
@@ -221,75 +327,16 @@ export function ProviderSettings({
   )
 }
 
-function StatusPill({ card }: { card: ProviderCard | null }) {
-  if (!card) return <Skeleton className="h-5 w-24 rounded-full" />
-  const [label, tone] = !card.enabled
-    ? ["Disabled", "muted"]
-    : !card.installed
-      ? ["Not installed", "muted"]
-      : card.authenticated
-        ? [
-            card.authMode === "subscription"
-              ? "Signed in · subscription"
-              : card.authMode === "token"
-                ? "Signed in · token"
-                : "Signed in · API key",
-            card.authMode === "api-key" ? "warn" : "ok",
-          ]
-        : ["Not signed in", "warn"]
-  return (
-    <span
-      className={cn(
-        "rounded-full border px-2 py-0.5 text-xs",
-        tone === "ok" && "border-ucch-active/40 text-ucch-active",
-        tone === "warn" && "border-warning/40 bg-warning-soft text-warning",
-        tone === "muted" && "text-muted-foreground",
-      )}
-    >
-      {label}
-    </span>
-  )
-}
-
-function CardShell({
-  icon: Icon,
-  title,
-  card,
-  children,
-}: {
-  icon: React.ComponentType<{ className?: string }>
-  title: string
-  card: ProviderCard | null
-  children: React.ReactNode
-}) {
-  return (
-    <section className="bg-card rounded-lg border p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="flex items-center gap-2 text-sm font-medium">
-          <Icon className="text-muted-foreground size-4" />
-          {title}
-        </h2>
-        <StatusPill card={card} />
-        {card?.version && (
-          <span className="text-muted-foreground font-mono text-xs">v{card.version}</span>
-        )}
-        {card?.account && (
-          <span className="text-muted-foreground font-mono text-xs">{card.account}</span>
-        )}
-      </div>
-      {children}
-    </section>
-  )
-}
-
 function DefaultProviderCard({
   value,
   cards,
-  onChange,
+  order,
+  onChoose,
 }: {
   value: ProviderId
   cards: Record<ProviderId, ProviderCard> | null
-  onChange: (provider: ProviderId) => void
+  order: ListedId[]
+  onChoose: (provider: ProviderId) => Promise<void>
 }) {
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -298,8 +345,7 @@ function DefaultProviderCard({
     setBusy(true)
     setError(null)
     try {
-      await saveDefaultProvider(provider === "native" ? null : provider)
-      onChange(provider)
+      await onChoose(provider)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -308,201 +354,420 @@ function DefaultProviderCard({
   }
 
   return (
-    <SettingsSection icon={BotIcon} title="Default provider" description={<>Which backend a new thread starts on when the composer does not say. A thread stays on the
-        provider its first message ran under; switching means a new thread.</>} bare>
-      <div className="mt-4 flex flex-wrap gap-2">
-        {(["native", "claude", "codex"] as const).map((id) =>
-          // Before the cards arrive the pick is a guess; bars, not a wrong highlight.
-          !cards ? (
-            <Skeleton key={id} className="h-8 w-20" />
-          ) : (
-            <Button
-              key={id}
-              variant={value === id ? "default" : "outline"}
-              size="sm"
-              disabled={busy}
-              onClick={() => void choose(id)}
-            >
-              {cards[id]?.label ?? id}
-            </Button>
-          ),
-        )}
-      </div>
-      {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
-    </SettingsSection>
-  )
-}
-
-function NativeCard({ card }: { card: ProviderCard | null }) {
-  return (
-    <CardShell icon={KeyRoundIcon} title="Custom (built-in loop)" card={card}>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        The harness's own agent, billed to your OpenRouter key from the{" "}
-        <a href="#api" className="text-ucch-active underline underline-offset-2">
-          API keys
-        </a>{" "}
-        tab. Any model in the catalogue; usage and cost are recorded per turn.
-      </p>
-    </CardShell>
-  )
-}
-
-function ClaudeCard({
-  card,
-  encryptionAvailable,
-  canLogin,
-  readOnly,
-  workspaceId,
-  onLogin,
-  onChanged,
-}: {
-  card: ProviderCard | null
-  encryptionAvailable: boolean
-  canLogin: boolean
-  readOnly: boolean
-  workspaceId: string | undefined
-  onLogin: () => void
-  onChanged: () => void
-}) {
-  const [draft, setDraft] = React.useState("")
-  const [busy, setBusy] = React.useState<"token" | "clear" | "signout" | null>(null)
-  const [error, setError] = React.useState<string | null>(null)
-  const [saved, setSaved] = React.useState(false)
-
-  async function act(kind: "token" | "clear" | "signout", fn: () => Promise<void>) {
-    setBusy(kind)
-    setError(null)
-    setSaved(false)
-    try {
-      await fn()
-      setSaved(kind === "token")
-      setDraft("")
-      onChanged()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const usable = Boolean(card?.enabled && card.installed)
-
-  return (
-    <CardShell icon={TerminalIcon} title="Claude Code" card={card}>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Runs the <code className="font-mono">claude</code> CLI on your Claude subscription. Sign in
-        from a terminal here -- the server never sees the credential -- or paste a long-lived token
-        from <code className="font-mono">claude setup-token</code> run on your own machine, which the
-        server stores encrypted and injects for each run.
-      </p>
-
-      {card?.warnings?.map((warning) => (
-        <p key={warning} className="text-warning mt-2 text-sm">
-          {warning}
-        </p>
-      ))}
-      {card?.error && !card.installed && (
-        <p className="text-muted-foreground mt-2 font-mono text-xs">{card.error}</p>
-      )}
-
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button onClick={onLogin} disabled={!usable || !canLogin || busy !== null}>
-          <LogInIcon />
-          Sign in
-        </Button>
-        {card?.authenticated && !readOnly && (
-          <Button
-            variant="outline"
-            onClick={() => void act("signout", () => signOutProvider("claude", workspaceId))}
-            disabled={busy !== null}
-          >
-            {busy === "signout" ? <Loader2Icon className="animate-spin" /> : <LogOutIcon />}
-            Sign out
-          </Button>
-        )}
-      </div>
-
-      {!readOnly && <div className="mt-4 flex max-w-xl flex-wrap items-center gap-2">
-        <Input
-          type="password"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder={card?.token?.configured ? "A token is stored; paste to replace" : "sk-ant-oat01-…"}
-          autoComplete="off"
-          spellCheck={false}
-          aria-label="Claude OAuth token"
-          className="min-w-64 flex-1 font-mono text-sm"
-          disabled={busy !== null || !encryptionAvailable}
-        />
-        <Button
-          variant="outline"
-          onClick={() => void act("token", () => saveClaudeToken(draft.trim(), workspaceId))}
-          disabled={busy !== null || !draft.trim() || !encryptionAvailable}
-        >
-          {busy === "token" && <Loader2Icon className="animate-spin" />}
-          {card?.token?.configured ? "Replace token" : "Save token"}
-        </Button>
-        {card?.token?.configured && (
-          <Button
-            variant="outline"
-            onClick={() => void act("clear", () => saveClaudeToken(null, workspaceId))}
-            disabled={busy !== null}
-          >
-            <TrashIcon />
-            Remove token
-          </Button>
-        )}
-      </div>}
-
-      <div className="mt-3 text-sm">
-        {error ? (
-          <p className="text-destructive">{error}</p>
-        ) : saved ? (
-          <p className="text-ucch-active flex items-center gap-1.5">
-            <CheckIcon className="size-4" />
-            Saved.
-          </p>
-        ) : !card ? (
-          <Skeleton className="my-0.5 h-3.5 w-3/4 max-w-prose" />
-        ) : card.token?.configured ? (
-          <p className={cn("text-muted-foreground", card.token.expiresSoon && "text-warning")}>
-            A token stored on {card.token.issuedAt ? new Date(card.token.issuedAt).toLocaleDateString() : "an unknown date"}{" "}
-            is in use.{card.token.expiresSoon && " Tokens last a year: it is time to mint a new one."}
-          </p>
-        ) : !encryptionAvailable ? (
-          <p className="text-muted-foreground">
-            <code className="font-mono">SECRET_KEY</code> is not configured, so a token cannot be stored. Sign in
-            from the terminal instead.
-          </p>
+    <div className="@container bg-card rounded-[10px] border">
+      <SettingsRow
+        first
+        title={<label htmlFor="default-provider">New threads start on</label>}
+        description="Used when the composer doesn't choose. A thread stays on the provider its first message ran under; switching means a new thread."
+      >
+        {/* Before the cards arrive the pick is a guess; a bar, not a wrong value. */}
+        {!cards ? (
+          <Skeleton className="h-8 w-[200px] @max-[480px]:w-full" />
         ) : (
-          <p className="text-muted-foreground">
-            No token stored. Signing in from the terminal is the better-hygiene path; the token is for
-            servers where that is awkward.
-          </p>
+          <div className="w-[200px] @max-[480px]:w-full">
+            <NativeSelect id="default-provider" value={value} onChange={(id) => void choose(id as ProviderId)} disabled={busy}>
+              {order.map((id) => (
+                <option key={id} value={id}>
+                  {PROVIDER_META[id].name}
+                </option>
+              ))}
+              {!order.some((id) => id === value) && <option value={value}>{cards[value]?.label ?? value}</option>}
+            </NativeSelect>
+          </div>
         )}
-      </div>
-    </CardShell>
+      </SettingsRow>
+      {error && <p className="text-destructive px-5 pb-4 text-sm">{error}</p>}
+    </div>
   )
 }
 
-function CodexCard({
-  card,
-  canLogin,
-  readOnly,
-  workspaceId,
-  onLogin,
-  onChanged,
+/**
+ * One row of settings: the label and its line on the left, the control on
+ * the right. Below 480px of card the control wraps under the text.
+ */
+function SettingsRow({
+  title,
+  description,
+  children,
+  first = false,
+  align = "center",
+  className,
 }: {
+  title: React.ReactNode
+  description?: React.ReactNode
+  children?: React.ReactNode
+  first?: boolean
+  /** `start` for a row whose text runs to several lines. */
+  align?: "center" | "start"
+  className?: string
+}) {
+  return (
+    <div
+      className={cn(
+        "flex justify-between gap-x-6 gap-y-2.5 px-5 py-4 @max-[480px]:flex-wrap",
+        align === "center" ? "items-center" : "items-start",
+        !first && "border-t",
+        className,
+      )}
+    >
+      <div className="min-w-0 flex-[0_1_auto]">
+        <div className="text-sm font-medium">{title}</div>
+        {description && <div className="text-muted-foreground mt-0.5 max-w-[420px] text-xs leading-relaxed">{description}</div>}
+      </div>
+      {children !== undefined && (
+        <div className={cn("flex shrink-0 items-center justify-end @max-[480px]:justify-start", align === "start" && "pt-0.5")}>
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Tile({ id, size }: { id: ListedId; size: 30 | 32 }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "bg-muted text-foreground flex shrink-0 items-center justify-center rounded-lg border",
+        size === 30 ? "size-[30px]" : "size-8",
+      )}
+    >
+      {PROVIDER_META[id].tile}
+    </span>
+  )
+}
+
+function StatusBadge({ card }: { card: ProviderCard | null }) {
+  if (!card) return <Skeleton className="h-5 w-16 rounded-full" />
+  const status = providerStatus(card)
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 items-center gap-1.5 rounded-full border px-2 text-xs",
+        status.tone === "ok" && "border-ucch-active/40 text-ucch-active",
+        status.tone === "warn" && "border-warning/40 bg-warning-soft text-warning",
+        status.tone === "muted" && "text-muted-foreground",
+      )}
+    >
+      <span className={cn("size-1.5 rounded-full", DOT[status.tone])} aria-hidden />
+      {status.badge}
+    </span>
+  )
+}
+
+function ProvidersCard({
+  cards,
+  order,
+  current,
+  defaultProvider,
+  onSelect,
+  onMakeDefault,
+  onRefresh,
+  footer,
+  lines,
+  renderDetail,
+}: {
+  cards: Record<ProviderId, ProviderCard> | null
+  order: ListedId[]
+  current: ListedId
+  defaultProvider: ListedId | null
+  onSelect: (id: ListedId) => void
+  onMakeDefault?: (id: ListedId) => Promise<void>
+  onRefresh: () => void
+  footer: React.ReactNode
+  lines?: Partial<Record<ListedId, string | null>>
+  renderDetail: (id: ListedId, compact: boolean) => React.ReactNode
+}) {
+  const [ref, width] = useWidth<HTMLDivElement>()
+  const compact = width !== null && width < 480
+  const card = cards?.[current] ?? null
+
+  return (
+    <div ref={ref} className="@container bg-card flex flex-wrap overflow-hidden rounded-[10px] border">
+      {/* Left: the list */}
+      <div
+        role="tablist"
+        aria-orientation="vertical"
+        aria-label="Providers"
+        className="flex basis-full flex-col border-b @min-[700px]:max-w-[280px] @min-[700px]:flex-[1_1_250px] @min-[700px]:border-r @min-[700px]:border-b-0"
+      >
+        {order.map((id) => (
+          <ListItem
+            key={id}
+            id={id}
+            card={cards?.[id] ?? null}
+            selected={id === current}
+            isDefault={id === defaultProvider}
+            line={lines?.[id]}
+            onSelect={() => onSelect(id)}
+          />
+        ))}
+        <div className="flex-1" />
+        <div className="border-t px-[18px] py-3">{footer}</div>
+      </div>
+
+      {/* Right: the chosen provider */}
+      <div role="tabpanel" aria-label={PROVIDER_META[current].name} className="flex min-w-0 flex-[999_1_420px] flex-col">
+        <div className="flex items-center gap-3 px-5 py-[18px]">
+          <Tile id={current} size={32} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-base leading-5 font-semibold">{PROVIDER_META[current].name}</div>
+            <div className="text-muted-foreground truncate text-[12.5px] leading-[18px]">{PROVIDER_META[current].subtitle}</div>
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label={`More for ${PROVIDER_META[current].name}`}
+              className="text-muted-foreground hover:text-foreground hover:bg-muted aria-expanded:bg-muted grid size-[30px] shrink-0 place-items-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <MoreHorizontalIcon className="size-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-48">
+              {onMakeDefault && (
+                <DropdownMenuItem
+                  disabled={current === defaultProvider || !card}
+                  onClick={() => void onMakeDefault(current).catch(() => {})}
+                >
+                  <StarIcon />
+                  {current === defaultProvider ? "Default for new threads" : "Make default"}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={onRefresh}>
+                <RefreshCwIcon />
+                Check again
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        {renderDetail(current, compact)}
+      </div>
+    </div>
+  )
+}
+
+function ListItem({
+  id,
+  card,
+  selected,
+  isDefault,
+  line,
+  onSelect,
+}: {
+  id: ListedId
   card: ProviderCard | null
+  /** What a ready provider's second line says, in place of how it is signed in. */
+  line?: string | null
+  selected: boolean
+  isDefault: boolean
+  onSelect: () => void
+}) {
+  const status = card ? providerStatus(card) : null
+  const version = card?.version ? `v${card.version}` : id === "native" ? "built-in" : null
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-center gap-3 border-b px-4 py-3.5 text-left transition-colors outline-none",
+        "hover:bg-muted/50 focus-visible:bg-muted/60",
+        // Inset, so the bar takes no room and nothing shifts when it moves.
+        selected && "bg-muted/40 shadow-[inset_2px_0_0_var(--color-foreground)]",
+      )}
+    >
+      <Tile id={id} size={30} />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="max-w-full shrink-0 truncate text-sm leading-5 font-medium">{PROVIDER_META[id].name}</span>
+          {/* The version gives way before the name does. */}
+          {version && <span className="text-muted-foreground min-w-0 truncate font-mono text-[11px]">{version}</span>}
+        </span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {status ? (
+            <>
+              <span className={cn("size-1.5 shrink-0 rounded-full", DOT[status.tone])} aria-hidden />
+              <span className="text-muted-foreground truncate text-xs leading-[18px]">
+                {status.tone === "ok" ? (line ?? status.detail) : status.badge}
+              </span>
+            </>
+          ) : (
+            <Skeleton className="h-3 w-24" />
+          )}
+        </span>
+      </span>
+      {isDefault && (
+        <span className="text-muted-foreground inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px]">
+          Default
+        </span>
+      )}
+    </button>
+  )
+}
+
+/** The list's foot: where sign-in terminals open, which needs a project to publish on. */
+function SignInFooter({
+  projects,
+  projectId,
+  onProjectChange,
+}: {
+  projects: { id: string; name: string }[]
+  projectId: string
+  onProjectChange: (id: string) => void
+}) {
+  if (projects.length === 0) {
+    return (
+      <p className="text-muted-foreground text-xs leading-relaxed">
+        Sign-in runs in a terminal. Create a project first to open one, or paste a token.
+      </p>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-muted-foreground text-xs leading-relaxed">
+        Sign-in runs in a terminal on the server, through the CLI&apos;s own login.
+      </p>
+      {projects.length > 1 && (
+        // Which project changes nothing about the login; a terminal just has to be published somewhere.
+        <label className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
+          <span className="shrink-0">Open in</span>
+          <select
+            value={projectId}
+            onChange={(e) => onProjectChange(e.target.value)}
+            className="border-input bg-background h-7 min-w-0 flex-1 truncate rounded-md border px-2 text-xs"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </div>
+  )
+}
+
+function StatusRow({ card }: { card: ProviderCard | null }) {
+  return (
+    <SettingsRow title="Status" description={card ? providerStatus(card).detail : <Skeleton className="mt-1 h-3 w-36" />}>
+      <StatusBadge card={card} />
+    </SettingsRow>
+  )
+}
+
+function VersionRow({ card }: { card: ProviderCard | null }) {
+  return (
+    <SettingsRow
+      title="CLI version"
+      description={
+        !card ? (
+          <Skeleton className="mt-1 h-3 w-32" />
+        ) : card.installed ? (
+          "Detected on this server."
+        ) : (
+          <span className="font-mono">{card.error ?? "Not found on this server."}</span>
+        )
+      }
+    >
+      {card ? (
+        <span className="text-muted-foreground font-mono text-xs">{card.version ? `v${card.version}` : "—"}</span>
+      ) : (
+        <Skeleton className="h-4 w-14" />
+      )}
+    </SettingsRow>
+  )
+}
+
+function ModelsRow({ card, description }: { card: ProviderCard | null; description: string }) {
+  const models = card?.models ?? []
+  const shown = models.slice(0, 3).map((m) => m.name)
+  return (
+    <SettingsRow title="Models" description={description}>
+      {!card ? (
+        <Skeleton className="h-4 w-20" />
+      ) : models.length === 0 ? (
+        <span className="text-muted-foreground text-xs">{card.id === "native" ? "Full catalogue" : "None listed"}</span>
+      ) : (
+        <span
+          className="text-muted-foreground block max-w-[220px] truncate text-xs"
+          title={models.map((m) => m.name).join(", ")}
+        >
+          {shown.join(", ")}
+          {models.length > shown.length ? ` +${models.length - shown.length}` : ""}
+        </span>
+      )}
+    </SettingsRow>
+  )
+}
+
+function WarningRows({ warnings }: { warnings: string[] }) {
+  return warnings.map((warning) => (
+    <SettingsRow
+      key={warning}
+      align="start"
+      title={
+        <span className="text-warning flex items-center gap-1.5">
+          <AlertTriangleIcon className="size-3.5" aria-hidden />
+          Warning
+        </span>
+      }
+      description={warning}
+    />
+  ))
+}
+
+function AccountsHeading({ intro }: { intro?: React.ReactNode }) {
+  return (
+    <>
+      <h3 className="px-5 pt-6 pb-1 text-sm font-semibold">Accounts</h3>
+      {intro && <p className="text-muted-foreground max-w-[560px] px-5 pt-1 text-xs leading-relaxed">{intro}</p>}
+    </>
+  )
+}
+
+interface CliRowsProps {
+  card: ProviderCard | null
+  accounts: AgentAccount[] | null
   canLogin: boolean
   readOnly: boolean
   workspaceId: string | undefined
-  onLogin: () => void
+  compact: boolean
+  onLogin: (account: AgentAccount) => void
   onChanged: () => void
-}) {
+}
+
+function ClaudeRows({ card, accounts, canLogin, readOnly, workspaceId, compact, onLogin, onChanged }: CliRowsProps) {
+  const usable = Boolean(card?.enabled && card.installed)
+  return (
+    <>
+      <StatusRow card={card} />
+      <VersionRow card={card} />
+      <ModelsRow card={card} description="What the composer offers for Claude Code." />
+      <WarningRows warnings={card?.warnings ?? []} />
+      <AccountsHeading
+        intro={
+          <>
+            You sign in through the CLI&apos;s own login, in a terminal here: the server never reads, stores or
+            forwards the credential.
+          </>
+        }
+      />
+      <AccountsList
+        provider="claude"
+        accounts={accounts}
+        workspaceId={workspaceId}
+        readOnly={readOnly}
+        canSignIn={usable && canLogin}
+        compact={compact}
+        onSignIn={onLogin}
+        onChanged={onChanged}
+      />
+    </>
+  )
+}
+
+function CodexRows({ card, accounts, canLogin, readOnly, workspaceId, compact, onLogin, onChanged }: CliRowsProps) {
   const [acknowledged, setAcknowledged] = React.useState(false)
-  const [busy, setBusy] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     try {
@@ -522,69 +787,68 @@ function CodexCard({
     }
   }
 
-  async function signOut() {
-    setBusy(true)
-    setError(null)
-    try {
-      await signOutProvider("codex", workspaceId)
-      onChanged()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const usable = Boolean(card?.enabled && card.installed)
   // The first warning is the spec's own text; the rest are probe findings.
   const [advisory, ...findings] = card?.warnings ?? []
 
   return (
-    <CardShell icon={TerminalIcon} title="Codex" card={card}>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        Runs the <code className="font-mono">codex</code> CLI on your ChatGPT subscription, signed
-        in with a device code from a terminal here.
-      </p>
-
+    <>
+      <StatusRow card={card} />
+      <VersionRow card={card} />
+      <ModelsRow card={card} description="What the composer offers for Codex." />
       {advisory && (
-        <div className="border-warning/40 bg-warning-soft mt-3 max-w-prose rounded-md border px-3 py-2 text-sm">
-          <p className="text-warning flex gap-2">
-            <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-            {advisory}
-          </p>
-          <label className="mt-2 flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={acknowledged}
-              onChange={(e) => acknowledge(e.target.checked)}
-            />
-            I understand and this is my own machine and my own repositories.
+        <SettingsRow
+          align="start"
+          title={
+            <span className="text-warning flex items-center gap-1.5">
+              <AlertTriangleIcon className="size-3.5" aria-hidden />
+              Before you sign in
+            </span>
+          }
+          description={
+            <>
+              {advisory} Signing in needs your word that this is your own machine and your own repositories.
+            </>
+          }
+        >
+          <label className="flex items-center gap-2 text-xs whitespace-nowrap">
+            <input type="checkbox" checked={acknowledged} onChange={(e) => acknowledge(e.target.checked)} />
+            I understand
           </label>
-        </div>
+        </SettingsRow>
       )}
-      {findings.map((warning) => (
-        <p key={warning} className="text-warning mt-2 text-sm">
-          {warning}
-        </p>
-      ))}
-      {card?.error && !card.installed && (
-        <p className="text-muted-foreground mt-2 font-mono text-xs">{card.error}</p>
-      )}
+      <WarningRows warnings={findings} />
+      <AccountsHeading />
+      <AccountsList
+        provider="codex"
+        accounts={accounts}
+        workspaceId={workspaceId}
+        readOnly={readOnly}
+        canSignIn={usable && canLogin && acknowledged}
+        compact={compact}
+        onSignIn={onLogin}
+        onChanged={onChanged}
+      />
+    </>
+  )
+}
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button onClick={onLogin} disabled={!usable || !canLogin || !acknowledged || busy}>
-          <LogInIcon />
-          Sign in (device code)
-        </Button>
-        {card?.authenticated && !readOnly && (
-          <Button variant="outline" onClick={() => void signOut()} disabled={busy}>
-            {busy ? <Loader2Icon className="animate-spin" /> : <LogOutIcon />}
-            Sign out
-          </Button>
-        )}
-      </div>
-      {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
-    </CardShell>
+function NativeRows({ card }: { card: ProviderCard | null }) {
+  return (
+    <>
+      <StatusRow card={card} />
+      <ModelsRow card={card} description="Any model in the OpenRouter catalogue." />
+      <SettingsRow
+        title="Billing"
+        description="Billed to your OpenRouter key; usage and cost are recorded per turn."
+        className="mb-2"
+      >
+        <TransitionLink href="/setting/api" className={cn(buttonVariants({ variant: "outline" }), "h-[30px] px-3 text-xs")}>
+          <KeyRoundIcon className="size-3.5" />
+          API keys
+        </TransitionLink>
+      </SettingsRow>
+    </>
   )
 }
 

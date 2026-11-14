@@ -56,6 +56,8 @@ export const SELF_AUDITED = new Set([
   "DELETE /api/projects/:hash/timeline/tasks/:taskId",
   "PUT /api/projects/:hash/file",
   "POST /api/projects/:hash/file",
+  // A copy from Resources logs itself as the file it created.
+  "POST /api/projects/:hash/file/from-resource",
   "PATCH /api/projects/:hash/file",
   "DELETE /api/projects/:hash/file",
   // The Tasks board writes its own entries (tasks-routes.ts).
@@ -95,6 +97,8 @@ const IGNORED = new Set([
   "POST /api/projects/:hash/uploads",
   "DELETE /api/projects/:hash/uploads/:id",
   "POST /api/projects/:hash/notes/assets",
+  // Dictation turns a clip into draft text; the message it ends up in is logged.
+  "POST /api/projects/:hash/transcribe",
   // A diagram generation announces its own start and end (see index.ts).
   "POST /api/projects/:hash/diagrams/:kind/generate",
 ]);
@@ -146,6 +150,18 @@ const TABLE: Record<string, Describe> = {
     action: "project.preview",
     targetType: "project",
     summary: typeof b?.port === "number" ? `Set the preview port to ${b.port}` : "Changed the preview",
+    resource: "project_settings",
+  }),
+  "PUT /api/projects/:hash/accounts/default/:provider": (p) => ({
+    action: "project.account_default",
+    targetType: "project",
+    summary: `Changed the default ${p.provider ?? ""} account`.replace("  ", " "),
+    resource: "project_settings",
+  }),
+  "PUT /api/projects/:hash/accounts/required-context": (_p, b) => ({
+    action: "project.required_context",
+    targetType: "project",
+    summary: typeof b?.context === "string" ? `Required ${b.context} accounts` : "Accepted any account",
     resource: "project_settings",
   }),
   "PATCH /api/projects/:hash/public": (_p, b) => ({
@@ -206,6 +222,21 @@ const TABLE: Record<string, Describe> = {
     action: "project.delete",
     targetType: "project",
     summary: "Deleted the project",
+    resource: "projects",
+    scope: "account",
+  }),
+  "POST /api/projects/:hash/session-settle": () => ({
+    action: "session.settle",
+    targetType: "project",
+    summary: "Settled the session",
+    resource: "projects",
+    scope: "account",
+  }),
+  "DELETE /api/workspaces/:id/settled-sessions": (p) => ({
+    action: "workspace.settled_sessions_delete",
+    targetType: "workspace",
+    targetId: p.id,
+    summary: "Deleted the data of every settled session",
     resource: "projects",
     scope: "account",
   }),
@@ -367,9 +398,12 @@ const TABLE: Record<string, Describe> = {
   "PUT /api/account/avatar": () => account("account.avatar", "Changed the avatar"),
   "PUT /api/settings/agent-permission-mode": () => account("settings.permissions", "Changed the agent permission mode"),
   "PUT /api/settings/default-model": () => account("settings.model", "Changed the default model"),
-  "PUT /api/settings/claude-token": () => account("settings.claude", "Changed the Claude token"),
   "PUT /api/settings/default-provider": () => account("settings.provider", "Changed the default provider"),
   "DELETE /api/providers/:id/credentials": (p) => account("settings.credentials", `Signed out of ${p.id ?? "a provider"}`),
+  "POST /api/agent-profiles": (_p, b) => account("settings.profiles", `Added ${str(b?.provider) ?? "a"} account ${quoted(b?.label, "")}`.trim()),
+  "PATCH /api/agent-profiles/:id": () => account("settings.profiles", "Changed a subscription account"),
+  "DELETE /api/agent-profiles/:id": () => account("settings.profiles", "Deleted a subscription account"),
+  "DELETE /api/agent-profiles/:id/credentials": () => account("settings.credentials", "Signed a subscription account out"),
   "DELETE /api/omp-memory/:projectId": () => account("settings.memory", "Cleared a project's OMP memory"),
 
   // -- Database connections --------------------------------------------------

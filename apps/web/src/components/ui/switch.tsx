@@ -25,7 +25,7 @@ function Switch({
       onCheckedChange={(next) => onCheckedChange?.(next)}
       className={cn(
         "peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent p-0.5 transition-colors outline-none",
-        "bg-input/60 data-checked:bg-primary",
+        "bg-input/60 data-checked:bg-primary light:bg-switch-off light:data-checked:bg-primary light:h-[26px] light:w-11",
         "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         "data-disabled:cursor-not-allowed data-disabled:opacity-50",
         className,
@@ -34,7 +34,7 @@ function Switch({
     >
       <SwitchPrimitive.Thumb
         data-slot="switch-thumb"
-        className="bg-background pointer-events-none block size-4 rounded-full shadow-sm transition-transform data-checked:translate-x-4"
+        className="bg-background pointer-events-none block size-4 rounded-full shadow-sm transition-transform data-checked:translate-x-4 light:size-5 light:data-checked:translate-x-[18px]"
       />
     </SwitchPrimitive.Root>
   )

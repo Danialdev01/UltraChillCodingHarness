@@ -39,7 +39,7 @@ export interface InvitePreview {
 export interface WorkspaceSettings {
   credentialPolicy: CredentialPolicy;
   /** Which dedicated credentials are stored -- booleans, never the keys. */
-  credentials: { openrouter: boolean; claudeToken: boolean; claudeTokenIssuedAt: string | null };
+  credentials: { openrouter: boolean };
   /** How the workspace's agents run (automatic handoff, …). */
   agent: WorkspaceAgentSettings;
 }
@@ -306,8 +306,6 @@ export class WorkspaceMemberService {
       .select({
         policy: workspaces.credentialPolicy,
         openrouter: workspaces.openrouterKeyEncrypted,
-        token: workspaces.claudeOauthTokenEncrypted,
-        issuedAt: workspaces.claudeTokenIssuedAt,
         agent: workspaces.agentSettings,
       })
       .from(workspaces)
@@ -318,8 +316,6 @@ export class WorkspaceMemberService {
       credentialPolicy: toPolicy(row.policy),
       credentials: {
         openrouter: Boolean(row.openrouter),
-        claudeToken: Boolean(row.token),
-        claudeTokenIssuedAt: row.token && row.issuedAt ? row.issuedAt.toISOString() : null,
       },
       agent: readAgentSettings(row.agent),
     };
@@ -356,7 +352,7 @@ export class WorkspaceMemberService {
   async setCredential(
     workspaceId: string,
     actorId: string,
-    kind: "openrouter" | "claude-token",
+    kind: "openrouter",
     value: string | null,
   ): Promise<{ ok: true } | { error: MemberError | "no_secret_key" }> {
     if (!(await this.workspaces.allows(workspaceId, actorId, "credentials.manage"))) {
@@ -366,11 +362,7 @@ export class WorkspaceMemberService {
     const encrypted = value ? encryptSecret(value, this.secretKey!) : null;
     await this.db
       .update(workspaces)
-      .set(
-        kind === "openrouter"
-          ? { openrouterKeyEncrypted: encrypted }
-          : { claudeOauthTokenEncrypted: encrypted, claudeTokenIssuedAt: encrypted ? new Date() : null },
-      )
+      .set({ openrouterKeyEncrypted: encrypted })
       .where(eq(workspaces.id, workspaceId));
     return { ok: true };
   }

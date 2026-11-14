@@ -5,10 +5,10 @@ import { OmpProvider } from "./omp.js";
 import type { AgentProvider } from "./types.js";
 
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
-  native: "Custom (legacy)",
+  native: "Default",
   claude: "Claude Code",
   codex: "Codex",
-  omp: "Custom",
+  omp: "Default",
 };
 
 export function isCliProviderId(value: unknown): value is CliProviderId {

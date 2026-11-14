@@ -20,6 +20,8 @@ import {
   SidebarGroupContent,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
 import { SECTIONS, SETTINGS, WORKSPACE_SETTINGS, projectHashFromPath, sectionForPath, type Section } from "@/lib/sections"
@@ -27,6 +29,9 @@ import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { useTransitionRouter } from "@/lib/view-transitions"
 import { useMe, useShellLists } from "@/lib/queries/bootstrap"
+import { useResourcesPanel } from "@/lib/resources-panel"
+import { ResourcesPanel } from "@/components/resources/resources-panel"
+import { FolderIcon } from "lucide-react"
 
 /**
  * Two columns: a fixed icon rail topped by the app logo, and a panel
@@ -78,6 +83,9 @@ export function AppSidebar({
   const activeProjectHash = projectHashFromPath(pathname) ?? undefined
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
   const sessionWorkspace = activeWorkspace?.kind === "session"
+  // Resources replaces the panel, not the page: while it is open the rail
+  // lights its folder rather than the URL's section.
+  const resources = useResourcesPanel()
 
   // A project opened straight after creating it can arrive before the list
   // knows it. Asking again once, per project, is what puts its row (and a
@@ -98,11 +106,17 @@ export function AppSidebar({
         section={section}
         // Account and workspace settings share one nav, so the gear stays lit
         // on either tree's pages.
-        isActive={active.id === section.id || (section.id === WORKSPACE_SETTINGS.id && active.id === SETTINGS.id)}
+        isActive={
+          !resources.open &&
+          (active.id === section.id || (section.id === WORKSPACE_SETTINGS.id && active.id === SETTINGS.id))
+        }
         projects={projects}
         connections={connections}
         activeProjectHash={activeProjectHash}
-        onOpenSidebar={() => setOpen(true)}
+        onOpenSidebar={() => {
+          resources.setOpen(false)
+          setOpen(true)
+        }}
       />
     )
   }
@@ -130,7 +144,16 @@ export function AppSidebar({
           <SidebarContent>
             <SidebarGroup>
               <SidebarGroupContent className="px-0">
-                <SidebarMenu>{SECTIONS.map(railItem)}</SidebarMenu>
+                <SidebarMenu>
+                  {SECTIONS.map(railItem)}
+                  <ResourcesRailItem
+                    active={resources.open}
+                    onToggle={() => {
+                      resources.toggle()
+                      setOpen(true)
+                    }}
+                  />
+                </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
           </SidebarContent>
@@ -186,6 +209,9 @@ export function AppSidebar({
           </div>
 
           <SidebarContent>
+            {resources.open && activeWorkspaceId ? (
+              <ResourcesPanel workspaceId={activeWorkspaceId} permissions={activeWorkspace?.permissions ?? []} />
+            ) : (
             <SectionPanel
               section={active}
               projects={projects}
@@ -195,6 +221,7 @@ export function AppSidebar({
               sessionWorkspace={sessionWorkspace}
               activeProjectHash={activeProjectHash}
             />
+            )}
           </SidebarContent>
         </Sidebar>
       </div>
@@ -206,6 +233,28 @@ export function AppSidebar({
         <NavUser user={shownUser} compact={collapsed} />
       </SidebarFooter>
     </Sidebar>
+  )
+}
+
+/**
+ * The rail's folder icon: a toggle, not a link. Resources opens in the
+ * sidebar beside the page you are on -- the chat stays where it is -- so
+ * the URL does not change and the icon is lit by the panel's own state.
+ */
+function ResourcesRailItem({ active, onToggle }: { active: boolean; onToggle: () => void }) {
+  return (
+    <SidebarMenuItem className="py-[5px]">
+      <SidebarMenuButton
+        isActive={active}
+        aria-pressed={active}
+        onClick={onToggle}
+        className="px-2"
+        tooltip={{ children: "Resources", hidden: false }}
+      >
+        <FolderIcon />
+        <span>Resources</span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
   )
 }
 

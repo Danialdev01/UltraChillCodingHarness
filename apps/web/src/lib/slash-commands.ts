@@ -20,7 +20,6 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "clear", description: "Clear the agent's context (keeps this session)" },
   { name: "model", description: "Choose the model", takesArg: "model" },
   { name: "effort", description: "Choose how hard the model thinks", takesArg: "effort" },
   { name: "harness", description: "Choose what runs the agent", takesArg: "harness" },
@@ -28,7 +27,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "documentation", description: "Turn documentation mode on or off" },
   { name: "attach", description: "Attach files from your computer" },
   { name: "compact", description: "Fold older turns into a summary now", takesArg: "focus" },
-  { name: "handoff", description: "Replace the context with a brief of the work so far", takesArg: "focus" },
+  { name: "handoff", description: "Hand over: replace the context with a brief of the work so far", takesArg: "focus" },
   { name: "continue", description: "Carry the work on in a new thread on another harness", takesArg: "target" },
 ];
 

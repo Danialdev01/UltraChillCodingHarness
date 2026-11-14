@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { ProviderId } from "@ucch/protocol";
+import type { ProviderRateLimits } from "@ucch/providers";
 import type { KeyQuota } from "./openrouter.js";
+import { profileKey, type ProfileRef } from "./profile-ref.js";
 
 /**
  * How much of each harness's allowance has been used, for the sidebar's
@@ -14,9 +14,12 @@ import type { KeyQuota } from "./openrouter.js";
  * used and when it resets -- so the rail shows three bars that read alike,
  * and the tooltip carries whatever the vendor's own words were.
  *
- * Read from the vendors directly rather than scraped from a running turn:
- * a meter that only moved while an agent was busy would be stale exactly
- * when someone looked at it to decide whether to start one.
+ * Claude Code and Codex readings come from the CLIs themselves, never from
+ * the vendors with the login's token (the harness does not read, copy or
+ * use what a CLI's sign-in wrote): Codex answers `account/rateLimits/read`
+ * on its own app server whenever asked; Claude Code reports its usage only
+ * inside a turn (`rate_limit_event`), so its meter is the last turn's
+ * reading, and says how old it is.
  */
 
 export interface QuotaWindow {
@@ -55,178 +58,6 @@ function isoOrNull(value: unknown): string | null {
   if (typeof value !== "string" || !value) return null;
   const at = Date.parse(value);
   return Number.isNaN(at) ? null : new Date(at).toISOString();
-}
-
-// -- Claude ------------------------------------------------------------------
-
-/**
- * The Claude Code credential file, as the CLI writes it under its config
- * directory. Only the one field that is read.
- */
-interface ClaudeCredentials {
-  claudeAiOauth?: { accessToken?: string; expiresAt?: number };
-}
-
-/** The OAuth token Claude Code signed in with, or null when it has not. */
-export async function readClaudeAccessToken(claudeDir: string): Promise<string | null> {
-  try {
-    const raw = await readFile(join(claudeDir, ".credentials.json"), "utf8");
-    const parsed = JSON.parse(raw) as ClaudeCredentials;
-    const token = parsed.claudeAiOauth?.accessToken;
-    return typeof token === "string" && token ? token : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * What `api.anthropic.com/api/oauth/usage` answers. Only the two windows
- * every subscription has; the per-model and promotional buckets vary by
- * plan and are left out rather than drawn as bars nobody asked for.
- */
-interface ClaudeUsageBody {
-  five_hour?: { utilization?: number; resets_at?: string | null } | null;
-  seven_day?: { utilization?: number; resets_at?: string | null } | null;
-  seven_day_opus?: { utilization?: number; resets_at?: string | null } | null;
-  seven_day_sonnet?: { utilization?: number; resets_at?: string | null } | null;
-}
-
-export function parseClaudeUsage(body: unknown): QuotaWindow[] {
-  const usage = (body ?? {}) as ClaudeUsageBody;
-  const windows: QuotaWindow[] = [];
-  const session = clampPercent(usage.five_hour?.utilization);
-  if (session !== null) {
-    windows.push({
-      id: "session",
-      label: "Session (5h)",
-      usedPercent: session,
-      resetsAt: isoOrNull(usage.five_hour?.resets_at),
-    });
-  }
-  const weekly = clampPercent(usage.seven_day?.utilization);
-  if (weekly !== null) {
-    windows.push({
-      id: "weekly",
-      label: "Weekly",
-      usedPercent: weekly,
-      resetsAt: isoOrNull(usage.seven_day?.resets_at),
-    });
-  }
-  for (const model of ["opus", "sonnet"] as const) {
-    const bucket = usage[`seven_day_${model}`];
-    const usedPercent = clampPercent(bucket?.utilization);
-    if (usedPercent !== null) windows.push({ id: "weekly", label: `${model} weekly`, model, usedPercent, resetsAt: isoOrNull(bucket?.resets_at) });
-  }
-  return windows;
-}
-
-export async function fetchClaudeUsage(token: string, signal?: AbortSignal): Promise<QuotaWindow[]> {
-  const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
-    headers: {
-      authorization: `Bearer ${token}`,
-      // The usage endpoint is OAuth-only and sits behind this beta flag,
-      // the same one the CLI sends.
-      "anthropic-beta": "oauth-2025-04-20",
-      accept: "application/json",
-    },
-    signal,
-  });
-  // The CLI renews its own token the next time it runs; the harness does
-  // not write credential files, so until then the honest word is "expired".
-  if (response.status === 401) throw new Error("the sign-in has expired; it renews on the next Claude Code turn");
-  if (response.status === 429) throw new Error("Anthropic is rate-limiting the lookup; it retries in a minute");
-  if (!response.ok) throw new Error(`claude usage failed: ${response.status}`);
-  return parseClaudeUsage(await response.json());
-}
-
-// -- Codex -------------------------------------------------------------------
-
-/** `auth.json` as the Codex CLI writes it with the file credential store. */
-interface CodexAuth {
-  tokens?: { access_token?: string; account_id?: string };
-}
-
-export interface CodexTokens {
-  accessToken: string;
-  accountId: string | null;
-}
-
-export async function readCodexTokens(codexDir: string): Promise<CodexTokens | null> {
-  try {
-    const raw = await readFile(join(codexDir, "auth.json"), "utf8");
-    const parsed = JSON.parse(raw) as CodexAuth;
-    const token = parsed.tokens?.access_token;
-    if (typeof token !== "string" || !token) return null;
-    const accountId = parsed.tokens?.account_id;
-    return { accessToken: token, accountId: typeof accountId === "string" ? accountId : null };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * What `chatgpt.com/backend-api/wham/usage` answers. Codex names its two
- * windows by position rather than by length, and says how long each is.
- */
-interface CodexUsageBody {
-  rate_limit?: {
-    primary_window?: CodexWindow | null;
-    secondary_window?: CodexWindow | null;
-  } | null;
-}
-
-interface CodexWindow {
-  used_percent?: number;
-  limit_window_seconds?: number;
-  reset_after_seconds?: number;
-  reset_at?: number | string;
-}
-
-function codexWindow(window: CodexWindow | null | undefined, now: number): QuotaWindow | null {
-  const used = clampPercent(window?.used_percent);
-  if (used === null) return null;
-  const seconds = window?.limit_window_seconds ?? 0;
-  const hours = Math.round(seconds / 3600);
-  // A day or longer is the weekly bucket; anything shorter is the session.
-  const weekly = seconds >= 24 * 3600;
-  let resetsAt: string | null = null;
-  if (typeof window?.reset_after_seconds === "number") {
-    resetsAt = new Date(now + window.reset_after_seconds * 1000).toISOString();
-  } else if (typeof window?.reset_at === "number") {
-    resetsAt = new Date(window.reset_at * 1000).toISOString();
-  } else {
-    resetsAt = isoOrNull(window?.reset_at);
-  }
-  return {
-    id: weekly ? "weekly" : "session",
-    label: weekly ? "Weekly" : hours > 0 ? `Session (${hours}h)` : "Session",
-    usedPercent: used,
-    resetsAt,
-  };
-}
-
-export function parseCodexUsage(body: unknown, now = Date.now()): QuotaWindow[] {
-  const usage = (body ?? {}) as CodexUsageBody;
-  const windows: QuotaWindow[] = [];
-  const primary = codexWindow(usage.rate_limit?.primary_window, now);
-  if (primary) windows.push(primary);
-  const secondary = codexWindow(usage.rate_limit?.secondary_window, now);
-  // Two windows of the same length would draw the same bar twice.
-  if (secondary && secondary.id !== primary?.id) windows.push(secondary);
-  return windows;
-}
-
-export async function fetchCodexUsage(tokens: CodexTokens, signal?: AbortSignal): Promise<QuotaWindow[]> {
-  const headers: Record<string, string> = {
-    authorization: `Bearer ${tokens.accessToken}`,
-    accept: "application/json",
-  };
-  if (tokens.accountId) headers["chatgpt-account-id"] = tokens.accountId;
-  const response = await fetch("https://chatgpt.com/backend-api/wham/usage", { headers, signal });
-  if (response.status === 401) throw new Error("the sign-in has expired; it renews on the next Codex turn");
-  if (response.status === 429) throw new Error("OpenAI is rate-limiting the lookup; it retries in a minute");
-  if (!response.ok) throw new Error(`codex usage failed: ${response.status}`);
-  return parseCodexUsage(await response.json());
 }
 
 // -- OpenRouter --------------------------------------------------------------
@@ -276,22 +107,60 @@ export function openRouterWindows(quota: KeyQuota): QuotaWindow[] {
   ];
 }
 
-/** Subscription lookups are keyed by credential subject, including dedicated workspace accounts. */
+const WINDOW_LABEL = { session: "Session (5h)", weekly: "Weekly" } as const;
+
+/** A CLI's reading as the meters' windows. */
+export function cliWindows(windows: ProviderRateLimits["windows"]): QuotaWindow[] {
+  return windows.map((w) => ({
+    id: w.id,
+    label: w.id === "session" && w.minutes && w.minutes !== 300 ? `Session (${Math.round(w.minutes / 60)}h)` : WINDOW_LABEL[w.id],
+    usedPercent: clampPercent(w.usedPercent) ?? 0,
+    resetsAt: isoOrNull(w.resetsAt),
+  }));
+}
+
+/** What the quota service asks of the providers. */
+export interface QuotaSource {
+  /** Codex's own answer; throws when it cannot give one. */
+  rateLimits(subject: string, provider: "codex", profile?: ProfileRef | null): Promise<ProviderRateLimits>;
+  /** Whether the subject's CLI is signed in, by its own status check. */
+  signedIn(subject: string, provider: "claude" | "codex", profile?: ProfileRef | null): Promise<boolean>;
+}
+
+/** How long a Codex answer is reused: the meters poll. */
+const CODEX_TTL_MS = 60_000;
+
+/**
+ * Subscription usage per credential subject (a user, or `ws-<id>`) and
+ * account (`profileKey`: the subject itself for its Default account).
+ * Claude's is whatever the subject's last turn reported (`record`); Codex's
+ * is asked of the CLI and reused for a minute.
+ */
 export class SubscriptionQuotaService {
+  private readonly claude = new Map<string, { at: number; windows: QuotaWindow[] }>();
   private readonly cache = new Map<string, { at: number; value: SessionQuota }>();
   private readonly pending = new Map<string, Promise<SessionQuota>>();
-  constructor(private readonly providers: {
-    credsDir(subject: string, provider: "claude" | "codex"): string;
-    claudeToken(subject: string): Promise<string | null>;
-  }) {}
+  constructor(private readonly source: QuotaSource) {}
 
-  get(subject: string, provider: "claude" | "codex"): Promise<SessionQuota> {
-    const key = `${subject}:${provider}`;
+  /** A turn's `agent.rate_limit`: the subject's latest Claude reading. */
+  record(subject: string, windows: ProviderRateLimits["windows"], profile?: ProfileRef | null): void {
+    if (windows.length === 0) return;
+    this.claude.set(profileKey(subject, "claude", profile), { at: Date.now(), windows: cliWindows(windows) });
+  }
+
+  async get(subject: string, provider: "claude" | "codex", profile?: ProfileRef | null): Promise<SessionQuota> {
+    const key = profileKey(subject, provider, profile);
+    if (provider === "claude") {
+      const reading = this.claude.get(key);
+      if (reading) return { provider, status: "ok", windows: reading.windows, checkedAt: new Date(reading.at).toISOString() };
+      if (!(await this.source.signedIn(subject, provider, profile).catch(() => true))) return { provider, status: "no_auth" };
+      return { provider, status: "unavailable", error: "Claude Code reports its usage during a turn; the meter fills after the next one." };
+    }
     const hit = this.cache.get(key);
-    if (hit && Date.now() - hit.at < 60_000) return Promise.resolve(hit.value);
+    if (hit && Date.now() - hit.at < CODEX_TTL_MS) return hit.value;
     const pending = this.pending.get(key);
     if (pending) return pending;
-    const lookup = this.lookup(subject, provider).then((value) => {
+    const lookup = this.lookupCodex(subject, profile).then((value) => {
       this.cache.set(key, { at: Date.now(), value });
       return value;
     }).finally(() => this.pending.delete(key));
@@ -299,21 +168,24 @@ export class SubscriptionQuotaService {
     return lookup;
   }
 
-  private async lookup(subject: string, provider: "claude" | "codex"): Promise<SessionQuota> {
+  /**
+   * Forgets readings after a sign-in or sign-out: one account's, by its
+   * `profileKey`, or a subject's and every account of it.
+   */
+  forget(key: string): void {
+    for (const map of [this.claude, this.cache]) {
+      for (const k of map.keys()) if (k === key || (!key.includes("/") && k.startsWith(`${key}/`))) map.delete(k);
+    }
+  }
+
+  private async lookupCodex(subject: string, profile?: ProfileRef | null): Promise<SessionQuota> {
+    const provider = "codex" as const;
+    if (!(await this.source.signedIn(subject, provider, profile).catch(() => true))) return { provider, status: "no_auth" };
     try {
-      let windows: QuotaWindow[];
-      if (provider === "claude") {
-        const token = await readClaudeAccessToken(this.providers.credsDir(subject, provider)) ?? await this.providers.claudeToken(subject);
-        if (!token) return { provider, status: "no_auth" };
-        windows = await fetchClaudeUsage(token, AbortSignal.timeout(10_000));
-      } else {
-        const tokens = await readCodexTokens(this.providers.credsDir(subject, provider));
-        if (!tokens) return { provider, status: "no_auth" };
-        windows = await fetchCodexUsage(tokens, AbortSignal.timeout(10_000));
-      }
-      return { provider, status: "ok", windows, checkedAt: new Date().toISOString() };
-    } catch {
-      return { provider, status: "unavailable" };
+      const { windows } = await this.source.rateLimits(subject, provider, profile);
+      return { provider, status: "ok", windows: cliWindows(windows), checkedAt: new Date().toISOString() };
+    } catch (error) {
+      return { provider, status: "unavailable", error: error instanceof Error ? error.message : String(error) };
     }
   }
 }

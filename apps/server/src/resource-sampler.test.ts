@@ -6,6 +6,8 @@ import { Registry } from "./metrics.js";
 import {
   aggregate,
   classify,
+  memoryInUse,
+  parseMeminfo,
   parseCmdline,
   parseKeyValues,
   parseMemoryMax,
@@ -53,6 +55,23 @@ describe("/proc parsers", () => {
     expect(parseKeyValues("low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n").get("oom_kill")).toBe(1);
     expect(parseMemoryMax("max\n")).toBeNull();
     expect(parseMemoryMax("8589934592\n")).toBe(8589934592);
+  });
+});
+
+describe("memory in use", () => {
+  const cgroup = (current: number, max: number | null, inactive = 0) => ({
+    current, max, stat: new Map([["inactive_file", inactive]]), events: new Map(), swap: null,
+  });
+  it("parses meminfo", () => {
+    expect(parseMeminfo("MemTotal: 2048 kB\nMemAvailable: 1024 kB\n")).toEqual({ total: 2048 * 1024, available: 1024 * 1024 });
+    expect(parseMeminfo("MemTotal: 2048 kB\n")).toBeNull();
+  });
+  it("takes whichever of cgroup and host is fuller", () => {
+    const host = { total: 1000, available: 100 };
+    expect(memoryInUse(cgroup(500, 1000, 100), host)).toEqual({ usedBytes: 900, limitBytes: 1000 });
+    expect(memoryInUse(cgroup(500, 1000, 100), { total: 1000, available: 900 })).toEqual({ usedBytes: 400, limitBytes: 1000 });
+    expect(memoryInUse(cgroup(500, null), null)).toBeNull();
+    expect(memoryInUse(null, host)).toEqual({ usedBytes: 900, limitBytes: 1000 });
   });
 });
 
@@ -204,6 +223,20 @@ describe("ResourceSampler", () => {
     expect(text).toContain('resource_cpu_seconds_total{group="git"} 0.2');
     expect(text).toContain('resource_rss_bytes{group="git"} 0');
     expect(text).toContain("cgroup_oom_kills_total 3");
+  });
+
+  it("reports memory in use for admission, stamped with the sample's start, and calls onSample", async () => {
+    const { proc, cgroup } = await fixture([]);
+    await writeFile(join(cgroup, "memory.current"), `${600 * MB}\n`);
+    await writeFile(join(cgroup, "memory.max"), `${1000 * MB}\n`);
+    await writeFile(join(cgroup, "memory.stat"), `inactive_file ${100 * MB}\n`);
+    await writeFile(join(proc, "meminfo"), "MemTotal:       16000000 kB\nMemFree: 1 kB\nMemAvailable:   15000000 kB\n");
+    let samples = 0;
+    const sampler = new ResourceSampler({ procRoot: proc, cgroupRoot: cgroup, registry: new Registry(), now: () => 42, onSample: () => samples++ });
+    expect(sampler.memoryReading).toBeNull();
+    await sampler.sample();
+    expect(samples).toBe(1);
+    expect(sampler.memoryReading).toEqual({ usedBytes: 500 * MB, limitBytes: 1000 * MB, at: 42 });
   });
 
   it("does not start without a /proc", async () => {

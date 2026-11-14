@@ -211,3 +211,49 @@ export function useProjectSessions(
   const sessions = listed ?? (state.error ? [] : null)
   return { sessions: projectHash ? sessions : null, refresh }
 }
+
+/**
+ * What settling a session-workspace session puts at stake: the files it
+ * holds besides `.agent/` (and `.git/`), and whether a turn is running.
+ */
+export interface SessionSettleCheck {
+  files: number
+  /** The first few of those top-level names, for the dialog. */
+  names: string[]
+  running: boolean
+}
+
+export async function fetchSessionSettleCheck(projectHash: string): Promise<SessionSettleCheck> {
+  const response = await fetch(`/api/projects/${projectHash}/session-settle`, { credentials: "include", cache: "no-store" })
+  const body = (await response.json().catch(() => ({}))) as Partial<SessionSettleCheck> & { error?: string }
+  if (!response.ok) throw new Error(body.error ?? "Could not check the session.")
+  return { files: body.files ?? 0, names: body.names ?? [], running: body.running === true }
+}
+
+/**
+ * Settles a session in a session workspace: it is marked settled and moves
+ * under the Settled divider. Its data stays until Workspace Settings'
+ * "Delete settled session data".
+ */
+export async function settleWorkspaceSession(projectHash: string): Promise<void> {
+  const response = await fetch(`/api/projects/${projectHash}/session-settle`, { method: "POST", credentials: "include" })
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string }
+    throw new Error(body.error ?? "Could not settle the session.")
+  }
+}
+
+/** Deletes every settled session of a session workspace, data and all. */
+export async function deleteSettledSessions(
+  workspaceId: string,
+): Promise<{ deleted: number; skipped: number; leftFiles: number }> {
+  const response = await fetch(`/api/workspaces/${workspaceId}/settled-sessions`, { method: "DELETE", credentials: "include" })
+  const body = (await response.json().catch(() => ({}))) as {
+    deleted?: number
+    skipped?: number
+    leftFiles?: number
+    error?: string
+  }
+  if (!response.ok) throw new Error(body.error ?? "Could not delete the settled sessions.")
+  return { deleted: body.deleted ?? 0, skipped: body.skipped ?? 0, leftFiles: body.leftFiles ?? 0 }
+}

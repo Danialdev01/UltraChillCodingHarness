@@ -9,7 +9,7 @@ import { projectHashFromPath } from "@/lib/sections";
 import { TransitionLink } from "@/lib/view-transitions";
 import { useActiveWorkspace, useWorkspaceHash } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
-import { subagentAnchor, type LineageEntry } from "@/lib/subagent-lineage";
+import { followUpHarness, subagentAnchor, type LineageEntry } from "@/lib/subagent-lineage";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -395,9 +395,15 @@ export function SubagentDetail({
       </section>
 
       </>}
-      <p className="text-muted-foreground border-t pt-3 text-xs">
-        This view shows the activity reported by the parent harness. Follow-up work is controlled by that harness.
-        Subagents started with <code className="font-mono">ucch_agent</code> have a separate application session.
+      <p className="text-muted-foreground border-t pt-3 text-xs" data-testid="subagent-follow-up-note">
+        {followUpHarness(entry) ? (
+          <>This agent runs inside its parent session: your messages go to it through that session, with its own context.</>
+        ) : (
+          <>
+            This view shows the activity reported by the parent harness, which cannot continue this agent.
+            Subagents started with <code className="font-mono">ucch_agent</code> have a session of their own you can chat with.
+          </>
+        )}
       </p>
     </div>
   );

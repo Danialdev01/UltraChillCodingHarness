@@ -112,8 +112,9 @@ class MemoryStore extends EventStore {
   constructor(
     readonly lengths: Map<string, number>,
     historyCacheEvents: number,
+    historyCacheBytes?: number,
   ) {
-    super({} as Database, new EventBus(), { historyCacheEvents });
+    super({} as Database, new EventBus(), { historyCacheEvents, historyCacheBytes });
   }
 
   override async readThread(threadId: string, sinceSeq = -1): Promise<StoredEvent[]> {
@@ -158,6 +159,25 @@ describe("EventStore.threadHistory", () => {
     expect(store.cachedHistoryEvents).toBe(10);
     await store.threadHistory("long");
     expect(store.reads.filter(([thread]) => thread === "long")).toEqual([["long", -1], ["long", -1]]);
+  });
+
+  it("bounds the cache by bytes too, so a few huge events cannot hide behind the count", async () => {
+    const size = Buffer.byteLength(JSON.stringify(fileChanged));
+    // Room for about ten events by size, a thousand by count.
+    const store = new MemoryStore(new Map([["a", 4], ["b", 4], ["c", 4], ["huge", 6]]), 1000, size * 10);
+    await store.threadHistory("a");
+    await store.threadHistory("b");
+    expect(store.cachedHistoryBytes).toBe(size * 8);
+    await store.threadHistory("c");
+    // 12 events' worth would be over: a, the least recently used, went.
+    expect(store.cachedHistoryEvents).toBe(8);
+    expect(store.cachedHistoryBytes).toBeLessThanOrEqual(size * 10);
+    // Over half the byte cap: returned, not kept.
+    expect(await store.threadHistory("huge")).toHaveLength(6);
+    expect(store.cachedHistoryEvents).toBe(8);
+    store.lengths.set("b", 5);
+    await store.threadHistory("b");
+    expect(store.cachedHistoryBytes).toBe(size * 9);
   });
 
   it("drops a kept thread that grows past half the cap", async () => {

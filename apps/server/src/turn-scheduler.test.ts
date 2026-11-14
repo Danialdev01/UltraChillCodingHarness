@@ -248,3 +248,93 @@ describe("shared memory admission", () => {
     release();
   });
 });
+
+describe("memory pressure admission", () => {
+  const GB = 1024 ** 3;
+  const estimatesMb = { cli: 512, omp: 512, native: 128 };
+  /** A scheduler whose readings and clock the test sets. */
+  function pressured(extra: Partial<Parameters<TurnScheduler["setMemoryPressure"]>[0] & object> = {}) {
+    const state = { now: 1_000_000, reading: { usedBytes: 1 * GB, limitBytes: 10 * GB, at: 1_000_000 } as { usedBytes: number; limitBytes: number; at: number } | null };
+    const scheduler = new TurnScheduler({ cliPerUser: 10, cliTotal: 10, nativeTotal: 10, ompTotal: 10 });
+    scheduler.setMemoryPressure({
+      read: () => state.reading, pauseRatio: 0.8, resumeRatio: 0.7, staleMs: 60_000, estimatesMb, now: () => state.now, ...extra,
+    });
+    /** A fresh reading at the current time. */
+    const sample = (usedGb: number) => {
+      state.reading = { usedBytes: usedGb * GB, limitBytes: 10 * GB, at: state.now };
+      scheduler.recheck();
+    };
+    return { scheduler, state, sample };
+  }
+
+  it("holds new starts at the pause line and resumes only below the resume line", async () => {
+    const { scheduler, state, sample } = pressured();
+    state.reading!.usedBytes = 8.5 * GB;
+    const turn = ask(scheduler, "a", "native", "t");
+    await settle();
+    expect(turn.started).toBe(false);
+    expect(scheduler.pressurePaused).toBe(true);
+    sample(7.5); // under the pause line, above the resume one: still paused
+    await settle();
+    expect(turn.started).toBe(false);
+    sample(6.5);
+    await settle();
+    expect(turn.started).toBe(true);
+    expect(scheduler.pressurePaused).toBe(false);
+  });
+
+  it("counts turns started since the last reading on top of it", async () => {
+    const { scheduler, state } = pressured({ settleMs: 30_000 });
+    state.reading!.usedBytes = 6 * GB;
+    // 6 GB + 512 MB each: three fit under 8 GB, the fourth would cross it.
+    const turns = Array.from({ length: 4 }, (_, i) => ask(scheduler, `u${i}`, "cli", `t${i}`));
+    await settle();
+    expect(turns.filter((t) => t.started)).toHaveLength(3);
+    // A reading long after those starts carries them; they stop counting twice.
+    state.now += 31_000;
+    state.reading = { usedBytes: 6 * GB, limitBytes: 10 * GB, at: state.now };
+    scheduler.recheck();
+    await settle();
+    expect(turns[3]!.started).toBe(true);
+  });
+
+  it("holds starts back on a stale or missing reading", async () => {
+    const { scheduler, state, sample } = pressured();
+    state.now += 61_000;
+    const turn = ask(scheduler, "a", "native", "t");
+    await settle();
+    expect(turn.started).toBe(false);
+    state.reading = null;
+    scheduler.recheck();
+    await settle();
+    expect(turn.started).toBe(false);
+    sample(1);
+    await settle();
+    expect(turn.started).toBe(true);
+  });
+
+  it("lets running turns finish and keeps count limits", async () => {
+    const { scheduler, state } = pressured();
+    const running = await scheduler.acquire({ ownerId: "a", threadId: "a", kind: "cli" });
+    state.reading!.usedBytes = 9 * GB;
+    const queued = ask(scheduler, "b", "cli", "b");
+    await settle();
+    expect(queued.started).toBe(false);
+    running(); // releasing does not let the queued one past the pressure
+    await settle();
+    expect(queued.started).toBe(false);
+    expect(scheduler.stats().running.cli).toBe(0);
+  });
+
+  it("is off again with null, and rejects inverted ratios", async () => {
+    const { scheduler, state } = pressured();
+    state.reading = null;
+    const turn = ask(scheduler, "a", "native", "t");
+    await settle();
+    expect(turn.started).toBe(false);
+    scheduler.setMemoryPressure(null);
+    await settle();
+    expect(turn.started).toBe(true);
+    expect(() => scheduler.setMemoryPressure({ read: () => null, pauseRatio: 0.7, resumeRatio: 0.8, staleMs: 1, estimatesMb })).toThrow(/ratios/);
+  });
+});

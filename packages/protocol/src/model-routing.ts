@@ -62,10 +62,10 @@ const FILLER = new Set(["model", "use", "using", "the", "with", "via", "on", "a"
 const VENDOR_PREFIX = /^(anthropic|openai|openrouter)\//;
 
 const PROVIDER_LABEL: Record<ProviderId, string> = {
-  native: "Custom (legacy)",
+  native: "Default",
   claude: "Claude Code",
   codex: "Codex",
-  omp: "Custom",
+  omp: "Default",
 };
 
 /**
@@ -264,9 +264,22 @@ export const UCCH_AGENT_GUIDE = [
   "",
   "When the person asks for subagents on a particular model or harness (for example \"create 2 subagents for research and development; use opus 5.5 for development and gpt6 sol for research\"),",
   "start each one with the `ucch_agent` tool, passing the model in their words as `model`. Start independent ones in the same message so they run in parallel.",
+  "Once a model or harness is named, start every subagent of that request with `ucch_agent`, including ones on this session's own vendor; never use your built-in subagent tool (Agent, Task, spawn_agent) for them, as it cannot change model or harness.",
+  "Never substitute another model for the one named. If `ucch_agent` fails or the model is unavailable, say so and ask the person how to go on.",
   "Use `ucch_agent` with background=true for agents that need messaging or coordination, even when no model is named. Leave `model` out to inherit this session's model. Built-in subagents remain suitable for isolated tasks.",
   "For coordinated work use background=true, continue independent work, and use ucch_message and ucch_agent_status to coordinate. End your turn when waiting; completion messages resume you without holding a scheduler slot.",
   "If `ucch_agent` answers that a model name is ambiguous, pick the closest candidate it lists, or ask the person.",
+].join("\n");
+
+/**
+ * In place of the guide when `ucch_agent` cannot be offered (the bridge is
+ * missing): a named model is then reported, not silently swapped.
+ */
+export const UCCH_AGENT_UNAVAILABLE_NOTE = [
+  "## Subagents on other models",
+  "",
+  "Subagents on other models or harnesses are unavailable in this session. If the person names a model or harness for a subagent that your built-in subagent tool cannot run,",
+  "do not substitute another model: tell them that cross-harness subagents are unavailable, and ask whether to go on with a model you can run.",
 ].join("\n");
 
 /**

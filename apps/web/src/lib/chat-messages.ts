@@ -70,6 +70,8 @@ export interface SubagentRun {
   childThreadId?: string;
   background?: boolean;
   routing?: string;
+  /** A Claude Code built-in subagent its parent can continue: chatting with it goes through the parent. */
+  resumeHandle?: string;
   /**
    * What a CLI's built-in subagent did, in order (Claude Code's): its prose,
    * its thinking (as a `<think>` text part), and its tool calls with their
@@ -201,6 +203,13 @@ export interface HarnessSwitch {
   brief: string;
   /** The harness it left had hit its usage limit. */
   limit: boolean;
+  /** A handover on the same harness: the context was full, or someone asked for one. */
+  context?: true;
+  /** The subscription accounts it moved between, when one was named. */
+  fromProfileId?: string | null;
+  toProfileId?: string | null;
+  /** The commit the work so far was saved in before the switch. */
+  checkpointSha?: string;
 }
 
 /** The other end of a handoff: the thread, and its address. */
@@ -674,6 +683,7 @@ export function toMessages(
           known.costUsd = null;
           delete known.recentTools;
           delete known.recentOutput;
+          if (event.resumeHandle) known.resumeHandle = event.resumeHandle;
           runs.get(known.id)!.turnId = event.turnId;
           break;
         }
@@ -712,6 +722,7 @@ export function toMessages(
           ...(event.childThreadId ? { childThreadId: event.childThreadId } : {}),
           ...(event.background ? { background: true } : {}),
           ...(event.routing ? { routing: event.routing } : {}),
+          ...(event.resumeHandle ? { resumeHandle: event.resumeHandle } : {}),
         };
         (call.subagents ??= []).push(run);
         runs.set(run.id, { run, call, turnId: event.turnId });
@@ -737,6 +748,7 @@ export function toMessages(
         run.status = event.status;
         run.result = event.result;
         if (event.model) run.model = event.model;
+        if (event.resumeHandle) run.resumeHandle = event.resumeHandle;
         if (event.toolCalls !== undefined) run.toolCalls = event.toolCalls;
         if (event.durationMs !== undefined) run.durationMs = event.durationMs;
         if (event.costUsd !== undefined) run.costUsd = event.costUsd;
@@ -880,6 +892,10 @@ export function toMessages(
             model: event.model ?? null,
             brief: event.brief,
             limit: event.reason === "limit",
+            ...(event.reason === "context" ? { context: true as const } : {}),
+            ...(event.fromProfileId !== undefined ? { fromProfileId: event.fromProfileId } : {}),
+            ...(event.toProfileId !== undefined ? { toProfileId: event.toProfileId } : {}),
+            ...(event.checkpointSha ? { checkpointSha: event.checkpointSha } : {}),
           },
         });
         break;

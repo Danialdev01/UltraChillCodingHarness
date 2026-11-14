@@ -54,5 +54,14 @@ END $$;
 SELECT 'CREATE DATABASE dev OWNER dev' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'dev')\gexec
 SQL
 
+# The MCP bundle that gives Claude Code and Codex turns `ucch_agent`
+# (subagents on other harnesses) and agent messaging. Rebuilt when any of
+# its sources, or the protocol it bundles, is newer than the bundle.
+bridge=packages/omp-bridge/dist/omp-bridge.mjs
+if [ ! -f "$bridge" ] || [ -n "$(find packages/omp-bridge/src packages/protocol/src -newer "$bridge" -name '*.ts' -print -quit)" ]; then
+  echo "[dev] building the omp-bridge bundle"
+  pnpm --filter @ucch/omp-bridge build
+fi
+
 echo "[dev] starting server :3001 and web :3000 -> http://localhost:3000"
 exec pnpm dev

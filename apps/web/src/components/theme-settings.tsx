@@ -60,9 +60,10 @@ const EXCLUDED_BANDS = [SEMANTIC_HUES.danger, SEMANTIC_HUES.success].map((centre
  * Where the harness's colour is chosen.
  *
  * Mode first (Light, Dark, System), then the palette: Shuffle for a random
- * seed, Lock to keep it, or a hue picked directly. Everything else -- text,
- * surfaces, borders, status colours, charts -- is generated from that one hue
- * with fixed lightness per role, then checked against WCAG AA, so no choice
+ * seed, Lock to keep it, or a hue picked directly. In light mode the hue
+ * drives only the three accent tokens and the neutrals are fixed (the light
+ * theme guideline); in dark mode text, surfaces and borders are generated
+ * from it with fixed lightness per role. Both are checked against WCAG AA, so no choice
  * here can produce unreadable text. Custom colours are under Advanced, with
  * their contrast shown live.
  *
@@ -85,7 +86,7 @@ export function ThemeSettings() {
     resetTheme,
   } = useTheme()
   const { source } = settings
-  const hue = Math.round(accentOf(source).hue)
+  const hue = Math.round(accentOf(source, resolvedMode).hue)
 
   return (
     <>
@@ -126,7 +127,7 @@ export function ThemeSettings() {
       <SettingsSection
         icon={PaletteIcon}
         title="Accent"
-        description="Pick an accent hue. Text, surfaces, borders and charts are generated from it and checked for WCAG AA contrast, in light and dark. Status colours stay fixed: red always means a problem."
+        description="Pick an accent hue for primary actions, links, selection and focus. In light mode, text, surfaces and borders stay fixed neutrals and only the accent follows the hue; in dark mode the palette is generated from it. Every pair is checked for WCAG AA contrast. Status colours stay fixed: red always means a problem."
         action={
           <>
             <Button size="sm" onClick={shuffle} disabled={settings.locked} aria-disabled={settings.locked}>
@@ -165,7 +166,7 @@ export function ThemeSettings() {
                 key={band.left}
                 aria-hidden
                 title="Reserved for status colours"
-                className="bg-background/80 border-border-strong absolute top-1/2 h-3 -translate-y-1/2 border-x border-dashed"
+                className="bg-background/80 light:bg-[repeating-linear-gradient(45deg,var(--border-strong)_0_1.5px,var(--sidebar)_1.5px_5px)] border-border-strong absolute top-1/2 h-3 -translate-y-1/2 border-x border-dashed"
                 style={{ left: `${band.left}%`, width: `${band.width}%` }}
               />
             ))}
@@ -183,7 +184,7 @@ export function ThemeSettings() {
             />
           </div>
           <p id="theme-hue-hint" className="text-muted-foreground mt-1 text-xs">
-            The dashed bands are reserved for error red and success green; the slider skips them.
+            The hatched bands are reserved for error red and success green; the slider skips them.
           </p>
         </div>
 

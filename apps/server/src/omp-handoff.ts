@@ -1,5 +1,8 @@
 import { CHARS_PER_TOKEN, type DomainEvent } from "@ucch/protocol";
 import type { OmpAskInput } from "@ucch/providers";
+import { maskSecrets } from "./log-redact.js";
+
+export { maskSecrets };
 
 /**
  * The handoff brief (solution §5.4): what a thread has done, written by a
@@ -52,35 +55,6 @@ export function handoffPrompt(focus?: string): string {
 }
 
 /** A value, keeping the quotes it came in: `"x"` stays a string where a reader expects one. */
-const redact = (value: string) => (/^(["']).*\1$/s.test(value) ? `${value[0]}<redacted>${value[0]}` : "<redacted>");
-
-/**
- * Credentials as they show up in a transcript: an environment-style name
- * that says it is one, assigned (`OPENROUTER_API_KEY=...`, `GITHUB_TOKEN:
- * ...`); a config key that is exactly one (`"apiKey": "..."`, `password:
- * ...`) -- not one that merely contains the word, so `maxTokens: 24000`
- * survives; a bearer header; and the vendors' own key prefixes.
- */
-const SECRET_PATTERNS: readonly [RegExp, (...groups: string[]) => string][] = [
-  [
-    /\b([A-Z0-9_]*(?:API_KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Z0-9_]*)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/g,
-    (_match, name, sep, value) => `${name}${sep}${redact(value!)}`,
-  ],
-  [
-    /(["']?)\b(api[_-]?key|secret|client[_-]?secret|password|passwd|token|access[_-]?token|auth[_-]?token|refresh[_-]?token)\1(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,}]+)/gi,
-    (_match, quote, name, sep, value) => `${quote}${name}${quote}${sep}${redact(value!)}`,
-  ],
-  [/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/g, (_match, bearer) => `${bearer}<redacted>`],
-  [/\b(?:sk-(?:or-|ant-|proj-)?|ghp_|gho_|github_pat_|xox[abp]-|AKIA)[A-Za-z0-9_-]{8,}/g, () => "<redacted>"],
-];
-
-/** The text with anything that looks like a credential replaced by `<redacted>`. */
-export function maskSecrets(text: string): string {
-  let out = text;
-  for (const [pattern, replace] of SECRET_PATTERNS) out = out.replace(pattern, (...args: string[]) => replace(...args));
-  return out;
-}
-
 /** At most `bytes` of UTF-8, cut on a character, with how much was left out. */
 function clip(text: string, bytes: number): string {
   const encoded = Buffer.from(text, "utf8");

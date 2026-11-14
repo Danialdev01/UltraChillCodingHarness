@@ -28,7 +28,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { renameProject } from "@/lib/create-project"
 import { sessionModelLabel } from "@/lib/harnesses"
 import { rememberLastModel, rememberLastProvider } from "@/lib/model-preference"
-import { settleProjectSession, startProjectSession } from "@/lib/project-sessions"
+import {
+  fetchSessionSettleCheck,
+  settleProjectSession,
+  settleWorkspaceSession,
+  startProjectSession,
+} from "@/lib/project-sessions"
 import {
   useCollapsedProjects,
   useLiveTurns,
@@ -132,6 +137,8 @@ export function SessionSidebar({
   const [deleteTarget, setDeleteTarget] = React.useState<Project | null>(null)
   const [renameTarget, setRenameTarget] = React.useState<SidebarSession | null>(null)
   const [settleTarget, setSettleTarget] = React.useState<SidebarSession | null>(null)
+  /** A session workspace's session being settled: the files it holds besides `.agent/`. */
+  const [settleFiles, setSettleFiles] = React.useState<{ count: number; names: string[] }>({ count: 0, names: [] })
 
   const listRef = React.useRef<HTMLDivElement>(null)
 
@@ -210,14 +217,9 @@ export function SessionSidebar({
 
   async function settle(session: SidebarSession) {
     if (sessionWorkspace) {
-      const response = await fetch(`/api/projects/${session.project.hash}`, { method: "DELETE", credentials: "include" })
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string }
-        throw new Error(body.error ?? "Could not settle the session.")
-      }
+      await settleWorkspaceSession(session.project.hash)
       toast({ title: `Settled ${session.title}` })
-      invalidate(qk.bootstrap(), qk.sessions.all, qk.project(session.project.hash))
-      if (isActive(session)) router.push(`/${ws}`)
+      invalidate(qk.sessions.all, qk.project(session.project.hash))
       return
     }
     let result
@@ -237,6 +239,25 @@ export function SessionSidebar({
         : ""
     toast({ title: `Settled ${session.title}`, description: merged ? merged + pushed : undefined })
     if (result.removed && isActive(session)) router.push(projectHref(ws, "project", session.project.hash))
+  }
+
+  /**
+   * Settling in a session workspace: no name to type. It asks first only
+   * when the session holds files besides `.agent/`; otherwise it settles.
+   */
+  async function beginSettle(session: SidebarSession) {
+    if (!sessionWorkspace) {
+      setSettleTarget(session)
+      return
+    }
+    const check = await fetchSessionSettleCheck(session.project.hash)
+    if (check.running) throw new Error("The agent is still working in this session. Stop it, then settle.")
+    if (check.files > 0) {
+      setSettleFiles({ count: check.files, names: check.names })
+      setSettleTarget(session)
+      return
+    }
+    await settle(session)
   }
 
   /** Takes a settled session off the list: its work is merged, its worktree already gone. */
@@ -280,6 +301,11 @@ export function SessionSidebar({
               disabled: working,
               onSelect: () => void act("archive it", () => update(session, { archived: true })),
             },
+      )
+      // A session workspace's settled session goes with the rest of them, from
+      // Workspace Settings' "Delete settled session data".
+      if (sessionWorkspace && session.settleState === "settled") return out
+      out.push(
         "separator",
         session.settleState === "settled"
           ? { label: "Remove", icon: CheckIcon, destructive: true, onSelect: () => void act("remove it", () => remove(session)) }
@@ -288,7 +314,7 @@ export function SessionSidebar({
               icon: CheckIcon,
               destructive: true,
               disabled: working,
-              onSelect: () => setSettleTarget(session),
+              onSelect: () => void act("settle it", () => beginSettle(session)),
             },
       )
     }
@@ -552,12 +578,23 @@ export function SessionSidebar({
           open={settleTarget !== null}
           onOpenChange={(open) => !open && setSettleTarget(null)}
           title={`Settle ${settleTarget?.title ?? "session"}?`}
-          description="Settling is done with a session: it and its files are deleted. Push anything you want to keep first."
+          description={`This session has ${settleFiles.count === 1 ? "a file" : `${settleFiles.count} files`} besides .agent/. Settled sessions are deleted, files and all, when you delete settled session data in Workspace Settings. Are you sure you want to settle it?`}
           confirmLabel="Settle"
           onConfirm={async () => {
             if (settleTarget) await settle(settleTarget)
           }}
-        />
+        >
+          {settleFiles.names.length > 0 && (
+            <ul className="bg-muted/50 text-muted-foreground max-h-32 overflow-y-auto rounded-md px-3 py-2 font-mono text-xs">
+              {settleFiles.names.map((name) => (
+                <li key={name} className="truncate">
+                  {name}
+                </li>
+              ))}
+              {settleFiles.count > settleFiles.names.length && <li>…and {settleFiles.count - settleFiles.names.length} more</li>}
+            </ul>
+          )}
+        </ConfirmDialog>
       ) : (
         <SettleSessionDialog
           session={settleTarget}

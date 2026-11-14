@@ -1,6 +1,6 @@
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentPermissionMode } from "@ucch/protocol";
+import { CONTEXT_HANDOVER_RATIO, type AgentPermissionMode } from "@ucch/protocol";
 import { OMP_FOREIGN_SOURCES, OMP_TOOL_TIERS, type OmpTier } from "@ucch/providers";
 
 export { OMP_TOOL_TIERS, type OmpTier };
@@ -169,6 +169,9 @@ export function ompOverlay(input: OmpOverlayInput): Record<string, unknown> {
     // Context management -- /docs/compaction, /docs/handoff
     compaction: {
       enabled: true,
+      // The handover line: OMP hands off (first in `methodOrder`) once the
+      // session is past this share of its window, mid-turn included.
+      thresholdPercent: Math.round(CONTEXT_HANDOVER_RATIO * 100),
       methodOrder: ["handoff", "remote", "shake", "soft"],
       keepRecentTokens: 20000,
       midTurnEnabled: true,

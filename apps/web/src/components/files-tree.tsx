@@ -1,5 +1,6 @@
 "use client"
 
+import { carriesResource, readResourceDrag } from "@/lib/resources-api"
 import * as React from "react"
 import {
   ChevronRightIcon,
@@ -75,6 +76,7 @@ export function FilesTree() {
     dropTarget,
     setDropTarget,
     move,
+    copyResource,
   } = useFilesPanel()
 
   return (
@@ -156,7 +158,7 @@ export function FilesTree() {
         tabIndex={0}
         // The tree itself is the root: a drop that no folder row claimed --
         // on a file, in a gap, on the empty space below -- lands at the top.
-        {...dropHandlers({ folder: "", dragging, dropTarget, setDropTarget, move })}
+        {...dropHandlers({ folder: "", dragging, dropTarget, setDropTarget, move, copyResource })}
         onKeyDown={(e) => {
           // The name input owns its own keys.
           if (e.target instanceof HTMLInputElement) return
@@ -308,13 +310,23 @@ function dropHandlers({
   move,
   onHover,
   onLeave,
-}: Pick<FilesPanelContextValue, "dragging" | "dropTarget" | "setDropTarget" | "move"> & {
+  copyResource,
+}: Pick<FilesPanelContextValue, "dragging" | "dropTarget" | "setDropTarget" | "move" | "copyResource"> & {
   folder: string
   onHover?: () => void
   onLeave?: () => void
 }): Pick<React.HTMLAttributes<HTMLElement>, "onDragOver" | "onDragLeave" | "onDrop"> {
   return {
     onDragOver: (e) => {
+      // A row from the sidebar's Resources: always a copy, into any folder.
+      if (carriesResource(e.dataTransfer)) {
+        e.preventDefault()
+        e.stopPropagation()
+        e.dataTransfer.dropEffect = "copy"
+        if (dropTarget !== folder) setDropTarget(folder)
+        onHover?.()
+        return
+      }
       if (!dragging || !e.dataTransfer.types.includes(DRAG_TYPE)) return
       e.preventDefault()
       e.stopPropagation()
@@ -334,6 +346,15 @@ function dropHandlers({
       if (dropTarget === folder) setDropTarget(null)
     },
     onDrop: (e) => {
+      const resource = readResourceDrag(e.dataTransfer)
+      if (resource) {
+        e.preventDefault()
+        e.stopPropagation()
+        onLeave?.()
+        setDropTarget(null)
+        void copyResource(resource, folder)
+        return
+      }
       if (!e.dataTransfer.types.includes(DRAG_TYPE)) return
       e.preventDefault()
       e.stopPropagation()

@@ -373,3 +373,33 @@ describe("targeted native worker chat", () => {
     expect(() => codexSubagentPrompt("hello", "parent:/root/alpha\nother", "parent")).toThrow();
   });
 });
+
+describe("codexRateLimits", () => {
+  it("reads account/rateLimits/read as session and weekly windows", async () => {
+    const { codexRateLimits } = await import("./codex.js");
+    expect(codexRateLimits({ rateLimits: {
+      primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1794647687 },
+      secondary: { usedPercent: 133, windowDurationMins: 10080, resetsAt: 1794834602 },
+      rateLimitReachedType: null,
+    } })).toEqual({
+      limited: false,
+      windows: [
+        { id: "session", usedPercent: 12, resetsAt: new Date(1794647687 * 1000).toISOString(), minutes: 300 },
+        { id: "weekly", usedPercent: 100, resetsAt: new Date(1794834602 * 1000).toISOString(), minutes: 10080 },
+      ],
+    });
+    expect(codexRateLimits({ rateLimits: { primary: { usedPercent: 100 }, rateLimitReachedType: "primary" } }).limited).toBe(true);
+    expect(codexRateLimits(null)).toEqual({ windows: [], limited: false });
+  });
+
+  it("asks the CLI's own app server, never a vendor endpoint", async () => {
+    const { readCodexRateLimits } = await import("./codex.js");
+    const host = new FakeProcessHost([{ match: (a) => a[1] === "app-server", lines: [
+      stdout('{"id":1,"result":{}}'),
+      stdout(JSON.stringify({ id: 2, result: { rateLimits: { primary: { usedPercent: 5, windowDurationMins: 300 } } } })),
+    ] }]);
+    const result = await readCodexRateLimits({ cwd: "/w", env: {}, host }, "codex");
+    expect(result.windows).toEqual([{ id: "session", usedPercent: 5, resetsAt: null, minutes: 300 }]);
+    expect(host.spawned[0]?.argv).toEqual(["codex", "app-server"]);
+  });
+});

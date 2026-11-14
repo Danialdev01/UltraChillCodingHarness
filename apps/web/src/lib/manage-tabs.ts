@@ -4,6 +4,7 @@ export const MANAGE_TABS = [
   { id: "activity", label: "Activity" },
   { id: "runtimes", label: "Runtimes" },
   { id: "project-key", label: "Project key" },
+  { id: "accounts", label: "Accounts" },
   { id: "preferences", label: "Preferences" },
 ] as const;
 

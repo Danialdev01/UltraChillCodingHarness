@@ -19,7 +19,29 @@
     }
 }
 
+/*
+ * `light:` is the mirror of `dark:` -- a forced Light, or System while the OS
+ * is light. It carries the light theme guideline's component rules (borders,
+ * weights, shadows) that dark mode does not share.
+ */
+@custom-variant light {
+    &:where([data-theme-mode="light"], [data-theme-mode="light"] *) {
+        @slot;
+    }
+    @media (prefers-color-scheme: light) {
+        &:where([data-theme-mode="system"], [data-theme-mode="system"] *) {
+            @slot;
+        }
+    }
+}
+
 @theme inline {
+    --color-accent-strong: var(--accent-strong);
+    --color-sunken: var(--sunken);
+    --color-bubble-user: var(--bubble-user);
+    --color-switch-off: var(--switch-off);
+    --shadow-rest: var(--ucch-shadow-rest);
+    --shadow-raised: var(--ucch-shadow-raised);
     /*
      * Inter for the UI, a serif for prose, iA Writer Mono for code in the UI.
      *
@@ -119,52 +141,56 @@
      * set from the settings is painted inline and wins.
      */
     /* @generated theme-tokens: start -- scripts/gen-theme-css.ts */
-    --background: light-dark(#fafcff, #0b0d13);
-    --foreground: light-dark(#17181b, #e7ebf4);
+    --background: light-dark(#ffffff, #0b0d13);
+    --foreground: light-dark(#0f1b1f, #e7ebf4);
     --card: light-dark(#ffffff, #181b20);
-    --card-foreground: light-dark(#17181b, #e7ebf4);
+    --card-foreground: light-dark(#0f1b1f, #e7ebf4);
     --popover: light-dark(#ffffff, #181b20);
-    --popover-foreground: light-dark(#17181b, #e7ebf4);
-    --primary: light-dark(#4269d3, #7aa1ff);
+    --popover-foreground: light-dark(#0f1b1f, #e7ebf4);
+    --primary: light-dark(#0b6b75, #7aa1ff);
     --primary-foreground: light-dark(#ffffff, #0b0d13);
-    --secondary: light-dark(#ebedf1, #1f2228);
-    --secondary-foreground: light-dark(#17181b, #e7ebf4);
-    --muted: light-dark(#ebedf1, #1f2228);
-    --muted-foreground: light-dark(#515256, #aaaeb6);
-    --accent: light-dark(#ebedf1, #1f2228);
-    --accent-foreground: light-dark(#17181b, #e7ebf4);
-    --destructive: light-dark(#af3d36, #fb8276);
-    --border: light-dark(#dfe1e5, #282b31);
-    --input: light-dark(#8a8c90, #63666d);
-    --ring: light-dark(#385cc6, #7aa1ff);
-    --sidebar: light-dark(#f3f5f9, #111419);
-    --sidebar-foreground: light-dark(#17181b, #e7ebf4);
-    --sidebar-primary: light-dark(#4269d3, #7aa1ff);
+    --secondary: light-dark(#e2e8ea, #1f2228);
+    --secondary-foreground: light-dark(#0f1b1f, #e7ebf4);
+    --muted: light-dark(#e2e8ea, #1f2228);
+    --muted-foreground: light-dark(#42525a, #aaaeb6);
+    --accent: light-dark(#e2e8ea, #1f2228);
+    --accent-foreground: light-dark(#0f1b1f, #e7ebf4);
+    --destructive: light-dark(#a8200f, #fb8276);
+    --border: light-dark(#cdd5d9, #282b31);
+    --input: light-dark(#7f8d93, #63666d);
+    --ring: light-dark(#0b6b75, #7aa1ff);
+    --sidebar: light-dark(#eef2f3, #111419);
+    --sidebar-foreground: light-dark(#0f1b1f, #e7ebf4);
+    --sidebar-primary: light-dark(#0b6b75, #7aa1ff);
     --sidebar-primary-foreground: light-dark(#ffffff, #0b0d13);
-    --sidebar-accent: light-dark(#ebedf1, #1f2228);
-    --sidebar-accent-foreground: light-dark(#17181b, #e7ebf4);
-    --sidebar-border: light-dark(#dfe1e5, #282b31);
-    --sidebar-ring: light-dark(#385cc6, #7aa1ff);
-    --text-subtle: light-dark(#626367, #92959d);
-    --border-strong: light-dark(#8a8c90, #63666d);
-    --focus-ring: light-dark(#385cc6, #7aa1ff);
-    --accent-soft: light-dark(#e7efff, #1b2338);
-    --ucch-active: light-dark(#385cc6, #7aa1ff);
-    --ucch-active-bg: light-dark(rgb(56 92 198 / 12%), rgb(122 161 255 / 18%));
-    --danger-soft: light-dark(#ffe9e6, #351c19);
-    --danger: light-dark(#af3d36, #fb8276);
-    --warning-soft: light-dark(#ffebd2, #2f210c);
-    --warning: light-dark(#8d5e00, #e19b1b);
-    --success-soft: light-dark(#dcf7e1, #15291a);
-    --success: light-dark(#007b36, #5ac576);
-    --info-soft: light-dark(#e1f1ff, #122636);
-    --info: light-dark(#006eae, #50b3ff);
-    --chart-1: light-dark(#587bd3, #7ba1fc);
-    --chart-2: light-dark(#c36033, #ec8558);
-    --chart-3: light-dark(#009584, #00bea9);
-    --chart-4: light-dark(#a362b5, #c987dc);
-    --chart-5: light-dark(#967f00, #bfa320);
-    --chart-6: light-dark(#008bbe, #28b2ee);
+    --sidebar-accent: light-dark(#e2e8ea, #1f2228);
+    --sidebar-accent-foreground: light-dark(#0f1b1f, #e7ebf4);
+    --sidebar-border: light-dark(#cdd5d9, #282b31);
+    --sidebar-ring: light-dark(#0b6b75, #7aa1ff);
+    --text-subtle: light-dark(#5a6a71, #92959d);
+    --border-strong: light-dark(#7f8d93, #63666d);
+    --focus-ring: light-dark(#0b6b75, #7aa1ff);
+    --accent-soft: light-dark(#d5ecef, #1b2338);
+    --accent-strong: light-dark(#07505a, #7aa1ff);
+    --ucch-active: light-dark(#07505a, #7aa1ff);
+    --ucch-active-bg: light-dark(#d5ecef, rgb(122 161 255 / 18%));
+    --sunken: light-dark(#f5f7f8, #0b0d13);
+    --bubble-user: light-dark(#e2ecee, #1f2228);
+    --switch-off: light-dark(#6b7a80, #63666d);
+    --danger-soft: light-dark(#fce8e5, #351c19);
+    --danger: light-dark(#a8200f, #fb8276);
+    --warning-soft: light-dark(#ffefcf, #2f210c);
+    --warning: light-dark(#7a4300, #e19b1b);
+    --success-soft: light-dark(#dff3e7, #15291a);
+    --success: light-dark(#0e6335, #5ac576);
+    --info-soft: light-dark(#e3eefb, #122636);
+    --info: light-dark(#17549c, #50b3ff);
+    --chart-1: light-dark(#00919f, #7ba1fc);
+    --chart-2: light-dark(#b85a95, #ec8558);
+    --chart-3: light-dark(#748c10, #00bea9);
+    --chart-4: light-dark(#4a7fd3, #c987dc);
+    --chart-5: light-dark(#c55d40, #bfa320);
+    --chart-6: light-dark(#00967b, #28b2ee);
     --ucch-note-gray: light-dark(#696969, #ababab);
     --ucch-note-red: light-dark(#af3c3a, #fb817a);
     --ucch-note-orange: light-dark(#9f5000, #f28e42);
@@ -176,21 +202,25 @@
     --ucch-note-highlight: light-dark(#fee484, #564700);
     --syn-keyword: light-dark(#7c3aed, #c678dd);
     --syn-string: light-dark(#a31515, #98c379);
-    --syn-number: light-dark(#0f766e, #d19a66);
-    --syn-comment: light-dark(#626977, #868b96);
+    --syn-number: light-dark(#007068, #d19a66);
+    --syn-comment: light-dark(#5e6573, #868b96);
     --syn-function: light-dark(#1d4ed8, #61afef);
     --syn-variable: light-dark(#1f2937, #e5e7eb);
-    --syn-property: light-dark(#0e7490, #e06c75);
-    --syn-type: light-dark(#ad4e00, #e5c07b);
+    --syn-property: light-dark(#006e8a, #e06c75);
+    --syn-type: light-dark(#a44a00, #e5c07b);
     --syn-operator: light-dark(#374151, #56b6c2);
-    --syn-punctuation: light-dark(#626977, #abb2bf);
+    --syn-punctuation: light-dark(#5e6573, #abb2bf);
     --syn-tag: light-dark(#166534, #e06c75);
     --syn-attribute: light-dark(#92400e, #d19a66);
     --syn-heading: light-dark(#1d4ed8, #61afef);
     --syn-link: light-dark(#0369a1, #56b6c2);
-    --syn-invalid: light-dark(#d1141b, #f87171);
+    --syn-invalid: light-dark(#cc0515, #f87171);
     /* @generated theme-tokens: end */
     --radius: 0.625rem;
+
+    /* Elevation (light guideline §4). Dark mode leans on borders instead. */
+    --ucch-shadow-rest: 0 1px 2px light-dark(rgb(15 27 31 / 0.06), rgb(0 0 0 / 0));
+    --ucch-shadow-raised: 0 4px 14px light-dark(rgb(15 27 31 / 0.1), rgb(0 0 0 / 0.35));
 
     /* Fixed in both modes: translucent, so they read over either ground. */
     --overlay: light-dark(oklch(0.2 0 0 / 0.3), oklch(0 0 0 / 0.6));
@@ -280,7 +310,7 @@
     }
   @media (prefers-color-scheme: dark) {
     [data-theme-mode="system"] .shadow-md,
-    [data-theme-mode="system"] .shadow-lg {
+[data-theme-mode="system"] .shadow-lg {
       --tw-shadow-color: transparent;
       }
   }
@@ -1085,4 +1115,80 @@
     .ucch-sky-sparkle {
         display: none;
     }
+}
+
+/* ---------------------------------------------------------------------------
+   The light theme guideline's structural rules, light mode only.
+
+   Colour comes from the tokens; what is here is what a token cannot say:
+   no gradient on the sidebar header, raised menus with a strong edge, bold
+   selected rows, secondary-coloured icons at rest. Only colour, border,
+   shadow and weight -- never size -- so a component's own layout stands.
+   --------------------------------------------------------------------------- */
+/* §2.1: no gradients on structural surfaces. */
+.ucch-sky {
+    @variant light {
+        background: none;
+    }
+}
+:root[data-theme-mode="light"] .ucch-sky::before,
+:root[data-theme-mode="light"] .ucch-sky::after,
+:root[data-theme-mode="light"] .ucch-sky-sparkle {
+    display: none;
+}
+@media (prefers-color-scheme: light) {
+    :root[data-theme-mode="system"] .ucch-sky::before,
+    :root[data-theme-mode="system"] .ucch-sky::after,
+    :root[data-theme-mode="system"] .ucch-sky-sparkle {
+        display: none;
+    }
+}
+/* §4: menus, popovers and floating panels are raised. */
+[data-slot="dropdown-menu-content"],
+[data-slot="dropdown-menu-sub-content"],
+[data-slot="context-menu-content"],
+[data-slot="popover-content"],
+[data-slot="command"][data-dialog],
+[data-slot="dialog-content"],
+[data-slot="sheet-content"] {
+    @variant light {
+        box-shadow: 0 0 0 1px var(--border-strong), var(--ucch-shadow-raised);
+    }
+}
+/* §5.2: selected nav rows are tint + dark accent text + bold; icons are
+       secondary at rest and take the row's colour when selected. */
+[data-slot="sidebar-menu-button"][data-active],
+[data-slot="sidebar-menu-sub-button"][data-active] {
+    @variant light {
+        font-weight: 700;
+    }
+}
+/* §5.4: placeholders are tertiary; entered text is full ink. */
+:root[data-theme-mode="light"] [data-slot="input"]::placeholder,
+:root[data-theme-mode="light"] [data-slot="textarea"]::placeholder,
+:root[data-theme-mode="light"] [data-slot="command-input"]::placeholder {
+    color: var(--text-subtle);
+}
+@media (prefers-color-scheme: light) {
+    :root[data-theme-mode="system"] [data-slot="input"]::placeholder,
+    :root[data-theme-mode="system"] [data-slot="textarea"]::placeholder,
+    :root[data-theme-mode="system"] [data-slot="command-input"]::placeholder {
+        color: var(--text-subtle);
+    }
+}
+/* Defaults a component's own colour utility should still beat: in base. */
+@layer base {
+  [data-slot="sidebar-menu-button"]:not([data-active]) > svg {
+      @variant light {
+          color: var(--muted-foreground);
+      }
+  }
+  /* Keyboard hints (§5.4): a small mono chip. */
+  kbd,
+  [data-slot="dropdown-menu-shortcut"],
+  [data-slot="command-shortcut"] {
+      @variant light {
+          color: var(--muted-foreground);
+      }
+  }
 }

@@ -77,6 +77,14 @@ const ThreadCreate = z.object({
    * Only the server may set it; a client's command naming it is refused.
    */
   parentThreadId: z.string().uuid().optional(),
+  /**
+   * The subscription account (`agent_profiles`) the session's Claude Code
+   * or Codex turns sign in as. Must be the subject's own -- the starter's,
+   * or the workspace's when it runs on the workspace's subscription -- and
+   * fit the project's required context. Absent: the project's default for
+   * the person, else the Default account.
+   */
+  profileId: z.string().uuid().optional(),
 });
 
 /**
@@ -198,17 +206,6 @@ const ThreadFork = z.object({
 });
 
 /**
- * Empties an idle thread's context in place: the same session, branch and
- * transcript, but the agent's next turn starts from nothing -- a fresh CLI
- * session, or for the native loop a replay that begins after this point.
- * Any provider; the turns before it stay in the log and on screen.
- */
-const ThreadClearContext = z.object({
-  type: z.literal("thread.clear_context"),
-  threadId: z.string().uuid(),
-});
-
-/**
  * Folds an idle OMP thread's older turns into a summary now, rather than
  * waiting for its context to fill (solution §5.3). `focus` is what the
  * summary should keep, handed to OMP as its `customInstructions`.
@@ -220,9 +217,13 @@ const ThreadCompact = z.object({
 });
 
 /**
- * OMP's handoff on an idle OMP thread (solution §5.3): the session's
- * context is replaced by a brief of the work so far -- what was done, what
- * matters, what is next -- and the thread carries on from that.
+ * A handover on an idle thread that has run: the session's context is
+ * replaced by a brief of the work so far -- what was done, what matters,
+ * what is next -- and the thread carries on from that, on the same
+ * harness. On OMP it is OMP's own handoff (solution §5.3); on any other
+ * harness the server writes the brief and opens a fresh session with it
+ * (a `thread.harness_switch_requested` to the same provider, reason
+ * `context`). It replaces clearing: the work is kept, the bloat is not.
  */
 const ThreadHandoff = z.object({
   type: z.literal("thread.handoff"),
@@ -269,6 +270,18 @@ const ThreadSwitchHarness = z.object({
   focus: z.string().trim().max(2_000).optional(),
   message: z.string().min(1).optional(),
   reason: z.enum(["limit", "manual"]).optional(),
+  /**
+   * The subscription account to carry on as. With the thread's own
+   * provider as `targetProvider`, this is a move to another account of the
+   * same provider -- allowed only as a person's choice, never `auto`.
+   */
+  targetProfileId: z.string().uuid().optional(),
+  /**
+   * The server switched by itself (a usage limit with automatic fallback),
+   * not because someone picked this. An automatic switch never moves
+   * between two accounts of one provider.
+   */
+  auto: z.boolean().optional(),
 });
 
 /**
@@ -318,6 +331,12 @@ const TerminalCreate = z.object({
    * caller must be allowed to manage its credentials.
    */
   credentialWorkspaceId: z.string().uuid().optional(),
+  /**
+   * A login program only: which of the subject's subscription accounts
+   * (`agent_profiles`) to sign in. Absent: its Default account. The server
+   * checks it is the subject's own before anything starts.
+   */
+  profileId: z.string().uuid().optional(),
   /** A project session's hash: the shell opens in that session's worktree. */
   sessionHash: ThreadHash.optional(),
 });
@@ -409,7 +428,6 @@ export const Command = z.discriminatedUnion("type", [
   ThreadPermissionReply,
   ThreadRevert,
   ThreadFork,
-  ThreadClearContext,
   ThreadCompact,
   ThreadHandoff,
   ThreadHandoffTo,

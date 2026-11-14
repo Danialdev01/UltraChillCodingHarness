@@ -18,8 +18,8 @@ describe("finding the command at the caret", () => {
 
 describe("matching", () => {
   it("puts commands that start with the query first", () => {
-    expect(matchCommands(SLASH_COMMANDS, "e").map((c) => c.name)).toEqual(["effort", "clear", "model", "harness", "research", "documentation", "continue"]);
-    expect(matchCommands(SLASH_COMMANDS, "cl").map((c) => c.name)).toEqual(["clear"]);
+    expect(matchCommands(SLASH_COMMANDS, "e").map((c) => c.name)).toEqual(["effort", "model", "harness", "research", "documentation", "handoff", "continue"]);
+    expect(matchCommands(SLASH_COMMANDS, "cl").map((c) => c.name)).toEqual([]);
     expect(matchCommands(SLASH_COMMANDS, "con")).toEqual([expect.objectContaining({ name: "continue", takesArg: "target" })]);
     expect(matchCommands(SLASH_COMMANDS, "zz")).toEqual([]);
   });

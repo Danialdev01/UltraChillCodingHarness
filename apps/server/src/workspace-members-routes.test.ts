@@ -86,7 +86,7 @@ function fakeMembers() {
       return roster.has(actor)
         ? {
             credentialPolicy: "member",
-            credentials: { openrouter: false, claudeToken: false, claudeTokenIssuedAt: null },
+            credentials: { openrouter: false },
             agent: { ...agent },
           }
         : null;

@@ -1,5 +1,6 @@
 "use client"
 
+import { copyResourceIntoProject, type ResourceDragPayload } from "@/lib/resources-api"
 import * as React from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
@@ -206,6 +207,11 @@ export interface FilesPanelContextValue {
 
   /** Moves each path into `folder` ("" for the project root), keeping its name. */
   move: (paths: readonly string[], folder: string) => Promise<void>
+  /**
+   * Copies a file or folder from the workspace's Resources into `folder`
+   * ("" for the root). Never overwrites: a taken name becomes `name (1)`.
+   */
+  copyResource: (payload: ResourceDragPayload, folder: string) => Promise<void>
   /**
    * The folder a drag is hovering, so it can light up: "" is the root, null
    * means nothing is being dragged over the tree.
@@ -475,6 +481,17 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       setProject(next)
     }
 
+    /**
+     * The last tab closed: an empty editor is a blank page, so the chat
+     * takes the main section back. The tree stays where it was -- the next
+     * file is picked from it -- so this sets the view directly rather than
+     * through `setMode`, which folds the tree away when leaving files.
+     */
+    function leaveEmptyEditor() {
+      setMode((current) => (current === "file" ? "chat" : current))
+      setSidebar((current) => current ?? "files")
+    }
+
     function openFile(path: string) {
       setTabs((current) => (current.includes(path) ? current : [...current, path]))
       setActiveTab(path)
@@ -566,6 +583,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       closeTab: (path) => {
         const remaining = tabs.filter((p) => p !== path)
         setTabs(remaining)
+        if (remaining.length === 0) leaveEmptyEditor()
         if (activeTab !== path) return
         // Falls back to the neighbour on the left, the way an editor does,
         // rather than to nothing.
@@ -575,6 +593,7 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
       closeAllTabs: () => {
         setTabs([])
         setActiveTab(null)
+        leaveEmptyEditor()
       },
       terminals,
       registerTerminals: setTerminals,
@@ -768,7 +787,10 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
         // Everything the deleted paths were: their tabs, their buffers, their
         // place in the tree. A folder takes its children with it.
         const inside = (p: string) => gone.some((path) => p === path || p.startsWith(`${path}/`))
+        const left = tabs.filter((p) => !inside(p))
         setTabs((current) => current.filter((p) => !inside(p)))
+        // Deleting the files that were open closes the editor with them.
+        if (tabs.length > 0 && left.length === 0) leaveEmptyEditor()
         setActiveTab((current) => (current && inside(current) ? null : current))
         setBuffers((current) => Object.fromEntries(Object.entries(current).filter(([p]) => !inside(p))))
         setSaved((current) => Object.fromEntries(Object.entries(current).filter(([p]) => !inside(p))))
@@ -819,6 +841,18 @@ export function FilesPanelProvider({ children }: { children: React.ReactNode }) 
           if (folder) next.add(folder)
           return next
         })
+        refreshTree()
+      },
+      copyResource: async (payload, folder) => {
+        if (!target) return
+        setTreeError(null)
+        try {
+          const { path } = await copyResourceIntoProject(target, payload, folder)
+          setExpandedSet((current) => (folder ? new Set([...current, folder]) : current))
+          setSelected(path)
+        } catch (error) {
+          setTreeError(error instanceof Error ? error.message : String(error))
+        }
         refreshTree()
       },
       dropTarget,

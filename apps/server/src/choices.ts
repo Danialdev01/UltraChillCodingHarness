@@ -89,9 +89,13 @@ export function harnessAvailability(
  * limit, each with why it cannot be picked when it cannot. The Custom one
  * asks for an OpenRouter model.
  */
-export function limitOptions(harnesses: readonly HarnessAvailability[], limited: ProviderId): ChoiceOption[] {
+export function limitOptions(
+  harnesses: readonly HarnessAvailability[],
+  limited: ProviderId,
+  accounts: readonly LimitAccount[] = [],
+): ChoiceOption[] {
   const same = (a: ProviderId, b: ProviderId) => a === b || (a !== "claude" && a !== "codex" && b !== "claude" && b !== "codex");
-  return harnesses
+  const others = harnesses
     .filter((harness) => !same(harness.provider, limited))
     .map((harness) => ({
       id: harness.custom ? "custom" : harness.provider,
@@ -100,6 +104,37 @@ export function limitOptions(harnesses: readonly HarnessAvailability[], limited:
       ...(harness.custom ? { pickModel: true, detail: "Billed to the OpenRouter key" } : {}),
       ...(harness.blocker ? { blocker: harness.blocker } : {}),
     }));
+  // The person's other accounts of the limited provider: offered, never
+  // taken by themselves (`thread.switch_harness` refuses an automatic move
+  // between two accounts of one provider).
+  const sameProvider = accounts.map((account) => ({
+    id: `profile:${account.id}`,
+    label: `Continue on another ${harnessLabel(limited)} account: ${account.label}`,
+    provider: limited,
+    profileId: account.id,
+    detail: "Plan limits assume individual use",
+    ...(account.blocker ? { blocker: account.blocker } : {}),
+  }));
+  return [...others, ...sameProvider];
+}
+
+/** Another account of the limited provider, for its limit card. */
+export interface LimitAccount {
+  id: string;
+  label: string;
+  /** Why it cannot be picked: limited too, signed out, the wrong context. */
+  blocker?: string | null;
+}
+
+/** Why an account cannot take over a session now, or null when it can. */
+export function accountBlocker(
+  account: { authStatus: string; limitedUntil: string | null; context: string },
+  requiredContext: string | null | undefined,
+): string | null {
+  if (requiredContext && account.context !== requiredContext) return `Tagged ${account.context}; this project needs a ${requiredContext} account`;
+  if (account.limitedUntil) return `Limited until ${account.limitedUntil.slice(11, 16)} UTC`;
+  if (account.authStatus !== "signed_in") return "Sign in to this account in Settings -> Harness";
+  return null;
 }
 
 /** "Claude Code", "Codex", "Custom": a provider as the cards name it. */

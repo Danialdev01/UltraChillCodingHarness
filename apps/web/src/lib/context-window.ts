@@ -7,16 +7,21 @@
  * rather than three magic numbers inside a className.
  */
 
+import { CONTEXT_HANDOVER_RATIO } from "@ucch/protocol/plain";
+
 /**
- * Where the bar changes colour.
- *
- * `warn` is set well before the wall. A thread that is three quarters full
- * still has room for a few more turns, and the point of saying so then is
- * that clearing is cheap now and disruptive later -- once a turn is refused
- * for length, whatever was being worked on is already interrupted.
+ * Where a session hands over (`CONTEXT_HANDOVER_RATIO`): the server makes
+ * one by itself once a turn ends past it, so the ring should never read
+ * much above it.
  */
-export const WARN_RATIO = 0.75;
-export const FULL_RATIO = 0.9;
+export const HANDOVER_RATIO = CONTEXT_HANDOVER_RATIO;
+
+/**
+ * Where the ring changes colour: amber as the handover line nears, red at
+ * it -- the next turn's end hands over.
+ */
+export const WARN_RATIO = 0.45;
+export const FULL_RATIO = HANDOVER_RATIO;
 
 export type ContextTone = "idle" | "normal" | "warn" | "full";
 

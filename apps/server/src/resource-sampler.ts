@@ -257,6 +257,41 @@ export interface ResourceSamplerOptions {
   registry?: Registry;
   /** Called with each sample when `LOG_RESOURCE_SAMPLES` is on. */
   log?: (sample: { groups: Record<string, GroupTotals>; cgroup: CgroupSample }) => void;
+  /** Called after every sample: the turn scheduler looks at its queue again. */
+  onSample?: () => void;
+  now?: () => number;
+}
+
+/** `/proc/meminfo`'s `MemTotal` and `MemAvailable`, in bytes; null without them. */
+export function parseMeminfo(text: string): { total: number; available: number } | null {
+  const kb = (key: string) => {
+    const match = new RegExp(`^${key}:\\s+(\\d+)\\s*kB`, "m").exec(text);
+    return match ? Number(match[1]) * 1024 : null;
+  };
+  const total = kb("MemTotal");
+  const available = kb("MemAvailable");
+  return total !== null && available !== null ? { total, available } : null;
+}
+
+/**
+ * Memory in use against what there is, for admission: whichever of the
+ * cgroup (its limit, use less reclaimable `inactive_file`, as `docker stats`
+ * counts it) and the host (total less `MemAvailable`) is nearer full. The
+ * host counts because a container without a limit, or with one above the
+ * machine's RAM, runs out when the machine does.
+ */
+export function memoryInUse(
+  cgroup: CgroupSample | null,
+  host: { total: number; available: number } | null,
+): { usedBytes: number; limitBytes: number } | null {
+  const candidates: { usedBytes: number; limitBytes: number }[] = [];
+  if (cgroup?.current != null && cgroup.max != null && cgroup.max > 0) {
+    const used = Math.max(0, cgroup.current - (cgroup.stat.get("inactive_file") ?? 0));
+    candidates.push({ usedBytes: used, limitBytes: cgroup.max });
+  }
+  if (host && host.total > 0) candidates.push({ usedBytes: Math.max(0, host.total - host.available), limitBytes: host.total });
+  if (candidates.length === 0) return null;
+  return candidates.reduce((a, b) => (b.usedBytes / b.limitBytes > a.usedBytes / a.limitBytes ? b : a));
 }
 
 export class ResourceSampler {
@@ -265,6 +300,10 @@ export class ResourceSampler {
   readonly #intervalMs: number;
   readonly #selfPid: number;
   readonly #log: ResourceSamplerOptions["log"];
+  readonly #onSample: ResourceSamplerOptions["onSample"];
+  readonly #now: () => number;
+  #lastHost: { total: number; available: number } | null = null;
+  #lastSampleAt: number | null = null;
   #timer: NodeJS.Timeout | null = null;
   #running = false;
   /** CPU ticks last seen per process, keyed by pid and start time so a reused pid starts afresh. */
@@ -284,6 +323,8 @@ export class ResourceSampler {
     this.#intervalMs = options.intervalMs ?? INTERVAL_MS;
     this.#selfPid = options.selfPid ?? process.pid;
     this.#log = options.log;
+    this.#onSample = options.onSample;
+    this.#now = options.now ?? Date.now;
     const registry = options.registry ?? defaultRegistry;
     this.#rss = registry.gauge("resource_rss_bytes", "Private resident memory by service or kind of child process; postgres includes its shared buffers once", ["group"]);
     this.#processes = registry.gauge("resource_processes", "Live processes by service or kind of child process", [
@@ -325,11 +366,23 @@ export class ResourceSampler {
     return this.#lastCgroup;
   }
 
+  /**
+   * Memory in use from the last sample, stamped with when that sample began
+   * (so a turn started while it was being read counts as not yet in it).
+   * Null before the first sample or with neither figure available.
+   */
+  get memoryReading(): { usedBytes: number; limitBytes: number; at: number } | null {
+    if (this.#lastSampleAt === null) return null;
+    const inUse = memoryInUse(this.#lastCgroup, this.#lastHost);
+    return inUse ? { ...inUse, at: this.#lastSampleAt } : null;
+  }
+
   /** One sample into the gauges. Never throws: a missing file is a missing figure. */
   async sample(): Promise<void> {
     // A slow disk must not stack samples on top of each other.
     if (this.#running) return;
     this.#running = true;
+    const startedAt = this.#now();
     try {
       const procs = await this.#readProcesses();
       const { groups, groupOf } = aggregate(procs, this.#selfPid);
@@ -371,9 +424,17 @@ export class ResourceSampler {
         this.#lastOomKills = oomKills;
       }
 
+      this.#lastHost = await readFile(`${this.#procRoot}/meminfo`, "utf8").then(parseMeminfo, () => null);
+      this.#lastSampleAt = startedAt;
+
       this.#log?.({ groups: Object.fromEntries(groups), cgroup });
     } finally {
       this.#running = false;
+    }
+    try {
+      this.#onSample?.();
+    } catch {
+      // The scheduler's problem, not the sampler's: the next sample tries again.
     }
   }
 

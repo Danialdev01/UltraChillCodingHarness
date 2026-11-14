@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchCatalogue, parseModelRequest, resolveHarness, type RoutingInput } from "./model-routing.js";
+import { UCCH_AGENT_GUIDE, UCCH_AGENT_UNAVAILABLE_NOTE, matchCatalogue, parseModelRequest, resolveHarness, type RoutingInput } from "./model-routing.js";
 
 const catalogue = [
   { id: "anthropic/claude-opus-5.5", name: "Anthropic: Claude Opus 5.5" },
@@ -137,5 +137,22 @@ describe("subscription routing policy", () => {
     expect(resolveHarness("minimax 3", config)).toMatchObject({ ok: true, provider: "omp", model: "minimax/minimax-m3" });
     config.harnesses = config.harnesses.filter((h) => h.provider !== "omp");
     expect(resolveHarness("minimax 3", config)).toMatchObject({ ok: false });
+  });
+});
+
+describe("the person's own words for a mixed pair of subagents", () => {
+  it("sends opus to Claude Code and gpt-6 sol to Codex, whatever the parent runs on", () => {
+    for (const provider of ["claude", "codex"] as const) {
+      const config = input({ parent: { provider, model: provider === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5" } });
+      expect(resolveHarness("opus 5.5", config)).toMatchObject({ ok: true, provider: "claude", model: "claude-opus-5-5" });
+      expect(resolveHarness("gpt-6 sol", config)).toMatchObject({ ok: true, provider: "codex", model: "gpt-6-sol" });
+    }
+  });
+
+  it("tells the agent to use ucch_agent for every named model and never to swap one", () => {
+    expect(UCCH_AGENT_GUIDE).toMatch(/every subagent of that request with `ucch_agent`/);
+    expect(UCCH_AGENT_GUIDE).toMatch(/never use your built-in subagent tool/);
+    expect(UCCH_AGENT_GUIDE).toMatch(/Never substitute another model/);
+    expect(UCCH_AGENT_UNAVAILABLE_NOTE).toMatch(/do not substitute another model/);
   });
 });

@@ -26,7 +26,35 @@ own() {
   chmod "$mode" "$dir"
 }
 
+# /data must be a mounted volume. Without one it lives in the container's
+# own layer, and the next redeploy (a new container) erases everything.
+if ! mountpoint -q "$data"; then
+  if [ "${ALLOW_EPHEMERAL_DATA:-false}" = "true" ]; then
+    echo "[init-dirs] WARNING: $data is not a mounted volume; all data is lost when this container is replaced (ALLOW_EPHEMERAL_DATA=true)" >&2
+  else
+    cat >&2 <<MSG
+[init-dirs] ERROR: $data is not a mounted volume.
+[init-dirs] Every redeploy would start from an empty database and erase all
+[init-dirs] accounts, projects and files, so the container refuses to start.
+[init-dirs] Dokploy: Advanced -> Volumes -> Add Volume -> Volume Mount,
+[init-dirs]          name ucch-data, mount path $data. Then redeploy.
+[init-dirs] Docker:  docker run -v ucch-data:$data ...
+[init-dirs] For a throwaway test run, set ALLOW_EPHEMERAL_DATA=true.
+MSG
+    exit 1
+  fi
+fi
+
 mkdir -p "$data"
+# Written on first boot: its absence means this volume is new, so a volume
+# that was swapped or wiped shows up in the logs.
+if [ ! -e "$data/.ucch-volume" ]; then
+  # A volume from before this marker existed already holds a database.
+  if [ ! -s "$data/postgres/PG_VERSION" ]; then
+    echo "[init-dirs] NEW EMPTY DATA VOLUME at $data: first boot, starting from nothing" >&2
+  fi
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$data/.ucch-volume"
+fi
 chown root:root "$data"
 chmod 755 "$data"
 own "$data/postgres" postgres 700

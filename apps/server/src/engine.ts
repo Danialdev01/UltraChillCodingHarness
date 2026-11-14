@@ -14,6 +14,7 @@ import {
 } from "@ucch/protocol";
 import {
   agentMessages,
+  agentProfiles,
   agentRuns,
   previews,
   projects,
@@ -246,6 +247,8 @@ export class OrchestrationEngine {
           baseBranch: row.baseBranch,
           treeHash: row.treeHash,
           parentThreadId: row.parentThreadId,
+          profileId: row.profileId,
+          createdByUserId: row.createdByUserId,
           hasActiveChildren: command.type === "thread.cancel" && (await this.db.select({ id: agentRuns.id }).from(agentRuns).where(and(eq(agentRuns.parentThreadId, row.id), eq(agentRuns.status, "running"))).limit(1)).length > 0,
         };
       }
@@ -254,7 +257,12 @@ export class OrchestrationEngine {
     if (command.type === "thread.send" && command.subagentId && state.thread) {
       const history = await this.store.threadHistory(state.thread.id);
       const started = history.findLast(row => row.event.type === "agent.subagent_started" && row.event.subagentId === command.subagentId)?.event;
-      if (started?.type === "agent.subagent_started") state.subagent = { id: started.subagentId, provider: started.provider, childThreadId: started.childThreadId };
+      // The handle a CLI's built-in subagent is continued by: the latest its
+      // own events reported, on its start or (learned from the result) its end.
+      const handle = history.findLast(row => (row.event.type === "agent.subagent_started" || row.event.type === "agent.subagent_finished")
+        && row.event.subagentId === command.subagentId && row.event.resumeHandle)?.event;
+      const resumeHandle = handle?.type === "agent.subagent_started" || handle?.type === "agent.subagent_finished" ? handle.resumeHandle : undefined;
+      if (started?.type === "agent.subagent_started") state.subagent = { id: started.subagentId, provider: started.provider, childThreadId: started.childThreadId, ...(resumeHandle ? { resumeHandle } : {}) };
     }
     if (command.type === "thread.agent_message") {
       const [source] = await this.db.select({ id: threads.id, projectId: threads.projectId, hash: threads.hash }).from(threads).where(eq(threads.id, command.fromThreadId)).limit(1);
@@ -274,10 +282,27 @@ export class OrchestrationEngine {
           workspaceId: row.project.workspaceId,
           containerState: row.project.containerState as ContainerState,
           defaultBranch: row.project.defaultBranch,
+          requiredContext: row.project.requiredContext,
         };
       }
     }
 
+    // The subscription account a session is started on or moved to: the
+    // decision checks it is the right subject's and fits the project.
+    const profileId =
+      command.type === "thread.create" ? command.profileId : command.type === "thread.switch_harness" ? command.targetProfileId : undefined;
+    if (profileId) {
+      const [row] = await this.db.select().from(agentProfiles).where(eq(agentProfiles.id, profileId)).limit(1);
+      if (row) {
+        state.profile = {
+          id: row.id,
+          subject: row.subject,
+          provider: row.provider,
+          context: row.context,
+          isDefault: row.dirName === row.provider,
+        };
+      }
+    }
     const workspaceId = "workspaceId" in command ? command.workspaceId : state.project?.workspaceId;
     if (workspaceId) {
       // The caller's membership comes with the workspace: it is what every
@@ -608,7 +633,12 @@ export async function applyProjection(
         // belongs to the old provider: the next turn opens a fresh one.
         await tx
           .update(threads)
-          .set({ provider: event.toProvider, providerSessionId: null })
+          .set({
+            provider: event.toProvider,
+            providerSessionId: null,
+            // Events from before accounts leave the binding as it was.
+            ...(event.toProfileId !== undefined ? { profileId: existingProfile(event.toProfileId) } : {}),
+          })
           .where(eq(threads.id, event.threadId));
         await tx
           .update(threads)
@@ -640,6 +670,7 @@ export async function applyProjection(
           worktreeState: event.branch ? (event.worktreeOf ? "ready" : "creating") : null,
           treeHash: event.treeHash ?? null,
           parentThreadId: event.parentThreadId ?? null,
+          profileId: existingProfile(event.profileId),
         });
         // A subagent's session is not one of the project's sessions.
         if (event.parentThreadId) break;
@@ -823,4 +854,13 @@ export interface Reactors {
     events: readonly DomainEvent[],
     principal: Principal,
   ): void;
+}
+
+/**
+ * A thread's account binding as projected: the id while that account still
+ * exists, else null. A replayed log can name an account deleted since,
+ * which the foreign key would refuse.
+ */
+function existingProfile(id: string | null | undefined) {
+  return id ? sql<string | null>`(select ${agentProfiles.id} from ${agentProfiles} where ${agentProfiles.id} = ${id})` : null;
 }

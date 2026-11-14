@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { ActivityFeed } from "@/components/activity/activity-feed"
 import { GitRemoteSettings } from "@/components/git/remote-settings"
+import { ProjectAccountSettings } from "@/components/project-account-settings"
 import { ProjectKeySettings } from "@/components/project-key-settings"
 import { ProjectPreferences } from "@/components/project-preferences"
 import { RuntimeSettings } from "@/components/runtime-settings"
@@ -56,6 +57,10 @@ export function ManageTabs({ project, initialTab }: { project: Project; initialT
 
       <TabsPanel value="project-key">
         <ProjectKeySettings project={project} />
+      </TabsPanel>
+
+      <TabsPanel value="accounts">
+        <ProjectAccountSettings project={project} />
       </TabsPanel>
 
       <TabsPanel value="preferences">

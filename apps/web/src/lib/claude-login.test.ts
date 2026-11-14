@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest"
 
 import {
   checkAuthCode,
-  checkSetupToken,
   detectOutcome,
   extractOAuthUrl,
   hasCodePrompt,
@@ -102,10 +101,5 @@ describe("format checks", () => {
     expect(checkAuthCode("#abc").ok).toBe(false)
     expect(checkAuthCode("abc#").ok).toBe(false)
     expect(checkAuthCode("abc#def")).toEqual({ ok: true, hint: null })
-  })
-
-  it("hints at, but does not refuse, an odd setup token", () => {
-    expect(checkSetupToken("hello")).toEqual({ ok: true, hint: expect.any(String) })
-    expect(checkSetupToken(`sk-ant-oat01-${"x".repeat(60)}`)).toEqual({ ok: true, hint: null })
   })
 })
