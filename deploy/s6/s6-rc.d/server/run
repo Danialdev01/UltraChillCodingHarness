@@ -21,6 +21,14 @@ from_secret() {
 from_secret SECRET_KEY
 from_secret DEFAULT_USER_PASSWORD
 
+# The build this image is: the BUILD_ID build argument, or the id the web
+# build gave itself (Dockerfile, web-build). Reported by /health, and to open
+# tabs so they offer to reload onto a new deploy.
+if [ -z "${BUILD_ID:-}" ] && [ -s /app/BUILD_ID ]; then
+  export BUILD_ID="$(cat /app/BUILD_ID)"
+fi
+echo "[server] build ${BUILD_ID:-unknown}" >&2
+
 if [ -z "${DATABASE_URL:-}" ]; then
   export DATABASE_URL="postgres://ucch:$(cat "$secrets/postgres_password")@127.0.0.1:5432/ucch"
   # The embedded server holds projects' databases too, as `dev`.

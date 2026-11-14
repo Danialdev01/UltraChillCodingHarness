@@ -1165,6 +1165,8 @@ app.get("/health", async (_request, reply) => {
   return reply.code(healthy ? 200 : 503).send({
     status: healthy ? "ok" : "degraded",
     version: "0.1.0",
+    // Which build is live, so a deploy can be checked from outside.
+    build: process.env.BUILD_ID || null,
     connections: gateway.connectionCount,
     db: database,
     ...(webApp ? { web: webApp } : {}),
@@ -1181,7 +1183,8 @@ app.get("/health", async (_request, reply) => {
  * `pickActiveWorkspace` does. Answers 304 to a matching If-None-Match, so a
  * client revalidating its cached copy pays for headers only.
  */
-const BUILD_ID = process.env.BUILD_ID ?? "dev";
+// Empty counts as unset: the image sets BUILD_ID="" when none was given.
+const BUILD_ID = process.env.BUILD_ID || "dev";
 // Who asks: the web app rendering a page on the server (loopback, and not
 // forwarded by anything) or a browser revalidating its cached copy.
 const bootstrapCalls = registry.counter("bootstrap_requests_total", "GET /api/bootstrap, by caller", ["caller"]);

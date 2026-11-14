@@ -69,7 +69,15 @@ ARG NEXT_PUBLIC_PWA=0
 ENV NEXT_PUBLIC_PWA=$NEXT_PUBLIC_PWA
 ENV NEXT_TELEMETRY_DISABLED=1
 # public/ exists either way, so the stages below can copy it.
-RUN cd apps/web && mkdir -p public && pnpm exec next build
+#
+# With no BUILD_ID given (a Dokploy "Dockerfile" build passes none), every
+# build names itself with its UTC time, so each deploy is still a distinct
+# build: /health reports it and open tabs offer to reload onto it. The id is
+# kept in /app/build-id for the app stage, which hands it to the server.
+RUN id="${BUILD_ID:-$(date -u +%Y%m%d%H%M%S)}" \
+  && printf '%s' "$id" > /app/build-id \
+  && cd apps/web && mkdir -p public \
+  && NEXT_PUBLIC_BUILD_ID="$id" pnpm exec next build
 # The file-tree icons are read off disk at run time, so the standalone trace
 # only has them through next.config.ts's outputFileTracingIncludes; without
 # them every icon request is a 500. Fail the build rather than ship that.
@@ -273,6 +281,9 @@ WORKDIR /app
 COPY --from=web-build --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=web-build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=web-build --chown=node:node /app/apps/web/public ./apps/web/public
+# The id the web bundle was built with; deploy/s6/s6-rc.d/server/run reads it
+# when BUILD_ID is empty.
+COPY --from=web-build /app/build-id /app/BUILD_ID
 COPY --from=server-build /out/server ./server
 COPY deploy/s6/ /etc/s6-overlay/
 COPY deploy/bin/ /usr/local/bin/

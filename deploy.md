@@ -107,11 +107,13 @@ Check it:
 
 ```bash
 curl -s https://ucch.example.com/health
-# {"status":"ok",...,"db":"ok","web":"ok"}
+# {"status":"ok",...,"build":"20261114105500",...,"db":"ok","web":"ok"}
 
 curl -o /dev/null -w '%{http_code}\n' https://ucch.example.com/api/me
 # 401  (the server answered; you just aren't signed in)
 ```
+
+`build` names the image that is live: the `BUILD_ID` build argument, or the time the image was built if none was given. After every deploy it should change; if it doesn't, see "Redeploy finished but the old version is still served" under Troubleshooting.
 
 ## 9. Sign in
 
@@ -173,6 +175,7 @@ Under the application's **General** tab, turn on **Auto Deploy**, so every push 
 | Logs show `NEW EMPTY DATA VOLUME` on an existing install   | The container got a different or empty volume. Check the mount in **Advanced → Volumes**.                                         |
 | PostgreSQL errors about the data directory after an update | The update order is `start-first`. Set it to `stop-first` (step 7.3) and restore from a backup if needed.                     |
 | Stored API keys stop working                               | `SECRET_KEY` changed. Restore the original from `/data/secrets/secret_key` or a backup.                                       |
+| Redeploy finished but the old version is still served (even in a private window) | `curl https://ucch.example.com/health` shows the old `build`, so the old container is still answering. Usually the update order is still `start-first` (step 7.3): the new container's PostgreSQL can't start beside the old one, the new container fails its health check, and Swarm keeps the old one. Set `stop-first` and deploy again. Otherwise look for a leftover container serving the same domain (`docker ps`; `docker service ps <service> --no-trunc` shows failed tasks) and remove that one, never the `/data` volume. Check that the deployment log built the right branch and commit. |
 | Changing a `NEXT_PUBLIC_*` value has no effect           | It's a build-time argument. Set it under Build-time Arguments and redeploy, which rebuilds.                                       |
 
 ## Security note
