@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DomainEvent } from "@ucch/protocol";
 import { describe, expect, it } from "vitest";
-import { CodexNormaliser, CodexProvider, codexArgv, codexMcpArgs, codexPrompt, isCodexLimit, listCodexModels, probeCodex } from "./codex.js";
-import { FakeProcessHost, stdout } from "./testing.js";
+import { CodexNormaliser, CodexProvider, codexArgv, codexMcpArgs, codexPrompt, codexSandboxMode, isCodexLimit, listCodexModels, probeCodex, probeCodexSandbox } from "./codex.js";
+import { FakeProcessHost, stderr, stdout } from "./testing.js";
 
 const WORKSPACE = "/srv/ucch/workspaces/11111111-1111-4111-8111-111111111111";
 const ids = {
@@ -113,8 +113,14 @@ describe("codexArgv", () => {
     expect(argv).not.toContain("--skip-git-repo-check");
   });
 
+  it("passes full access only when asked to", () => {
+    const argv = codexArgv({ bin: "codex", isRepo: true, caps, sandbox: "danger-full-access" });
+    expect(argv.join(" ")).toContain("--sandbox danger-full-access");
+    expect(argv).not.toContain("workspace-write");
+  });
+
   // Ephemeral skips the rollout file that resume needs.
-  it("never passes --ephemeral or full access", () => {
+  it("never passes --ephemeral or full access by default", () => {
     for (const argv of [
       codexArgv({ bin: "codex", isRepo: true, caps }),
       codexArgv({ bin: "codex", isRepo: false, caps, resumeToken: "t", model: "gpt-5" }),
@@ -320,6 +326,54 @@ describe("probeCodex", () => {
       { match: (a) => a[1] === "login", lines: [stdout("Not logged in")], exit: { code: 1, signal: null } },
     ]);
     expect(await probeCodex(ctx(host), "codex")).toMatchObject({ authenticated: false, authMode: "none" });
+  });
+});
+
+describe("Codex sandbox fallback", () => {
+  const ctx = (host: FakeProcessHost) => ({ cwd: "/tmp", env: { PATH: "/usr/bin" }, host });
+  const installed = [
+    { match: (a: readonly string[]) => a[1] === "--version", lines: [stdout("codex-cli 0.166.0")] },
+    { match: (a: readonly string[]) => a[1] === "login", lines: [stdout("Logged in using ChatGPT")] },
+  ];
+  const blocked = {
+    match: (a: readonly string[]) => a[1] === "sandbox",
+    lines: [stderr("bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces.")],
+    exit: { code: 1, signal: null },
+  };
+
+  it("maps policy and probe to a mode", () => {
+    expect(codexSandboxMode("auto", { ignoreRules: false })).toBe("workspace-write");
+    expect(codexSandboxMode("auto", { ignoreRules: false, sandbox: true })).toBe("workspace-write");
+    expect(codexSandboxMode("auto", { ignoreRules: false, sandbox: false })).toBe("danger-full-access");
+    expect(codexSandboxMode("workspace-write", { ignoreRules: false, sandbox: false })).toBe("workspace-write");
+    expect(codexSandboxMode("danger-full-access", { ignoreRules: false, sandbox: true })).toBe("danger-full-access");
+  });
+
+  it("reads the probe: works, blocked, or unknown", async () => {
+    expect(await probeCodexSandbox(ctx(new FakeProcessHost([{ match: (a) => a[1] === "sandbox" }])), "codex")).toBe(true);
+    expect(await probeCodexSandbox(ctx(new FakeProcessHost([blocked])), "codex")).toBe(false);
+    // An old CLI without the subcommand says nothing about namespaces.
+    expect(await probeCodexSandbox(ctx(new FakeProcessHost([])), "codex")).toBeUndefined();
+  });
+
+  it("runs with full access, and says so, where bubblewrap cannot start", async () => {
+    const host = new FakeProcessHost([...installed, blocked, { match: (a) => a[1] === "exec", lines: fixture.trim().split("\n").map(stdout) }]);
+    const provider = new CodexProvider("codex", () => true);
+    const health = await provider.probe(ctx(host));
+    expect(health.warnings?.some((w) => /full access/.test(w))).toBe(true);
+    const run = provider.run({ ctx: { cwd: WORKSPACE, env: { PATH: "/usr/bin", CODEX_HOME: "/creds" }, host }, prompt: "x", ...ids });
+    for await (const _ of run.events) { /* drain */ }
+    expect(host.spawned.find((s) => s.argv.includes("--json"))?.argv.join(" ")).toContain("--sandbox danger-full-access");
+  });
+
+  it("keeps workspace-write when the policy pins it, without probing", async () => {
+    const host = new FakeProcessHost([...installed, blocked, { match: (a) => a[1] === "exec", lines: fixture.trim().split("\n").map(stdout) }]);
+    const provider = new CodexProvider("codex", () => true, "workspace-write");
+    await provider.probe(ctx(host));
+    expect(host.spawned.some((s) => s.argv[1] === "sandbox")).toBe(false);
+    const run = provider.run({ ctx: { cwd: WORKSPACE, env: { PATH: "/usr/bin", CODEX_HOME: "/creds" }, host }, prompt: "x", ...ids });
+    for await (const _ of run.events) { /* drain */ }
+    expect(host.spawned.find((s) => s.argv.includes("--json"))?.argv.join(" ")).toContain("--sandbox workspace-write");
   });
 });
 

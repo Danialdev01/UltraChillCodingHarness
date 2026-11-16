@@ -280,6 +280,7 @@ const providerService = new ProviderService(
   createProviders({
     claudeBin: config.CLAUDE_BIN,
     codexBin: config.CODEX_BIN,
+    codexSandbox: config.CODEX_SANDBOX,
     ompBin: config.OMP_BIN,
     isRepo: (cwd) => existsSync(join(cwd, ".git")),
   }),

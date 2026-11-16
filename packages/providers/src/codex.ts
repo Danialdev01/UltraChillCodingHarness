@@ -187,6 +187,45 @@ export const CODEX_SUBSCRIPTION_WARNING =
 
 export interface CodexCapabilities {
   ignoreRules: boolean;
+  /**
+   * Whether Codex's own Linux sandbox (bubblewrap) can start where turns
+   * run. `false` only when the probe failed for the known reason -- no user
+   * namespaces, as in a default Docker container; unknown otherwise.
+   */
+  sandbox?: boolean;
+}
+
+/** `--sandbox` values the harness passes. Read-only is never one (it looks broken). */
+export type CodexSandboxMode = "workspace-write" | "danger-full-access";
+
+/**
+ * `CODEX_SANDBOX`: a fixed mode, or `auto` -- workspace-write where Codex's
+ * sandbox can start, full access where it cannot (inside a container, which
+ * is then the isolation). Without this, every shell call a containerised
+ * Codex makes fails with "bwrap: No permissions to create a new namespace".
+ */
+export type CodexSandboxPolicy = "auto" | CodexSandboxMode;
+
+export function codexSandboxMode(policy: CodexSandboxPolicy, caps: CodexCapabilities): CodexSandboxMode {
+  if (policy !== "auto") return policy;
+  return caps.sandbox === false ? "danger-full-access" : "workspace-write";
+}
+
+/** bubblewrap's words when it cannot make a namespace (EPERM, or ENOSPC when nested). */
+const NO_NAMESPACES = /bwrap:|creating new namespace failed|no permissions to create a new namespace|unprivileged.*namespace|setting up uid map/i;
+
+/**
+ * Runs `true` under Codex's sandbox, the way a turn's commands would run.
+ * `true`/`false` when that answers it, `undefined` when the result says
+ * nothing about namespaces (an old CLI without `codex sandbox`, a timeout).
+ */
+export async function probeCodexSandbox(ctx: RunContext, bin: string): Promise<boolean | undefined> {
+  const result = await ctx.host
+    .run({ argv: [bin, "sandbox", "true"], cwd: ctx.cwd, env: ctx.env }, { timeoutMs: 15_000 })
+    .catch(() => null);
+  if (!result) return undefined;
+  if (result.code === 0) return true;
+  return NO_NAMESPACES.test(`${result.stderr}\n${result.stdout}`) ? false : undefined;
 }
 
 export function codexArgv(input: {
@@ -197,14 +236,17 @@ export function codexArgv(input: {
   /** Whether the workspace is a git repository. Codex refuses one that is not, unless told. */
   isRepo: boolean;
   caps: CodexCapabilities;
+  /** Defaults to workspace-write. */
+  sandbox?: CodexSandboxMode;
   /** The OMP bridge (solution §10.3). Absent: no MCP server is added. */
   mcp?: CodexMcpServer;
 }): string[] {
   const argv = [input.bin, "exec"];
   argv.push("--json");
   // The default sandbox is read-only, which makes the agent look broken.
-  // Full access is not offered: this is not yet a container.
-  argv.push("--sandbox", "workspace-write");
+  // Full access only where Codex's own sandbox cannot start, which is inside
+  // a container (codexSandboxMode).
+  argv.push("--sandbox", input.sandbox ?? "workspace-write");
   // Subscription image generation must be available in headless chat turns too.
   argv.push("-c", "features.image_generation=true");
   if (!input.isRepo) argv.push("--skip-git-repo-check");
@@ -630,21 +672,40 @@ export class CodexProvider implements AgentProvider {
     return readCodexRateLimits(ctx, this.bin);
   }
   #caps: CodexCapabilities | null = null;
+  /** Whether the sandbox can start here: a property of the host, probed once. */
+  #sandbox: Promise<boolean | undefined> | null = null;
 
   constructor(
     private readonly bin: string,
     /** Whether `cwd` is a git repository; the server knows, the package does not look. */
     private readonly isRepo: (cwd: string) => boolean = () => true,
+    private readonly sandboxPolicy: CodexSandboxPolicy = "auto",
   ) {}
 
   async probe(ctx: RunContext): Promise<ProviderHealth> {
     const { caps, ...health } = await probeCodex(ctx, this.bin);
-    if (health.installed) this.#caps = caps;
+    if (!health.installed) return health;
+    if (this.sandboxPolicy === "auto") {
+      this.#sandbox ??= probeCodexSandbox(ctx, this.bin);
+      const sandbox = await this.#sandbox;
+      if (sandbox === undefined) this.#sandbox = null; // ask again next probe
+      else caps.sandbox = sandbox;
+    }
+    this.#caps = caps;
+    if (codexSandboxMode(this.sandboxPolicy, caps) === "danger-full-access") {
+      health.warnings = [
+        ...(health.warnings ?? []),
+        this.sandboxPolicy === "auto"
+          ? "Codex's own sandbox cannot start on this server (no user namespaces, as in a container), so Codex runs with full access inside it."
+          : "CODEX_SANDBOX=danger-full-access: Codex runs without its own sandbox.",
+      ];
+    }
     return health;
   }
 
   run(input: ProviderRunInput): AgentRun {
     const caps = this.#caps ?? { ignoreRules: false };
+    const sandbox = codexSandboxMode(this.sandboxPolicy, caps);
     const normaliser = new CodexNormaliser({
       projectId: input.projectId,
       threadId: input.threadId,
@@ -662,6 +723,7 @@ export class CodexProvider implements AgentProvider {
           ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
           isRepo: this.isRepo(input.ctx.cwd),
           caps,
+          sandbox,
           ...(input.codexMcp ? { mcp: input.codexMcp } : {}),
         }),
         stdin: `${CODEX_IMAGE_INSTRUCTIONS}\n\n${codexPrompt(input.subagentId ? codexSubagentPrompt(input.prompt, input.subagentId, input.resumeToken) : input.prompt, input.instructions, input.resumeToken)}`,

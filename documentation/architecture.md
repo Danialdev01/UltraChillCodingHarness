@@ -405,6 +405,7 @@ Configuration is validated once at boot by zod (`apps/server/src/config.ts`). A 
 | `AGENT_MAX_CONCURRENT_PER_USER` / `_TOTAL` | `2` / `5` | CLI turn caps |
 | `AGENT_MAX_NATIVE_TOTAL` | `32` | native turns and diagram jobs |
 | `CLAUDE_BIN`, `CODEX_BIN`, `OMP_BIN` | `claude`, `codex`, `omp` | CLI paths |
+| `CODEX_SANDBOX` | `auto` (image: `danger-full-access`) | Codex's `--sandbox`; `auto` uses workspace-write where its bubblewrap sandbox starts, full access where it cannot (a container) |
 | `OMP_ENABLED` | `false` | new Custom threads run on OMP |
 | `NATIVE_LOOP_FALLBACK` | `true` | native threads keep running natively |
 | `OMP_BRIDGE_BIN` | `/opt/ucch/omp-bridge.mjs` | the bridge bundle |

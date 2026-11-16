@@ -242,7 +242,13 @@ ENV JS_DEBUG_DAP_SERVER=/opt/js-debug/js-debug/src/dapDebugServer.js
 # AGENT_ALLOW_HOST_SHELL=true at runtime (.env.example sets it).
 ARG CLAUDE_CODE_VERSION=2.1.318
 ARG CODEX_VERSION=0.166.0
-ENV DISABLE_AUTOUPDATER=1
+# Codex's own sandbox is bubblewrap, which needs user namespaces; Docker's
+# default seccomp profile blocks them, so under workspace-write every shell
+# call fails with "bwrap: No permissions to create a new namespace". The
+# container is the isolation here. CODEX_SANDBOX=auto (the server's default)
+# would find the same by probing; this makes it certain on any host.
+ENV DISABLE_AUTOUPDATER=1 \
+    CODEX_SANDBOX=danger-full-access
 RUN npm install -g \
     "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     "@openai/codex@${CODEX_VERSION}" \

@@ -223,6 +223,14 @@ const Env = z.object({
   CODEX_BIN: z.string().default("codex"),
 
   /**
+   * Codex's `--sandbox`. `auto` probes Codex's own (bubblewrap) sandbox and
+   * uses workspace-write where it starts, full access where it cannot -- a
+   * Docker container, which blocks the user namespaces it needs. The image
+   * sets `danger-full-access`: the container is the isolation there.
+   */
+  CODEX_SANDBOX: z.enum(["auto", "workspace-write", "danger-full-access"]).default("auto"),
+
+  /**
    * The oh-my-pi agent (`documentation/architecture.md` §7), which takes over
    * the "Custom" provider from the native loop. A bare name resolves through
    * PATH; the image pins `/opt/omp/bin/omp`.

@@ -35,6 +35,8 @@ services:
       PUBLIC_WEB_ORIGIN: ${PUBLIC_WEB_ORIGIN:-http://localhost:3000}
       ENABLE_MYSQL: ${ENABLE_MYSQL:-false}
       AGENT_ALLOW_HOST_SHELL: "true"
+      # Codex's bubblewrap sandbox cannot start in a container; see Dockerfile.
+      CODEX_SANDBOX: ${CODEX_SANDBOX:-danger-full-access}
       AGENT_MEMORY_BUDGET_MB: ${AGENT_MEMORY_BUDGET_MB:-}
       AGENT_CLI_MEMORY_MB: ${AGENT_CLI_MEMORY_MB:-512}
       AGENT_OMP_MEMORY_MB: ${AGENT_OMP_MEMORY_MB:-512}

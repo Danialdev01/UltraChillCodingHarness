@@ -1,6 +1,6 @@
 import type { CliProviderId, ProviderId } from "@ucch/protocol";
 import { ClaudeProvider } from "./claude.js";
-import { CodexProvider } from "./codex.js";
+import { CodexProvider, type CodexSandboxPolicy } from "./codex.js";
 import { OmpProvider } from "./omp.js";
 import type { AgentProvider } from "./types.js";
 
@@ -32,10 +32,12 @@ export function createProviders(options: {
   /** OMP's binary; absent, there is no OMP provider. */
   ompBin?: string;
   isRepo?: (cwd: string) => boolean;
+  /** `CODEX_SANDBOX`; defaults to auto. */
+  codexSandbox?: CodexSandboxPolicy;
 }): CliProviders {
   return {
     claude: new ClaudeProvider(options.claudeBin),
-    codex: new CodexProvider(options.codexBin, options.isRepo),
+    codex: new CodexProvider(options.codexBin, options.isRepo, options.codexSandbox),
     ...(options.ompBin ? { omp: new OmpProvider(options.ompBin) } : {}),
   };
 }
