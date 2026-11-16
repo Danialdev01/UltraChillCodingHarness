@@ -15,12 +15,15 @@ export function NativeSelect({
   value,
   onChange,
   disabled,
+  className,
   children,
 }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  /** Replaces the field's look (height, border, background), e.g. a dialog's own field style. */
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -30,11 +33,15 @@ export function NativeSelect({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        className={cn(
-          "border-input bg-background h-8 w-full appearance-none rounded-lg border pr-8 pl-2.5 text-sm outline-none",
-          "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring disabled:opacity-50",
-          "dark:bg-input/30",
-        )}
+        className={
+          className
+            ? cn("w-full appearance-none pr-8", className)
+            : cn(
+                "border-input bg-background h-8 w-full appearance-none rounded-lg border pr-8 pl-2.5 text-sm outline-none",
+                "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring disabled:opacity-50",
+                "dark:bg-input/30",
+              )
+        }
       >
         {children}
       </select>

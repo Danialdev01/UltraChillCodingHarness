@@ -1,3 +1,5 @@
+import { bareModelId } from "@/lib/model-keys";
+
 /**
  * How the Usage cards decide which models to name.
  *
@@ -71,5 +73,6 @@ export function modelLabel(
 ): string {
   if (others) return "Others";
   if (!model) return "Unknown";
-  return names.get(model) ?? model.split("/").pop() ?? model;
+  const bare = bareModelId(model);
+  return names.get(bare) ?? bare.split("/").pop() ?? bare;
 }

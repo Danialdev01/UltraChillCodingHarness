@@ -1,5 +1,6 @@
 "use client";
 
+import { bareModelId } from "@/lib/model-keys"
 import { ArrowLeftIcon, ArrowUpIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
@@ -203,7 +204,7 @@ function Run({ run, titled }: { run: SubagentRun; titled: boolean }) {
           {titled && run.description && <span className="truncate">{run.description}</span>}
           {run.model && (
             <span className="truncate font-mono" title={run.routing}>
-              {run.model}
+              {bareModelId(run.model)}
             </span>
           )}
           {transcript && (
@@ -340,7 +341,7 @@ export function SubagentDetail({
           <h2 className="truncate text-base font-medium">{run.description ?? run.agent}</h2>
           <p className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-xs">
             <span>{run.agent}</span>
-            {run.model && <span className="font-mono">· {run.model}</span>}
+            {run.model && <span className="font-mono">· {bareModelId(run.model)}</span>}
             <span
               className={cn(
                 run.status === "running" && "text-ucch-active",

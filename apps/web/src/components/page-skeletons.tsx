@@ -128,10 +128,10 @@ export function SettingsSkeleton() {
  * The API keys page's cards, drawn at their real size: an icon tile and a
  * title, the 40px key row, and the footer strip.
  */
-export function ApiKeysSkeleton() {
+export function ApiKeysSkeleton({ count = 2 }: { count?: number }) {
   return (
     <div className="flex flex-col gap-4" aria-hidden>
-      {Array.from({ length: 3 }, (_, i) => (
+      {Array.from({ length: count }, (_, i) => (
         <div key={i} className="bg-card overflow-hidden rounded-lg border">
           <div className="flex flex-col gap-4 p-4">
             <div className="flex items-start gap-3">

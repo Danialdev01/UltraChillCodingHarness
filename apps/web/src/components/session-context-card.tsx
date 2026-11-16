@@ -1,5 +1,6 @@
 "use client"
 
+import { bareModelId } from "@/lib/model-keys"
 import * as React from "react"
 import {
   ArrowDownIcon,
@@ -480,7 +481,7 @@ function LineageRow({
         />
         <span className="truncate">{run.description ?? run.agent}</span>
         {run.model && run.provider && (
-          <span className="text-muted-foreground min-w-0 truncate font-mono text-2xs">{run.model}</span>
+          <span className="text-muted-foreground min-w-0 truncate font-mono text-2xs">{bareModelId(run.model)}</span>
         )}
         <span
           className={cn(

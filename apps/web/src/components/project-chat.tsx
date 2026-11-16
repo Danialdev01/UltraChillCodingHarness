@@ -49,9 +49,11 @@ import {
   ModelSelect,
   describeEffort,
   NATIVE_EFFORTS,
+  sourcesOf,
   useModels,
   type ModelChoice,
 } from "@/components/model-picker";
+import { bareModelId, keyedModel, parseKeyedModel } from "@/lib/model-keys";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -301,7 +303,8 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   const noteChangedRef = useRef(noteChanged);
   noteChangedRef.current = noteChanged;
 
-  const { models, defaultModel } = useModels();
+  // Every key the account has, each model under the key it bills.
+  const { models, defaultModel } = useModels({ keyed: true });
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState<ReasoningEffort>("off");
 
@@ -375,8 +378,11 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    * What the model picker offers: the OpenRouter catalogue, or the chosen
    * harness's own list shaped like it, so one combobox serves both.
    */
+  const modelKeyId = parseKeyedModel(model)?.keyId ?? null;
   const catalogue: ModelChoice[] = useMemo(() => {
-    if (!cli) return models;
+    // Under Custom the key is picked in the harness list, so the model list
+    // is that key's models alone -- no row of keys to choose between again.
+    if (!cli) return modelKeyId ? models.filter((m) => m.source?.id === modelKeyId) : models;
     const card = providers.cards?.[provider];
     return (card?.models ?? []).map((m) => ({
       id: m.id,
@@ -388,7 +394,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       // reason to say otherwise, and no catalogue to read it from.
       images: true,
     }));
-  }, [cli, models, providers.cards, provider]);
+  }, [cli, models, modelKeyId, providers.cards, provider]);
 
   // A CLI harness always has a model selected -- the remembered one for this
   // project and harness, else the first it offers -- so every prompt names
@@ -429,6 +435,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     if (!model && defaultModel) setModel(defaultModel);
   }, [project.id, defaultModel, model]);
 
+  // A remembered model under a named key that has since been removed would
+  // only fail the next turn; it goes back to the default instead.
+  useEffect(() => {
+    if (models.length === 0 || !defaultModel || !parseKeyedModel(model)) return;
+    if (!models.some((m) => m.id === model)) setModel(defaultModel);
+  }, [models, model, defaultModel]);
+
   const chooseModel = useCallback(
     (id: string) => {
       if (cli) {
@@ -440,6 +453,28 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       }
     },
     [cli, cliKey, project.id],
+  );
+
+  // The named keys Custom can bill, by the names given them in Settings ->
+  // Providers, and the one the current model is under.
+  const modelKeys = useMemo(() => sourcesOf(models), [models]);
+
+  /**
+   * Moves Custom onto another key: the same model under it when that key
+   * carries it, else the account's default there, else its first model.
+   */
+  const chooseModelKey = useCallback(
+    (keyId: string) => {
+      const under = models.filter((m) => m.source?.id === keyId);
+      if (under.length === 0) return;
+      const ids = new Set(under.map((m) => m.id));
+      const same = keyedModel(keyId, bareModelId(model));
+      const fallback = defaultModel ? keyedModel(keyId, bareModelId(defaultModel)) : null;
+      const next = ids.has(same) ? same : fallback && ids.has(fallback) ? fallback : under[0]!.id;
+      setModel(next);
+      rememberLastModel(project.id, next);
+    },
+    [models, model, defaultModel, project.id],
   );
 
   const reasons = models.find((m) => m.id === model)?.reasoning ?? false;
@@ -703,12 +738,31 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
    */
   const followRef = useRef(true);
   const [following, setFollowing] = useState(true);
+  /**
+   * The last `scrollTop` seen, to tell the reader scrolling up from the
+   * thread growing under them. Only a move *up* stops following: content
+   * landing below (a tool's whole output at once, in the transcript view)
+   * leaves the box far from the floor without anyone having scrolled, and
+   * our own pin to the floor only ever moves down.
+   */
+  const lastTopRef = useRef(0);
   const noteScroll = useCallback(() => {
     const el = listRef.current;
     if (!el) return;
-    const bottom = atBottom(el);
-    followRef.current = bottom;
-    setFollowing(bottom);
+    const top = el.scrollTop;
+    const movedUp = top < lastTopRef.current - 1;
+    lastTopRef.current = top;
+    const next = atBottom(el) ? true : movedUp ? false : followRef.current;
+    followRef.current = next;
+    setFollowing(next);
+  }, []);
+
+  /** Puts the box on its floor at once; a smooth scroll lags a streaming reply. */
+  const pinToEnd = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    lastTopRef.current = el.scrollTop;
   }, []);
 
   const scrollToEnd = useCallback((behavior: ScrollBehavior = "smooth") => {
@@ -717,9 +771,21 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     endRef.current?.scrollIntoView({ behavior });
   }, []);
 
+  useLayoutEffect(() => {
+    if (followRef.current) pinToEnd();
+  }, [durableEvents, liveTurns, pinToEnd]);
+
+  // Growth that is not a new event -- highlighting, an image loading, a
+  // step opened -- moves the floor too; keep up with it while following.
   useEffect(() => {
-    if (followRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [durableEvents, liveTurns]);
+    const content = listRef.current?.firstElementChild;
+    if (!content) return;
+    const observer = new ResizeObserver(() => {
+      if (followRef.current) pinToEnd();
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [pinToEnd]);
 
   /** Default or CLI-style transcript, from Workspace Settings → Chat view. */
   const viewMode = useChatViewMode();
@@ -1879,7 +1945,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
             variant="secondary"
             onClick={() => scrollToEnd()}
             title="Scroll to the latest"
-            className="absolute bottom-3 left-1/2 size-8 -translate-x-1/2 rounded-full border shadow-md"
+            className="absolute bottom-3 left-1/2 size-10 -translate-x-1/2 rounded-full border shadow-md @md:size-8"
           >
             <ArrowDownIcon />
             <span className="sr-only">Scroll to the latest</span>
@@ -2220,7 +2286,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                     : "Opening the thread…"
                 }
                 className={cn(
-                  "placeholder:text-muted-foreground min-w-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 text-sm focus:outline-none disabled:opacity-60",
+                  // 16px on a phone: iOS zooms the page into any field set smaller,
+                  // and does not zoom back out.
+                  "placeholder:text-muted-foreground min-w-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 text-base sm:text-sm focus:outline-none disabled:opacity-60",
                   // Room to start writing before it has to grow.
                   empty && "@2xl:min-h-16",
                 )}
@@ -2342,7 +2410,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                 // would leave out what the running turn adds.
                 disabled={running || sending || !threadId || !hasRun}
               />
-              <div className="ml-auto flex min-w-0 shrink items-center gap-0.5">
+              <div className="ml-auto flex shrink-0 items-center gap-0.5 @lg:min-w-0 @lg:shrink">
                 <ProviderSelect
                   providers={providers}
                   value={provider}
@@ -2352,6 +2420,9 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   accounts={accounts}
                   currentProfileId={currentProfileId}
                   onAccount={(account) => void chooseAccount(account)}
+                  modelKeys={modelKeys}
+                  currentKeyId={modelKeyId}
+                  onModelKey={chooseModelKey}
                   look="inline"
                   disabled={sending || running}
                 />

@@ -891,6 +891,44 @@ export const accountKeys = pgTable(
 export type AccountKey = typeof accountKeys.$inferSelect;
 
 /**
+ * Extra model-provider keys an account names for itself -- "Work OpenRouter",
+ * "AnonRouter" -- beside the one default OpenRouter key on `users`. The
+ * composer's model picker lists each one's models under its name, and a turn
+ * started on one bills that key at that provider.
+ *
+ * The key is AES-256-GCM under `SECRET_KEY`; the prefix and last four are
+ * kept beside it so the list draws a masked key without decrypting.
+ */
+export const modelKeys = pgTable(
+  "model_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** `openrouter` or `anonrouter`. */
+    kind: text("kind").notNull(),
+    name: text("name").notNull(),
+    keyEncrypted: text("key_encrypted").notNull(),
+    prefix: text("prefix").notNull(),
+    last4: text("last4").notNull(),
+    /**
+     * The account's OpenRouter key for everything that is not a Custom turn
+     * on a named key: voice input, research, OMP, a Custom model picked
+     * without a key. One per user among the OpenRouter keys; the first one
+     * added is it until another is chosen.
+     */
+    isDefault: boolean("is_default").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("model_keys_name_idx").on(t.userId, t.name)],
+);
+
+export type ModelKey = typeof modelKeys.$inferSelect;
+
+/**
  * A named Claude Code or Codex subscription login: several per subject (a
  * user, or `ws-<id>`) and provider, e.g. "Work" and "Personal". Each is its
  * own folder under `CREDS_ROOT/<subject>/<dir_name>`, written only by the

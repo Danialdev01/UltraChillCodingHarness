@@ -9,6 +9,7 @@ import { BRIDGE_CALL_OVERHEAD_SEC, bridgeServer } from "./omp-bridge-config.js";
 import { DEFAULT_OMP_SETTINGS, writeOmpOverlay } from "./omp-overlay.js";
 import { resolveModel, type OmpBridgeOptions } from "./agent.js";
 import { workspaceOfSubject } from "./providers.js";
+import { accountOpenRouterKey } from "./model-keys.js";
 
 /**
  * The OMP bridge for `claude` and `codex` started by hand in a project
@@ -53,8 +54,11 @@ export interface TerminalBridgeOptions extends OmpBridgeOptions {
   /** The subject's `omp/run` and `omp/agent` (`ProviderService`). */
   runDir(subject: string): string;
   agentDir(subject: string): string;
-  /** The project's mnemopi bank under the subject (`ProviderService.ompMemoryDb`). */
-  memoryDb(subject: string, projectId: string): string;
+  /**
+   * The bank a terminal's bridge reads and writes: its project's shared one
+   * (`SessionMemory`, no session), closed when the terminal closes.
+   */
+  openMemory(subject: string, projectId: string, key: string): Promise<{ path: string; close(): Promise<void> }>;
   /** The workspace's setting, and the subject's key and the person's model. */
   facts(projectId: string, subject: string, userId: string): Promise<TerminalBridgeFacts | null>;
 }
@@ -97,13 +101,15 @@ export class TerminalBridge {
       for (const step of disposers.splice(0).reverse()) await step();
     };
     try {
+      const recall = facts.memory.enabled ? await options.openMemory(input.subject, input.projectId, `bridge-term-${input.terminalId}`) : null;
+      if (recall) disposers.push(() => recall.close());
       const overlay = await writeOmpOverlay(options.runDir(input.subject), `bridge-term-${input.terminalId}`, {
         settings: {
           ...DEFAULT_OMP_SETTINGS,
           models: { default: resolveModel(undefined, facts.defaultModel, options.defaultModel) },
           memory: facts.memory,
         },
-        ...(facts.memory.enabled ? { memoryDbPath: options.memoryDb(input.subject, input.projectId), memoryToolsOnly: true } : {}),
+        ...(recall ? { memoryDbPath: recall.path, memoryToolsOnly: true } : {}),
         preset: "standard",
         // The bridge's own `omp` is headless; the CLI asked its person first.
         permissionMode: "allow_all",
@@ -176,7 +182,7 @@ export function terminalBridgeFacts(db: Database): TerminalBridgeOptions["facts"
       .limit(1);
     if (!project) return null;
     const [person] = await db
-      .select({ key: users.openrouterKeyEncrypted, defaultModel: users.defaultModel })
+      .select({ key: accountOpenRouterKey, defaultModel: users.defaultModel })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Command, REQUIRED_SCOPE, type Membership } from "@ucch/protocol";
+import { Command, HANDOVER_CONTINUE, REQUIRED_SCOPE, type Membership } from "@ucch/protocol";
 import {
   decide,
   type DecisionContext,
@@ -439,6 +439,7 @@ describe("thread.compact and thread.handoff", () => {
           fromProvider: provider,
           targetProvider: provider,
           focus: "the parser",
+          message: HANDOVER_CONTINUE,
           reason: "context",
         },
       ],

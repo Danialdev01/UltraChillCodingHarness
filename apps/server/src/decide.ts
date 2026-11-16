@@ -1,4 +1,4 @@
-import { can, effectiveCredentialSource, normalizeWorkspacePath, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
+import { can, effectiveCredentialSource, HANDOVER_CONTINUE, normalizeWorkspacePath, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
 import type {
   Command,
   ContainerState,
@@ -507,6 +507,8 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
             fromProvider: thread.value.provider,
             targetProvider: thread.value.provider,
             ...(command.focus ? { focus: command.focus } : {}),
+            // The fresh session carries the work on at once, from the brief.
+            message: HANDOVER_CONTINUE,
             reason: "context",
           },
         ]);

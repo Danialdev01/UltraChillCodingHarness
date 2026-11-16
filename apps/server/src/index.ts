@@ -85,6 +85,8 @@ import { registerNoteRoutes } from "./notes-routes.js";
 import { registerTimelineRoutes } from "./timeline-routes.js";
 import { registerEnvRoutes } from "./env-routes.js";
 import { registerAccountKeyRoutes } from "./account-keys-routes.js";
+import { registerModelKeyRoutes } from "./model-keys-routes.js";
+import { DbModelKeys, accountOpenRouterKey, anonCatalogue, checkModelKeyLive, setModelKeyBase } from "./model-keys.js";
 import { AgentProfiles, toRef } from "./agent-profiles.js";
 import { registerAgentProfileRoutes } from "./agent-profiles-routes.js";
 import { backfillSessionTitles } from "./session-titles.js";
@@ -110,7 +112,7 @@ import { registerResourceRoutes, resourceFailure } from "./resource-routes.js";
 import { ResourceStoreService, keyOf, readAll, resourceName } from "./resource-stores.js";
 import { WorkspaceMemberService } from "./workspace-members.js";
 import { registerWorkspaceMemberRoutes } from "./workspace-members-routes.js";
-import { registerOmpMemoryRoutes } from "./omp-memory-routes.js";
+import { isPlaceholderTitle, memoriesDirsUnder, SESSION_RETENTION, SessionMemory, sessionKeywords, sharesKeyword, type MemoryBankRef } from "./session-memory.js";
 import { WebProxy } from "./web-proxy.js";
 import { FileWatcher } from "./file-watcher.js";
 import { registerDbManagerRoutes } from "./db-manager-routes.js";
@@ -148,6 +150,7 @@ import { openRouterWindows, type SessionQuota, type SessionQuotas } from "./quot
 
 const config = loadConfig();
 setOpenRouterBase(config.OPENROUTER_BASE_URL);
+setModelKeyBase("openrouter", config.OPENROUTER_BASE_URL);
 
 // Before anything else touches the database. Idempotent, so it runs on every
 // boot and a fresh deployment needs no separate migration step.
@@ -242,6 +245,7 @@ const audit = new AuditLog(
   (error) => app.log.error({ err: error }, "could not write to the activity log"),
 );
 /** "Last used" on the API keys page: touched when a stored key is decrypted for a call. */
+const modelKeyStore = new DbModelKeys(db, config.SECRET_KEY ?? "");
 const keyUsage = new KeyUsage(db, (error) => app.log.warn({ err: error }, "could not record key use"));
 const workspaceFiles = new WorkspaceFiles(config.WORKSPACE_ROOT);
 const storageService = new StorageService(db, workspaceService, config.WORKSPACE_ROOT);
@@ -280,6 +284,83 @@ const providerService = new ProviderService(
     isRepo: (cwd) => existsSync(join(cwd, ".git")),
   }),
   (cwd) => runtimes.pathFor(cwd),
+);
+
+/**
+ * The banks one session may recall besides its own (`session-memory.ts`):
+ * its project's shared bank always; then in a project workspace every
+ * other session of the project that is active (not archived) or settled,
+ * and in a session workspace the other active sessions sharing a keyword
+ * with it -- their titles, or its prompt while it has none.
+ */
+async function recallableBanks(session: MemoryBankRef, text: string): Promise<MemoryBankRef[]> {
+  const [project] = await db
+    .select({ workspaceId: projects.workspaceId, name: projects.name, kind: workspaces.kind })
+    .from(projects)
+    .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+    .where(eq(projects.id, session.projectId))
+    .limit(1);
+  if (!project) return [];
+  const banks: MemoryBankRef[] = [{ projectId: session.projectId, threadId: null }];
+  const others = (rows: { projectId: string; threadId: string }[]) =>
+    rows.filter((row) => row.threadId !== session.threadId).map((row) => ({ projectId: row.projectId, threadId: row.threadId }));
+
+  if (project.kind !== "session") {
+    const rows = await db
+      .select({ projectId: threads.projectId, threadId: threads.id })
+      .from(threads)
+      .where(
+        and(
+          eq(threads.projectId, session.projectId),
+          or(eq(threads.settleState, "settled"), sql`${threads.archivedAt} is null`),
+        ),
+      );
+    return [...banks, ...others(rows)];
+  }
+
+  // A session workspace: each session is a project, and only the active ones count.
+  const rows = await db
+    .select({ projectId: threads.projectId, threadId: threads.id, title: threads.title, name: projects.name })
+    .from(threads)
+    .innerJoin(projects, eq(projects.id, threads.projectId))
+    .where(
+      and(
+        eq(projects.workspaceId, project.workspaceId),
+        sql`${threads.settleState} is distinct from 'settled'`,
+        sql`${threads.archivedAt} is null`,
+      ),
+    );
+  const mine = rows.filter((row) => row.projectId === session.projectId);
+  const title = mine.find((row) => row.threadId === session.threadId)?.title;
+  const own = sessionKeywords(
+    [project.name, isPlaceholderTitle(title) ? text.slice(0, 2000) : title].filter(Boolean).join(" "),
+  );
+  const matching = rows.filter(
+    (row) => row.projectId !== session.projectId && sharesKeyword(own, sessionKeywords(`${row.name} ${row.title}`)),
+  );
+  // The same session's other threads (a handoff's, a subagent's) are itself.
+  return [
+    ...banks,
+    ...others(mine),
+    ...[...new Set(matching.map((row) => row.projectId))].map((projectId) => ({ projectId, threadId: null })),
+    ...others(matching),
+  ];
+}
+
+/** Every OMP run's memory: one bank per session, recalled by the workspace's rules. */
+const sessionMemory = new SessionMemory(
+  {
+    memoriesDir: (subject) => join(providerService.ensureCredsDir(subject, "omp"), "memories"),
+    allMemoriesDirs: () => memoriesDirsUnder(config.CREDS_ROOT),
+    recallable: recallableBanks,
+    exists: async (bank) => {
+      const [row] = bank.threadId
+        ? await db.select({ id: threads.id }).from(threads).where(eq(threads.id, bank.threadId)).limit(1)
+        : await db.select({ id: projects.id }).from(projects).where(eq(projects.id, bank.projectId)).limit(1);
+      return Boolean(row);
+    },
+  },
+  (error) => app.log.error({ err: error }, "could not gather or keep a session's memory"),
 );
 
 /** Named Claude Code and Codex subscription accounts, each its own login folder. */
@@ -325,6 +406,7 @@ const agentTurns = new AgentTurnReactor(
   {
     secretKey: config.SECRET_KEY,
     onKeyUsed: (encrypted) => keyUsage.touchCiphertext("openrouter", encrypted),
+    modelKeys: modelKeyStore,
     defaultModel: config.DEFAULT_MODEL,
     searchModel: config.SEARCH_MODEL,
     workspaceRoot: config.WORKSPACE_ROOT,
@@ -339,6 +421,7 @@ const agentTurns = new AgentTurnReactor(
     // it has been asked for explicitly.
     registry: { allowHostShell: shellPluginEnabled(config) },
     providers: providerService,
+    memory: sessionMemory,
     profiles: agentProfiles,
     cliEnabled: cliProvidersEnabled(config),
     scheduler: turnScheduler,
@@ -508,7 +591,8 @@ const terminals = new TerminalReactor(
       defaultModel: config.DEFAULT_MODEL,
       runDir: (subject) => providerService.ompRunDir(subject),
       agentDir: (subject) => providerService.ompAgentDir(subject),
-      memoryDb: (subject, projectId) => providerService.ompMemoryDb(subject, projectId),
+      openMemory: (subject, projectId, key) =>
+        sessionMemory.open({ subject, bank: { projectId, threadId: null }, runDir: providerService.ompRunDir(subject), key, text: "" }),
       facts: terminalBridgeFacts(db),
     }),
     // A sign-in terminal: the CLI's own login flow, in the user's credential
@@ -1440,6 +1524,8 @@ app.get<{ Params: { hash: string } }>("/api/workspaces/by-hash/:hash", async (re
   }
   const workspace = await workspaceService.findWorkspaceByHash(request.params.hash, principal.userId);
   if (!workspace) return reply.code(404).send({ error: "workspace not found" });
+  // Loading a workspace is when its expired sessions go.
+  await purgeExpiredSessions(workspace.id);
   return workspace;
 });
 
@@ -1493,6 +1579,10 @@ app.get<{ Params: { id: string } }>("/api/workspaces/:id/projects", async (reque
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
 
+  // The sidebar's list never shows a session that is about to expire.
+  if (z.string().uuid().safeParse(request.params.id).success && (await workspaceService.canView(request.params.id, principal.userId))) {
+    await purgeExpiredSessions(request.params.id);
+  }
   const projects = await workspaceService.listProjects(request.params.id, principal.userId);
   // null means "not yours or not there" -- reported the same way, because
   // whether a workspace exists is itself privileged.
@@ -1847,6 +1937,8 @@ async function removeProjectFiles(projectId: string): Promise<boolean> {
       rm(sessionTreesOf(config.WORKSPACE_ROOT, projectId), { recursive: true, force: true }),
       runtimes.removeProject(projectId),
       uploads.discardAll(projectId),
+      // Every session's memory, under every subject that paid for one.
+      sessionMemory.forget({ projectId }),
     ]);
     const failed = cleanup.find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
@@ -2473,13 +2565,20 @@ const sessionLifecycle = new SessionLifecycle({
   // The thread's turns go with it, and so does their spend: its project's
   // totals are summed again in the same transaction.
   deleteThread: async (threadId) => {
-    await db.transaction(async (tx) => {
-      const [gone] = await tx
+    const gone = await db.transaction(async (tx) => {
+      const [row] = await tx
         .delete(threads)
         .where(eq(threads.id, threadId))
         .returning({ projectId: threads.projectId });
-      if (gone) await recomputeProjectStats(tx, gone.projectId);
+      if (row) await recomputeProjectStats(tx, row.projectId);
+      return row;
     });
+    // What it remembered goes with it: no later run recalls it.
+    if (gone) {
+      await sessionMemory
+        .forget({ projectId: gone.projectId, threadId })
+        .catch((error) => app.log.error({ err: error, threadId }, "could not delete a session's memory"));
+    }
   },
   // The same token the push route uses: the owner's, and only for a host it
   // belongs to.
@@ -2507,6 +2606,76 @@ const SESSION_COLUMNS = {
   worktreeState: threads.worktreeState,
   treeHash: threads.treeHash,
 };
+
+/**
+ * Deletes a workspace's expired sessions, data and memory, and for good
+ * (`SESSION_RETENTION`): in a project workspace each session settled more
+ * than two weeks ago -- its worktree is gone already; the thread, its
+ * turns and what it remembered go now -- and in a session workspace each
+ * session whose threads were all settled more than a week ago, which is a
+ * project, files and all. Run whenever the workspace is loaded, by whoever
+ * loads it. A session with a turn in flight is left for the next load.
+ */
+const purgingWorkspaces = new Map<string, Promise<void>>();
+
+function purgeExpiredSessions(workspaceId: string): Promise<void> {
+  const inFlight = purgingWorkspaces.get(workspaceId);
+  if (inFlight) return inFlight;
+  const next = purgeExpiredSessionsNow(workspaceId)
+    .catch((error) => app.log.error({ err: error, workspaceId }, "could not delete expired sessions"))
+    .finally(() => purgingWorkspaces.delete(workspaceId));
+  purgingWorkspaces.set(workspaceId, next);
+  return next;
+}
+
+async function purgeExpiredSessionsNow(workspaceId: string): Promise<void> {
+  const [workspace] = await db
+    .select({ kind: workspaces.kind, ownerUserId: workspaces.ownerUserId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!workspace) return;
+
+  if (workspace.kind === "session") {
+    const cutoff = new Date(Date.now() - SESSION_RETENTION.sessionSettledMs).toISOString();
+    const expired = await db
+      .select({ id: projects.id, hash: projects.hash })
+      .from(projects)
+      .innerJoin(threads, eq(threads.projectId, projects.id))
+      .where(eq(projects.workspaceId, workspaceId))
+      .groupBy(projects.id, projects.hash)
+      .having(
+        sql`bool_and(${threads.settleState} is not distinct from 'settled') and max(${threads.settledAt}) < ${cutoff}::timestamptz`,
+      );
+    for (const project of expired) {
+      // As its owner: nobody has to be an admin for a session to expire.
+      const result = await workspaceService.deleteProject(project.hash, workspace.ownerUserId);
+      if ("error" in result) continue;
+      void gateway.revalidate({ projectId: result.projectId }).catch((error) =>
+        app.log.error({ err: error }, "could not re-check access"),
+      );
+      if (!(await removeProjectFiles(result.projectId))) {
+        app.log.error({ projectId: result.projectId }, "an expired session was deleted, but some of its files were left");
+      }
+    }
+    return;
+  }
+
+  const cutoff = new Date(Date.now() - SESSION_RETENTION.projectSettledMs);
+  const expired: SessionRecord[] = await db
+    .select(SESSION_COLUMNS)
+    .from(threads)
+    .innerJoin(projects, eq(projects.id, threads.projectId))
+    .where(and(eq(projects.workspaceId, workspaceId), eq(threads.settleState, "settled"), lt(threads.settledAt, cutoff)));
+  for (const session of expired) {
+    try {
+      // Settled: merged already, so nothing is left to lose but the thread.
+      await sessionLifecycle.discard(session);
+    } catch (error) {
+      if (!(error instanceof SessionBusyError)) throw error;
+    }
+  }
+}
 
 /** How old an empty session has to be before the sweep takes it. */
 const EMPTY_SESSION_AGE_MS = 30 * 60_000;
@@ -2924,7 +3093,7 @@ registerTranscribeRoutes(app, {
     const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
     if (!principal) return null;
     const [row] = await db
-      .select({ openrouter: users.openrouterKeyEncrypted })
+      .select({ openrouter: accountOpenRouterKey })
       .from(users)
       .where(eq(users.id, principal.userId))
       .limit(1);
@@ -2995,6 +3164,25 @@ registerSessionRoutes(app, {
   db,
   principal: (request) => auth.resolveSession(request.cookies[SESSION_COOKIE]),
   canView: (workspaceId, userId) => workspaceService.canView(workspaceId, userId),
+});
+
+registerModelKeyRoutes(app, {
+  principal: (request) => auth.resolveSession(request.cookies[SESSION_COOKIE]),
+  keys: modelKeyStore,
+  encryptionAvailable: Boolean(config.SECRET_KEY),
+  check: (kind, key) => checkModelKeyLive(kind, key),
+  audit: async (entry) => {
+    await audit.record({
+      projectId: null,
+      userId: entry.userId,
+      clientId: null,
+      action: entry.action,
+      targetType: "model_key",
+      targetId: entry.keyId,
+      summary: entry.summary,
+      details: entry.details,
+    });
+  },
 });
 
 registerAccountKeyRoutes(app, {
@@ -3127,16 +3315,6 @@ registerAgentProfileRoutes(app, {
   setRequiredContext: async (projectId, context) => {
     await db.update(projects).set({ requiredContext: context }).where(eq(projects.id, projectId));
   },
-});
-
-registerOmpMemoryRoutes(app, {
-  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
-  subjectFor: providerSubject,
-  visibleProject: async (projectId, userId) => {
-    const [row] = await db.select({ workspaceId: projects.workspaceId }).from(projects).where(eq(projects.id, projectId)).limit(1);
-    return row && (await workspaceService.canView(row.workspaceId, userId)) ? row : null;
-  },
-  memoryDb: (subject, projectId) => providerService.ompMemoryDb(subject, projectId),
 });
 
 registerDbManagerRoutes(app, {
@@ -3977,7 +4155,7 @@ app.get("/api/account/openrouter/quota", async (request, reply) => {
   if (cached && Date.now() - cached.at < QUOTA_TTL_MS) return cached.quota;
 
   const [row] = await db
-    .select({ openrouter: users.openrouterKeyEncrypted })
+    .select({ openrouter: accountOpenRouterKey })
     .from(users)
     .where(eq(users.id, principal.userId))
     .limit(1);
@@ -4027,7 +4205,7 @@ async function sessionQuotasFor(userId: string): Promise<SessionQuotas> {
       return { provider: "native", status: "ok", windows: openRouterWindows(hit.quota), checkedAt };
     }
     const [row] = await db
-      .select({ openrouter: users.openrouterKeyEncrypted })
+      .select({ openrouter: accountOpenRouterKey })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
@@ -4330,13 +4508,34 @@ app.get("/api/models", async (request, reply) => {
   // reads it from, which is why setting it there needs nothing else wired up.
   const defaultModel = await defaultModelFor(principal.userId);
 
+  // The named keys, and each kind's catalogue once (not once per key): the
+  // composer lists a key's models under the key's name. A catalogue that
+  // cannot be reached is an empty list, not a failed picker.
+  const [named, [own]] = await Promise.all([
+    modelKeyStore.list(principal.userId),
+    db
+      .select({ has: sql<boolean>`${accountOpenRouterKey} is not null` })
+      .from(users)
+      .where(eq(users.id, principal.userId))
+      .limit(1),
+  ]);
+  const keys = named.map((k) => ({ id: k.id, name: k.name, kind: k.kind }));
+  const defaultKey = Boolean(own?.has);
+  const anonrouter = named.some((k) => k.kind === "anonrouter")
+    ? await anonCatalogue().catch((error: unknown) => {
+        app.log.warn({ err: error }, "could not refresh the AnonRouter catalogue");
+        return [];
+      })
+    : [];
+
   try {
-    return { models: await catalogue(), defaultModel };
+    const models = await catalogue();
+    return { models, defaultModel, defaultKey, keys, catalogues: { openrouter: models, anonrouter } };
   } catch (error) {
     app.log.warn({ err: error }, "could not refresh the model catalogue");
     const stale = cachedCatalogue();
     if (!stale) return reply.code(502).send({ error: "model catalogue unavailable" });
-    return { models: stale, defaultModel };
+    return { models: stale, defaultModel, defaultKey, keys, catalogues: { openrouter: stale, anonrouter } };
   }
 });
 
@@ -4348,6 +4547,7 @@ app.get<{ Params: { hash: string } }>("/api/projects/:hash/threads", async (requ
 
   const project = await workspaceService.findByHash(request.params.hash, principal.userId);
   if (!project) return reply.code(404).send({ error: "project not found" });
+  if (project.workspaceId) await purgeExpiredSessions(project.workspaceId);
 
   const rows = await db
     .select({

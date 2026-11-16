@@ -83,6 +83,10 @@ export const metadata: Metadata = {
  * title bar -- in the page's `--background`, light or dark with the OS.
  */
 export const viewport: Viewport = {
+  // The on-screen keyboard shrinks the layout rather than covering it, so
+  // the composer at the foot of the chat stays above the keys (Android
+  // Chrome; iOS already behaves this way).
+  interactiveWidget: "resizes-content",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#fafcff" },
     { media: "(prefers-color-scheme: dark)", color: "#0b0d13" },

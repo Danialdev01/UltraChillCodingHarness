@@ -14,7 +14,8 @@ import type { SettingsPageId } from "@/lib/sections"
  * Which page is a matter of the URL: the sidebar's Settings panel lists them
  * as rows, and the lit one is read off the address bar the same way the rail
  * reads its section -- so there is no tab state to remember, and a link to
- * `/setting/api` lands on API keys by itself.
+ * `/setting/api` lands on API keys (Resend, GitHub) by itself; model-provider
+ * keys are under `/setting/providers`, in the Custom provider's panel.
  */
 export function SettingsPage({
   page,

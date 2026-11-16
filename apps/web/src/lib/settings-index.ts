@@ -42,7 +42,7 @@ export const SETTINGS_GROUPS: readonly { label: string | null; entries: readonly
     label: "Account",
     entries: [
       { scope: "account", id: "account", keywords: "profile name email avatar password github sign in" },
-      { scope: "account", id: "api", keywords: "api keys openrouter resend github tokens secrets" },
+      { scope: "account", id: "api", keywords: "api keys resend github tokens secrets email" },
       { scope: "account", id: "usage", keywords: "usage tokens cost storage quota" },
       { scope: "account", id: "activity", keywords: "activity log audit history" },
     ],
@@ -50,7 +50,7 @@ export const SETTINGS_GROUPS: readonly { label: string | null; entries: readonly
   {
     label: "Agents",
     entries: [
-      { scope: "account", id: "providers", keywords: "providers claude codex sign in login cli" },
+      { scope: "account", id: "providers", keywords: "providers claude codex sign in login cli custom api keys openrouter anonrouter model keys" },
       { scope: "workspace", id: "harness", keywords: "harness subscription claude codex shared login widgets interactive visual chart diagram" },
     ],
   },

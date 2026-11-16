@@ -5,6 +5,7 @@ import { CodexMark } from "@/components/icons/harness/codex"
 import type { HarnessIconProps } from "@/components/icons/harness/types"
 import { OmpMark } from "@/components/icons/harness/omp"
 import { UnknownMark } from "@/components/icons/harness/unknown"
+import { bareModelId } from "@/lib/model-keys"
 
 /**
  * The AI harnesses a session can run on, keyed by the provider id the
@@ -105,6 +106,8 @@ export function sessionModelLabel(
 ): string {
   const harness = getHarness(provider)
   if (!model) return harness.name
+  // A model picked under a named key reads as the model.
+  model = bareModelId(model)
   const named = names?.get(model)
   if (named) return harness.id === "ucch" ? `Default · ${named}` : named
   return harness.modelLabel(model)

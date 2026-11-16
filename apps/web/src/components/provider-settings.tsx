@@ -5,19 +5,16 @@ import { InlineError } from "@/components/layout/inline-error"
 import dynamic from "next/dynamic"
 import {
   AlertTriangleIcon,
-  BrainIcon,
   BracesIcon,
   KeyRoundIcon,
-  Loader2Icon,
   MoreHorizontalIcon,
   RefreshCwIcon,
   StarIcon,
   TerminalIcon,
-  TrashIcon,
 } from "lucide-react"
 
 import type { LoginProgram } from "@/components/login-terminal-dialog"
-import { Button, buttonVariants } from "@/components/ui/button"
+import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,21 +24,17 @@ import {
 import { NativeSelect } from "@/components/ui/native-select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AccountsList } from "@/components/agent-accounts"
+import { ModelKeySettings } from "@/components/model-key-settings"
 import {
-  clearOmpMemory,
   fetchAccounts,
-  fetchOmpMemory,
   fetchProviders,
   saveDefaultProvider,
   type AgentAccount,
-  type OmpMemoryStats,
   type ProviderCard,
   type ProviderId,
   type ProvidersResponse,
 } from "@/lib/providers-api"
-import { formatBytes } from "@/lib/attachments"
 import { cn } from "@/lib/utils"
-import { TransitionLink } from "@/lib/view-transitions"
 
 // xterm comes with the sign-in dialogs, which most visits to settings never open.
 const LoginTerminalDialog = dynamic(
@@ -73,7 +66,7 @@ const PROVIDER_META: Record<ListedId, { name: string; subtitle: string; tile: Re
   },
   native: {
     name: "Custom",
-    subtitle: "The harness's own agent loop, billed to your OpenRouter key.",
+    subtitle: "The harness's own agent loop, billed to your OpenRouter or AnonRouter keys.",
     tile: <BracesIcon className="size-3.5" aria-hidden />,
   },
 }
@@ -90,14 +83,14 @@ function providerStatus(card: ProviderCard): { badge: string; detail: string; to
   }
   if (!card.authenticated) {
     return card.id === "native"
-      ? { badge: "No key", detail: "Add an OpenRouter key under API keys.", tone: "warn" }
+      ? { badge: "No key", detail: "Add an OpenRouter or AnonRouter key below.", tone: "warn" }
       : { badge: "Not signed in", detail: "Sign in an account below.", tone: "warn" }
   }
   const how =
     card.authMode === "subscription" ? "subscription" : card.authMode === "token" ? "token" : "API key"
   return {
     badge: "Ready",
-    detail: card.id === "native" ? "OpenRouter API key" : `Signed in · ${how}`,
+    detail: card.id === "native" ? "API keys" : `Signed in · ${how}`,
     tone: card.authMode === "api-key" && card.id !== "native" ? "warn" : "ok",
   }
 }
@@ -144,8 +137,9 @@ function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number |
  * on the right (stacked when the card is narrow). Claude Code and Codex need
  * the vendor's CLI signed in on the server, and this is where that happens
  * -- in a terminal, running the CLI's own login flow, so the server never
- * handles the credential. The Custom loop needs an OpenRouter key from the
- * API tab.
+ * handles the credential. The Custom loop needs a model-provider key, which
+ * is added in its own panel: the default OpenRouter key, and any number of
+ * named OpenRouter or AnonRouter keys.
  *
  * What it shows comes from probing the CLIs themselves. A masked account
  * label is the most any of it reveals.
@@ -271,7 +265,7 @@ export function ProviderSettings({
           }
           renderDetail={(id, compact) => {
             const card = cards?.[id] ?? null
-            if (id === "native") return <NativeRows card={card} />
+            if (id === "native") return <NativeRows onChanged={() => void load(true)} />
             const list = accounts?.filter((a) => a.provider === id) ?? null
             const props = {
               card,
@@ -290,8 +284,6 @@ export function ProviderSettings({
           }}
         />
       </section>
-
-      {projects.length > 0 && <MemoryCard projects={projects} workspaceId={workspaceId} readOnly={readOnly} />}
 
       {login?.program === "claude-login" && projectId && (
         <ClaudeLoginDialog
@@ -833,144 +825,21 @@ function CodexRows({ card, accounts, canLogin, readOnly, workspaceId, compact, o
   )
 }
 
-function NativeRows({ card }: { card: ProviderCard | null }) {
+function NativeRows({ onChanged }: { onChanged: () => void }) {
   return (
     <>
-      <StatusRow card={card} />
-      <ModelsRow card={card} description="Any model in the OpenRouter catalogue." />
-      <SettingsRow
-        title="Billing"
-        description="Billed to your OpenRouter key; usage and cost are recorded per turn."
-        className="mb-2"
-      >
-        <TransitionLink href="/setting/api" className={cn(buttonVariants({ variant: "outline" }), "h-[30px] px-3 text-xs")}>
-          <KeyRoundIcon className="size-3.5" />
-          API keys
-        </TransitionLink>
-      </SettingsRow>
+      <h3 className="flex items-center gap-2 border-t px-5 pt-5 pb-1 text-sm font-semibold">
+        <KeyRoundIcon className="text-muted-foreground size-4" aria-hidden />
+        API keys
+      </h3>
+      <p className="text-muted-foreground max-w-[560px] px-5 pt-1 text-xs leading-relaxed">
+        Encrypted at rest and decrypted only for the call that needs them.
+      </p>
+      {/* A key added or removed changes whether Custom is ready. */}
+      <div className="flex flex-col gap-6 px-5 pt-4 pb-5">
+        <ModelKeySettings onChanged={onChanged} />
+      </div>
     </>
   )
 }
 
-/**
- * One project's OMP memory (OMP OM7.3, solution §7.3): how much the bank
- * holds, and a Clear button. Counts only -- the memories themselves stay on
- * the server. The bank is the one the cards above pay for: yours, or with
- * `workspaceId` the workspace's dedicated subscription's.
- */
-function MemoryCard({
-  projects,
-  workspaceId,
-  readOnly,
-}: {
-  projects: { id: string; name: string }[]
-  workspaceId?: string
-  readOnly: boolean
-}) {
-  const [projectId, setProjectId] = React.useState(projects[0]!.id)
-  const [stats, setStats] = React.useState<{ projectId: string; value: OmpMemoryStats } | null>(null)
-  const [error, setError] = React.useState<string | null>(null)
-  const [confirming, setConfirming] = React.useState(false)
-  const [clearing, setClearing] = React.useState(false)
-
-  React.useEffect(() => {
-    let live = true
-    setError(null)
-    setConfirming(false)
-    fetchOmpMemory(projectId, workspaceId).then(
-      (value) => live && setStats({ projectId, value }),
-      (e: unknown) => live && setError(e instanceof Error ? e.message : "Could not read the memory."),
-    )
-    return () => {
-      live = false
-    }
-  }, [projectId, workspaceId])
-
-  async function clear() {
-    setClearing(true)
-    setError(null)
-    try {
-      await clearOmpMemory(projectId, workspaceId)
-      setStats({ projectId, value: await fetchOmpMemory(projectId, workspaceId) })
-      setConfirming(false)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not clear the memory.")
-    } finally {
-      setClearing(false)
-    }
-  }
-
-  const current = stats?.projectId === projectId ? stats.value : null
-
-  return (
-    <section className="bg-card rounded-lg border p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="flex items-center gap-2 text-sm font-medium">
-          <BrainIcon className="text-muted-foreground size-4" />
-          OMP memory
-        </h2>
-        {projects.length > 1 && (
-          <select
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            aria-label="Project"
-            className="border-input bg-background h-7 rounded-md border px-2 text-xs"
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
-        What Custom turns have kept about this project{workspaceId ? " on the workspace's subscription" : ""}: facts
-        they retained, and summaries of past turns. Turned on under the workspace&apos;s Harness settings.
-      </p>
-      <p className="text-warning mt-2 max-w-prose text-sm">
-        Do not ask an agent to remember secrets: memory is stored as plain text and recalled into later turns.
-      </p>
-      {!current && !error && <Skeleton className="mt-4 h-5 w-72" />}
-      {current && (
-        <p className="mt-4 text-sm">
-          {current.exists ? (
-            <>
-              {current.facts} {current.facts === 1 ? "fact" : "facts"}, {current.episodes}{" "}
-              {current.episodes === 1 ? "turn summary" : "turn summaries"}
-              <span className="text-muted-foreground">
-                {" "}
-                · {formatBytes(current.bytes)}
-                {current.lastAt ? ` · last added ${new Date(current.lastAt).toLocaleString()}` : ""}
-              </span>
-            </>
-          ) : (
-            <span className="text-muted-foreground">Nothing remembered yet.</span>
-          )}
-        </p>
-      )}
-      {current?.exists && !readOnly && (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          {confirming ? (
-            <>
-              <span className="text-sm">Forget everything for this project?</span>
-              <Button variant="destructive" size="sm" onClick={() => void clear()} disabled={clearing}>
-                {clearing ? <Loader2Icon className="animate-spin" /> : <TrashIcon />}
-                Clear memory
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => setConfirming(false)} disabled={clearing}>
-                Keep it
-              </Button>
-            </>
-          ) : (
-            <Button variant="outline" size="sm" onClick={() => setConfirming(true)}>
-              <TrashIcon />
-              Clear…
-            </Button>
-          )}
-        </div>
-      )}
-      {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
-    </section>
-  )
-}

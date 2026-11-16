@@ -30,6 +30,7 @@ import {
   isOpenRouterLimit,
   isUcchAgentTool,
   limitFallback,
+  HANDOVER_CONTINUE,
   needsHandover,
   UCCH_AGENT_ARGS,
   UCCH_AGENT_DESCRIPTION,
@@ -88,9 +89,12 @@ import type { ArgvWrapper } from "./child-priority.js";
 import { registry as metrics } from "./metrics.js";
 import type { EventBus } from "./bus.js";
 import { catalogue } from "./openrouter.js";
+import { accountOpenRouterKey, anonCatalogue, baseUrlFor, parseKeyedModel, type ModelKeyStore } from "./model-keys.js";
+import type { Complete } from "@ucch/agent";
 import { ChoiceWaiters, accountBlocker, harnessAvailability, harnessLabel, limitOptions, type LimitAccount } from "./choices.js";
 import { AgentMessaging, COLLABORATION_GUIDE } from "./agent-messaging.js";
 import { SubagentRunner, type SubagentCall, type SubagentRequest } from "./subagents.js";
+import type { OpenedMemory, SessionMemory } from "./session-memory.js";
 
 export interface AgentOptions {
   secretKey: string | undefined;
@@ -99,6 +103,12 @@ export interface AgentOptions {
    * the account's "last used" (`KeyUsage.touchCiphertext`). Never the key.
    */
   onKeyUsed?: (encrypted: string) => void;
+  /**
+   * The account's named model keys (OpenRouter, AnonRouter). A native turn
+   * on a model id of the form `@<keyId>/<model>` bills that key instead of
+   * the default one.
+   */
+  modelKeys?: ModelKeyStore;
   defaultModel: string;
   /** For `web_search` and for compaction. Never the coding model. */
   searchModel: string;
@@ -173,6 +183,11 @@ export interface AgentOptions {
    * (and `dispatch`), no turn is offered subagents on other harnesses.
    */
   bus?: Pick<EventBus, "subscribe">;
+  /**
+   * Which sessions' memories a run recalls (`session-memory.ts`). Without
+   * it every run reads and writes its project's one bank.
+   */
+  memory?: SessionMemory;
 }
 
 /** What the server knows about the OMP bridge: where it is, and where its calls take a slot. */
@@ -541,7 +556,7 @@ export class AgentTurnReactor {
         continue;
       }
       if (event.type === "thread.compaction_requested") {
-        void this.#compact(event.threadId, event.method, event.focus).catch(this.onError);
+        void this.#compact(event.threadId, event.method, event.focus, principal).catch(this.onError);
         continue;
       }
       if (event.type === "thread.handoff_requested") {
@@ -1185,8 +1200,10 @@ export class AgentTurnReactor {
 
       // Checked after the turn is open, so a missing key surfaces as a failed
       // turn in the conversation rather than as a message that was never
-      // answered by anything.
-      const apiKey = this.#decryptKey(owner.openrouterKeyEncrypted);
+      // answered by anything. A model picked under a named key bills that
+      // key, at that key's provider.
+      const route = await this.#nativeRoute(owner, resolvedModel);
+      const apiKey = route.apiKey;
 
       // The clone reactor fills this in on `project.created`, but a turn
       // can start while that clone is still running, or after one that
@@ -1198,17 +1215,14 @@ export class AgentTurnReactor {
 
       // Looked up per turn rather than held: the model can change between
       // turns, and the catalogue behind this is cached anyway.
-      const [contextLength, canSeeImages] = await Promise.all([
-        contextLengthFor(resolvedModel),
-        supportsImages(resolvedModel),
-      ]);
+      const [contextLength, canSeeImages] = await Promise.all([route.contextLength(), route.supportsImages()]);
 
       await runTurn({
         projectId: thread.projectId,
         threadId,
         turnId,
         apiKey,
-        model: resolvedModel,
+        model: route.model,
         // OpenRouter's scale stops at high; Claude Code's levels above it are
         // clamped here rather than sent on to be refused.
         ...(effort ? { effort: effort === "xhigh" || effort === "max" ? "high" : effort } : {}),
@@ -1237,7 +1251,7 @@ export class AgentTurnReactor {
           pathPrefix: () => this.options.runtimePath?.(workspace) ?? null,
         }),
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
-        complete: streamCompletion,
+        complete: route.complete,
         signal: controller.signal,
         approve: (request) =>
           this.#approveNative({
@@ -1307,7 +1321,12 @@ export class AgentTurnReactor {
    * (`#running`). Every way out ends with `thread.compaction_finished`,
    * which is what frees the thread the request claimed.
    */
-  async #compact(threadId: string, method: "compact" | "handoff", focus: string | undefined): Promise<void> {
+  async #compact(
+    threadId: string,
+    method: "compact" | "handoff",
+    focus: string | undefined,
+    principal: Principal | undefined,
+  ): Promise<void> {
     const controller = new AbortController();
     this.#running.set(threadId, controller);
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1).catch((error: unknown) => {
@@ -1387,6 +1406,45 @@ export class AgentTurnReactor {
         .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
         .catch(this.onError);
     }
+    // A handover replaced the context with its brief: the session carries
+    // the work on from it at once, rather than waiting for the person.
+    // Compacting alone keeps the conversation going as it was, so asks nothing.
+    if (method !== "handoff" || error || controller.signal.aborted) return;
+    await this.#continueAfterHandover(threadId, principal);
+  }
+
+  /**
+   * The turn after a handover: `HANDOVER_CONTINUE`, on the model the
+   * session last ran on, so the fresh context picks the work up where the
+   * brief left it.
+   */
+  async #continueAfterHandover(
+    threadId: string,
+    principal: Principal | undefined,
+    { provider, text = HANDOVER_CONTINUE }: { provider?: ProviderId; text?: string } = {},
+  ): Promise<void> {
+    const dispatch = this.options.dispatch;
+    if (!dispatch || !principal) return;
+    const model = await this.#lastModel(threadId);
+    const sent = await dispatch(principal, {
+      type: "thread.send",
+      threadId,
+      text,
+      ...(provider ? { provider } : {}),
+      ...(model ? { model } : {}),
+    });
+    if (!sent.ok) this.onError(new Error(`the turn after handing ${threadId} over could not be sent: ${sent.message}`));
+  }
+
+  /** The model of the thread's last turn, or null before it has one. */
+  async #lastModel(threadId: string): Promise<string | null> {
+    const [last] = await this.db
+      .select({ model: turns.model })
+      .from(turns)
+      .where(eq(turns.threadId, threadId))
+      .orderBy(desc(turns.seq))
+      .limit(1);
+    return last?.model ?? null;
   }
 
   /**
@@ -1599,6 +1657,12 @@ export class AgentTurnReactor {
         .catch(this.onError);
     }
     if (!switched || error || !event.message) return;
+    // A handover on the same harness: the turn after it keeps the model the
+    // session was on (the request names none), from the fresh context.
+    if (event.reason === "context" && !event.model) {
+      await this.#continueAfterHandover(threadId, principal, { provider: toProvider, text: event.message });
+      return;
+    }
     const dispatch = this.options.dispatch;
     if (!dispatch || !principal) return;
     const sent = await dispatch(principal, {
@@ -1839,6 +1903,7 @@ export class AgentTurnReactor {
 
     let run: AgentRun | undefined;
     let overlay: { dispose(): Promise<void> } | undefined;
+    let recall: OpenedMemory | undefined;
     let bridge: (Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { omp: boolean; dispose(): Promise<void> }) | null = null;
     try {
       await this.#prepareWorkspace(input.workspace);
@@ -1929,8 +1994,9 @@ export class AgentTurnReactor {
           ...hostToolSchemas(preset, { ...this.options.registry, widgets, ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx) } : {}) }),
           ...(offersSubagents ? [UCCH_AGENT_HOST_TOOL] : []),
         ];
-        // One bank per project, under the subject that pays (solution §7.1).
+        // The session's bank and the ones it may recall, under the subject that pays.
         const memory = input.agentSettings?.memory ?? DEFAULT_OMP_SETTINGS.memory;
+        if (memory.enabled) recall = await this.#openMemory(input, input.turnId, input.text);
         const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), input.turnId, {
           // Every model role is the turn's model until the workspace picks
           // its own (OM8.1): a role left unnamed is the repository's to set.
@@ -1940,7 +2006,7 @@ export class AgentTurnReactor {
             isolatedFanOut: input.agentSettings?.isolatedFanOut.enabled ?? false,
             memory,
           },
-          ...(memory.enabled ? { memoryDbPath: providers.ompMemoryDb(input.ownerId, input.projectId) } : {}),
+          ...(recall ? { memoryDbPath: recall.path } : {}),
           preset,
           permissionMode,
           // A trusted project keeps its debugger (§0.3); its LSP is the argv's.
@@ -2069,7 +2135,25 @@ export class AgentTurnReactor {
       // overlay any more. A failure to delete it is the operator's to hear.
       await overlay?.dispose().catch(this.onError);
       await bridge?.dispose().catch(this.onError);
+      await recall?.close();
     }
+  }
+
+  /**
+   * The bank file a run names in its overlay: the session's working bank
+   * (`SessionMemory`), or without one the project's single bank. Closed
+   * once the run's process has exited.
+   */
+  async #openMemory(input: { ownerId: string; projectId: string; threadId: string }, key: string, text: string): Promise<OpenedMemory> {
+    const providers = this.options.providers!;
+    if (!this.options.memory) return { path: providers.ompMemoryDb(input.ownerId, input.projectId), close: async () => {} };
+    return this.options.memory.open({
+      subject: input.ownerId,
+      bank: { projectId: input.projectId, threadId: input.threadId },
+      runDir: providers.ompRunDir(input.ownerId),
+      key,
+      text,
+    });
   }
 
   /**
@@ -2098,17 +2182,19 @@ export class AgentTurnReactor {
     }
     const release = await this.#scheduler.acquire({ ownerId: input.ownerId, kind: "omp", threadId: input.threadId });
     let overlay: { dispose(): Promise<void> } | undefined;
+    let recall: OpenedMemory | undefined;
     try {
       const resolved = await providers.resolve(input.ownerId, "omp", { openrouterKey, ompPreset: "standard" });
       const omp = resolved.provider as Partial<BriefAsker>;
       if (!omp.ask) return;
+      recall = await this.#openMemory(input, `retain-${randomUUID()}`, input.answer);
       const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), randomUUID(), {
         settings: {
           ...DEFAULT_OMP_SETTINGS,
           models: { default: resolveModel(undefined, input.owner.defaultModel, this.options.defaultModel) },
           memory: input.agentSettings?.memory ?? DEFAULT_OMP_SETTINGS.memory,
         },
-        memoryDbPath: providers.ompMemoryDb(input.ownerId, input.projectId),
+        memoryDbPath: recall.path,
         memoryToolsOnly: true,
         preset: "standard",
         // Nobody to ask, and `retain` is its only tool, so untrusted always.
@@ -2130,6 +2216,7 @@ export class AgentTurnReactor {
     } finally {
       release();
       await overlay?.dispose().catch(this.onError);
+      await recall?.close();
     }
   }
 
@@ -2185,6 +2272,8 @@ export class AgentTurnReactor {
       for (const step of disposers.splice(0).reverse()) await step();
     };
     try {
+      const recall = openrouterKey && memory.enabled ? await this.#openMemory(input, `bridge-${input.turnId}`, "") : null;
+      if (recall) disposers.push(() => recall.close());
       const overlay = !openrouterKey ? null : await writeOmpOverlay(providers.ompRunDir(input.ownerId), `bridge-${input.turnId}`, {
         // Each call names a role (`@smol`, `@slow`); every role is the
         // account's OpenRouter model until the workspace picks its own.
@@ -2194,7 +2283,7 @@ export class AgentTurnReactor {
           memory,
         },
         // The project's bank, as its OMP turns have it (OM7.2).
-        ...(memory.enabled ? { memoryDbPath: providers.ompMemoryDb(input.ownerId, input.projectId), memoryToolsOnly: true } : {}),
+        ...(recall ? { memoryDbPath: recall.path, memoryToolsOnly: true } : {}),
         preset: "standard",
         // A bridge call has no one to ask: its `omp` runs headless, under
         // `--approval-mode yolo`. The person is asked by Claude Code, about
@@ -2550,7 +2639,8 @@ export class AgentTurnReactor {
     const [person] = await this.db
       .select({
         id: users.id,
-        openrouterKeyEncrypted: users.openrouterKeyEncrypted,
+        // The default named OpenRouter key, else the account's own.
+        openrouterKeyEncrypted: accountOpenRouterKey,
         defaultModel: users.defaultModel,
         defaultProvider: users.defaultProvider,
         agentPermissionMode: users.agentPermissionMode,
@@ -2613,6 +2703,78 @@ export class AgentTurnReactor {
       );
     }
     return row;
+  }
+
+  /**
+   * Where a native turn's calls go, and on what key.
+   *
+   * A plain model id is the default OpenRouter key's, as it always was. One
+   * of the form `@<keyId>/<model>` names one of the person's own named keys:
+   * that key, its provider's base URL, and the bare model id. The turn's
+   * side calls on other models -- the search model, compaction -- are
+   * OpenRouter models; on an AnonRouter key they go to OpenRouter on the
+   * default key when there is one.
+   */
+  async #nativeRoute(
+    owner: TurnOwner,
+    model: string,
+  ): Promise<{
+    apiKey: string;
+    model: string;
+    complete: Complete;
+    contextLength: () => Promise<number | null>;
+    supportsImages: () => Promise<boolean>;
+  }> {
+    const keyed = parseKeyedModel(model);
+    if (!keyed) {
+      return {
+        apiKey: this.#decryptKey(owner.openrouterKeyEncrypted),
+        model,
+        complete: streamCompletion,
+        contextLength: () => contextLengthFor(model),
+        supportsImages: () => supportsImages(model),
+      };
+    }
+    if (!this.options.secretKey) {
+      throw new Error("SECRET_KEY is not configured, so no stored key can be decrypted");
+    }
+    const stored = await this.options.modelKeys?.use(owner.personId, keyed.keyId);
+    if (!stored) {
+      throw new Error("The API key this model was picked under no longer exists. Pick a model under another key in the composer.");
+    }
+    const inner = keyed.model;
+    if (stored.kind === "openrouter") {
+      return {
+        apiKey: stored.key,
+        model: inner,
+        complete: streamCompletion,
+        contextLength: () => contextLengthFor(inner),
+        supportsImages: () => supportsImages(inner),
+      };
+    }
+    const baseUrl = baseUrlFor(stored.kind);
+    let fallbackKey: string | null = null;
+    try {
+      fallbackKey = owner.openrouterKeyEncrypted ? this.#decryptKey(owner.openrouterKeyEncrypted) : null;
+    } catch {
+      fallbackKey = null;
+    }
+    const complete: Complete = (request, onDelta) =>
+      request.model === inner || !fallbackKey
+        ? streamCompletion({ ...request, apiKey: stored.key }, onDelta, { baseUrl }).catch((error: unknown) => {
+            throw error instanceof Error
+              ? new Error(error.message.replace(/^openrouter:/, `${stored.kind}:`))
+              : error;
+          })
+        : streamCompletion({ ...request, apiKey: fallbackKey }, onDelta);
+    const entry = async () => (await anonCatalogue().catch(() => [])).find((m) => m.id === inner);
+    return {
+      apiKey: stored.key,
+      model: inner,
+      complete,
+      contextLength: async () => (await entry())?.contextLength ?? null,
+      supportsImages: async () => (await entry())?.images ?? false,
+    };
   }
 
   /** The stored key in the clear, for exactly this turn. */

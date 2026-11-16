@@ -475,6 +475,19 @@ describe("the context window", () => {
     expect(state.messages.some((m) => m.turnId === TURN)).toBe(true);
   });
 
+  it("knows nothing again once a handover has replaced the context with its brief", () => {
+    const state = log(completed(120_000, 400), {
+      type: "thread.harness_switched",
+      threadId: THREAD,
+      fromProvider: "claude",
+      toProvider: "claude",
+      brief: "Did A; next B.",
+      reason: "context",
+    });
+    expect(state.contextTokens).toBeNull();
+    expect(state.messages.at(-1)?.switched).toMatchObject({ context: true, brief: "Did A; next B." });
+  });
+
   it("is the last turn's prompt plus what the model wrote back", () => {
     expect(log(completed(12_000, 400)).contextTokens).toBe(12_400);
   });

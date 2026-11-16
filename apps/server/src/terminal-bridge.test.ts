@@ -38,7 +38,7 @@ describe("TerminalBridge", () => {
       defaultModel: "anthropic/claude-sonnet-4.5",
       runDir: () => join(root, "run"),
       agentDir: () => "/creds/u/omp/agent",
-      memoryDb: (subject, projectId) => `/creds/${subject}/omp/memories/${projectId}/mnemopi.db`,
+      openMemory: async (subject, projectId) => ({ path: `/creds/${subject}/omp/memories/${projectId}/mnemopi.db`, close: async () => {} }),
       facts: async () => facts,
     });
     return { terminal, tokens };

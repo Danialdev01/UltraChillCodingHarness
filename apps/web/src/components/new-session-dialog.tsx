@@ -1,13 +1,12 @@
 "use client"
 
 import * as React from "react"
-import { GitBranchIcon } from "lucide-react"
+import { CpuIcon, FolderIcon, GitBranchIcon, GitForkIcon } from "lucide-react"
 
-import { FormDialog, FormDialogFooter, FormField } from "@/components/form-dialog"
+import { FOCUS, FormDialog, FormDialogFooter, FormField, PopoverSelect } from "@/components/form-dialog"
 import { HarnessIcon } from "@/components/harness-icon"
 import { BranchPicker } from "@/components/new-project-dialog"
 import { useProviders } from "@/components/provider-picker"
-import { NativeSelect } from "@/components/ui/native-select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { fetchGitBranches } from "@/lib/git-api"
 import { getHarness } from "@/lib/harnesses"
@@ -132,6 +131,9 @@ export function NewSessionDialog({
     }
   }
 
+  const ready = Boolean(branch && client)
+  const anyBlocked = Boolean(cards) && HARNESS_CHOICES.some((id) => !cards![id] || providerBlocker(cards![id]))
+
   return (
     <FormDialog
       open={open}
@@ -142,36 +144,58 @@ export function NewSessionDialog({
       description={`A conversation of its own in ${project.name}, on its own branch and worktree, running alongside the others.`}
       onSubmit={(event) => void submit(event)}
       footer={
-        <FormDialogFooter busy={pending} disabled={!branch || !client} hint="Forks a new branch from the base">
-          Start session
+        <FormDialogFooter busy={pending} disabled={!ready} hint="Forks a new branch from the base" hintIcon={GitForkIcon}>
+          {pending ? "Starting…" : "Start session"}
         </FormDialogFooter>
       }
     >
       {projects && projects.length > 1 && (
-        <FormField label="Project" htmlFor="new-session-project">
-          <NativeSelect id="new-session-project" value={project.id} onChange={setProjectId} disabled={pending}>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </NativeSelect>
+        <FormField label="Project" labelId="new-session-project-label">
+          <PopoverSelect
+            value={project.id}
+            options={projects.map((p) => ({ value: p.id, label: p.name }))}
+            onChange={setProjectId}
+            heading="Projects"
+            icon={FolderIcon}
+            disabled={pending}
+            labelledBy="new-session-project-label"
+            searchable={projects.length > 8}
+          />
         </FormField>
       )}
-      <FormField label="Harness" labelId="new-session-harness-label">
+
+      <FormField
+        label="Harness"
+        labelId="new-session-harness-label"
+        aside={
+          anyBlocked && (
+            <TransitionLink
+              href={settingsPageHref("providers")}
+              className={cn("rounded-[4px] text-[11px] text-(--fd-text-muted) hover:text-(--fd-text)", FOCUS)}
+            >
+              Set up in Settings
+            </TransitionLink>
+          )
+        }
+      >
         <HarnessCards cards={cards} value={provider} onChange={setProvider} disabled={pending} />
       </FormField>
+
       {models.length > 0 && (
-        <FormField label="Model" htmlFor="new-session-model">
-          <NativeSelect id="new-session-model" value={model} onChange={setModel} disabled={pending}>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </NativeSelect>
+        <FormField label="Model" labelId="new-session-model-label">
+          <PopoverSelect
+            value={model}
+            options={models.map((m) => ({ value: m.id, label: m.name }))}
+            onChange={setModel}
+            heading="Models"
+            icon={CpuIcon}
+            disabled={pending}
+            labelledBy="new-session-model-label"
+            searchable={models.length > 8}
+          />
         </FormField>
       )}
+
       <FormField
         label="Base branch"
         labelId="new-session-branch-label"
@@ -193,9 +217,12 @@ export function NewSessionDialog({
 }
 
 /**
- * The harness to start on, as cards: each with its mark and whether it is
- * ready. One that is not says why and links to where that is fixed, rather
- * than being left out.
+ * The harness to start on, as cards side by side in the new project dialog's
+ * source-card style: each with its mark and whether it is ready. One that is
+ * not says why rather than being left out.
+ *
+ * A radio group: arrow keys move the choice and the focus together among the
+ * ready ones, with only the checked card in the tab order.
  */
 function HarnessCards({
   cards,
@@ -208,46 +235,75 @@ function HarnessCards({
   onChange: (id: ProviderId) => void
   disabled?: boolean
 }) {
+  const refs = React.useRef<Partial<Record<ProviderId, HTMLButtonElement | null>>>({})
+  const rows = HARNESS_CHOICES.map((id) => {
+    const card = cards?.[id]
+    const blocker = card ? providerBlocker(card) : cards ? "Not available on this server" : null
+    return { id, card, blocker, ready: Boolean(card) && !blocker }
+  })
+  const usable = rows.filter((row) => row.ready).map((row) => row.id)
+  // With nothing checked yet, the first usable card is the one Tab reaches.
+  const tabStop = value && usable.includes(value) ? value : usable[0]
+
+  function onKeyDown(event: React.KeyboardEvent) {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key]
+    if (!step || usable.length < 2 || disabled) return
+    event.preventDefault()
+    const at = Math.max(0, usable.indexOf(tabStop!))
+    const next = usable[(at + step + usable.length) % usable.length]!
+    onChange(next)
+    refs.current[next]?.focus()
+  }
+
   return (
-    <div role="radiogroup" aria-labelledby="new-session-harness-label" className="grid gap-1.5">
-      {HARNESS_CHOICES.map((id) => {
-        const card = cards?.[id]
-        const blocker = card ? providerBlocker(card) : cards ? "Not available on this server" : null
-        const ready = Boolean(card) && !blocker
+    <div
+      role="radiogroup"
+      aria-labelledby="new-session-harness-label"
+      className="grid gap-1.5"
+      style={{ gridTemplateColumns: `repeat(${HARNESS_CHOICES.length}, minmax(0, 1fr))` }}
+      onKeyDown={onKeyDown}
+    >
+      {rows.map(({ id, card, blocker, ready }) => {
         const checked = value === id
+        const dim = cards !== null && !ready
         return (
-          <div
+          <button
             key={id}
+            ref={(node) => {
+              refs.current[id] = node
+            }}
+            type="button"
+            role="radio"
+            aria-checked={checked}
+            tabIndex={id === tabStop ? 0 : -1}
+            disabled={disabled || !ready}
+            onClick={() => onChange(id)}
+            title={dim ? (blocker ?? undefined) : undefined}
             className={cn(
-              "flex items-center gap-2.5 rounded-lg border px-3 py-2",
-              checked && "border-primary bg-primary/5",
-              !ready && "bg-muted/40",
+              "flex min-w-0 flex-col items-start gap-[3px] rounded-[8px] border px-2.5 py-2 text-left transition-[border-color,box-shadow,background-color] disabled:cursor-not-allowed",
+              FOCUS,
+              checked
+                ? "border-(--fd-accent) bg-(--fd-accent-tint) ring-[3px] ring-(--fd-ring-soft)"
+                : "border-(--fd-border) bg-(--fd-field) enabled:hover:border-(--fd-border-hover)",
+              dim && "border-dashed bg-(--fd-field-muted)",
             )}
           >
-            <button
-              type="button"
-              role="radio"
-              aria-checked={checked}
-              disabled={disabled || !ready}
-              onClick={() => onChange(id)}
-              className="focus-visible:ring-ring flex min-w-0 flex-1 items-center gap-2.5 rounded text-left outline-none focus-visible:ring-2 disabled:cursor-not-allowed"
-            >
-              <HarnessIcon harness={id} size={20} />
-              <span className="flex min-w-0 flex-col">
-                <span className="text-sm font-medium">{getHarness(id).name}</span>
-                {cards === null ? (
-                  <Skeleton className="mt-1 h-3 w-32" />
-                ) : (
-                  <span className="text-muted-foreground truncate text-xs">{ready ? readyLabel(card!) : blocker}</span>
-                )}
+            <span className="flex min-w-0 max-w-full items-center gap-1.5">
+              <span className={cn("shrink-0", dim && "opacity-50")}>
+                <HarnessIcon harness={id} size={14} />
               </span>
-            </button>
-            {cards !== null && !ready && (
-              <TransitionLink href={settingsPageHref("providers")} className="text-primary shrink-0 text-xs underline-offset-2 hover:underline">
-                Settings
-              </TransitionLink>
+              <span className={cn("truncate text-[12px] font-medium", dim ? "text-(--fd-text-muted)" : "text-(--fd-text)")}>
+                {getHarness(id).name}
+              </span>
+            </span>
+            {cards === null ? (
+              <Skeleton className="my-[2px] h-2.5 w-20" />
+            ) : (
+              <span className="max-w-full truncate text-[11px] text-(--fd-text-muted)">
+                {ready ? readyLabel(card!) : blocker}
+              </span>
             )}
-          </div>
+          </button>
         )
       })}
     </div>

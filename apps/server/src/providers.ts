@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { users, workspaces, type Database } from "@ucch/db";
+import { modelKeys, users, workspaces, type Database } from "@ucch/db";
 import type { CliProviderId, ProviderId, ReasoningEffort } from "@ucch/protocol";
 import {
   isOmpCredentialEnv,
@@ -345,8 +345,9 @@ export class ProviderService {
         id: "native",
         label: PROVIDER_LABELS.native,
         installed: true,
-        authenticated: Boolean(row?.openrouter),
-        authMode: row?.openrouter ? "api-key" : "none",
+        // The default OpenRouter key, or any named key the composer can pick.
+        authenticated: Boolean(row?.openrouter || row?.named),
+        authMode: row?.openrouter || row?.named ? "api-key" : "none",
         enabled: true,
         models: [],
       },
@@ -452,7 +453,7 @@ export class ProviderService {
   }
 
   /** A subject's stored OpenRouter key, from its user or workspace row. */
-  async #storedKeys(subject: string): Promise<{ openrouter: string | null } | undefined> {
+  async #storedKeys(subject: string): Promise<{ openrouter: string | null; named: boolean } | undefined> {
     const workspaceId = workspaceOfSubject(subject);
     const table = workspaceId ? workspaces : users;
     const [row] = await this.db
@@ -462,7 +463,12 @@ export class ProviderService {
       .from(table)
       .where(eq(table.id, workspaceId ?? subject))
       .limit(1);
-    return row;
+    if (!row) return undefined;
+    // Named keys are a person's own; a workspace's subscription has none.
+    const named = workspaceId
+      ? []
+      : await this.db.select({ keyId: modelKeys.id }).from(modelKeys).where(eq(modelKeys.userId, subject)).limit(1);
+    return { ...row, named: Boolean(named[0]?.keyId) };
   }
 }
 

@@ -9,11 +9,10 @@ import {
   EyeOffIcon,
   KeyRoundIcon,
   Loader2Icon,
-  ShieldCheckIcon,
   TrashIcon,
 } from "lucide-react"
 
-import { OpenRouterMark, ResendMark } from "@/components/brand-marks"
+import { ResendMark } from "@/components/brand-marks"
 import { GithubMark } from "@/components/github-mark"
 import { InlineError } from "@/components/layout/inline-error"
 import { SettingsSection } from "@/components/layout/settings-section"
@@ -43,9 +42,7 @@ import {
   type ApiKeysResponse,
 } from "@/lib/api-keys"
 import { useToast } from "@/lib/realtime"
-import { settingsPageHref } from "@/lib/sections"
 import { cn } from "@/lib/utils"
-import { TransitionLink } from "@/lib/view-transitions"
 
 /** Everything that differs between one provider's card and another's. */
 interface Provider {
@@ -66,24 +63,6 @@ interface Provider {
 const linkClass = "text-primary underline underline-offset-2 hover:no-underline"
 
 const PROVIDERS: Provider[] = [
-  {
-    id: "openrouter",
-    name: "OpenRouter",
-    icon: OpenRouterMark,
-    description: "The key every agent turn is billed to.",
-    placeholder: "sk-or-v1-…",
-    help: (
-      <>
-        Create one at{" "}
-        <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" className={linkClass}>
-          openrouter.ai/keys
-        </a>
-        .
-      </>
-    ),
-    consequence: "Agent turns will stop until a new key is added.",
-    extra: () => ({ label: "Used by", value: "All projects" }),
-  },
   {
     id: "resend",
     name: "Resend",
@@ -141,6 +120,9 @@ interface StepUp {
   request(request: StepUpRequest): void
 }
 
+/** What Settings -> API keys lists. Model-provider keys (OpenRouter, AnonRouter) are under Providers -> Custom. */
+export const ACCOUNT_PAGE_PROVIDERS: ApiKeyProvider[] = ["resend", "github"]
+
 /**
  * Account Setting -> API keys.
  *
@@ -150,7 +132,12 @@ interface StepUp {
  * confirmation) and records in Activity. A revealed key hides itself after
  * thirty seconds, when the tab is hidden, or when the card goes away.
  */
-export function ApiKeySettings() {
+export function ApiKeySettings({
+  providers = ACCOUNT_PAGE_PROVIDERS,
+}: {
+  providers?: ApiKeyProvider[]
+} = {}) {
+  const shown = PROVIDERS.filter((p) => providers.includes(p.id))
   const [data, setData] = React.useState<ApiKeysResponse | null>(null)
   const [loadError, setLoadError] = React.useState<string | null>(null)
   const [stepUpRequest, setStepUpRequest] = React.useState<StepUpRequest | null>(null)
@@ -186,38 +173,8 @@ export function ApiKeySettings() {
     [],
   )
 
-  const reveal = data?.reveal
-  return (
-    <SettingsSection
-      plain
-      icon={KeyRoundIcon}
-      title="API keys"
-      description="Credentials the harness uses on your behalf. Keys are encrypted at rest and decrypted only when a request needs them."
-    >
-      <aside className="bg-muted/40 flex gap-3 rounded-lg border px-4 py-3 text-sm">
-        <ShieldCheckIcon className="text-primary mt-0.5 size-4 shrink-0" aria-hidden />
-        <div className="flex flex-col gap-1">
-          <p className="font-medium">Revealing a key needs your password.</p>
-          <p className="text-muted-foreground">
-            A revealed key hides itself again after 30 seconds, and every reveal or copy is recorded in{" "}
-            <TransitionLink href={settingsPageHref("activity")} className={linkClass}>
-              Activity
-            </TransitionLink>
-            .
-          </p>
-          {reveal && !reveal.available && (
-            <p className="text-warning">
-              {reveal.reason}{" "}
-              {reveal.code === "PASSWORD_REQUIRED" && (
-                <TransitionLink href={settingsPageHref("account")} className={linkClass}>
-                  Go to Account
-                </TransitionLink>
-              )}
-            </p>
-          )}
-        </div>
-      </aside>
-
+  const body = (
+    <>
       {data && !data.encryptionAvailable && (
         <InlineError tone="warning">
           <code className="font-mono">SECRET_KEY</code> is not configured on the server, so keys can&apos;t be stored
@@ -228,10 +185,10 @@ export function ApiKeySettings() {
       {loadError && !data ? (
         <InlineError onRetry={() => void load()}>{loadError}</InlineError>
       ) : !data ? (
-        <ApiKeysSkeleton />
+        <ApiKeysSkeleton count={shown.length} />
       ) : (
         <div className="flex flex-col gap-4">
-          {PROVIDERS.map((provider) => (
+          {shown.map((provider) => (
             <ProviderCard
               key={provider.id}
               provider={provider}
@@ -252,6 +209,16 @@ export function ApiKeySettings() {
           stepUpUntil.current = Date.now() + 5 * 60_000
         }}
       />
+    </>
+  )
+  return (
+    <SettingsSection
+      plain
+      icon={KeyRoundIcon}
+      title="API keys"
+      description="Credentials the harness uses on your behalf. Keys are encrypted at rest and decrypted only when a request needs them. The Custom provider's keys are under Providers → Custom."
+    >
+      {body}
     </SettingsSection>
   )
 }

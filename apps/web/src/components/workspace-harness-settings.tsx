@@ -392,7 +392,7 @@ function OmpVerifySection({
 
 /**
  * mnemopi memory on Custom turns (OMP OM7.1, solution §7): one bank per
- * project, shared by its threads. `llmMode` says whether the bank may use
+ * session, recalled by the rules in the server's `session-memory.ts`. `llmMode` says whether the bank may use
  * the fast model to extract and match facts, or full-text search only.
  * `retainCliTurns` (OM7.2) feeds Claude Code and Codex turns' answers in.
  */
@@ -416,9 +416,15 @@ function MemorySection({
     })
 
   return (
-    <SettingsSection icon={BrainIcon} title="Project memory" description={<>Lets Custom turns remember what they learn about a project, such as its conventions, decisions and pitfalls,
-        and recall it in later threads of the same project. Each project has its own memory, kept privately on the
-        server rather than in the repository. Where it disagrees with the files or the request, those win.</>} bare>
+    <SettingsSection icon={BrainIcon} title="Project memory" description={<>Lets Custom turns remember what they learn, such as conventions, decisions and pitfalls, and
+        recall it in later sessions. In a project workspace a session recalls the project&apos;s active and settled
+        sessions; in a session workspace, only the active sessions that share keywords with it. Memory is kept
+        privately on the server rather than in the repository. Where it disagrees with the files or the request,
+        those win.</>} bare>
+      <p className="text-muted-foreground mt-2 max-w-prose text-sm">
+        Settled sessions are deleted for good when the workspace is next opened: after two weeks in a project
+        workspace, after one week in a session workspace. Their data and their memory cannot be recovered.
+      </p>
       <p className="text-warning mt-2 max-w-prose text-sm">
         Never ask an agent to remember secrets: memory is stored as plain text and recalled into later turns.
       </p>

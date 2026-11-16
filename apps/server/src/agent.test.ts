@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
-import { DomainEvent, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
+import { DomainEvent, HANDOVER_CONTINUE, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
 import {
   ClaudeNormaliser,
   createProviders,
@@ -933,7 +933,7 @@ describe("an OMP turn", () => {
 
   describe("compact and handoff between turns", () => {
     /** The reactor as `#compact` reads: the thread, whom to bill, the model the session last ran on. */
-    function compactReactor(threadRow: Row, personRow: Row) {
+    function compactReactor(threadRow: Row, personRow: Row, dispatched?: Command[]) {
       const creds = join(root, "creds");
       const providers = new ProviderService(
         {} as Database,
@@ -943,10 +943,27 @@ describe("an OMP turn", () => {
       );
       const scheduler = new TurnScheduler({ cliPerUser: 2, cliTotal: 2, nativeTotal: 2, ompTotal: 1 });
       const built = reactorWith(
-        { workspaceRoot: join(root, "workspaces"), secretKey: SECRET, defaultModel: "anthropic/claude-sonnet-4.5", cliEnabled: true, providers, scheduler },
+        {
+          workspaceRoot: join(root, "workspaces"),
+          secretKey: SECRET,
+          defaultModel: "anthropic/claude-sonnet-4.5",
+          cliEnabled: true,
+          providers,
+          scheduler,
+          ...(dispatched
+            ? {
+                dispatch: async (_principal: unknown, command: Command) => {
+                  dispatched.push(command);
+                  return { ok: true, events: [] };
+                },
+              }
+            : {}),
+        },
         [threadRow],
         [owner],
         [personRow],
+        [{ model: "anthropic/claude-sonnet-4.5" }],
+        // The turn after a handover reads the model again.
         [{ model: "anthropic/claude-sonnet-4.5" }],
       );
       return { ...built, scheduler, creds };
@@ -990,6 +1007,25 @@ describe("an OMP turn", () => {
       // The slot is given back, and the overlay is gone.
       await eventually(() => scheduler.stats().running.omp, 0);
       await eventually(() => readdir(join(creds, USER, "omp", "run")), []);
+    });
+
+    it.each(["compact", "handoff"] as const)("%s: carries the work on from the brief only after a handover", async (method) => {
+      const bound = await boundThread();
+      const principal = { userId: USER, sessionId: "s", scopes: ["read", "write", "exec"] as ("read" | "write" | "exec")[] };
+      const dispatched: Command[] = [];
+      const { agent, appended } = compactReactor(bound, keyed, dispatched);
+      agent.react(
+        { type: method === "compact" ? "thread.compact" : "thread.handoff", threadId: THREAD },
+        [{ type: "thread.compaction_requested", threadId: THREAD, method }],
+        principal,
+      );
+      await until(appended, finished);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(dispatched).toEqual(
+        method === "handoff"
+          ? [{ type: "thread.send", threadId: THREAD, text: HANDOVER_CONTINUE, model: "anthropic/claude-sonnet-4.5" }]
+          : [],
+      );
     });
 
     it("frees the thread with the reason when there is nothing to fold", async () => {

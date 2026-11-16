@@ -3,7 +3,8 @@
 import * as React from "react"
 
 import { HarnessIcon } from "@/components/harness-icon"
-import { PickerChevron, pickerTrigger, type PickerLook } from "@/components/model-picker"
+import { KindTile } from "@/components/model-key-settings"
+import { PickerChevron, pickerTrigger, type ModelSource, type PickerLook } from "@/components/model-picker"
 import { Button } from "@/components/ui/button"
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -16,6 +17,7 @@ import {
   type ProviderCard,
   type ProviderId,
 } from "@/lib/providers-api"
+import { KIND_NAMES } from "@/lib/model-keys"
 
 export interface ProvidersState {
   cards: Record<ProviderId, ProviderCard> | null
@@ -72,6 +74,9 @@ function accountBlocker(account: AgentAccount): string | null {
 
 const ORDER: ProviderId[] = ["native", "claude", "codex"]
 
+/** A named key's tile at the size of a harness icon. */
+const KEY_TILE = "size-4 rounded-[4px] [&_svg]:size-2.5 [&>span]:text-[7px]"
+
 /**
  * Which backend answers the next message.
  *
@@ -93,6 +98,9 @@ export function ProviderSelect({
   accounts,
   currentProfileId,
   onAccount,
+  modelKeys,
+  currentKeyId,
+  onModelKey,
   disabled,
   look = "field",
 }: {
@@ -113,6 +121,15 @@ export function ProviderSelect({
   /** The account in use, when one is known. */
   currentProfileId?: string | null
   onAccount?: (account: AgentAccount) => void
+  /**
+   * The named keys from Settings -> Providers -> Custom. Each is listed as
+   * a harness of its own, by the name it was given, in place of Custom:
+   * picking one is Custom with the model moved onto that key.
+   */
+  modelKeys?: ModelSource[]
+  /** The key the current model bills, when it names one. */
+  currentKeyId?: string | null
+  onModelKey?: (keyId: string) => void
   disabled?: boolean
   look?: PickerLook
 }) {
@@ -120,13 +137,26 @@ export function ProviderSelect({
   const cards = providers.cards
   const current = cards?.[value]
   const blocker = current ? providerBlocker(current) : null
+  const keys = onModelKey ? (modelKeys ?? []) : []
+  // Under Custom, the key in use stands in for the harness: it goes by the
+  // name it was given, as Claude Code and Codex go by theirs.
+  const currentKey = value === "native" ? keys.find((k) => k.id === currentKeyId) : undefined
+  const label = currentKey?.name ?? current?.label ?? value
+
+  /** Custom, billing `keyId`: the key first, so the harness's next turn is on it. */
+  function chooseKey(keyId: string) {
+    onModelKey?.(keyId)
+    if (locked && onSwitch) {
+      if (locked !== "native") onSwitch("native")
+    } else if (value !== "native") onChange("native")
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={
           <Button
-            {...pickerTrigger(look, look === "inline" ? "text-muted-foreground" : "w-36")}
+            {...pickerTrigger(look, look === "inline" ? "text-muted-foreground shrink-0 @lg:shrink" : "w-36")}
             role="combobox"
             aria-expanded={open}
             aria-label="Harness"
@@ -136,7 +166,7 @@ export function ProviderSelect({
                 ? onSwitch
                   ? `This session runs on ${cards?.[locked]?.label ?? locked}. Pick another harness to switch it, with a brief of the work so far.`
                   : `This thread runs on ${cards?.[locked]?.label ?? locked}.`
-                : (blocker ?? `Harness: ${current?.label ?? value}`)
+                : (blocker ?? `Harness: ${currentKey ? `${current?.label ?? value} on ${currentKey.name}` : label}`)
             }
           />
         }
@@ -145,28 +175,56 @@ export function ProviderSelect({
           // On the toolbar, a narrow panel shows the robot alone; the name
           // is in the title and in the list it opens.
           <>
-            <HarnessIcon harness={value} size={16} />
-            <span className="sr-only @md:not-sr-only @md:truncate">{current?.label ?? value}</span>
-            <span className="hidden @md:contents">
+            {currentKey ? <KindTile kind={currentKey.kind} className={KEY_TILE} /> : <HarnessIcon harness={value} size={16} />}
+            <span className="sr-only @lg:not-sr-only @lg:truncate">{label}</span>
+            <span className="hidden @lg:contents">
               <PickerChevron look={look} />
             </span>
           </>
         ) : (
           <>
-            <HarnessIcon harness={value} size={16} />
-            <span className="truncate">{current?.label ?? value}</span>
+            {currentKey ? <KindTile kind={currentKey.kind} className={KEY_TILE} /> : <HarnessIcon harness={value} size={16} />}
+            <span className="truncate">{label}</span>
             <PickerChevron look={look} />
           </>
         )}
       </PopoverTrigger>
 
-      <PopoverContent className="w-72 p-0">
+      {/* As wide as its rows: names are short, and only a blocked row's reason needs the room. */}
+      <PopoverContent className="w-max min-w-48 max-w-72 p-0">
         <Command>
           <CommandList>
             <CommandGroup heading={locked && onSwitch ? "Switch this session to" : "Harness"}>
               {ORDER.map((id) => {
                 const card = cards?.[id]
                 const why = card ? providerBlocker(card) : id === "native" ? null : "Checking…"
+                // Custom with named keys: one row per key, by its name, in
+                // place of the one Custom row. Picking a key is picking Custom
+                // and billing that key, in one go.
+                if (id === "native" && keys.length > 0) {
+                  return keys.map((key) => {
+                    const checked = value === "native" && key.id === currentKeyId
+                    return (
+                      <CommandItem
+                        key={`key:${key.id}`}
+                        value={`key:${key.id}`}
+                        data-checked={checked}
+                        disabled={why !== null && value !== "native"}
+                        title={why ?? `${card?.label ?? "Custom"} on ${key.name} (${KIND_NAMES[key.kind]})`}
+                        onSelect={() => {
+                          if (!checked) chooseKey(key.id)
+                          setOpen(false)
+                        }}
+                      >
+                        <KindTile kind={key.kind} className={KEY_TILE} />
+                        <span className="min-w-0 truncate">{key.name}</span>
+                        {why && (
+                          <span className="text-muted-foreground ml-auto min-w-0 truncate text-[10px]">{why}</span>
+                        )}
+                      </CommandItem>
+                    )
+                  })
+                }
                 return (
                   <CommandItem
                     key={id}

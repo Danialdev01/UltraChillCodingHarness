@@ -878,6 +878,9 @@ export function toMessages(
       case "thread.harness_switched":
         switching = null;
         running = false;
+        // The old session is gone with its context: the next session starts
+        // from the brief, and the meter from its first reading.
+        contextTokens = null;
         messages.push({
           role: "assistant",
           text: "",

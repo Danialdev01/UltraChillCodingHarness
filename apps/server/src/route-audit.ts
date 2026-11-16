@@ -404,7 +404,6 @@ const TABLE: Record<string, Describe> = {
   "PATCH /api/agent-profiles/:id": () => account("settings.profiles", "Changed a subscription account"),
   "DELETE /api/agent-profiles/:id": () => account("settings.profiles", "Deleted a subscription account"),
   "DELETE /api/agent-profiles/:id/credentials": () => account("settings.credentials", "Signed a subscription account out"),
-  "DELETE /api/omp-memory/:projectId": () => account("settings.memory", "Cleared a project's OMP memory"),
 
   // -- Database connections --------------------------------------------------
   "POST /api/workspaces/:id/database-connections": (_p, b) =>

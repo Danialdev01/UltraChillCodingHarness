@@ -38,6 +38,8 @@ export interface ModelChoice {
    * optimistic direction costs the whole turn.
    */
   images: boolean;
+  /** AnonRouter's word that the model is tuned to refuse less. Never set for OpenRouter. */
+  uncensored?: boolean;
 }
 
 /**
@@ -387,11 +389,16 @@ function stripMarks(message: ChatMessage): unknown {
 export async function streamCompletion(
   request: CompletionRequest,
   onDelta: (delta: { text?: string; reasoning?: string }) => void,
+  /**
+   * Another OpenAI-compatible provider's API root (AnonRouter, for a turn on
+   * a named key of that kind). OpenRouter's own when absent.
+   */
+  options: { baseUrl?: string } = {},
 ): Promise<CompletionResult> {
   const tools = request.tools ?? [];
   const plugins = request.plugins ?? [];
 
-  const response = await fetch(`${base}/chat/completions`, {
+  const response = await fetch(`${options.baseUrl ?? base}/chat/completions`, {
     method: "POST",
     signal: request.signal,
     headers: {

@@ -869,6 +869,7 @@ export function BranchPicker({
   loading,
   placeholder,
   labelledBy,
+  className,
 }: {
   branches: string[];
   value: string;
@@ -878,6 +879,8 @@ export function BranchPicker({
   /** What to say when there is nothing to choose from yet. */
   placeholder: string;
   labelledBy: string;
+  /** Extra trigger classes, e.g. a taller field in a roomier dialog. */
+  className?: string;
 }) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -909,6 +912,7 @@ export function BranchPicker({
             className={cn(
               FIELD,
               "group disabled:border-dashed disabled:border-(--fd-border-disabled) disabled:bg-(--fd-field-muted)",
+              className,
             )}
           />
         }

@@ -12,6 +12,13 @@ import type { ProviderId } from "./events.js";
 export const CONTEXT_HANDOVER_RATIO = 0.55;
 
 /**
+ * What a session is asked once a handover has replaced its context with a
+ * brief: carry the work on from there, without waiting for the person. The
+ * brief itself rides ahead of it (`handoffMessage`, or OMP's own handoff).
+ */
+export const HANDOVER_CONTINUE = "Continue the work from the handover brief.";
+
+/**
  * The context window a CLI harness's model works in, where the CLI does not
  * say: Claude Code's models are 200k unless the alias asks for the 1M
  * window (`[1m]`), Codex's 272k of input. Null for a harness that reports
