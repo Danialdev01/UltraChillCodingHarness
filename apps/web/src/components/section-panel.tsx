@@ -8,6 +8,7 @@ import {
 } from "lucide-react"
 
 import { ConnectionsPanel } from "@/components/database/connections-panel"
+import { KnowledgePanel } from "@/components/knowledge/knowledge-panel"
 import { SessionSidebar } from "@/components/session-sidebar/session-sidebar"
 import {
   SidebarGroup,
@@ -234,6 +235,17 @@ export function SectionPanel({
       <ConnectionsPanel
         connections={connections}
         workspaceId={workspaceId}
+        compact={compact}
+        onNavigate={onNavigate}
+      />
+    )
+  }
+
+  if (section.id === "knowledge" && workspaceId) {
+    return (
+      <KnowledgePanel
+        workspaceId={workspaceId}
+        canWrite={activeWorkspace?.permissions.includes("project.write") ?? false}
         compact={compact}
         onNavigate={onNavigate}
       />

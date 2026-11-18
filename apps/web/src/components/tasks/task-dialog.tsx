@@ -127,7 +127,7 @@ export function TaskDialog({
     setError(null)
     try {
       for (const file of Array.from(files)) {
-        const staged = await stageUpload(target, file)
+        const { upload: staged } = await stageUpload(target, file)
         add({ kind: "upload", uploadId: staged.id, name: staged.name })
       }
     } catch (e) {

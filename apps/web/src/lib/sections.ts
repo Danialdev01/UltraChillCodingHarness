@@ -1,5 +1,6 @@
 import {
   ActivityIcon,
+  LibraryBigIcon,
   BotIcon,
   ChartColumnIcon,
   DatabaseIcon,
@@ -131,7 +132,24 @@ export const SECTIONS = [
     ListTodoIcon,
     "Tasks the agent has planned or completed across this workspace. Arrives with the agent core.",
   ),
+  section(
+    "knowledge",
+    "Knowledge",
+    LibraryBigIcon,
+    "Folders of documents, each with a knowledge graph, that a chat can be answered from.",
+  ),
 ] as const satisfies readonly Section[];
+
+/** The page of one knowledge base. */
+export function knowledgeBaseHref(ws: string, baseId: string): string {
+  return `/${ws}/knowledge/${encodeURIComponent(baseId)}`;
+}
+
+/** The knowledge base a URL is on, or null off a base's page. */
+export function knowledgeBaseIdFromPath(pathname: string): string | null {
+  const match = /^\/knowledge\/([0-9a-f-]{36})(?:\/|$)/i.exec(inWorkspace(pathname)?.rest ?? "");
+  return match?.[1] ?? null;
+}
 
 /**
  * The account's own settings. Reached from the profile menu rather than the

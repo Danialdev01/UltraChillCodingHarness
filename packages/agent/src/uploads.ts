@@ -40,6 +40,29 @@ export interface StagedUpload {
    * Absent on the ordinary attachment, which still expires.
    */
   retained?: boolean;
+  /**
+   * The text read out of the file when it was staged -- a PDF's pages, a
+   * workbook's sheets, a deck's slides -- or absent when there is none
+   * (an image, an archive). The text itself is kept beside the bytes.
+   */
+  extract?: UploadExtract;
+  /** A link fetched into staging: the address it came from. */
+  sourceUrl?: string;
+}
+
+/** What was read out of an upload, without the text itself. */
+export interface UploadExtract {
+  kind: string;
+  /** e.g. "PDF, 12 pages". */
+  summary: string;
+  chars: number;
+  /** Estimated, at about four characters a token. */
+  tokens: number;
+  /** The text was cut at the extraction limit. */
+  truncated: boolean;
+  warning?: string;
+  /** A scanned PDF's first pages, staged as pictures for a model that can see. */
+  pageImages?: { id: string; name: string; type: string }[];
 }
 
 /** Where an attach ended up. */
@@ -79,6 +102,19 @@ export interface UploadStaging {
     projectId: string,
     uploadId: string,
   ): Promise<{ bytes: Buffer; contentType: string } | null>;
+  /**
+   * Copies a staged file, and the text read out of it, into `root`'s
+   * `.attachments/` folder for the agent to read. Workspace-relative paths,
+   * or null when it is gone. Optional: a staging without it inlines only.
+   */
+  materialize?(
+    projectId: string,
+    uploadId: string,
+    root: string,
+  ): Promise<{ file: string; text: string | null } | null>;
+  /** A picture's cached description by a vision model, or null. Optional. */
+  readDescription?(projectId: string, uploadId: string): Promise<string | null>;
+  saveDescription?(projectId: string, uploadId: string, text: string): Promise<void>;
 }
 
 /** Raised when the id names nothing. Separated so the tool can say which. */

@@ -1080,6 +1080,17 @@ describe("OmpProvider", () => {
     expect(env).toEqual({ PATH: "/usr/bin", OPENROUTER_API_KEY: "sk-or-test" });
   });
 
+  it("hands the message's pictures to OMP on the prompt, and sends none when there are none", async () => {
+    const host = fakeOmp({ turn: promptFrames("omp-tool") });
+    await drain(startTurn(host, { images: [{ path: "/w/.attachments/ab/shot.png", mediaType: "image/png", data: "iVBORw0KGgo=" }] }));
+    const prompt = host.children[0]!.frames.find((f) => f.type === "prompt");
+    expect(prompt).toMatchObject({ message: "go", images: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] });
+
+    const plain = fakeOmp({ turn: promptFrames("omp-tool") });
+    await drain(startTurn(plain));
+    expect(plain.children[0]!.frames.find((f) => f.type === "prompt")).not.toHaveProperty("images");
+  });
+
   it("round-trips the confirm recording: requested, resolved, then the tool's result", async () => {
     const host = fakeOmp({ turn: promptFrames("omp-confirm") });
     const run = startTurn(host);

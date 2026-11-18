@@ -24,6 +24,7 @@ import {
   type OmpRunFiles,
   type PermissionReply,
   type ProviderHealth,
+  type ProviderImage,
   type ProviderRunInput,
   type RunContext,
 } from "./types.js";
@@ -1542,7 +1543,7 @@ class OmpTurn implements AgentRun {
     const before = await this.#stats(rpc);
     if (this.#interrupted) return this.#close(rpc);
 
-    const prompt = await rpc.request({ type: "prompt", message: this.input.prompt });
+    const prompt = await rpc.request({ type: "prompt", message: this.input.prompt, ...ompImages(this.input.images) });
     if (!prompt.success) {
       this.#failure = prompt.error || "omp refused the prompt";
       return this.#close(rpc);
@@ -1731,4 +1732,17 @@ class EventQueue implements AsyncIterable<DomainEvent> {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The pictures attached to a message, as OMP's RPC `prompt` takes them:
+ * base64 content blocks, which it hands its model the way the model's API
+ * wants them (and leaves out for one that cannot see). Nothing when there
+ * are none, so an ordinary prompt is sent exactly as before.
+ */
+export function ompImages(
+  images: readonly ProviderImage[] | undefined,
+): { images?: { type: "image"; data: string; mimeType: string }[] } {
+  if (!images?.length) return {};
+  return { images: images.map((image) => ({ type: "image", data: image.data, mimeType: image.mediaType })) };
 }

@@ -58,7 +58,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
+  DropdownMenuSeparator,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
@@ -74,7 +74,11 @@ import {
   pasteCarriesText,
   previewKindOf,
   pendingImageCount,
+  findLinks,
+  linkLabel,
   readAttachment,
+  tokenLabel,
+  withStaged,
   type Attachment,
 } from "@/lib/attachments";
 import {
@@ -84,7 +88,7 @@ import {
 import { ImageEditorDialog } from "@/components/image-editor-dialog";
 import { useVoiceInput, type VoiceState } from "@/lib/use-voice-input";
 import { insertTranscript } from "@/lib/voice-transcribe";
-import { discardUpload, stageUpload, uploadContentUrl } from "@/lib/uploads-api";
+import { discardUpload, stageLink, stageUpload, uploadContentUrl } from "@/lib/uploads-api";
 import { carriesResource, readResourceDrag, resourceAsFile, type ResourceDragPayload } from "@/lib/resources-api";
 import { AccessSelect } from "@/components/access-select";
 import { ContextMeter } from "@/components/context-meter";
@@ -167,10 +171,13 @@ import { basename, dirname } from "@/lib/files-api";
 import { flattenEntries } from "@/lib/file-tree";
 import { insertMention, mentionAt, rankEntries, type Mention } from "@/lib/file-mention";
 import { matchCommands, matchOptions, SLASH_COMMANDS, slashAt, type Slash } from "@/lib/slash-commands";
+import { PlanReadyCard } from "@/components/plan-ready";
+import { KnowledgeBaseSelect, KnowledgeModeSubmenu, useKnowledgeChoice } from "@/components/knowledge/knowledge-picker";
+import { toMessageKnowledge, type KnowledgeChoice } from "@/lib/knowledge-api";
 import { ComposerMenu, type MenuRow } from "@/components/composer-menu";
 import { FileTypeIcon } from "@/components/file-type-icon";
 import { ConversationSkeleton } from "@/components/page-skeletons";
-import type { ComposerDraft, MessageImage, MessageMode, ReasoningEffort } from "@ucch/protocol";
+import type { ComposerDraft, MessageImage, MessageMode, PlanStage, ReasoningEffort } from "@ucch/protocol";
 import type { Project, ProjectSession } from "@/lib/session";
 import { ServerError } from "@/lib/client";
 import { createComposerSync, type ComposerSync } from "@/lib/composer-sync";
@@ -361,10 +368,22 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
   const [mode, setMode] = useState<MessageMode | null>(null);
   const research = mode === "research";
   const documentation = mode === "documentation";
-  const toggleMode = useCallback(
-    (next: MessageMode) => setMode((current) => (current === next ? null : next)),
-    [],
-  );
+  /**
+   * Plan mode (`/plan`), as the Claude Code and Codex CLIs have it: messages
+   * go as read-only drafts, the agent asks what it needs and proposes a
+   * plan, and running it is the person's call (`PlanReadyCard`). Not one of
+   * the pipeline modes -- a plan turn is a coding turn -- but never on with
+   * one either.
+   */
+  const [planning, setPlanning] = useState(false);
+  const toggleMode = useCallback((next: MessageMode) => {
+    setPlanning(false);
+    setMode((current) => (current === next ? null : next));
+  }, []);
+  const togglePlanning = useCallback(() => {
+    setMode(null);
+    setPlanning((current) => !current);
+  }, []);
 
   const chooseProvider = useCallback(
     (id: ProviderId) => {
@@ -586,6 +605,16 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     () => threadStore?.contextUsage ?? null,
     () => null,
   );
+  /**
+   * The context window the chosen model works in: the provider's own
+   * reading, the CLI's known window, or the catalogue's. Null when nothing
+   * says, which the attachment budget treats as a modest model.
+   */
+  const windowTokens =
+    measuredContext?.windowTokens ??
+    (cli ? cliContextWindow(provider, activeModel) : null) ??
+    models.find((m) => m.id === model)?.contextLength ??
+    null;
 
   useEffect(() => {
     const client = sharedClient;
@@ -911,6 +940,20 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
   // A turn waiting for a slot is the agent's as much as one running: the
   // composer offers Stop, and the server refuses a second message either way.
   const running = turnRunning || queuedAhead !== null;
+  // Plan mode stays on while a plan is being worked out, across reloads:
+  // the newest message's stage says where the thread is.
+  const lastPlanStage = useMemo(() => messages.findLast((m) => m.role === "user")?.plan ?? null, [messages]);
+  useEffect(() => {
+    if (lastPlanStage === "draft") {
+      setMode(null);
+      setPlanning(true);
+    } else if (lastPlanStage === "run") setPlanning(false);
+  }, [lastPlanStage]);
+  /** The newest answer proposed a plan that has not been run or answered yet. */
+  const planReady = useMemo(() => {
+    const last = messages.at(-1);
+    return Boolean(last?.role === "assistant" && last.proposedPlan && !last.streaming && !last.error);
+  }, [messages]);
 
   // A CLI's built-in subagent, opened from the session card: its own view
   // over this thread (`?agent=`), as it has no session of its own.
@@ -1016,6 +1059,12 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
   leftEmpty.current = messages.length === 0 && draft.trim() === "" && attachments.length === 0;
   const sessionHash = session?.hash ?? null;
   const standaloneSession = project.workspaceKind === "session";
+  // Any chat can be answered from its workspace's knowledge bases; the pick
+  // is the chat's own -- per project session, or per session workspace's session.
+  const knowledgeWorkspace = project.workspaceId;
+  const [knowledgeChoice, setKnowledgeChoice] = useKnowledgeChoice(knowledgeWorkspace, sessionHash ?? project.id);
+  // What the next message carries: nothing on Web only, or before a base is picked.
+  const knowledge = knowledgeWorkspace ? toMessageKnowledge(knowledgeChoice) : undefined;
   useEffect(() => {
     if (!sessionHash && !standaloneSession) return;
     const key = sessionHash ?? project.hash;
@@ -1174,7 +1223,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
    * what to do with the text then is the caller's decision.
    */
   const dispatchMessage = useCallback(
-    async (text: string, images: MessageImage[] = []) => {
+    async (text: string, images: MessageImage[] = [], stage: PlanStage | null = planning ? "draft" : null) => {
       const client = clientRef.current;
       if (!client || !threadId) throw new Error("The conversation is not connected.");
       await client.dispatch({
@@ -1189,14 +1238,16 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
         // model would otherwise ride along to one that cannot use it.
         ...(effortLevels ? { effort: sentEffort } : {}),
         provider,
-        ...(mode ? { mode } : {}),
+        ...(stage ? { plan: stage } : mode ? { mode } : {}),
+        // The workspace's knowledge bases picked in the composer.
+        ...(knowledge ? { knowledge } : {}),
       });
       // From here on the thread is bound, whatever the picker said before.
       setBoundProvider(provider);
       // Your own message is the one thing you always want to see land.
       scrollToEnd();
     },
-    [cli, cliModel, effortLevels, model, mode, provider, scrollToEnd, sentEffort, threadId],
+    [cli, cliModel, effortLevels, knowledge, model, mode, planning, provider, scrollToEnd, sentEffort, threadId],
   );
 
   const invalidate = useInvalidate();
@@ -1205,11 +1256,20 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     // Attachments alone are a message: "here, look at this" is a real thing
     // to say, and the files carry it. A code reference alone is not: it says
     // where to look but not what to do.
+    // `/plan <request>`: the request is the first draft of a plan, and plan
+    // mode stays on for the questions that follow.
+    const planned = /^\/plan\s+(\S[\s\S]*)$/.exec(draft);
+    const typed = planned ? planned[1]! : draft;
     const text = composeMessage(
-      reference ? (draft.trim() ? codeChatPrompt(reference, draft) : "") : draft,
+      reference ? (typed.trim() ? codeChatPrompt(reference, typed) : "") : typed,
       attachments,
+      windowTokens,
     );
-    if (!text || !threadId || sending || vision || worktreeBlocked) return;
+    if (!text || !threadId || sending || worktreeBlocked) return;
+    if (planned) {
+      setMode(null);
+      setPlanning(true);
+    }
 
     // The manifest in `text` describes every attachment; this names the ones
     // the model is shown as pictures. Sent alongside rather than instead:
@@ -1231,7 +1291,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     history.current = idleCursor;
     try {
       // The server titles the session from this message (engine.ts).
-      await dispatchMessage(text, images);
+      await dispatchMessage(text, images, planned || planning ? "draft" : null);
     } catch (e) {
       // Put the composer back as it was rather than losing it to a failed
       // send -- including the files, which the user would otherwise have to
@@ -1243,7 +1303,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     } finally {
       setSending(false);
     }
-  }, [abortVoice, attachments, dispatchMessage, draft, reference, sending, threadId, vision, worktreeBlocked]);
+  }, [abortVoice, attachments, dispatchMessage, draft, planning, reference, sending, threadId, windowTokens, worktreeBlocked]);
 
   /** A subagent's session: its task again, as a new turn here. */
   const rerun = useCallback(async () => {
@@ -1293,11 +1353,9 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
   const stageOne = useCallback(
     async (attachment: Attachment, file: File) => {
       try {
-        const upload = await stageUpload(project.hash, file);
+        const staged = await stageUpload(project.hash, file);
         setAttachments((current) =>
-          current.map((a) =>
-            a.id === attachment.id ? { ...a, uploadId: upload.id, status: "staged" as const } : a,
-          ),
+          current.map((a) => (a.id === attachment.id ? withStaged(a, staged) : a)),
         );
       } catch (e) {
         setAttachments((current) =>
@@ -1446,11 +1504,57 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
       setAttachments((current) => {
         const going = current.find((a) => a.id === id);
         if (going?.uploadId) void discardUpload(project.hash, going.uploadId);
+        // A link taken off stays off, though it is still in the draft.
+        if (going?.url) dismissedLinks.current.add(going.url);
         return current.filter((a) => a.id !== id);
       });
     },
     [project.hash],
   );
+
+  /**
+   * Links in the draft, read for the model: each one the person types or
+   * pastes becomes a chip, and the server fetches it (`stageLink`, public
+   * addresses only) and reads it like a dropped file -- a page, a PDF, a
+   * spreadsheet. The model then has the page whichever harness answers,
+   * web tool or not. A chip removed is never offered again for that link.
+   *
+   * Debounced, so a link half-typed is not fetched; a paste settles at once.
+   */
+  const dismissedLinks = useRef(new Set<string>());
+  const linkDelay = useRef(900);
+  useEffect(() => {
+    const wanted = findLinks(draft).filter(
+      (url) => !dismissedLinks.current.has(url) && !attachments.some((a) => a.url === url),
+    );
+    if (wanted.length === 0) return;
+    const timer = setTimeout(() => {
+      const chips: Attachment[] = wanted.map((url) => ({
+        id: `link-${Date.now()}-${url}`,
+        name: linkLabel(url),
+        size: 0,
+        type: "text/html",
+        text: null,
+        uploadId: null,
+        status: "uploading",
+        url,
+      }));
+      setAttachments((current) => [...current, ...chips.filter((c) => !current.some((a) => a.url === c.url))]);
+      for (const chip of chips) {
+        stageLink(project.hash, chip.url!).then(
+          (staged) => setAttachments((current) => current.map((a) => (a.id === chip.id ? withStaged(a, staged) : a))),
+          (e: unknown) =>
+            setAttachments((current) =>
+              current.map((a) =>
+                a.id === chip.id ? { ...a, status: "failed" as const, error: e instanceof Error ? e.message : String(e) } : a,
+              ),
+            ),
+        );
+      }
+    }, linkDelay.current);
+    linkDelay.current = 900;
+    return () => clearTimeout(timer);
+  }, [attachments, draft, project.hash]);
 
   /**
    * Stops the turn in flight.
@@ -1570,6 +1674,12 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     [boundProvider, threadId, project.hash],
   );
 
+  /** Plan mode's go-ahead: plan mode ends, and the agent carries the plan out. */
+  const runPlan = useCallback(async () => {
+    await dispatchMessage("Run the plan.", [], "run");
+    setPlanning(false);
+  }, [dispatchMessage]);
+
   /** Answers a choice card (`thread.choice_reply`); the card goes when `agent.choice_resolved` lands. */
   const replyChoice = useCallback(
     async (requestId: string, optionId: string, model?: string) => {
@@ -1659,6 +1769,11 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
           const step = () => replaceDraft(`/${command.name} `, command.name.length + 2);
           const row = { key: command.name, label: `/${command.name}`, detail: command.description };
           switch (command.name) {
+            case "plan":
+              return {
+                row: { ...row, icon: icon(ListChecksIcon), detail: `Plan mode is ${planning ? "on" : "off"}` },
+                pick: () => (done(), togglePlanning()),
+              };
             case "research":
               return {
                 row: { ...row, icon: icon(TelescopeIcon), detail: `Research is ${research ? "on" : "off"}` },
@@ -2061,6 +2176,16 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
           {choices[0] && !prompts[0] && (
             <ChoicePromptCard key={choices[0].requestId} choice={choices[0]} onReply={replyChoice} />
           )}
+          {planReady && !running && !sending && !choices[0] && !prompts[0] && (
+            <PlanReadyCard
+              onRun={runPlan}
+              onRefine={() => {
+                setMode(null);
+                setPlanning(true);
+                draftRef.current?.focus({ preventScroll: true });
+              }}
+            />
+          )}
           {compactionError && (
             <InlineError className="text-xs">{compactionError}</InlineError>
           )}
@@ -2068,7 +2193,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
               the send would do, and it goes away when the cause does --
               another model picked, or the picture removed. */}
           {vision && (
-            <InlineError className="text-xs">{vision}</InlineError>
+            <p className="text-muted-foreground px-1 text-xs" data-testid="vision-note">{vision}</p>
           )}
           {/* The whole box is the input, not just the textarea: the border
               and focus ring live out here so the send button reads as being
@@ -2136,11 +2261,19 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                         ? `Upload failed: ${file.error ?? "unknown error"}`
                         : file.status === "uploading"
                           ? "Uploading…"
-                          : // What the model will be told about this file:
-                            // staged outside the project until it is placed.
-                            `Staged — the agent can add it to the project on request${
-                              file.text === null ? ` (content ${excludedReason(file)})` : ""
-                            }`
+                          : // What the model will be told about this file: its
+                            // text inline up to the model's budget, and the
+                            // whole file copied into .attachments/ to read.
+                            [
+                              file.url ? `Fetched from ${file.url}` : null,
+                              file.text !== null
+                                ? `The agent reads its text${tokenLabel(file) ? ` (${tokenLabel(file)})` : ""}; long files are excerpted and read in full from the workspace copy`
+                                : `The agent reads it from the workspace copy (${excludedReason(file)})`,
+                              file.extract?.warning ?? null,
+                              "It can also add the file to the project on request",
+                            ]
+                              .filter(Boolean)
+                              .join(". ")
                     }
                     className={`flex max-w-40 items-center gap-1.5 rounded-md py-1 pr-1 pl-2 text-xs @md:max-w-64 ${
                       file.status === "failed"
@@ -2215,6 +2348,9 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                   // clipboard -- the same thing the file picker hands over, so
                   // it takes the same path: staged on the server, chipped in the
                   // composer, and named in the message as a picture to look at.
+                  // A pasted link is read at once rather than after the
+                  // typing pause (the link effect above).
+                  if (findLinks(e.clipboardData.getData("text/plain") ?? "").length) linkDelay.current = 0;
                   const files = clipboardFiles(e.clipboardData);
                   if (files.length === 0) return;
                   // Only a paste with nothing to type is swallowed, so pasting
@@ -2323,18 +2459,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
               <AttachMenu
                 disabled={!threadId || sending || running}
                 onAddFiles={() => fileRef.current?.click()}
-                mode={mode}
-                onMode={toggleMode}
-                researchNote={
-                  cli
-                    ? `Researches on OpenRouter first, then hands ${provider} the brief with your message`
-                    : "Find live information with Perplexity Sonar, read the pages with Crawl4AI, and send a browser agent where the crawler cannot go"
-                }
-                documentationNote={
-                  cli
-                    ? `Hands ${provider} the document rules, templates and scripts with your message`
-                    : "Create, edit and read PDF, DOCX and DOC files: fixed templates, diagrams and charts, then a layout check of every page"
-                }
+                {...(knowledgeWorkspace ? { knowledge: knowledgeChoice, onKnowledge: setKnowledgeChoice } : {})}
               />
               <MicButton
                 state={voice.state}
@@ -2342,9 +2467,33 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                 disabled={!threadId || sending || running}
                 onClick={toggleDictation}
               />
+              {/* The bases, once the + menu's Knowledge is off Web only. */}
+              {knowledgeWorkspace && knowledgeChoice.mode !== "web" && (
+                <KnowledgeBaseSelect
+                  workspaceId={knowledgeWorkspace}
+                  value={knowledgeChoice}
+                  onChange={setKnowledgeChoice}
+                  disabled={!threadId || sending}
+                />
+              )}
               {/* The mode, shown where it was switched on. A toggle buried
                   in a menu needs something visible saying it is still on,
                   and this is also the fastest way to turn it off. */}
+              {planning && (
+                <button
+                  type="button"
+                  onClick={() => setPlanning(false)}
+                  disabled={sending || running}
+                  title="Plan mode: the agent plans and asks, changing nothing, until you run the plan. Click to turn off."
+                  data-testid="plan-mode"
+                  className="bg-ucch-active-bg text-foreground hover:text-muted-foreground flex h-7 items-center gap-1 rounded-full py-1 pr-1.5 pl-2 text-xs transition-colors disabled:opacity-60"
+                >
+                  <ListChecksIcon className="size-3.5" />
+                  Plan
+                  <XIcon className="size-3 opacity-70" />
+                  <span className="sr-only">Turn plan mode off</span>
+                </button>
+              )}
               {mode && (
                 <button
                   type="button"
@@ -2409,12 +2558,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
               <ComposerDivider />
               <ContextMeter
                 tokens={measuredContext?.usedTokens ?? contextTokens}
-                limit={
-                  measuredContext?.windowTokens ??
-                  (cli ? cliContextWindow(provider, activeModel) : null) ??
-                  models.find((m) => m.id === model)?.contextLength ??
-                  null
-                }
+                limit={windowTokens}
                 threshold={measuredContext?.thresholdTokens ?? null}
                 live={measuredContext !== null}
                 onHandover={() => void compactThread("handoff", "")}
@@ -2486,10 +2630,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                       attachments.some((a) => a.status === "uploading") ||
                       !threadId ||
                       sending ||
-                      // The warning above says why; sending anyway would
-                      // fail the turn and hand the message back.
-                      vision !== null ||
-                      // So does the worktree notice.
+                      // The worktree notice says why.
                       worktreeBlocked
                     }
                   >
@@ -2612,32 +2753,25 @@ function Greeting() {
 /**
  * The plus under the composer.
  *
- * Three entries work today -- files, and the Research and Documentation
- * toggles; the rest are
- * named because the menu is the place a user goes looking for them, and a
+ * Files work today; the rest are named because the menu is the place a user goes looking for them, and a
  * menu that grows an item later teaches nothing about where the first one
  * lives. They are disabled rather than hidden -- "not yet" is information,
  * and an empty menu is not.
  *
- * The modes are checkbox items rather than actions: each is a mode for the
- * messages that follow, not something added to this one. At most one is on.
+ * Research and Documentation are not here: they are modes, switched with
+ * `/research` and `/documentation`.
  */
 function AttachMenu({
   disabled,
   onAddFiles,
-  mode,
-  onMode,
-  researchNote,
-  documentationNote,
+  knowledge,
+  onKnowledge,
 }: {
   disabled: boolean;
   onAddFiles: () => void;
-  mode: MessageMode | null;
-  /** Flips the named mode, turning any other off. */
-  onMode: (mode: MessageMode) => void;
-  /** What turning each on does under the current provider. */
-  researchNote: string;
-  documentationNote: string;
+  /** Where the agent may look, and the bases: absent where the workspace is not known. */
+  knowledge?: KnowledgeChoice;
+  onKnowledge?: (next: KnowledgeChoice) => void;
 }) {
   return (
     <DropdownMenu>
@@ -2671,22 +2805,12 @@ function AttachMenu({
           <BlocksIcon />
           Connectors
         </DropdownMenuItem>
-        <DropdownMenuCheckboxItem
-          checked={mode === "research"}
-          onCheckedChange={() => onMode("research")}
-          title={researchNote}
-        >
-          <TelescopeIcon />
-          Research
-        </DropdownMenuCheckboxItem>
-        <DropdownMenuCheckboxItem
-          checked={mode === "documentation"}
-          onCheckedChange={() => onMode("documentation")}
-          title={documentationNote}
-        >
-          <FileTextIcon />
-          Documentation
-        </DropdownMenuCheckboxItem>
+        {knowledge && onKnowledge && (
+          <>
+            <DropdownMenuSeparator />
+            <KnowledgeModeSubmenu value={knowledge} onChange={onKnowledge} />
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

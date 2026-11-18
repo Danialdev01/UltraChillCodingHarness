@@ -1,5 +1,6 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  bigint,
   bigserial,
   boolean,
   customType,
@@ -697,6 +698,61 @@ export const resourceStores = pgTable(
 );
 
 /**
+ * A session workspace's knowledge bases: named folders of documents a chat
+ * can be answered from. Plain state, like `resource_stores`: nothing replays it.
+ */
+export const knowledgeBases = pgTable(
+  "knowledge_bases",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("knowledge_bases_workspace_idx").on(t.workspaceId)],
+);
+
+/** What one document contributes to its base's graph. Merged at read time. */
+export interface KnowledgeDocumentGraph {
+  entities: { name: string; type: string; description: string }[];
+  relations: { source: string; target: string; relation: string }[];
+}
+
+/**
+ * One document in a knowledge base. The original is on disk under the
+ * workspace root's `.knowledge/`; the text read out of it, and the slice of
+ * the graph it adds, are here -- so deleting the row removes both.
+ */
+export const knowledgeDocuments = pgTable(
+  "knowledge_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    baseId: uuid("base_id")
+      .notNull()
+      .references(() => knowledgeBases.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    mediaType: text("media_type").notNull(),
+    /** Bytes; a bigint because a document may be past 2 GiB. */
+    size: bigint("size", { mode: "number" }).notNull(),
+    /** `processing`, `ready` or `failed`. */
+    status: text("status").notNull().default("processing"),
+    error: text("error"),
+    text: text("text").notNull().default(""),
+    graph: jsonb("graph").$type<KnowledgeDocumentGraph>(),
+    /** `model` or `heuristic`; null until the graph is built. */
+    graphSource: text("graph_source"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("knowledge_documents_base_idx").on(t.baseId)],
+);
+
+/**
  * A project's notes: a tree of pages, Notion-style.
  *
  * Plain state rather than a projection of `events`: a note is edited in place
@@ -1061,6 +1117,8 @@ export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type DatabaseConnection = typeof databaseConnections.$inferSelect;
 export type ResourceStoreRow = typeof resourceStores.$inferSelect;
+export type KnowledgeBaseRow = typeof knowledgeBases.$inferSelect;
+export type KnowledgeDocumentRow = typeof knowledgeDocuments.$inferSelect;
 
 /**
  * What people changed in a project, newest first on its Activity page.

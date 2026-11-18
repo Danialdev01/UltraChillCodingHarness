@@ -234,3 +234,11 @@ export async function deleteSettledSessions(
   if (!response.ok) throw new Error(body.error ?? "Could not delete the settled sessions.")
   return { deleted: body.deleted ?? 0, skipped: body.skipped ?? 0, leftFiles: body.leftFiles ?? 0 }
 }
+
+/** Deletes one settled session of a session workspace, its files and data with it. */
+export async function deleteSettledSession(projectHash: string): Promise<{ leftFiles: boolean }> {
+  const response = await fetch(`/api/projects/${projectHash}/settled-session`, { method: "DELETE", credentials: "include" })
+  const body = (await response.json().catch(() => ({}))) as { leftFiles?: boolean; error?: string }
+  if (!response.ok) throw new Error(body.error ?? "Could not delete the session.")
+  return { leftFiles: body.leftFiles ?? false }
+}

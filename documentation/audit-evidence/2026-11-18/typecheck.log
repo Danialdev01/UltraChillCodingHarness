@@ -1,0 +1,19 @@
+
+> ucch@ typecheck /srv/http/git/work/UltraChillCodingHarness
+> pnpm -r typecheck
+
+Scope: 7 of 8 workspace projects
+packages/protocol typecheck$ tsc --noEmit
+packages/protocol typecheck: Done
+apps/web typecheck$ next typegen && tsc --noEmit
+packages/agent typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/providers typecheck$ tsc --noEmit
+packages/db typecheck: Done
+packages/providers typecheck: Done
+packages/agent typecheck: Done
+apps/web typecheck: Done
+apps/server typecheck$ tsc --noEmit
+packages/omp-bridge typecheck$ tsc --noEmit
+packages/omp-bridge typecheck: Done
+apps/server typecheck: Done

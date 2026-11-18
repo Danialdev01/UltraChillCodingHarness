@@ -66,6 +66,24 @@ describe("explainClaudeError", () => {
 });
 
 describe("claudeArgv", () => {
+  it("plans read-only in Claude Code's plan mode, without its plan and question tools", () => {
+    const argv = claudeArgv({ bin: "claude", caps, readOnly: true });
+    expect(argv.join(" ")).toContain("--permission-mode plan");
+    const at = argv.indexOf("--disallowedTools");
+    expect(argv.slice(at + 1, at + 4)).toEqual(["ExitPlanMode", "AskUserQuestion", "EnterPlanMode"]);
+    expect(claudeArgv({ bin: "claude", caps })).not.toContain("--disallowedTools");
+  });
+
+  it("holds back the web tools on a knowledge-only turn, beside a plan's", () => {
+    const argv = claudeArgv({ bin: "claude", caps, noWeb: true });
+    const at = argv.indexOf("--disallowedTools");
+    expect(argv.slice(at + 1, at + 3)).toEqual(["WebSearch", "WebFetch"]);
+    const both = claudeArgv({ bin: "claude", caps, readOnly: true, noWeb: true });
+    expect(both.filter((a) => a === "--disallowedTools")).toHaveLength(1);
+    expect(both).toContain("WebFetch");
+    expect(both).toContain("ExitPlanMode");
+  });
+
   it("names the stream, a permission mode and the host for prompts", () => {
     const argv = claudeArgv({ bin: "claude", caps });
     expect(argv.slice(0, 2)).toEqual(["claude", "-p"]);
@@ -148,13 +166,14 @@ describe("claudeArgv", () => {
       const at = normal.indexOf("--mcp-config");
       expect(normal.slice(at, at + 3)).toEqual(["--mcp-config", "/c/run/t.mcp.json", "--strict-mcp-config"]);
       const allowed = normal.indexOf("--allowedTools");
-      expect(normal.slice(allowed + 1, allowed + 12)).toEqual([
+      expect(normal.slice(allowed + 1, allowed + 13)).toEqual([
         "mcp__omp__omp_symbols",
         "mcp__omp__omp_recall",
         "mcp__omp__omp_review",
         "mcp__omp__omp_task",
         "mcp__omp__ucch_agent",
         "mcp__omp__ucch_sessions",
+        "mcp__omp__ucch_session_read",
         "mcp__omp__ucch_inbox",
         "mcp__omp__ucch_message",
         "mcp__omp__ucch_agent_status",
@@ -163,7 +182,7 @@ describe("claudeArgv", () => {
       ]);
       // `--allowedTools` takes every word up to the next flag: whatever follows it is one.
       const resumed = claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", model: "opus", resumeToken: "s1" });
-      expect(resumed[resumed.indexOf("--allowedTools") + 12]).toMatch(/^--/);
+      expect(resumed[resumed.indexOf("--allowedTools") + 13]).toMatch(/^--/);
       expect(claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x", permissionMode: "normal" })).toEqual(
         claudeArgv({ bin: "claude", caps, mcpConfigPath: "/x" }),
       );
@@ -815,6 +834,8 @@ describe("ClaudeProvider.run", () => {
       message: { role: "user", content: "say pong" },
     });
     expect(host.spawned[0]?.env.CLAUDE_CONFIG_DIR).toBe("/creds");
+    // The CLI folds its own context mid-turn at the handover line.
+    expect(host.spawned[0]?.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe("55");
     expect(events[0]?.type).toBe("agent.session_started");
     expect(events.at(-1)?.type).toBe("agent.turn_completed");
   });

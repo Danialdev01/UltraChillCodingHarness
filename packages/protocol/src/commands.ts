@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { ProjectDatabase } from "./database.js";
-import { MessageImage, MessageMode, ProjectMode, ProviderId, ReviewScope } from "./events.js";
+import { MessageImage, MessageMode, PlanStage, ProjectMode, ProviderId, ReviewScope } from "./events.js";
 import { BranchName, PreviewHash, ThreadHash } from "./ids.js";
+import { MessageKnowledge } from "./knowledge.js";
 
 /**
  * Commands are the only way a client changes anything.
@@ -147,6 +148,19 @@ const ThreadSend = z.object({
    * thread, bound or not.
    */
   mode: MessageMode.optional(),
+  /**
+   * Plan mode (`/plan`): `draft` is a read-only turn that asks what it needs
+   * and ends with a plan to approve; `run` carries out the thread's newest
+   * proposed plan. Wins over `mode`: a plan turn is an ordinary coding turn.
+   */
+  plan: PlanStage.optional(),
+  /**
+   * The workspace's knowledge bases this message is answered from, and
+   * whether the agent may also search the web. Absent is an ordinary turn.
+   * Bases outside the thread's workspace are dropped by the server, not
+   * trusted from here.
+   */
+  knowledge: MessageKnowledge.optional(),
 });
 
 /**
@@ -229,6 +243,12 @@ const ThreadHandoff = z.object({
   type: z.literal("thread.handoff"),
   threadId: z.string().uuid(),
   focus: z.string().trim().max(2_000).optional(),
+  /**
+   * The server handed over by itself: the session ended a turn past the
+   * fallback line (`CONTEXT_FORCE_RATIO`). Quiet -- the chat shows no row
+   * for it -- and, like any handover, it sends nothing.
+   */
+  auto: z.boolean().optional(),
 });
 
 /**

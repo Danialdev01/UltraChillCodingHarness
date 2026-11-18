@@ -8,6 +8,8 @@
  * below) is what moves it into the project.
  */
 
+import type { AttachmentExtract } from "./attachments";
+
 /** One staged file. Mirrors the server's `StagedUpload`. */
 export interface StagedUpload {
   id: string;
@@ -15,6 +17,20 @@ export interface StagedUpload {
   size: number;
   contentType: string;
   stagedAt: string;
+  /** What the server read out of the file (`UploadExtract`), when it could. */
+  extract?: AttachmentExtract;
+  /** A fetched link: where it came from. */
+  sourceUrl?: string;
+}
+
+/**
+ * A staging response: the record, and the text the server read out of the
+ * file, capped at what one message could ever inline.
+ */
+export interface Staged {
+  upload: StagedUpload;
+  text?: string;
+  textTruncated?: boolean;
 }
 
 /** The server's message, or a fallback, as one throwable thing. */
@@ -30,7 +46,7 @@ async function fail(response: Response, fallback: string): Promise<never> {
  * and type in the query string -- the server parses one buffer rather than a
  * multipart envelope, and there is no form to build here.
  */
-export async function stageUpload(hash: string, file: File): Promise<StagedUpload> {
+export async function stageUpload(hash: string, file: File): Promise<Staged> {
   const query = new URLSearchParams({ name: file.name, type: file.type || "" });
   const response = await fetch(`/api/projects/${hash}/uploads?${query}`, {
     method: "POST",
@@ -39,7 +55,22 @@ export async function stageUpload(hash: string, file: File): Promise<StagedUploa
     body: file,
   });
   if (!response.ok) await fail(response, `Could not upload ${file.name}.`);
-  return ((await response.json()) as { upload: StagedUpload }).upload;
+  return (await response.json()) as Staged;
+}
+
+/**
+ * Has the server fetch a link and stage what came back -- a page, a PDF, a
+ * spreadsheet -- so it reaches the model like a dropped file does.
+ */
+export async function stageLink(hash: string, url: string): Promise<Staged> {
+  const response = await fetch(`/api/projects/${hash}/uploads/link`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!response.ok) await fail(response, "Could not read that link.");
+  return (await response.json()) as Staged;
 }
 
 /**

@@ -87,6 +87,11 @@ function feed(normaliser: CodexNormaliser, text: string): DomainEvent[] {
 describe("codexArgv", () => {
   const caps = { ignoreRules: true };
 
+  it("switches web search off on a knowledge-only turn", () => {
+    expect(codexArgv({ bin: "codex", isRepo: true, caps, noWeb: true }).join(" ")).toContain('-c web_search="disabled"');
+    expect(codexArgv({ bin: "codex", isRepo: true, caps }).join(" ")).not.toContain("web_search");
+  });
+
   it("sets reasoning effort for new and resumed turns, leaving Default to the CLI", () => {
     for (const resumeToken of [undefined, "th-1"]) {
       for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
@@ -111,6 +116,16 @@ describe("codexArgv", () => {
     expect(argv.join(" ")).toContain("--sandbox workspace-write");
     expect(argv).toContain("--ignore-rules");
     expect(argv).not.toContain("--skip-git-repo-check");
+  });
+
+  it("compacts its own context mid-turn at the handover line, on new and resumed turns", () => {
+    for (const resumeToken of [undefined, "th-1"]) {
+      const argv = codexArgv({ bin: "codex", isRepo: true, caps, resumeToken });
+      const index = argv.indexOf(`model_auto_compact_token_limit=${Math.floor(272_000 * 0.55)}`);
+      expect(index).toBeGreaterThan(0);
+      expect(argv[index - 1]).toBe("-c");
+      if (resumeToken) expect(index).toBeLessThan(argv.indexOf("resume"));
+    }
   });
 
   it("passes full access only when asked to", () => {
@@ -153,7 +168,7 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
   it("is unchanged with the bridge off", () => {
     expect(codexArgv({ bin: "codex", isRepo: false, caps, resumeToken: "th-1", model: "gpt-5" })).toEqual([
       "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--skip-git-repo-check",
-      "--ignore-rules", "--model", "gpt-5", "resume", "th-1",
+      "--ignore-rules", "--model", "gpt-5", "-c", "model_auto_compact_token_limit=149600", "resume", "th-1",
     ]);
   });
 
@@ -166,10 +181,10 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
       "-c", 'mcp_servers.omp.default_tools_approval_mode="approve"',
     ];
     expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp })).toEqual([
-      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", ...flags,
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", "-c", "model_auto_compact_token_limit=149600", ...flags,
     ]);
     expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp, resumeToken: "th-1" })).toEqual([
-      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", ...flags, "resume", "th-1",
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", "-c", "model_auto_compact_token_limit=149600", ...flags, "resume", "th-1",
     ]);
   });
 
@@ -393,6 +408,15 @@ describe("CodexProvider.run", () => {
     expect(() =>
       provider.run({ ctx: { cwd: WORKSPACE, env: { OPENAI_API_KEY: "sk" }, host }, prompt: "x", ...ids }),
     ).toThrow(/OPENAI_API_KEY/);
+  });
+});
+
+describe("a plan-mode draft on Codex", () => {
+  it("runs in a read-only sandbox", async () => {
+    const host = new FakeProcessHost([{ match: (a) => a[1] === "exec", lines: fixture.trim().split("\n").map(stdout) }]);
+    const run = new CodexProvider("codex", () => true).run({ ctx: { cwd: WORKSPACE, env: { PATH: "/usr/bin" }, host }, prompt: "plan it", readOnly: true, ...ids });
+    for await (const _ of run.events) void _;
+    expect(host.spawned[0]?.argv.join(" ")).toContain("--sandbox read-only");
   });
 });
 

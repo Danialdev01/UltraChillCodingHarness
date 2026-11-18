@@ -122,6 +122,10 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 #   python venv             -- python-docx, pypdf, pdfplumber, vl-convert
 #   poppler-utils           -- pdftoppm (page renders), pdffonts (checks)
 #   libreoffice-writer-nogui -- .doc/.odt/.rtf in, .docx -> .pdf out
+#   libreoffice-calc/impress-nogui -- legacy .xls/.ppt attachments, converted
+#                              to .xlsx/.pptx so the composer can read them
+#   tesseract-ocr           -- OCR for PDF pages with no text layer (scans),
+#                              so a model that cannot see still reads them
 #   graphviz, chromium + mermaid-cli -- diagrams
 #   fonts-*                 -- the families templates/base.typ asks for (IBM
 #                              Plex, its fallback, is not packaged for bookworm)
@@ -138,7 +142,8 @@ RUN apt-get update \
     bash ca-certificates curl git ripgrep xz-utils \
     postgresql-client default-mysql-client \
     php-cli php-mbstring php-xml php-curl php-zip php-sqlite3 php-pgsql php-mysql php-bcmath php-intl php-gd unzip \
-    python3 python3-venv poppler-utils libreoffice-writer-nogui graphviz chromium \
+    python3 python3-venv poppler-utils libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
+    tesseract-ocr tesseract-ocr-eng graphviz chromium \
     fonts-inter fonts-jetbrains-mono fonts-noto-core fonts-dejavu-core \
   && curl -fsSL -o /tmp/pandoc.deb "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-amd64.deb" \
   && dpkg -i /tmp/pandoc.deb && rm /tmp/pandoc.deb \

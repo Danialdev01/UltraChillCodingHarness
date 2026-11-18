@@ -1,4 +1,5 @@
 import type { DomainEvent, MessageImage } from "@ucch/protocol";
+import { elideInlinedAttachments } from "@ucch/protocol/plain";
 import { summaryMessage } from "./context.js";
 import type { ChatMessage, ToolCall, UserContentPart } from "./completion.js";
 
@@ -38,6 +39,9 @@ export const INTERRUPTED = "Interrupted before this tool ran.";
 export function rebuild(
   events: readonly DomainEvent[],
   images: ReadonlyMap<string, string> = new Map(),
+  descriptions: ReadonlyMap<string, string> = new Map(),
+  /** Whether the model can see pictures: what an unshown one is said to be. */
+  canSee = true,
 ): ChatMessage[] {
   let checkpoint = -1;
   let summary: string | null = null;
@@ -59,17 +63,27 @@ export function rebuild(
   }
 
   if (checkpoint >= 0) {
-    const rest = replay(events.slice(checkpoint + 1), images);
+    const rest = replay(events.slice(checkpoint + 1), images, descriptions, canSee);
     return summary === null ? rest : [summaryMessage(summary), ...rest];
   }
-  return replay(events, images);
+  return replay(events, images, descriptions, canSee);
 }
+
+/** How many of the newest user messages keep their attachments' inlined text. */
+const KEEP_INLINE_MESSAGES = 2;
 
 /** The fold itself, over whatever window `rebuild` decided the model sees. */
 function replay(
   events: readonly DomainEvent[],
   images: ReadonlyMap<string, string>,
+  descriptions: ReadonlyMap<string, string>,
+  canSee: boolean,
 ): ChatMessage[] {
+  // The newest messages keep their attachments' inlined text, so a follow-up
+  // about a file still has it; older ones keep the manifest and its paths.
+  const users = events.flatMap((event, index) => (event.type === "user.message" ? [index] : []));
+  const keepFrom = users.length > KEEP_INLINE_MESSAGES ? users[users.length - KEEP_INLINE_MESSAGES]! : 0;
+
   // Results are looked up rather than read in order: they are appended as
   // each tool finishes, which for parallel calls is not the order the model
   // asked for them in, and the conversation must not inherit that shuffle.
@@ -82,9 +96,10 @@ function replay(
 
   const messages: ChatMessage[] = [];
 
-  for (const event of events) {
+  for (const [index, event] of events.entries()) {
     if (event.type === "user.message") {
-      messages.push({ role: "user", content: userContent(event.text, event.images, images) });
+      const text = index < keepFrom ? elideInlinedAttachments(event.text) : event.text;
+      messages.push({ role: "user", content: userContent(text, event.images, images, descriptions, canSee) });
       continue;
     }
     if (event.type !== "agent.message") continue;
@@ -185,26 +200,41 @@ function userContent(
   text: string,
   attached: readonly MessageImage[] | undefined,
   images: ReadonlyMap<string, string>,
+  descriptions: ReadonlyMap<string, string> = new Map(),
+  canSee = true,
 ): string | UserContentPart[] {
   if (!attached?.length) return text;
 
   const parts: UserContentPart[] = [];
   const missing: string[] = [];
+  const described: string[] = [];
   for (const image of attached) {
     const url = images.get(image.uploadId);
+    const description = descriptions.get(image.uploadId);
     if (url) parts.push({ type: "image_url", image_url: { url } });
+    else if (description) described.push(`--- ${image.name} (described by a vision model: this model cannot see images) ---\n${description}`);
     else missing.push(image.name);
   }
+  if (described.length) text = `${text}\n\n${described.join("\n\n")}`;
 
-  if (parts.length === 0) return note(text, missing);
+  if (parts.length === 0) return note(text, missing, canSee);
   // The text leads: a picture answers a question, and the question is what
   // the person actually typed.
-  return [{ type: "text", text: note(text, missing) }, ...parts];
+  return [{ type: "text", text: note(text, missing, canSee) }, ...parts];
 }
 
-function note(text: string, missing: readonly string[]): string {
+/**
+ * What the model is told about pictures it is not shown. Two different
+ * facts: a model that cannot see is told so, and to say so, rather than
+ * that the person's picture has gone -- which it would then repeat to them.
+ */
+function note(text: string, missing: readonly string[], canSee = true): string {
   if (missing.length === 0) return text;
-  return `${text}\n\n(${missing.join(", ")} ${
-    missing.length === 1 ? "was" : "were"
-  } attached to this message but the image is no longer available.)`;
+  const names = `${missing.join(", ")} ${missing.length === 1 ? "was" : "were"}`;
+  if (!canSee) {
+    return `${text}\n\n(${names} attached to this message, but this model cannot see images and no description of ${
+      missing.length === 1 ? "it" : "them"
+    } is available. If the answer depends on what ${missing.length === 1 ? "it shows" : "they show"}, say so and ask the person to describe it or to switch to a model that can see images; do not guess.)`;
+  }
+  return `${text}\n\n(${names} attached to this message but the image is no longer available.)`;
 }

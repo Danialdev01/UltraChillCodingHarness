@@ -121,6 +121,13 @@ export interface HostExecutorOptions {
    * `php` here is the one its terminal runs. Null leaves PATH as it is.
    */
   pathPrefix?: () => string | null;
+  /**
+   * Folders outside the workspace the file tools may read by absolute path:
+   * this turn's knowledge bases, kept once in the server's store rather than
+   * copied into every project. Never written: writes and deletes still
+   * have to land inside the workspace.
+   */
+  readOnlyRoots?: readonly string[];
 }
 
 /**
@@ -173,6 +180,8 @@ export class HostExecutor implements Executor {
    */
   resolve(path: string): string {
     if (isAbsolute(path)) {
+      const readable = this.#readOnly(path);
+      if (readable) return readable.absolute;
       throw new Error(`path must be relative to the workspace root: ${path}`);
     }
     const normalized = normalizeWorkspacePath(path);
@@ -192,11 +201,24 @@ export class HostExecutor implements Executor {
     return absolute;
   }
 
+  /** An absolute path inside one of `readOnlyRoots`, normalised, with that root; else null. */
+  #readOnly(path: string): { absolute: string; root: string } | null {
+    const absolute = resolvePath(path);
+    for (const root of this.options.readOnlyRoots ?? []) {
+      const base = resolvePath(root);
+      if (absolute === base || absolute.startsWith(base + sep)) return { absolute, root: base };
+    }
+    return null;
+  }
+
   /** `resolve`, then refused if a symlink along the way leads out of the tree. */
-  async #confined(path: string): Promise<string> {
+  async #confined(path: string, read = false): Promise<string> {
     const absolute = this.resolve(path);
+    // Only a read may land in a read-only root, and no link may lead out of
+    // it; a write there is checked against the workspace, and refused.
+    const readRoot = read && isAbsolute(path) ? this.#readOnly(path)?.root : undefined;
     await assertRealpathInside(
-      this.#root,
+      readRoot ?? this.#root,
       absolute,
       () => new Error(`path escapes the workspace through a symlink: ${path}`),
     );
@@ -321,7 +343,7 @@ export class HostExecutor implements Executor {
   }
 
   async readFile(path: string, options: { maxBytes?: number } = {}): Promise<string> {
-    const absolute = await this.#confined(path);
+    const absolute = await this.#confined(path, true);
     const max = options.maxBytes ?? DEFAULT_MAX_READ_BYTES;
 
     // Opened and read by the byte rather than slurped: a tool asking for the

@@ -74,6 +74,12 @@ export interface TurnInput {
    */
   supportsImages?: boolean;
   /**
+   * For a model that cannot see: a picture in words, by a model that can
+   * (`describe-image.ts`), or null when it could not be described. Each
+   * attached image is then given to the model as that text instead.
+   */
+  describeImage?: (uploadId: string, signal?: AbortSignal) => Promise<string | null>;
+  /**
    * The model that summarises -- for compaction, and for `web_search`.
    * Neither is the work, and neither should be billed as if it were.
    * Falls back to the turn's own model when unset.
@@ -198,13 +204,14 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
     await input.append([{ type: "context.injected", threadId, source: "omp_bridge", content: input.instructions }]);
   }
   const images = await loadImages(input);
+  const descriptions = await describeImages(input);
 
   const messages: ChatMessage[] = [
     // Spans, not one joined string: the file tree moves whenever anybody adds
     // a file, and joined it dragged the harness rules and `AGENTS.md` down
     // with it on every turn that it changed.
     { role: "system", content: prompt.segments },
-    ...rebuild(input.history, images),
+    ...rebuild(input.history, images, descriptions, input.supportsImages === true),
   ];
 
   // A message asking for a visual is told, on that message, to answer with a
@@ -582,6 +589,30 @@ async function loadImages(input: TurnInput): Promise<ReadonlyMap<string, string>
     }),
   );
 
+  return found;
+}
+
+/**
+ * The attached pictures as words, for a model that cannot see them
+ * (`TurnInput.describeImage`). Every image in the history, so an earlier
+ * screenshot is still there to reason about; the describer caches each, so
+ * this costs one vision call per picture, ever. Fails soft, like
+ * `loadImages`: a picture not described is named as attached and unseen.
+ */
+async function describeImages(input: TurnInput): Promise<ReadonlyMap<string, string>> {
+  const found = new Map<string, string>();
+  if (input.supportsImages || !input.describeImage) return found;
+  const wanted = new Set<string>();
+  for (const event of input.history) {
+    if (event.type !== "user.message") continue;
+    for (const image of event.images ?? []) if (isModelImageType(image.type)) wanted.add(image.uploadId);
+  }
+  await Promise.all(
+    [...wanted].map(async (uploadId) => {
+      const text = await input.describeImage!(uploadId, input.signal).catch(() => null);
+      if (text) found.set(uploadId, text);
+    }),
+  );
   return found;
 }
 

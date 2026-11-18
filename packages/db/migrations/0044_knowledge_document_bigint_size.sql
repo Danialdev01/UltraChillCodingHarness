@@ -1,0 +1,1 @@
+ALTER TABLE "knowledge_documents" ALTER COLUMN "size" SET DATA TYPE bigint;

@@ -636,3 +636,60 @@ export function ShellSkeleton() {
     </div>
   )
 }
+
+/** The tab strip a tabbed page opens on: a few labels over a rule. */
+function TabsBarSkeleton({ tabs = 3 }: { tabs?: number }) {
+  return (
+    <div className="flex h-9 items-center gap-4 border-b px-3" aria-hidden>
+      {Array.from({ length: tabs }, (_, i) => (
+        <Skeleton key={i} className="h-3" style={{ width: `${40 + ((i * 23) % 40)}px` }} />
+      ))}
+    </div>
+  )
+}
+
+/** Knowledge: the heading, then a grid of base cards. */
+export function KnowledgeIndexSkeleton() {
+  return (
+    <div className="flex flex-1 flex-col p-4 sm:p-6">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+        <PageHeadingSkeleton />
+        <KnowledgeCardsSkeleton />
+      </div>
+    </div>
+  )
+}
+
+/** The knowledge base cards, as the index and the Manage tab draw them. */
+export function KnowledgeCardsSkeleton({ cards = 3 }: { cards?: number }) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-hidden>
+      {Array.from({ length: cards }, (_, i) => (
+        <div key={i} className="flex h-[132px] flex-col gap-2 rounded-lg border p-4">
+          <Skeleton className="h-4" style={{ width: `${45 + ((i * 19) % 35)}%` }} />
+          <Skeleton className="h-3 w-4/5 opacity-70" />
+          <div className="mt-auto flex gap-3">
+            <Skeleton className="h-3 w-14" />
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-3 w-12" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** One knowledge base: its heading, the tabs, and the document rows. */
+export function KnowledgeBaseSkeleton() {
+  return (
+    <div className="flex flex-1 flex-col p-4 sm:p-6">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+        <PageHeadingSkeleton />
+        <div className="flex flex-col gap-4">
+          <TabsBarSkeleton tabs={3} />
+          <ListRowsSkeleton rows={5} />
+        </div>
+      </div>
+    </div>
+  )
+}

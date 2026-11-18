@@ -24,7 +24,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { SECTIONS, SETTINGS, WORKSPACE_SETTINGS, projectHashFromPath, sectionForPath, type Section } from "@/lib/sections"
+import { SETTINGS, WORKSPACE_SETTINGS, projectHashFromPath, SECTIONS, sectionForPath, type Section } from "@/lib/sections"
 import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { useTransitionRouter } from "@/lib/view-transitions"

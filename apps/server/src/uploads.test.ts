@@ -89,10 +89,10 @@ describe("staging a file", () => {
       Buffer.from("x"),
     );
     expect(upload.name).toBe("passwd");
-    expect(await readdir(resolve(root, ".uploads", PROJECT))).toEqual([
-      upload.id,
-      `${upload.id}.json`,
-    ]);
+    // The bytes, the record, and the text read out of them -- all named by id.
+    expect((await readdir(resolve(root, ".uploads", PROJECT))).sort()).toEqual(
+      [upload.id, `${upload.id}.json`, `${upload.id}.txt`].sort(),
+    );
   });
 });
 
@@ -313,5 +313,80 @@ describe("contentDisposition", () => {
   it("falls back to a name rather than an empty one", () => {
     // `safeName` already guarantees a name, so this is the belt to that brace.
     expect(contentDisposition("")).toContain('filename="attachment"');
+  });
+});
+
+describe("reading documents for the model", () => {
+  it("keeps the extracted text beside the bytes and summarises it on the record", async () => {
+    const upload = await stage("table.csv", "text/csv", "a,b\n1,2\n");
+    expect(upload.extract).toMatchObject({ kind: "spreadsheet", chars: 7, truncated: false });
+    expect(await store.readText(PROJECT, upload.id)).toBe("a,b\n1,2");
+    // The record round-trips through `find`.
+    expect((await store.find(PROJECT, upload.id))?.extract?.summary).toMatch(/^Table/);
+  });
+
+  it("stages a binary with no text and no extract", async () => {
+    const upload = await store.stage(PROJECT, "x.bin", "application/octet-stream", Buffer.from([1, 0, 2]));
+    expect(upload.extract).toBeUndefined();
+    expect(await store.readText(PROJECT, upload.id)).toBeNull();
+  });
+
+  it("forgets the text when the upload is discarded", async () => {
+    const upload = await stage("t.csv", "text/csv", "a\n");
+    await store.discard(PROJECT, upload.id);
+    expect(await store.readText(PROJECT, upload.id)).toBeNull();
+  });
+});
+
+describe("materializing an attachment into a workspace", () => {
+  it("copies the file and its text under a self-ignoring .attachments folder", async () => {
+    const upload = await stage("data.csv", "text/csv", "a,b\n1,2\n");
+    const workspace = files.root(PROJECT);
+    const placed = await store.materialize(PROJECT, upload.id, workspace);
+    expect(placed?.file).toBe(`.attachments/${upload.id.slice(0, 8)}/data.csv`);
+    expect(placed?.text).toBe(`.attachments/${upload.id.slice(0, 8)}/data.csv.txt`);
+    expect(await readFile(join(workspace, placed!.file), "utf8")).toBe("a,b\n1,2\n");
+    expect(await readFile(join(workspace, placed!.text!), "utf8")).toBe("a,b\n1,2");
+    expect(await readFile(join(workspace, ".attachments/.gitignore"), "utf8")).toContain("*");
+    // Still staged: placing it in the project proper is a separate decision.
+    expect(await store.find(PROJECT, upload.id)).not.toBeNull();
+  });
+
+  it("does not write a second copy of a plain-text file", async () => {
+    const upload = await stage("notes.txt");
+    const placed = await store.materialize(PROJECT, upload.id, files.root(PROJECT));
+    expect(placed?.text).toBeNull();
+  });
+
+  it("is idempotent", async () => {
+    const upload = await stage("data.csv", "text/csv", "a\n");
+    const workspace = files.root(PROJECT);
+    const first = await store.materialize(PROJECT, upload.id, workspace);
+    expect(await store.materialize(PROJECT, upload.id, workspace)).toEqual(first);
+  });
+
+  it("refuses a workspace whose .attachments is not a folder", async () => {
+    const upload = await stage("notes.txt");
+    const workspace = files.root(PROJECT);
+    await writeFile(join(workspace, ".attachments"), "mine");
+    expect(await store.materialize(PROJECT, upload.id, workspace)).toBeNull();
+  });
+
+  it("never writes through a symlink planted at the destination", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const upload = await stage("notes.txt");
+    const workspace = files.root(PROJECT);
+    const outside = join(root, "outside.txt");
+    await writeFile(outside, "untouched");
+    const dir = join(workspace, ".attachments", upload.id.slice(0, 8));
+    await mkdir(dir, { recursive: true });
+    await symlink(outside, join(dir, "notes.txt"));
+    await store.materialize(PROJECT, upload.id, workspace);
+    expect(await readFile(outside, "utf8")).toBe("untouched");
+    expect(await readFile(join(dir, "notes.txt"), "utf8")).toBe("hello");
+  });
+
+  it("returns null for an upload that is gone", async () => {
+    expect(await store.materialize(PROJECT, "33333333-3333-3333-3333-333333333333", files.root(PROJECT))).toBeNull();
   });
 });

@@ -18,6 +18,7 @@ export * from "./media.js";
 export * from "./avatar.js";
 export * from "./hostname.js";
 export * from "./notes.js";
+export * from "./knowledge-limits.js";
 export * from "./note-text.js";
 export * from "./timeline.js";
 export * from "./tasks.js";
@@ -28,6 +29,7 @@ export * from "./runtime-names.js";
 export * from "./model-routing.js";
 export * from "./widgets.js";
 export * from "./context-budget.js";
+export * from "./attachments.js";
 
 // --- Projects ----------------------------------------------------------------
 
@@ -186,3 +188,4 @@ export function normalizeResourceKey(key: string): string | null {
 
 /** The drag data type a resource row sets; the chat and the file tree accept it. */
 export const RESOURCE_DRAG_TYPE = "application/x-ucch-resource";
+export * from "./plan-mode.js";

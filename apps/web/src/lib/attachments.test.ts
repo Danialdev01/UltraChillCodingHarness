@@ -16,6 +16,8 @@ import {
   previewKindOf,
   parseAttachments,
   readAttachment,
+  linkLabel,
+  withStaged,
   type Attachment,
 } from "./attachments.js";
 
@@ -86,6 +88,43 @@ describe("saying why a file's content was not inlined", () => {
   });
 });
 
+describe("showing a scanned PDF's pages", () => {
+  it("sends the rendered pages as pictures", () => {
+    const pdf = attachment({
+      name: "scan.pdf",
+      type: "application/pdf",
+      text: null,
+      extract: {
+        kind: "pdf",
+        summary: "PDF",
+        chars: 0,
+        tokens: 0,
+        truncated: false,
+        pageImages: [{ id: "p-1", name: "scan-page-1.png", type: "image/png" }],
+      },
+    });
+    expect(modelImages([pdf])).toEqual([{ uploadId: "p-1", name: "scan-page-1.png", type: "image/png" }]);
+  });
+});
+
+describe("taking a staging response", () => {
+  it("keeps the browser's own text and takes the server's when there is none", () => {
+    const extract = { kind: "pdf", summary: "PDF, 2 pages", chars: 5, tokens: 1, truncated: false };
+    const upload = { id: "u", name: "a.pdf", size: 9, contentType: "application/pdf", stagedAt: "", extract };
+    const pdf = withStaged(attachment({ name: "a.pdf", text: null, status: "uploading", uploadId: null }), { upload, text: "hello" });
+    expect(pdf).toMatchObject({ status: "staged", uploadId: "u", text: "hello", extract });
+    const md = withStaged(attachment({ text: "mine" }), { upload, text: "theirs" });
+    expect(md.text).toBe("mine");
+  });
+
+  it("names a link for what it turned out to be", () => {
+    const upload = { id: "u", name: "report.pdf", size: 9, contentType: "application/pdf", stagedAt: "", sourceUrl: "https://x.dev/r" };
+    const link = withStaged(attachment({ name: "x.dev/r", text: null, url: "https://x.dev/r", size: 0 }), { upload });
+    expect(link).toMatchObject({ name: "report.pdf", type: "application/pdf", size: 9 });
+    expect(linkLabel("https://www.example.com/a/b?q=1")).toBe("example.com/a/b");
+  });
+});
+
 describe("whether an attachment can be placed", () => {
   it("is placeable only once staging has given it an id", () => {
     expect(isPlaceable(attachment())).toBe(true);
@@ -119,9 +158,75 @@ describe("composing the message that is actually sent", () => {
 
     const { attachments } = parseAttachments(sent);
     expect(attachments).toEqual([
-      { name: "a.pdf", size: 2048, type: "application/pdf", uploadId: "up-1" },
-      { name: "b.png", size: 99, type: "image/png", uploadId: "up-2" },
+      { name: "a.pdf", size: 2048, type: "application/pdf", uploadId: "up-1", path: ".attachments/up-1/a.pdf" },
+      { name: "b.png", size: 99, type: "image/png", uploadId: "up-2", path: ".attachments/up-2/b.png" },
     ]);
+  });
+
+  it("names where a document and its text are in the workspace", () => {
+    const id = "abcdef12-0000-4000-8000-000000000000";
+    const sent = composeMessage("summarise", [
+      attachment({
+        name: "report.pdf",
+        type: "application/pdf",
+        text: "Page one",
+        uploadId: id,
+        extract: { kind: "pdf", summary: "PDF, 3 pages", chars: 8, tokens: 2, truncated: false },
+      }),
+    ]);
+    const [entry] = parseAttachments(sent).attachments;
+    expect(entry).toMatchObject({
+      path: ".attachments/abcdef12/report.pdf",
+      textPath: ".attachments/abcdef12/report.pdf.txt",
+      summary: "PDF, 3 pages",
+    });
+    expect(sent).toContain("--- report.pdf (PDF, 3 pages) — .attachments/abcdef12/report.pdf.txt ---");
+    expect(sent).toContain("Page one");
+    expect(sent).not.toContain("Excerpt:");
+  });
+
+  it("inlines short files whole and excerpts the long one, within the model's budget", () => {
+    // 8k tokens is the floor: 32k characters for every file together.
+    const long = "row\n".repeat(20_000);
+    const sent = composeMessage(
+      "compare",
+      [
+        attachment({ id: "1", name: "a.md", text: "short a", uploadId: "u-a" }),
+        attachment({ id: "2", name: "big.csv", type: "text/csv", text: long, uploadId: "u-b" }),
+      ],
+      10_000,
+    );
+    expect(sent).toContain("short a");
+    expect(sent).toMatch(/Excerpt: the first \d+ of 80000 characters\. Read the rest from \.attachments\/u-b\/big\.csv/);
+    expect(sent.length).toBeLessThan(34_000);
+  });
+
+  it("gives a bigger window more of the file", () => {
+    const long = "x".repeat(400_000);
+    const small = composeMessage("", [attachment({ text: long })], 32_000);
+    const large = composeMessage("", [attachment({ text: long })], 1_000_000);
+    expect(large.length).toBeGreaterThan(small.length * 5);
+  });
+
+  it("says where a document's text is when none of it fits", () => {
+    const sent = composeMessage("read", [
+      attachment({
+        name: "scan.pdf",
+        type: "application/pdf",
+        text: null,
+        uploadId: "u-s",
+        extract: { kind: "pdf", summary: "PDF, 1 page", chars: 0, tokens: 0, truncated: false, warning: "No text layer." },
+      }),
+    ]);
+    expect(sent).toContain("Note: No text layer.");
+  });
+
+  it("carries a link's address", () => {
+    const sent = composeMessage("what is this", [
+      attachment({ name: "page.html", type: "text/html", text: "Hello", url: "https://example.com/" }),
+    ]);
+    expect(parseAttachments(sent).attachments[0]!.url).toBe("https://example.com/");
+    expect(sent).toContain("from https://example.com/");
   });
 
   it("sends the files on their own when nothing was typed", () => {

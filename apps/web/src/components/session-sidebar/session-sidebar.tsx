@@ -12,6 +12,7 @@ import {
   PinIcon,
   PinOffIcon,
   SquarePenIcon,
+  Trash2Icon,
 } from "lucide-react"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
@@ -29,6 +30,7 @@ import { renameProject } from "@/lib/create-project"
 import { sessionModelLabel } from "@/lib/harnesses"
 import { rememberLastModel, rememberLastProvider } from "@/lib/model-preference"
 import {
+  deleteSettledSession,
   fetchSessionSettleCheck,
   settleProjectSession,
   settleWorkspaceSession,
@@ -137,6 +139,7 @@ export function SessionSidebar({
   const [deleteTarget, setDeleteTarget] = React.useState<Project | null>(null)
   const [renameTarget, setRenameTarget] = React.useState<SidebarSession | null>(null)
   const [settleTarget, setSettleTarget] = React.useState<SidebarSession | null>(null)
+  const [removeTarget, setRemoveTarget] = React.useState<SidebarSession | null>(null)
   /** A session workspace's session being settled: the files it holds besides `.agent/`. */
   const [settleFiles, setSettleFiles] = React.useState<{ count: number; names: string[] }>({ count: 0, names: [] })
 
@@ -260,10 +263,21 @@ export function SessionSidebar({
     await settle(session)
   }
 
-  /** Takes a settled session off the list: its work is merged, its worktree already gone. */
+  /**
+   * Deletes a settled session for good: its work is merged already. In a
+   * project workspace the thread goes; in a session workspace the session
+   * is its own project, and goes files and all.
+   */
   async function remove(session: SidebarSession) {
+    if (sessionWorkspace) {
+      const { leftFiles } = await deleteSettledSession(session.project.hash)
+      toast({ title: `Deleted ${session.title}`, description: leftFiles ? "Some of its files could not be removed." : undefined })
+      invalidate(qk.projects.all, qk.sessions.all, qk.bootstrap())
+      if (isActive(session)) router.push(`/${ws}`)
+      return
+    }
     await settleProjectSession(session.project.hash, session.hash ?? "", { discard: true })
-    toast({ title: `Removed ${session.title}` })
+    toast({ title: `Deleted ${session.title}` })
     invalidate(qk.sessions.all, qk.git.all)
     if (isActive(session)) router.push(projectHref(ws, "project", session.project.hash))
   }
@@ -302,13 +316,10 @@ export function SessionSidebar({
               onSelect: () => void act("archive it", () => update(session, { archived: true })),
             },
       )
-      // A session workspace's settled session goes with the rest of them, from
-      // Workspace Settings' "Delete settled session data".
-      if (sessionWorkspace && session.settleState === "settled") return out
       out.push(
         "separator",
         session.settleState === "settled"
-          ? { label: "Remove", icon: CheckIcon, destructive: true, onSelect: () => void act("remove it", () => remove(session)) }
+          ? { label: "Delete session…", icon: Trash2Icon, destructive: true, disabled: working, onSelect: () => setRemoveTarget(session) }
           : {
               label: session.settleState === "failed" ? "Retry settle…" : "Settle…",
               icon: CheckIcon,
@@ -571,6 +582,20 @@ export function SessionSidebar({
         onRenamed={() => {
           setRenameTarget(null)
           invalidate(qk.sessions.all, qk.bootstrap())
+        }}
+      />
+      <ConfirmDialog
+        open={removeTarget !== null}
+        onOpenChange={(open) => !open && setRemoveTarget(null)}
+        title={`Delete ${removeTarget?.title ?? "session"}?`}
+        description={
+          sessionWorkspace
+            ? "The session, its conversation and its files are deleted for good. This cannot be undone."
+            : "The session and its conversation are deleted for good. Its work is already merged and stays. This cannot be undone."
+        }
+        confirmLabel="Delete"
+        onConfirm={async () => {
+          if (removeTarget) await remove(removeTarget)
         }}
       />
       {sessionWorkspace ? (

@@ -15,6 +15,7 @@ import type {
   AgentRun,
   PermissionReply,
   ProviderHealth,
+  ProviderImage,
   ProviderRunInput,
   RunContext,
 } from "./types.js";
@@ -63,7 +64,7 @@ export interface ClaudeCapabilities {
  * brief -- ask, as a command does; under Strict everything asks, and after
  * "Allow All" nothing does.
  */
-export const OMP_BRIDGE_READ_TOOLS = ["omp_symbols", "omp_recall", "omp_review", "omp_task", "ucch_agent", "ucch_sessions", "ucch_inbox", "ucch_message", "ucch_agent_status", "ucch_agent_cancel", "show_widget"] as const;
+export const OMP_BRIDGE_READ_TOOLS = ["omp_symbols", "omp_recall", "omp_review", "omp_task", "ucch_agent", "ucch_sessions", "ucch_session_read", "ucch_inbox", "ucch_message", "ucch_agent_status", "ucch_agent_cancel", "show_widget"] as const;
 
 /**
  * How long Claude Code waits on one MCP tool call (`MCP_TOOL_TIMEOUT`, ms):
@@ -99,6 +100,17 @@ export function claudeArgv(input: {
    * settings do. Absent, or a CLI without the flags: no MCP config at all.
    */
   mcpConfigPath?: string;
+  /**
+   * A plan-mode draft: Claude Code's own `plan` permission mode, which
+   * refuses edits. Its plan tools are held back: the plan is written in the
+   * answer for the chat to offer, and questions are asked there too, so
+   * neither stalls the turn on a prompt the chat would have to fake.
+   */
+  readOnly?: boolean;
+  /** A knowledge-only turn: Claude Code's own web tools are held back. */
+  noWeb?: boolean;
+  /** Folders outside the working directory it may read (`--add-dir`). */
+  readDirs?: readonly string[];
 }): string[] {
   const argv = [
     input.bin,
@@ -114,7 +126,7 @@ export function claudeArgv(input: {
     // `-p` starts at manual on every plan, so a mode must be named. Edits in
     // the workspace are the point; nothing here ever ships bypassPermissions.
     "--permission-mode",
-    input.permissionMode === "strict" ? "default" : "acceptEdits",
+    input.readOnly ? "plan" : input.permissionMode === "strict" ? "default" : "acceptEdits",
     // Anything acceptEdits does not cover -- a shell command, a fetch -- is
     // asked over stdio as a `control_request`, and the person answers it
     // from the chat. Without this the CLI denies it on its own and the
@@ -136,6 +148,14 @@ export function claudeArgv(input: {
       argv.push("--allowedTools", ...OMP_BRIDGE_READ_TOOLS.map(ompBridgeToolName));
     }
   }
+  const heldBack = [
+    ...(input.readOnly ? CLAUDE_PLAN_HELD_BACK : []),
+    ...(input.noWeb ? CLAUDE_WEB_TOOLS : []),
+    // Read, never written: `//` roots a permission rule at the filesystem's `/`.
+    ...(input.readDirs ?? []).flatMap((dir) => [`Edit(/${dir}/**)`, `Write(/${dir}/**)`]),
+  ];
+  if (heldBack.length > 0) argv.push("--disallowedTools", ...heldBack);
+  for (const dir of input.readDirs ?? []) argv.push("--add-dir", dir);
   if (input.model) argv.push("--model", input.model);
   if (input.effort && input.effort !== "off") argv.push("--effort", input.effort);
   if (input.resumeToken) argv.push("--resume", input.resumeToken);
@@ -219,6 +239,22 @@ export async function probeClaude(
       ? { error: status.stderr.trim() }
       : {}),
   });
+}
+
+/** The tools a plan-mode draft runs without (`claudeArgv`'s `readOnly`). */
+export const CLAUDE_PLAN_HELD_BACK = ["ExitPlanMode", "AskUserQuestion", "EnterPlanMode"] as const;
+
+/** The tools a knowledge-only turn runs without (`claudeArgv`'s `noWeb`). */
+export const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"] as const;
+
+/**
+ * The CLI's own auto-compact, at UCCH's line (`CONTEXT_HANDOVER_RATIO`)
+ * rather than at the wall: a long turn folds its context and keeps going,
+ * as the Claude Code CLI does, instead of crowding the window until the
+ * server has to hand the session over between turns.
+ */
+export function claudeContextEnv(): Record<string, string> {
+  return { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(Math.round(CONTEXT_HANDOVER_RATIO * 100)) };
 }
 
 /** The tools that spawn a subagent: `Task`, renamed `Agent` by 2.1.316. */
@@ -528,6 +564,12 @@ export class ClaudeNormaliser implements Normaliser {
         // background, so these, not the call's tool_result, say how it went.
         if (line.subtype === "task_started" || line.subtype === "task_progress" || line.subtype === "task_notification") {
           return this.#taskLine(line);
+        }
+        // The CLI folded its own context mid-turn (auto-compact): the turn
+        // goes on, and the next call's reading is the folded size.
+        if (line.subtype === "compact_boundary") {
+          this.#contextKey = null;
+          return [];
         }
         if (line.subtype === "background_tasks_changed" && Array.isArray(line.tasks)) {
           this.#backgroundTasks = new Set(line.tasks.map((task) => task.task_id).filter((id): id is string => !!id));
@@ -1137,9 +1179,14 @@ export class ClaudeProvider implements AgentProvider {
     });
     return runCli({
       provider: "claude",
-      ctx: input.mcpConfigPath
-        ? { ...input.ctx, env: { ...input.ctx.env, MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS) } }
-        : input.ctx,
+      ctx: {
+        ...input.ctx,
+        env: {
+          ...input.ctx.env,
+          ...claudeContextEnv(),
+          ...(input.mcpConfigPath ? { MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS) } : {}),
+        },
+      },
       spec: {
         argv: claudeArgv({
           bin: this.bin,
@@ -1149,9 +1196,12 @@ export class ClaudeProvider implements AgentProvider {
           ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
           ...(input.instructions ? { appendSystemPrompt: input.instructions } : {}),
           ...(input.mcpConfigPath ? { mcpConfigPath: input.mcpConfigPath } : {}),
+          ...(input.readOnly ? { readOnly: true } : {}),
+          ...(input.noWeb ? { noWeb: true } : {}),
+          ...(input.readDirs?.length ? { readDirs: input.readDirs } : {}),
           caps,
         }),
-        stdin: `${JSON.stringify(userLine(prompt))}\n`,
+        stdin: `${JSON.stringify(userLine(prompt, input.images))}\n`,
         holdStdin: true,
       },
       normaliser,
@@ -1159,7 +1209,32 @@ export class ClaudeProvider implements AgentProvider {
   }
 }
 
-/** The prompt as `--input-format stream-json` wants it. */
-export function userLine(prompt: string): { type: "user"; message: { role: "user"; content: string } } {
-  return { type: "user", message: { role: "user", content: prompt } };
+/** One block of a stream-json user message. */
+type ClaudeUserContent =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
+/**
+ * The prompt as `--input-format stream-json` wants it. Pictures the person
+ * attached ride along as image blocks, after the text that refers to them,
+ * so Claude sees the screenshot rather than reading that there was one.
+ */
+export function userLine(
+  prompt: string,
+  images: readonly ProviderImage[] = [],
+): { type: "user"; message: { role: "user"; content: string | ClaudeUserContent[] } } {
+  if (images.length === 0) return { type: "user", message: { role: "user", content: prompt } };
+  return {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        ...images.map((image) => ({
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: image.mediaType, data: image.data },
+        })),
+      ],
+    },
+  };
 }

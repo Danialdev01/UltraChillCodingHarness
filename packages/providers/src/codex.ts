@@ -1,5 +1,5 @@
 import { CodexSubagents, withCodexSubagents } from "./codex-subagents.js";
-import type { DomainEvent, ReasoningEffort, TokenUsage } from "@ucch/protocol";
+import { cliContextWindow, compactAtTokens, type DomainEvent, type ReasoningEffort, type TokenUsage } from "@ucch/protocol";
 import { CODEX_IMAGE_INSTRUCTIONS, rolloutImagePaths, withCodexImages } from "./codex-images.js";
 import { workspaceRelative } from "./claude.js";
 import type { ExitStatus } from "./process.js";
@@ -196,7 +196,7 @@ export interface CodexCapabilities {
 }
 
 /** `--sandbox` values the harness passes. Read-only is never one (it looks broken). */
-export type CodexSandboxMode = "workspace-write" | "danger-full-access";
+export type CodexSandboxMode = "workspace-write" | "danger-full-access" | "read-only";
 
 /**
  * `CODEX_SANDBOX`: a fixed mode, or `auto` -- workspace-write where Codex's
@@ -240,6 +240,10 @@ export function codexArgv(input: {
   sandbox?: CodexSandboxMode;
   /** The OMP bridge (solution §10.3). Absent: no MCP server is added. */
   mcp?: CodexMcpServer;
+  /** Pictures attached to the message, as files (`-i`). */
+  images?: readonly string[];
+  /** A knowledge-only turn: Codex's web search is switched off. */
+  noWeb?: boolean;
 }): string[] {
   const argv = [input.bin, "exec"];
   argv.push("--json");
@@ -257,7 +261,16 @@ export function codexArgv(input: {
   if (input.effort && input.effort !== "off") {
     argv.push("-c", `model_reasoning_effort=${JSON.stringify(input.effort)}`);
   }
+  // Codex's own auto-compaction, at UCCH's line rather than at the wall: a
+  // long turn folds its context and keeps going (CONTEXT_HANDOVER_RATIO).
+  const window = cliContextWindow("codex", input.model ?? null);
+  if (window) argv.push("-c", `model_auto_compact_token_limit=${compactAtTokens(window)}`);
+  if (input.noWeb) argv.push("-c", 'web_search="disabled"');
   if (input.mcp) argv.push(...codexMcpArgs("omp", input.mcp));
+  // Attached pictures, for the prompt on stdin. `--image` takes several
+  // values, so each is its own `--image=` argument: in the spaced form the
+  // `resume` subcommand after it would be read as one more image.
+  for (const image of input.images ?? []) argv.push(`--image=${image}`);
   // Exec-only options such as --sandbox must precede the resume subcommand.
   if (input.resumeToken) argv.push("resume", input.resumeToken);
   return argv;
@@ -705,7 +718,8 @@ export class CodexProvider implements AgentProvider {
 
   run(input: ProviderRunInput): AgentRun {
     const caps = this.#caps ?? { ignoreRules: false };
-    const sandbox = codexSandboxMode(this.sandboxPolicy, caps);
+    // A plan-mode draft changes nothing, whatever the sandbox would allow.
+    const sandbox = input.readOnly ? "read-only" : codexSandboxMode(this.sandboxPolicy, caps);
     const normaliser = new CodexNormaliser({
       projectId: input.projectId,
       threadId: input.threadId,
@@ -722,9 +736,11 @@ export class CodexProvider implements AgentProvider {
           ...(input.effort ? { effort: input.effort } : {}),
           ...(input.resumeToken ? { resumeToken: input.resumeToken } : {}),
           isRepo: this.isRepo(input.ctx.cwd),
+          ...(input.noWeb ? { noWeb: true } : {}),
           caps,
           sandbox,
           ...(input.codexMcp ? { mcp: input.codexMcp } : {}),
+          ...(input.images?.length ? { images: input.images.map((image) => image.path) } : {}),
         }),
         stdin: `${CODEX_IMAGE_INSTRUCTIONS}\n\n${codexPrompt(input.subagentId ? codexSubagentPrompt(input.prompt, input.subagentId, input.resumeToken) : input.prompt, input.instructions, input.resumeToken)}`,
       },

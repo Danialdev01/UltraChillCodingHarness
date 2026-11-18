@@ -63,7 +63,7 @@ describe("warning about pictures a model cannot see", () => {
   });
 
   it("names the model and counts the pictures", () => {
-    expect(visionWarning(1, blind)).toMatch(/Text-Only 1 can't see images.*the picture\./);
-    expect(visionWarning(3, blind)).toMatch(/the pictures\./);
+    expect(visionWarning(1, blind)).toMatch(/Text-Only 1 can't see images.*the picture will be described/);
+    expect(visionWarning(3, blind)).toMatch(/the pictures will be described/);
   });
 });

@@ -23,6 +23,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "model", description: "Choose the model", takesArg: "model" },
   { name: "effort", description: "Choose how hard the model thinks", takesArg: "effort" },
   { name: "harness", description: "Choose what runs the agent", takesArg: "harness" },
+  { name: "plan", description: "Plan first: questions, then a plan to approve before anything changes" },
   { name: "research", description: "Turn research mode on or off" },
   { name: "documentation", description: "Turn documentation mode on or off" },
   { name: "attach", description: "Attach files from your computer" },

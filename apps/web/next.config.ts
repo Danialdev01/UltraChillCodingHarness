@@ -50,6 +50,12 @@ const config: NextConfig = {
     // cache meanwhile. Live updates arrive over the socket either way.
     staleTimes: { dynamic: 30, static: 300 },
     optimizePackageImports: ["lucide-react", "@base-ui/react"],
+    // Next buffers every request body it proxies through the `/api` rewrite
+    // up to this size (10 MB by default) and cuts the connection past it,
+    // which the browser reports only as a network error. Match the server's
+    // own upload limit (`UPLOAD_MAX_BYTES`, 25 MB by default) so a file the
+    // API would take -- a knowledge document, a chat attachment -- gets there.
+    middlewareClientMaxBodySize: Number(process.env.UPLOAD_MAX_BYTES) || 25 * 1024 * 1024,
   },
   async headers() {
     // The same baseline the API sends (apps/server/src/http-guards.ts). The

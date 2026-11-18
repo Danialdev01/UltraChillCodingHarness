@@ -22,3 +22,4 @@ export * from "./tool.js";
 export * from "./uploads.js";
 export * from "./schema.js";
 export * from "./tools/format.js";
+export { isBlocked, refuseUnsafe } from "./tools/web.js";

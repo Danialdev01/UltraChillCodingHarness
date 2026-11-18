@@ -65,6 +65,12 @@ export interface EngineOptions {
   maxParallel?: number;
   /** A thread's project, for queueing its commands with the project's; see `keyOf`. */
   projectOfThread?: (threadId: string) => Promise<string | null>;
+  /**
+   * Runs in the project's queue before a message is sent into a thread:
+   * an archived or settled session is made active again here (session-revive.ts).
+   * A failure refuses the send with its message.
+   */
+  beforeSend?: (principal: Principal, threadId: string) => Promise<void>;
 }
 
 /**
@@ -160,6 +166,14 @@ export class OrchestrationEngine {
     }
     if (!hasScope(principal.scopes, required)) {
       return { ok: false, code: "forbidden", message: `requires ${required} scope` };
+    }
+
+    if (command.type === "thread.send" && this.options.beforeSend) {
+      try {
+        await this.options.beforeSend(principal, command.threadId);
+      } catch (error) {
+        return { ok: false, code: "conflict", message: `could not reopen this session: ${describeError(error)}` };
+      }
     }
 
     let state: DecisionState;
@@ -265,7 +279,8 @@ export class OrchestrationEngine {
       if (started?.type === "agent.subagent_started") state.subagent = { id: started.subagentId, provider: started.provider, childThreadId: started.childThreadId, ...(resumeHandle ? { resumeHandle } : {}) };
     }
     if (command.type === "thread.agent_message") {
-      const [source] = await this.db.select({ id: threads.id, projectId: threads.projectId, hash: threads.hash }).from(threads).where(eq(threads.id, command.fromThreadId)).limit(1);
+      const [source] = await this.db.select({ id: threads.id, projectId: threads.projectId, hash: threads.hash, workspaceId: projects.workspaceId })
+        .from(threads).innerJoin(projects, eq(projects.id, threads.projectId)).where(eq(threads.id, command.fromThreadId)).limit(1);
       if (source) state.messageSource = source;
     }
     const projectId = "projectId" in command ? command.projectId : state.thread?.projectId;

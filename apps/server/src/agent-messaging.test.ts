@@ -33,24 +33,36 @@ function setup(rows: unknown[][], history: DomainEvent[] = []) {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 describe("AgentMessaging", () => {
-  it("refuses a target outside the caller's project without dispatching", async () => {
+  it("refuses a target outside the caller's workspace without dispatching", async () => {
     const { service, dispatch } = setup([...access(), []]);
-    expect(await service.call(THREAD, "ucch_message", { sessionId: OTHER, text: "x" })).toEqual({ error: "session not found in this project" });
+    expect(await service.call(THREAD, "ucch_message", { sessionId: OTHER, text: "x" })).toEqual({ error: "session not found in this workspace" });
     expect(dispatch).not.toHaveBeenCalled();
   });
   it("binds the sender to its session and records a sender mirror", async () => {
-    const { service, dispatch, events } = setup([...access(), [{ id: OTHER, hash: "abcdef123456" }]]);
+    const { service, dispatch, events } = setup([...access(), [{ thread: { id: OTHER, hash: "abcdef123456" }, projectName: "p", projectHash: "h" }]]);
     expect(await service.call(THREAD, "ucch_message", { sessionId: OTHER, text: "Review", fromThreadId: OTHER })).toMatchObject({ text: expect.stringContaining(ID) });
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ userId: USER, internal: true }), { type: "thread.agent_message", fromThreadId: THREAD, threadId: OTHER, text: "Review", depth: 0 });
     expect(events[0]).toMatchObject({ type: "agent.session_message_sent", toThreadId: OTHER });
   });
+  it("reads a session's latest prompt and reply, settled or not", async () => {
+    const { service } = setup([...access(), [{ thread: { id: OTHER, hash: "abcdef123456", title: "MRT trip", status: "idle", settleState: "settled", archivedAt: null }, projectName: "MRT", projectHash: "h" }]],
+      [
+        { type: "user.message", threadId: OTHER, text: "plan my trip" },
+        { type: "agent.message", threadId: OTHER, turnId: ID, content: [{ type: "thinking", thinking: "x" }, { type: "text", text: "Take the MRT." }] },
+      ]);
+    const result = await service.call(THREAD, "ucch_session_read", { sessionId: OTHER });
+    expect("text" in result && JSON.parse(result.text)).toMatchObject({
+      session: { id: OTHER, title: "MRT trip", state: "settled" },
+      turns: [{ prompt: "plan my trip", reply: "Take the MRT." }],
+    });
+  });
   it("requires a reply to be from the addressed session", async () => {
-    const { service, dispatch } = setup([...access(), [{ id: OTHER }], []]);
+    const { service, dispatch } = setup([...access(), [{ thread: { id: OTHER } }], []]);
     expect(await service.call(THREAD, "ucch_message", { sessionId: OTHER, text: "x", replyTo: ID })).toMatchObject({ error: expect.stringContaining("incoming message") });
     expect(dispatch).not.toHaveBeenCalled();
   });
   it("carries the hop budget even when the model omits replyTo", async () => {
-    const { service, dispatch } = setup([...access(), [{ id: OTHER }], [{ depth: 7 }]], [{ type: "user.message", threadId: THREAD, text: "agent messages", agentMessageIds: [ID] }]);
+    const { service, dispatch } = setup([...access(), [{ thread: { id: OTHER } }], [{ depth: 7 }]], [{ type: "user.message", threadId: THREAD, text: "agent messages", agentMessageIds: [ID] }]);
     await service.call(THREAD, "ucch_message", { sessionId: OTHER, text: "Another question" });
     expect(dispatch.mock.calls[0]![1]).toMatchObject({ depth: 8 });
   });

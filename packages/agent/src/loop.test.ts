@@ -866,11 +866,13 @@ describe("keeping a turn inside the context window", () => {
   });
 
   it("prunes the oldest tool results before it spends a model call", async () => {
+    // Room for the six protected results (~60k tokens) under the compaction
+    // line once the older fourteen are pruned, but not for all twenty.
     const script = scripted(reply({ text: "done", finishReason: "stop" }));
     const { input, appended } = harness({
       complete: script.complete,
       history: heavyHistory(20, 40_000),
-      contextLength: 120_000,
+      contextLength: 160_000,
     });
 
     await runTurn(input);
@@ -964,5 +966,40 @@ describe("approval", () => {
 
     expect(result).toMatchObject({ isError: true, content: "use a branch instead" });
     await expect(readFile(join(root, "denied.txt"), "utf8")).rejects.toThrow();
+  });
+});
+
+describe("pictures for a model that cannot see", () => {
+  const UPLOAD = "0b7c2f7e-1d1a-4c55-9a43-6a2b1f0e9c11";
+  const withScreenshot: DomainEvent[] = [
+    { type: "user.message", threadId: THREAD, text: "why is this failing?", images: [{ uploadId: UPLOAD, name: "error.png", type: "image/png" }] },
+  ];
+
+  it("gives the model a vision model's description of the picture instead", async () => {
+    const script = scripted(reply({ text: "done", finishReason: "stop" }));
+    const asked: string[] = [];
+    const { input } = harness({
+      complete: script.complete,
+      history: withScreenshot,
+      supportsImages: false,
+      describeImage: async (uploadId) => {
+        asked.push(uploadId);
+        return "A terminal showing: TypeError: cannot read properties of undefined (reading 'id')";
+      },
+    });
+    await runTurn(input);
+    expect(asked).toEqual([UPLOAD]);
+    const user = String(script.requests[0]!.messages.find((m) => m.role === "user")!.content);
+    expect(user).toContain("error.png (described by a vision model");
+    expect(user).toContain("TypeError: cannot read properties of undefined");
+  });
+
+  it("says the model cannot see it, rather than that it is gone, when there is no description", async () => {
+    const script = scripted(reply({ text: "done", finishReason: "stop" }));
+    const { input } = harness({ complete: script.complete, history: withScreenshot, supportsImages: false, describeImage: async () => null });
+    await runTurn(input);
+    const user = String(script.requests[0]!.messages.find((m) => m.role === "user")!.content);
+    expect(user).toContain("this model cannot see images");
+    expect(user).not.toContain("no longer available");
   });
 });

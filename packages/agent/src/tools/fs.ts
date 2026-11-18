@@ -32,7 +32,7 @@ export const readFile = defineTool({
     "Use offset and limit to page through a file that is too long to read at once.",
   permission: "read",
   inputSchema: z.strictObject({
-    path: z.string().describe("Path relative to the workspace root, e.g. src/index.ts"),
+    path: z.string().describe("Path relative to the workspace root, e.g. src/index.ts -- or the absolute path of a knowledge base file the turn names"),
     offset: z
       .number()
       .int()

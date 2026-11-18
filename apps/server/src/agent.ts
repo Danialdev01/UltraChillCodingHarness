@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { contextAllowed, toRef, toView, type AgentProfiles } from "./agent-profiles.js";
 import type { ProfileRef } from "./profile-ref.js";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { count, desc, eq } from "drizzle-orm";
 import { projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
@@ -30,8 +30,11 @@ import {
   isOpenRouterLimit,
   isUcchAgentTool,
   limitFallback,
-  HANDOVER_CONTINUE,
   needsHandover,
+  planDraftPrompt,
+  planRunPrompt,
+  proposedPlanIn,
+  type PlanStage,
   UCCH_AGENT_ARGS,
   UCCH_AGENT_DESCRIPTION,
   UCCH_AGENT_GUIDE,
@@ -43,10 +46,14 @@ import {
   asksForWidget,
   needsApproval,
   readAgentSettings,
+  isModelImageType,
+  parseAttachmentManifest,
   type CliProviderId,
   type Command,
   type DomainEvent,
+  type MessageImage,
   type MessageMode,
+  type MessageKnowledge,
   type ProviderId,
   type ReasoningEffort,
   type TokenUsage,
@@ -62,6 +69,7 @@ import {
   type OmpMaintenanceInput,
   type OmpProvider,
   type OmpRunFiles,
+  type ProviderImage,
   type ProviderRunInput,
 } from "@ucch/providers";
 import { detectStack } from "./clone.js";
@@ -73,13 +81,17 @@ import { applyProjection } from "./engine.js";
 import { treeFor, worktreeIdOf } from "./trees.js";
 import type { Principal } from "./auth.js";
 import type { EngineResult } from "./engine.js";
+import { cliTranscriptExists } from "./cli-session-files.js";
+import { conversationRecap, exchangesOf } from "./thread-transcript.js";
 import { buildHandoffBrief, handoffMessage, handoffTitle, type BriefAsker } from "./omp-handoff.js";
 import { messageText, RETAIN_PROMPT, retainStdin } from "./omp-memory.js";
 import { runReview } from "./omp-review.js";
 import { runGit } from "./git-exec.js";
 import type { EventStore } from "./eventstore.js";
 import { contextLengthFor, streamCompletion, supportsImages } from "./openrouter.js";
+import { stagedImageDescriber } from "./describe-image.js";
 import { documentationPrompt } from "./documents.js";
+import type { KnowledgeService } from "./knowledge.js";
 import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 import { TurnScheduler, type TurnKind } from "./turn-scheduler.js";
@@ -132,6 +144,11 @@ export interface AgentOptions {
    * vision model -- for a turn sent in documentation mode.
    */
   documents: DocumentsBackends;
+  /**
+   * The workspace's knowledge bases, for a message sent with some picked
+   * (`thread.send`'s `knowledge`). Absent, such a message runs as usual.
+   */
+  knowledge?: KnowledgeService;
   /**
    * Where the native loop's document renders wait for one another: one gate
    * for the whole server, so `DOC_JOBS_MAX` holds across every turn.
@@ -213,6 +230,12 @@ interface TurnOptions {
   effort?: ReasoningEffort | undefined;
   provider?: ProviderId | undefined;
   mode?: MessageMode | undefined;
+  /** Plan mode's stage (`plan-mode.ts`): a read-only draft, or running the approved plan. */
+  plan?: PlanStage | undefined;
+  /** The pictures this message shows the model (`thread.send`'s `images`). */
+  images?: readonly MessageImage[] | undefined;
+  /** The knowledge bases this message is answered from, and whether the web is allowed too. */
+  knowledge?: MessageKnowledge | undefined;
 }
 
 /** The account a turn is billed to; see `#owner`. */
@@ -556,7 +579,7 @@ export class AgentTurnReactor {
         continue;
       }
       if (event.type === "thread.compaction_requested") {
-        void this.#compact(event.threadId, event.method, event.focus, principal).catch(this.onError);
+        void this.#compact(event.threadId, event.method, event.focus).catch(this.onError);
         continue;
       }
       if (event.type === "thread.handoff_requested") {
@@ -584,6 +607,9 @@ export class AgentTurnReactor {
           // From the event, not the command: it is recorded there, and a turn
           // replayed from the log runs the same pipeline the original did.
           mode: event.mode,
+          plan: event.plan,
+          images: event.images,
+          knowledge: sent?.knowledge,
         },
         principal,
       ).catch(this.onError);
@@ -726,12 +752,29 @@ export class AgentTurnReactor {
   }
 
   /**
-   * A handover when the session ended its turn past the handover line
-   * (`CONTEXT_HANDOVER_RATIO`): a brief of the work so far replaces the
-   * history, on the same harness, before the next message is sent. OMP and
-   * the native loop keep under it themselves -- OMP's overlay sets its
-   * compaction threshold there, the native loop compacts there -- so this
-   * is for Claude Code and Codex, whose sessions UCCH cannot fold.
+   * A plan-mode turn's prompt (`plan-mode.ts`): a draft's rules ahead of the
+   * message, or the thread's newest proposed plan ahead of a run's. A run
+   * with no plan to find is sent as it is.
+   */
+  async #planPrompt(threadId: string, plan: PlanStage, text: string): Promise<string> {
+    if (plan === "draft") return planDraftPrompt(text);
+    const found = latestProposedPlan((await this.store.threadHistory(threadId)).map((row) => row.event));
+    return found ? planRunPrompt(found, text) : text;
+  }
+
+  /**
+   * The fallback when a session ended its turn past the fallback line
+   * (`CONTEXT_FORCE_RATIO`): a brief of the work so far replaces the
+   * history, on the same harness, before the next message is sent. Quiet
+   * (`auto`): no row in the chat and no message of its own -- the person's
+   * next message is the first turn on the brief.
+   *
+   * Every harness keeps under the handover line itself, mid-turn, so long
+   * work runs on without stopping: Claude Code and Codex by their own
+   * auto-compaction, set to that line (`claudeContextEnv`, `codexArgv`), OMP
+   * by its overlay's threshold, the native loop by its compactor. This is
+   * only for a Claude Code or Codex session whose compaction did not run or
+   * did not fold enough.
    *
    * A thread sent another message meanwhile refuses it (busy): the turn
    * after that one tries again.
@@ -747,7 +790,7 @@ export class AgentTurnReactor {
       .where(eq(threads.id, threadId))
       .limit(1);
     if (!thread || thread.parentThreadId || (thread.provider !== "claude" && thread.provider !== "codex")) return;
-    const result = await dispatch(principal, { type: "thread.handoff", threadId });
+    const result = await dispatch(principal, { type: "thread.handoff", threadId, auto: true });
     if (!result.ok) this.onError(new Error(`automatic handover of ${threadId} refused: ${result.message}`));
   }
 
@@ -915,7 +958,7 @@ export class AgentTurnReactor {
   async #turn(
     threadId: string,
     text: string,
-    { model, effort, provider: requestedProvider, mode, subagentId, subagentHandle }: TurnOptions,
+    { model, effort, provider: requestedProvider, mode, plan, subagentId, subagentHandle, images, knowledge }: TurnOptions,
     controller: AbortController,
   ): Promise<ProviderId | undefined> {
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
@@ -931,13 +974,13 @@ export class AgentTurnReactor {
         .then(() => {}, this.onError);
     };
 
-    let project: { stack: string | null; agent?: unknown; ompTrusted?: boolean } | undefined;
+    let project: { stack: string | null; agent?: unknown; ompTrusted?: boolean; workspaceId?: string } | undefined;
     let owner: TurnOwner | null;
     try {
       // With the workspace's agent settings, which an OMP turn's overlay
       // reads, and the project's trust, which decides its LSP and debugger.
       [project] = await this.db
-        .select({ stack: projects.stack, agent: workspaces.agentSettings, ompTrusted: projects.ompTrusted })
+        .select({ stack: projects.stack, agent: workspaces.agentSettings, ompTrusted: projects.ompTrusted, workspaceId: projects.workspaceId })
         .from(projects)
         .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
         .where(eq(projects.id, thread.projectId))
@@ -1079,6 +1122,31 @@ export class AgentTurnReactor {
         return;
       }
 
+      // Every attachment, and the text read out of it, into the tree this
+      // turn works in, before any harness starts: the message names those
+      // paths, and each harness reads them with its own tools.
+      const pictures = await this.#placeAttachments(thread.projectId, workspace, text, images).catch((error: unknown) => {
+        this.onError(error);
+        return [] as ProviderImage[];
+      });
+
+      // The knowledge bases picked for this message: the folders their text
+      // is kept in (read where they are, never copied into the tree), and the
+      // passages and graph facts the message matches, into the prompt.
+      // Only the thread's own workspace's bases count; a failure to search
+      // is the operator's to hear about, and the turn runs without them.
+      const turnKnowledge =
+        knowledge && this.options.knowledge && project.workspaceId
+          ? await this.options.knowledge.forTurn(project.workspaceId, knowledge, text, workspace).catch((error: unknown) => {
+              this.onError(error);
+              return null;
+            })
+          : null;
+      const noWeb = turnKnowledge?.scope === "knowledge";
+      if (turnKnowledge) {
+        await append([{ type: "context.injected", threadId, source: "knowledge", content: turnKnowledge.prompt }]);
+      }
+
       if (provider !== "native") {
         // A CLI provider names its own models; the OpenRouter defaults are
         // not for it. What the composer sent, or nothing -- the CLI's own.
@@ -1153,6 +1221,8 @@ export class AgentTurnReactor {
           ]);
         }
 
+        if (turnKnowledge) prompt = `${turnKnowledge.prompt}\n\n${prompt}`;
+
         // A message asking for a visual is told, right there, to answer with
         // a widget: the standing prompt alone loses to a history of building
         // files, pages or Claude Code mods instead.
@@ -1161,12 +1231,47 @@ export class AgentTurnReactor {
           await append([{ type: "context.injected", threadId, source: "system_prompt", content: WIDGET_TURN_NUDGE }]);
         }
 
+        // Plan mode: a draft is told to plan and ask, read-only; a run is
+        // handed the plan it carries out, so it holds after a compaction.
+        if (plan) {
+          const planned = await this.#planPrompt(threadId, plan, prompt);
+          if (planned !== prompt) {
+            await append([{ type: "context.injected", threadId, source: "system_prompt", content: planned.slice(0, planned.length - prompt.length).trim() }]);
+          }
+          prompt = planned;
+        }
+
         // The first turn on a harness the thread was switched to: its session
         // is new, and starts from the brief of the work so far. Only a bound
         // thread can have been switched; a new one has nothing to read.
         if (thread.provider && !thread.providerSessionId) {
           const brief = await this.#pendingBrief(threadId);
           if (brief) prompt = handoffMessage(brief, prompt);
+        }
+
+        // A session the CLI no longer has -- Claude Code deletes transcripts
+        // after 30 days, and a settled session reopened weeks later asks for
+        // one -- cannot be resumed: `--resume` would fail the turn at once.
+        // A new session starts instead, with a recap of the conversation.
+        let resumeToken = thread.providerSessionId;
+        if (resumeToken && !subagentId && (provider === "claude" || provider === "codex") && this.options.providers) {
+          const providers = this.options.providers;
+          const token = resumeToken;
+          // A check that cannot run keeps the session: resuming is the usual case.
+          const gone = await Promise.resolve()
+            .then(() => cliTranscriptExists(providers.credsDir(owner.id, provider, profile), provider, token))
+            .then((exists) => !exists, () => false);
+          if (gone) {
+            resumeToken = null;
+            const exchanges = exchangesOf(await this.store.threadHistory(threadId));
+            // The message being sent is the last exchange, not yet answered.
+            if (exchanges.at(-1)?.reply === "") exchanges.pop();
+            const recap = conversationRecap(exchanges);
+            if (recap) {
+              await append([{ type: "context.injected", threadId, source: "system_prompt", content: recap }]);
+              prompt = `<earlier-conversation>\n${recap}\n</earlier-conversation>\n\n${prompt}`;
+            }
+          }
         }
 
         await this.#runCli(provider, {
@@ -1181,7 +1286,7 @@ export class AgentTurnReactor {
           ...(subagentId ? { subagentId } : {}),
           ...(subagentId && subagentHandle ? { subagentHandle } : {}),
           subagent: Boolean(thread.parentThreadId),
-          resumeToken: thread.providerSessionId,
+          resumeToken,
           model: cliModel,
           effort,
           signal: controller.signal,
@@ -1189,7 +1294,11 @@ export class AgentTurnReactor {
           agentSettings: readAgentSettings(project.agent),
           trusted: project.ompTrusted === true,
           ...(mode ? { mode } : {}),
+          ...(plan === "draft" ? { readOnly: true } : {}),
+          ...(noWeb ? { noWeb: true } : {}),
+          ...(turnKnowledge?.dirs.length ? { readDirs: turnKnowledge.dirs } : {}),
           ...(researched ? { researched } : {}),
+          ...(pictures.length ? { images: pictures } : {}),
         });
         // A plan's usage limit (Claude Code, Codex) or the OpenRouter key's (OMP).
         return limited ? provider : undefined;
@@ -1216,6 +1325,7 @@ export class AgentTurnReactor {
       // Looked up per turn rather than held: the model can change between
       // turns, and the catalogue behind this is cached anyway.
       const [contextLength, canSeeImages] = await Promise.all([route.contextLength(), route.supportsImages()]);
+      const describeImage = canSeeImages ? undefined : await this.#imageDescriber(thread.projectId, owner);
 
       await runTurn({
         projectId: thread.projectId,
@@ -1227,11 +1337,17 @@ export class AgentTurnReactor {
         // clamped here rather than sent on to be refused.
         ...(effort ? { effort: effort === "xhigh" || effort === "max" ? "high" : effort } : {}),
         history: history.map((row) => row.event),
-        instructions: this.messaging ? [COLLABORATION_GUIDE, !thread.parentThreadId ? UCCH_AGENT_GUIDE : ""].join("\n\n") : undefined,
+        instructions: [
+          ...(this.messaging ? [COLLABORATION_GUIDE, !thread.parentThreadId ? UCCH_AGENT_GUIDE : ""] : []),
+          // Plan mode rides in the system prompt here: the history is the log.
+          ...(plan ? [(await this.#planPrompt(threadId, plan, "")).trim()] : []),
+          ...(turnKnowledge ? [turnKnowledge.prompt] : []),
+        ].filter(Boolean).join("\n\n") || undefined,
         stack: project.stack,
         // The preset and the mode travel together: each mode's prompt
-        // describes its own tools, and only its preset offers them.
-        preset: mode ?? "standard",
+        // describes its own tools, and only its preset offers them. A plan
+        // draft reads only.
+        preset: plan === "draft" ? "readonly" : (mode ?? "standard"),
         ...(mode === "research" ? { mode, research: this.options.research } : {}),
         ...(mode === "documentation" ? { mode, documents: this.options.documents } : {}),
         // The workspace's "Allow interactive widgets": the prompt section
@@ -1239,16 +1355,19 @@ export class AgentTurnReactor {
         registry: {
           ...this.options.registry,
           widgets: widgetsOn(readAgentSettings(project.agent)) && !thread.parentThreadId,
+          ...(noWeb ? { web: false } : {}),
           ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx), subagents: !thread.parentThreadId } : {}),
         },
         contextLength,
         supportsImages: canSeeImages,
+        ...(describeImage ? { describeImage } : {}),
         searchModel: this.options.searchModel,
         maxIterations: this.options.maxIterations,
         executor: new HostExecutor(workspace, {
           heavyJobs: this.options.heavyJobs,
           wrapArgv: this.options.wrapArgv,
           pathPrefix: () => this.options.runtimePath?.(workspace) ?? null,
+          ...(turnKnowledge?.dirs.length ? { readOnlyRoots: turnKnowledge.dirs } : {}),
         }),
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
         complete: route.complete,
@@ -1325,7 +1444,6 @@ export class AgentTurnReactor {
     threadId: string,
     method: "compact" | "handoff",
     focus: string | undefined,
-    principal: Principal | undefined,
   ): Promise<void> {
     const controller = new AbortController();
     this.#running.set(threadId, controller);
@@ -1406,45 +1524,9 @@ export class AgentTurnReactor {
         .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
         .catch(this.onError);
     }
-    // A handover replaced the context with its brief: the session carries
-    // the work on from it at once, rather than waiting for the person.
-    // Compacting alone keeps the conversation going as it was, so asks nothing.
-    if (method !== "handoff" || error || controller.signal.aborted) return;
-    await this.#continueAfterHandover(threadId, principal);
-  }
-
-  /**
-   * The turn after a handover: `HANDOVER_CONTINUE`, on the model the
-   * session last ran on, so the fresh context picks the work up where the
-   * brief left it.
-   */
-  async #continueAfterHandover(
-    threadId: string,
-    principal: Principal | undefined,
-    { provider, text = HANDOVER_CONTINUE }: { provider?: ProviderId; text?: string } = {},
-  ): Promise<void> {
-    const dispatch = this.options.dispatch;
-    if (!dispatch || !principal) return;
-    const model = await this.#lastModel(threadId);
-    const sent = await dispatch(principal, {
-      type: "thread.send",
-      threadId,
-      text,
-      ...(provider ? { provider } : {}),
-      ...(model ? { model } : {}),
-    });
-    if (!sent.ok) this.onError(new Error(`the turn after handing ${threadId} over could not be sent: ${sent.message}`));
-  }
-
-  /** The model of the thread's last turn, or null before it has one. */
-  async #lastModel(threadId: string): Promise<string | null> {
-    const [last] = await this.db
-      .select({ model: turns.model })
-      .from(turns)
-      .where(eq(turns.threadId, threadId))
-      .orderBy(desc(turns.seq))
-      .limit(1);
-    return last?.model ?? null;
+    // Neither method asks the model anything more: a handover replaces the
+    // context with its brief and then waits, so the person's next message
+    // is the first turn on it.
   }
 
   /**
@@ -1644,6 +1726,7 @@ export class AgentTurnReactor {
         ...(event.fromProfileId !== undefined ? { fromProfileId: event.fromProfileId } : {}),
         ...(event.toProfileId !== undefined ? { toProfileId: event.toProfileId } : {}),
         ...(checkpointSha ? { checkpointSha } : {}),
+        ...(event.auto ? { auto: true } : {}),
       };
     } catch (caught) {
       error = controller.signal.aborted ? "Stopped." : caught instanceof Error ? caught.message : String(caught);
@@ -1656,13 +1739,9 @@ export class AgentTurnReactor {
         .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
         .catch(this.onError);
     }
+    // A handover on the same harness carries no message: the person's next
+    // one is the first turn on the brief.
     if (!switched || error || !event.message) return;
-    // A handover on the same harness: the turn after it keeps the model the
-    // session was on (the request names none), from the fresh context.
-    if (event.reason === "context" && !event.model) {
-      await this.#continueAfterHandover(threadId, principal, { provider: toProvider, text: event.message });
-      return;
-    }
     const dispatch = this.options.dispatch;
     if (!dispatch || !principal) return;
     const sent = await dispatch(principal, {
@@ -1818,6 +1897,75 @@ export class AgentTurnReactor {
   }
 
   /**
+   * Copies a message's attachments into the turn's workspace
+   * (`UploadStore.materialize`) and returns the pictures among them for a
+   * CLI that can be shown them.
+   *
+   * Only into a workspace that already has something in it: a project whose
+   * clone is still queued must find its directory empty, and the message's
+   * inlined text still carries what fits. Each picture is retained as it is
+   * read, as the native loop does, so a thread replayed later still has it.
+   */
+  async #placeAttachments(
+    projectId: string,
+    workspace: string,
+    text: string,
+    images: readonly MessageImage[] | undefined,
+  ): Promise<ProviderImage[]> {
+    const staging = this.options.uploads;
+    if (!staging?.materialize) return [];
+    const ids = new Set(parseAttachmentManifest(text).attachments.map((a) => a.uploadId).filter((id): id is string => Boolean(id)));
+    for (const image of images ?? []) ids.add(image.uploadId);
+    if (ids.size === 0) return [];
+    const entries = await readdir(workspace).catch(() => [] as string[]);
+    if (entries.length === 0) return [];
+
+    const placed = new Map<string, string>();
+    for (const id of ids) {
+      const where = await staging.materialize(projectId, id, workspace).catch((error: unknown) => {
+        this.onError(error);
+        return null;
+      });
+      if (where) placed.set(id, join(workspace, where.file));
+    }
+
+    const pictures: ProviderImage[] = [];
+    for (const image of images ?? []) {
+      const path = placed.get(image.uploadId);
+      if (!path || !isModelImageType(image.type)) continue;
+      await staging.retain(projectId, image.uploadId).catch(() => {});
+      const file = await staging.readBytes(projectId, image.uploadId).catch(() => null);
+      if (!file || !isModelImageType(file.contentType)) continue;
+      pictures.push({ path, mediaType: file.contentType.split(";")[0]!.trim(), data: file.bytes.toString("base64") });
+    }
+    return pictures;
+  }
+
+  /**
+   * For a model that cannot see: a describer that puts each attached picture
+   * into words (`describe-image.ts`), by the search model -- cheap, fast, and
+   * able to see by default -- on the owner's OpenRouter key. Undefined when
+   * there is no key, no staging, or the search model cannot see either: the
+   * turn then names the picture as attached and unseen, as before.
+   */
+  async #imageDescriber(
+    projectId: string,
+    owner: { openrouterKeyEncrypted: string | null },
+  ): Promise<((uploadId: string, signal?: AbortSignal) => Promise<string | null>) | undefined> {
+    const staging = this.options.uploads;
+    const model = this.options.searchModel;
+    if (!staging || !model || !owner.openrouterKeyEncrypted) return undefined;
+    if (!(await supportsImages(model).catch(() => false))) return undefined;
+    let apiKey: string;
+    try {
+      apiKey = this.#decryptKey(owner.openrouterKeyEncrypted);
+    } catch {
+      return undefined;
+    }
+    return stagedImageDescriber({ staging, projectId, complete: streamCompletion, apiKey, model, onError: this.onError });
+  }
+
+  /**
    * The workspace as every turn expects to find it: there, and with its
    * `.agent/index.md`. Run before every turn of every harness, which is what
    * gives a project made before `.agent` existed its folder.
@@ -1881,12 +2029,24 @@ export class AgentTurnReactor {
       /** The composer mode. Only OMP reads it: the CLIs' prompt already carries it. */
       mode?: MessageMode;
       /**
+       * A plan-mode draft: nothing may change. Claude Code runs in its plan
+       * permission mode, Codex in a read-only sandbox, and OMP asks the
+       * person before anything but a read.
+       */
+      readOnly?: boolean;
+      /** A knowledge-only turn: the CLI's own web tools are switched off. */
+      noWeb?: boolean;
+      /** Folders outside the tree the CLI may read: this turn's knowledge bases. */
+      readDirs?: string[];
+      /**
        * What a research phase already spent on this turn. Folded into the
        * CLI's `agent.turn_completed`, which is the one event the usage
        * breakdown reads -- a phase that closed the turn itself would have
        * moved the thread to idle with the CLI still to run.
        */
       researched?: { usage: TokenUsage; costUsd: number };
+      /** Pictures attached to the message, for a CLI that can be shown them. */
+      images?: readonly ProviderImage[];
       /** A subagent's own session: it is not offered `ucch_agent`. */
       subagent?: boolean;
     },
@@ -1985,7 +2145,7 @@ export class AgentTurnReactor {
         ...(openrouterKey ? { openrouterKey, ompPreset: preset } : {}),
         ...(input.profile ? { profile: input.profile } : {}),
       });
-      const permissionMode = this.#modeFor(input.threadId, input.owner);
+      const permissionMode = input.readOnly ? "strict" : this.#modeFor(input.threadId, input.owner);
       let omp: OmpRunFiles | undefined;
       let host: Pick<ProviderRunInput, "hostTools" | "onHostToolCall"> = {};
       if (provider === "omp") {
@@ -2028,7 +2188,7 @@ export class AgentTurnReactor {
         host = {
           hostTools,
           onHostToolCall: (call, signal) =>
-            [UCCH_AGENT_TOOL, "ucch_sessions", "ucch_message", "ucch_inbox", "ucch_agent_status", "ucch_agent_cancel"].includes(call.toolName) && hostTools.some((tool) => tool.name === call.toolName)
+            [UCCH_AGENT_TOOL, "ucch_sessions", "ucch_session_read", "ucch_message", "ucch_inbox", "ucch_agent_status", "ucch_agent_cancel"].includes(call.toolName) && hostTools.some((tool) => tool.name === call.toolName)
               ? this.#coordinate(call.toolName, call.arguments, { threadId: input.threadId, turnId: input.turnId, toolUseId: call.toolCallId, signal })
               : this.#runHostTool(call, signal, {
               ...input,
@@ -2043,6 +2203,7 @@ export class AgentTurnReactor {
         ...(input.subagentId ? { subagentId: input.subagentId } : {}),
         ...(input.subagentHandle ? { subagentHandle: input.subagentHandle } : {}),
         prompt: !fresh && this.messaging ? `${input.text}\n\n${COLLABORATION_GUIDE}\n\n${offersSubagents ? (bridge ? UCCH_AGENT_GUIDE : UCCH_AGENT_UNAVAILABLE_NOTE) : ""}` : input.text,
+        ...(input.images?.length ? { images: input.images } : {}),
         projectId: input.projectId,
         threadId: input.threadId,
         turnId: input.turnId,
@@ -2050,6 +2211,9 @@ export class AgentTurnReactor {
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         permissionMode,
+        ...(input.readOnly ? { readOnly: true } : {}),
+        ...(input.noWeb ? { noWeb: true } : {}),
+        ...(input.readDirs?.length ? { readDirs: input.readDirs } : {}),
         ...(instructions ? { instructions } : {}),
         ...(omp ? { omp } : {}),
         ...(bridge?.mcpConfigPath ? { mcpConfigPath: bridge.mcpConfigPath } : {}),
@@ -2928,4 +3092,20 @@ export function sinceCleared<E extends { type: string }>(events: readonly E[]): 
     if (events[i]!.type === "thread.context_cleared") return events.slice(i + 1);
   }
   return [...events];
+}
+
+/**
+ * The newest plan an agent proposed on a thread (`<proposed_plan>`), from
+ * the text its turns streamed, newest turn first.
+ */
+export function latestProposedPlan(events: readonly DomainEvent[]): string | null {
+  const texts = new Map<string, string>();
+  for (const event of events) {
+    if (event.type === "agent.text_delta") texts.set(event.turnId, (texts.get(event.turnId) ?? "") + event.text);
+  }
+  for (const text of [...texts.values()].reverse()) {
+    const plan = proposedPlanIn(text);
+    if (plan) return plan;
+  }
+  return null;
 }

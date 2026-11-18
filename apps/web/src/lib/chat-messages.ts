@@ -1,5 +1,5 @@
-import type { DomainEvent, MessageMode } from "@ucch/protocol";
-import { isUcchAgentTool } from "@ucch/protocol/plain";
+import type { DomainEvent, MessageMode, PlanStage } from "@ucch/protocol";
+import { isUcchAgentTool, PLAN_CLOSE, PLAN_OPEN, proposedPlanIn, stripPlanTags } from "@ucch/protocol/plain";
 import { parseAttachments, type MessageAttachment } from "./attachments.js";
 
 /**
@@ -258,6 +258,13 @@ export interface ChatMessage {
   attachments?: MessageAttachment[];
   /** How the message asked to be answered. Absent on an ordinary one. */
   mode?: MessageMode;
+  /** Plan mode's stage (`/plan`): a draft to plan in, or the go-ahead to run the plan. */
+  plan?: PlanStage;
+  /**
+   * The plan an answer proposed (`<proposed_plan>`), without its tags; the
+   * prose in `parts` keeps the plan's Markdown and loses the tags.
+   */
+  proposedPlan?: string;
   /**
    * The brief a handoff opened this thread with (`<handoff-brief>`, solution
    * §5.4), split from the request after it, which is `text`.
@@ -393,6 +400,8 @@ export function toMessages(
   let contextTokens: number | null = null;
   let compacting: "compact" | "handoff" | null = null;
   let compactionError: string | null = null;
+  /** The open switch is a quiet handover (the server's own, past the fallback line). */
+  let quietSwitch = false;
   let handingOff: ProviderId | null = null;
   let continuedIn: HandoffLink | null = null;
   let continuedFrom: HandoffLink | null = null;
@@ -512,6 +521,7 @@ export function toMessages(
           ...(tasked ? { subagentTask: true as const, raw: event.text } : {}),
           ...(attachments.length ? { attachments } : {}),
           ...(event.mode ? { mode: event.mode } : {}),
+          ...(event.plan ? { plan: event.plan } : {}),
           parts: [],
           reasoning: "",
           streaming: false,
@@ -868,7 +878,10 @@ export function toMessages(
         break;
 
       case "thread.harness_switch_requested":
-        switching = event.targetProvider;
+        // The server's own handover past the fallback line is quiet: the
+        // session looks busy for the moment the brief takes, nothing more.
+        quietSwitch = !!event.auto && event.reason === "context";
+        if (!quietSwitch) switching = event.targetProvider;
         compactionError = null;
         running = true;
         activeTurn = null;
@@ -881,6 +894,11 @@ export function toMessages(
         // The old session is gone with its context: the next session starts
         // from the brief, and the meter from its first reading.
         contextTokens = null;
+        // A quiet handover (the server's own, past the fallback line) leaves
+        // no row: the conversation simply goes on, as the CLI's own
+        // compaction does.
+        quietSwitch = false;
+        if (event.auto && event.reason === "context") break;
         messages.push({
           role: "assistant",
           text: "",
@@ -921,7 +939,10 @@ export function toMessages(
       case "thread.harness_switch_failed":
         switching = null;
         running = false;
-        compactionError = `The switch did not happen: ${event.error}`;
+        // A quiet handover that failed changed nothing; the next turn's end
+        // tries again, so there is nothing for the person to act on.
+        if (!quietSwitch) compactionError = `The switch did not happen: ${event.error}`;
+        quietSwitch = false;
         break;
 
       case "agent.choice_requested": {
@@ -940,6 +961,17 @@ export function toMessages(
         break;
       }
     }
+  }
+
+  // A plan an answer proposed: found across its prose, and its tags taken
+  // out of what is drawn.
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const prose = message.parts.filter((part): part is TextPart => part.kind === "text");
+    if (!prose.some((part) => part.text.includes(PLAN_OPEN) || part.text.includes(PLAN_CLOSE))) continue;
+    const plan = proposedPlanIn(prose.map((part) => part.text).join(""));
+    if (plan) message.proposedPlan = plan;
+    for (const part of prose) part.text = stripPlanTags(part.text);
   }
 
   return {

@@ -279,3 +279,25 @@ describe("document renders", () => {
     await render;
   });
 });
+
+describe("read-only roots", () => {
+  it("reads a file in one by absolute path, and refuses to write or delete there", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "ucch-knowledge-"));
+    try {
+      await writeFile(join(outside, "doc.md"), "kept once\n", "utf8");
+      const reader = new HostExecutor(root, { readOnlyRoots: [outside] });
+      expect(await reader.readFile(join(outside, "doc.md"))).toBe("kept once\n");
+      expect(reader.resolve(outside)).toBe(outside);
+      await expect(reader.writeFile(join(outside, "doc.md"), "changed")).rejects.toThrow(/escapes the workspace/);
+      await expect(reader.removeFile(join(outside, "doc.md"))).rejects.toThrow(/escapes the workspace/);
+      expect(await readFile(join(outside, "doc.md"), "utf8")).toBe("kept once\n");
+      // Any other absolute path is still refused.
+      await expect(reader.readFile("/etc/hostname")).rejects.toThrow(/relative to the workspace root/);
+      // A link out of the root is refused too.
+      await symlink("/etc", join(outside, "etc"));
+      await expect(reader.readFile(join(outside, "etc", "hostname"))).rejects.toThrow(/symlink/);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});

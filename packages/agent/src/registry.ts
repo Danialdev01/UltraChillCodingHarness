@@ -149,7 +149,7 @@ const toolCache = new Map<string, readonly AnyTool[]>();
 const schemaCache = new Map<string, readonly ToolSchema[]>();
 
 const cacheKey = (preset: ToolPreset, options: RegistryOptions): string =>
-  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}:${Boolean(options.coordination)}:${Boolean(options.subagents)}`;
+  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}:${options.web ?? true}:${Boolean(options.coordination)}:${Boolean(options.subagents)}`;
 
 /**
  * Filters a tool list to a preset, in the list's own order.
@@ -215,7 +215,15 @@ export interface RegistryOptions {
    * turned interactive widgets off.
    */
   widgets?: boolean;
+  /**
+   * Defaults to true. False withholds every tool that reaches the web --
+   * a knowledge-only turn answers from its knowledge bases alone.
+   */
+  web?: boolean;
 }
+
+/** Tools withheld when the web is off: search, fetch, and research's own. */
+const WEB_TOOLS: readonly string[] = ["web_search", "web_fetch", ...RESEARCH_ONLY];
 
 /** Tools withheld when widgets are off. */
 const WIDGET_TOOLS: readonly string[] = ["show_widget"];
@@ -227,6 +235,7 @@ export function selectPreset(
 ): readonly AnyTool[] {
   const allowHostShell = options.allowHostShell ?? true;
   const widgets = options.widgets ?? true;
+  const web = options.web ?? true;
   return Object.freeze(
     tools.filter((tool) => {
       if (tool.name.startsWith("ucch_")) {
@@ -235,6 +244,7 @@ export function selectPreset(
       }
       if (!allowHostShell && HOST_SHELL.includes(tool.name)) return false;
       if (!widgets && WIDGET_TOOLS.includes(tool.name)) return false;
+      if (!web && WEB_TOOLS.includes(tool.name)) return false;
       if (preset !== "research" && RESEARCH_ONLY.includes(tool.name)) return false;
       if (preset !== "documentation" && DOCUMENTATION_ONLY.includes(tool.name)) return false;
       switch (preset) {

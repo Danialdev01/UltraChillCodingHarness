@@ -259,3 +259,35 @@ describe("the server's own repository", () => {
     expect(await snapshot()).toEqual(before);
   });
 });
+
+describe("restoring a settled session's worktree", () => {
+  it("forks a new branch from the base its work was merged into, when settling deleted the branch", async () => {
+    const origin = await makeOrigin("gamma", "main");
+    const repo = await cloneProject(A, origin);
+    const tree = await git.addWorktree(A, "sessiong0001", "ucch/sessiong0001", "main");
+    await edit(tree, "trip.md", "MRT Putrajaya\n", "plan the trip");
+    const settled = await git.settle(settleInput(A, "sessiong0001", "main"));
+    expect(settled.state).toBe("settled");
+    expect(await exists(tree)).toBe(false);
+
+    const restored = await git.restoreWorktree(A, "sessiong0001", "ucch/sessiong0001", "main");
+    expect(restored).toBe(tree);
+    expect(await out(tree, "branch", "--show-current")).toBe("ucch/sessiong0001");
+    // The merged work is there to carry on from.
+    expect(await exists(join(tree, "trip.md"))).toBe(true);
+    expect(await out(repo, "worktree", "list")).toContain("sessiong0001");
+  });
+
+  it("checks out the session's own branch when settling kept it", async () => {
+    const origin = await makeOrigin("delta", "main");
+    await cloneProject(A, origin);
+    const tree = await git.addWorktree(A, "sessiond0001", "ucch/sessiond0001", "main");
+    await edit(tree, "notes.md", "kept\n", "keep the branch");
+    const settled = await git.settle(settleInput(A, "sessiond0001", "main", { deleteBranch: false }));
+    expect(settled.state).toBe("settled");
+
+    await git.restoreWorktree(A, "sessiond0001", "ucch/sessiond0001", "main");
+    expect(await out(tree, "branch", "--show-current")).toBe("ucch/sessiond0001");
+    expect(await exists(join(tree, "notes.md"))).toBe(true);
+  });
+});

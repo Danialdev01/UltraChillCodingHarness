@@ -62,8 +62,9 @@ export function promptNeighbours(
  *
  * Only the native loop is checked: the CLI harnesses pick from a short list
  * of models that all take images, and their catalogue does not say either
- * way. On OpenRouter the catalogue does, and the honest thing is to say so
- * before the send rather than let the turn fail with the message in it.
+ * way. On OpenRouter the catalogue does: the server has a vision model
+ * describe the pictures for one that cannot see (`describe-image.ts`), and
+ * this says so before the send, so a text description is no surprise.
  * `null` for vision, so the caller can check the model's flag is known:
  * a model the catalogue no longer lists is not refused, only unverified.
  */
@@ -72,7 +73,7 @@ export function visionWarning(
   model: { name: string; images: boolean } | undefined,
 ): string | null {
   if (imageCount === 0 || !model || model.images) return null;
-  return `${model.name} can't see images. Pick a model with vision, or remove the ${
+  return `${model.name} can't see images: the ${
     imageCount === 1 ? "picture" : "pictures"
-  }.`;
+  } will be described to it in text by a vision model.`;
 }

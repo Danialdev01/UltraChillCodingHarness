@@ -16,6 +16,7 @@ import {
   can,
   DEFAULT_AGENT_PERMISSION_MODE,
   MAX_AVATAR_BYTES,
+  MAX_INLINE_ATTACHMENT_CHARS,
   mediaTypeFor,
   projectUrl,
   ProviderId,
@@ -62,7 +63,9 @@ import {
   UploadStore,
   UnknownUploadError,
   contentDisposition,
+  type StagedUpload,
 } from "./uploads.js";
+import { fetchLink, LinkError } from "./link-fetch.js";
 import { TerminalReactor } from "./terminals.js";
 import { TerminalBridge, terminalBridgeFacts } from "./terminal-bridge.js";
 import { serverReadings, Watchdog } from "./watchdog.js";
@@ -109,6 +112,8 @@ import { TaskPipeline } from "./task-pipeline.js";
 import { TaskScheduler } from "./task-scheduler.js";
 import { registerDatabaseRoutes } from "./database-routes.js";
 import { registerResourceRoutes, resourceFailure } from "./resource-routes.js";
+import { KnowledgeService } from "./knowledge.js";
+import { registerKnowledgeRoutes } from "./knowledge-routes.js";
 import { ResourceStoreService, keyOf, readAll, resourceName } from "./resource-stores.js";
 import { WorkspaceMemberService } from "./workspace-members.js";
 import { registerWorkspaceMemberRoutes } from "./workspace-members-routes.js";
@@ -141,9 +146,11 @@ import {
   SessionUnsavedError,
   type SessionRecord,
 } from "./session-lifecycle.js";
-import { cachedCatalogue, catalogue, keyQuota, setOpenRouterBase, type KeyQuota } from "./openrouter.js";
+import { cachedCatalogue, catalogue, keyQuota, setOpenRouterBase, streamCompletion, type KeyQuota } from "./openrouter.js";
 import { isLoopback, LATENCY_BUCKETS, metricsAccess, recordVitals, registry, startRuntimeMetrics } from "./metrics.js";
 import { recomputeProjectStats } from "./project-stats.js";
+import { removeCliSessionFiles, removeOrphanCliFiles } from "./cli-session-files.js";
+import { reviveSession } from "./session-revive.js";
 import { ProjectActivityPublisher } from "./project-activity.js";
 import { ResourceSampler } from "./resource-sampler.js";
 import { openRouterWindows, type SessionQuota, type SessionQuotas } from "./quotas.js";
@@ -401,6 +408,27 @@ const BRIDGE_SOCKET = join(config.CREDS_ROOT, "omp-scheduler.sock");
  * phases; the agent one is here, so a user message is answered.
  */
 const documents = documentsBackends(config);
+// Knowledge bases: a document's graph is built by the search model on the
+// uploader's own OpenRouter key, or by the local fallback without one.
+const knowledge = new KnowledgeService({
+  db,
+  workspaceRoot: config.WORKSPACE_ROOT,
+  graphModel: {
+    complete: streamCompletion,
+    model: config.SEARCH_MODEL,
+    apiKeyFor: async (userId) => {
+      const [row] = await db
+        .select({ openrouter: accountOpenRouterKey })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      const key = decryptOrNull(row?.openrouter ?? null);
+      if (key) keyUsage.touch(userId, "openrouter");
+      return key;
+    },
+  },
+  onError: (error) => app.log.error({ err: error }, "knowledge base processing failed"),
+});
 const agentTurns = new AgentTurnReactor(
   db,
   store,
@@ -415,6 +443,7 @@ const agentTurns = new AgentTurnReactor(
     uploads,
     research: researchBackends(config),
     documents,
+    knowledge,
     heavyJobs: new HeavyJobGate(config.DOC_JOBS_MAX, documents.kitDir),
     wrapArgv: wrapChild,
     runtimePath: (cwd) => runtimes.pathFor(cwd),
@@ -643,6 +672,8 @@ const engine = new OrchestrationEngine(
     // holds it there): every command in flight can hold a connection.
     maxParallel: config.ENGINE_MAX_PARALLEL,
     projectOfThread: (threadId) => access.projectOfThread(threadId),
+    // A message into an archived or settled session makes it active again.
+    beforeSend: (principal, threadId) => reviveSession({ db, store, projectGit }, principal, threadId),
   },
 );
 /**
@@ -1954,6 +1985,8 @@ async function removeProjectFiles(projectId: string): Promise<boolean> {
       uploads.discardAll(projectId),
       // Every session's memory, under every subject that paid for one.
       sessionMemory.forget({ projectId }),
+      // And every CLI's transcripts of its sessions.
+      removeOrphanCliFiles(config.CREDS_ROOT, config.WORKSPACE_ROOT, (id) => id !== projectId),
     ]);
     const failed = cleanup.find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
@@ -2075,6 +2108,43 @@ app.delete<{ Params: { id: string } }>("/api/workspaces/:id/settled-sessions", a
     if (!(await removeProjectFiles(result.projectId))) leftFiles += 1;
   }
   return { deleted, skipped, leftFiles };
+});
+
+/**
+ * Deletes one settled session of a session workspace, data and all: the
+ * project, once every one of its sessions is settled. Its creator, or a
+ * workspace admin, like abandoning an empty one.
+ */
+app.delete<{ Params: { hash: string } }>("/api/projects/:hash/settled-session", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+  if (!project) return reply.code(404).send({ error: "session not found" });
+  if (project.workspaceKind !== "session") return reply.code(400).send({ error: "not a session workspace's session" });
+  const [owner] = await db.select({ userId: projects.userId }).from(projects).where(eq(projects.id, project.id)).limit(1);
+  if (!can(project.membership, "project.write") ||
+      (owner?.userId !== principal.userId && !can(project.membership, "workspace.manage"))) {
+    return reply.code(403).send({ error: "you cannot delete this session" });
+  }
+  const [state] = await db
+    .select({ settled: sql<boolean>`coalesce(bool_and(${threads.settleState} is not distinct from 'settled'), false)` })
+    .from(threads)
+    .where(eq(threads.projectId, project.id));
+  if (!state?.settled) return reply.code(409).send({ error: "only a settled session can be deleted here" });
+  const [busy] = await db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(and(eq(threads.projectId, project.id), inArray(threads.status, ["queued", "running", "cancelling"])))
+    .limit(1);
+  if (busy) return reply.code(409).send({ error: "a turn is still running in this session -- stop it, then delete" });
+
+  // Its creator need not be an admin: the row goes directly, then its files.
+  await db.delete(projects).where(eq(projects.id, project.id));
+  void gateway.revalidate({ projectId: project.id }).catch((error) => app.log.error({ err: error }, "could not re-check access"));
+  if (project.workspaceId) {
+    bus.publishToWorkspace(project.workspaceId, { type: "resource.changed", projectId: null, resource: "projects" });
+  }
+  return { deleted: true, leftFiles: !(await removeProjectFiles(project.id)) };
 });
 
 // -- Repositories ------------------------------------------------------------
@@ -2596,27 +2666,9 @@ const sessionLifecycle = new SessionLifecycle({
     return { count: row?.count ?? 0, running: row?.running ?? false };
   },
   // The thread's turns go with it, and so does their spend: its project's
-  // totals are summed again in the same transaction.
-  deleteThread: async (threadId, onlyIfEmpty) => {
-    const gone = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .delete(threads)
-        .where(and(eq(threads.id, threadId), onlyIfEmpty ? and(
-          isNull(threads.usedAt), eq(threads.status, "idle"),
-          sql`not exists (select 1 from ${turns} where ${turns.threadId} = ${threads.id})`,
-        ) : undefined))
-        .returning({ projectId: threads.projectId });
-      if (row) await recomputeProjectStats(tx, row.projectId);
-      return row;
-    });
-    // What it remembered goes with it: no later run recalls it.
-    if (gone) {
-      await sessionMemory
-        .forget({ projectId: gone.projectId, threadId })
-        .catch((error) => app.log.error({ err: error, threadId }, "could not delete a session's memory"));
-    }
-    return !!gone;
-  },
+  // totals are summed again in the same transaction. So do its subagent
+  // sessions, and every file any of them left on disk.
+  deleteThread: (threadId, onlyIfEmpty) => deleteThreadsCompletely(threadId, onlyIfEmpty),
   // The same token the push route uses: the owner's, and only for a host it
   // belongs to.
   credentials: async (projectId) => {
@@ -2631,6 +2683,60 @@ const sessionLifecycle = new SessionLifecycle({
   onCleanupError: (error, session) =>
     app.log.error({ err: error, threadId: session.id }, "could not remove a session's worktree"),
 });
+
+/**
+ * Deletes a thread for good: the row, with its subagent sessions (which
+ * name their parent but are not tied to it by a key), their events and
+ * turns by cascade, what they remembered, and the CLIs' transcripts of them
+ * under `CREDS_ROOT`. Nothing of a deleted session stays on disk.
+ */
+async function deleteThreadsCompletely(threadId: string, onlyIfEmpty?: boolean): Promise<boolean> {
+  const gone = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ projectId: threads.projectId })
+      .from(threads)
+      .where(and(eq(threads.id, threadId), onlyIfEmpty ? and(
+        isNull(threads.usedAt), eq(threads.status, "idle"),
+        sql`not exists (select 1 from "turns" tu where tu."thread_id" = "threads"."id")`,
+      ) : undefined))
+      .for("update")
+      .limit(1);
+    if (!row) return null;
+    const family = await tx.execute<{ id: string; session_id: string | null }>(sql`
+      with recursive tree(id) as (
+        select ${threadId}::uuid
+        union
+        select t.id from threads t join tree on t.parent_thread_id = tree.id
+      )
+      select tree.id, s.session_id from tree
+      left join lateral (
+        select provider_session_id as session_id from threads where threads.id = tree.id and provider_session_id is not null
+        union
+        select e.payload->>'sessionId' from events e where e.thread_id = tree.id and e.type = 'agent.session_started'
+      ) s on true
+    `);
+    const ids = [...new Set(family.map((r) => r.id))];
+    await tx.delete(threads).where(inArray(threads.id, ids));
+    await recomputeProjectStats(tx, row.projectId);
+    return {
+      projectId: row.projectId,
+      ids,
+      sessionIds: family.map((r) => r.session_id).filter((id): id is string => Boolean(id)),
+    };
+  });
+  if (!gone) return false;
+  // What it remembered goes with it: no later run recalls it.
+  for (const id of gone.ids) {
+    composer.forget(id);
+    await sessionMemory
+      .forget({ projectId: gone.projectId, threadId: id })
+      .catch((error) => app.log.error({ err: error, threadId: id }, "could not delete a session's memory"));
+  }
+  await removeCliSessionFiles(config.CREDS_ROOT, gone.sessionIds).catch((error) =>
+    app.log.error({ err: error, threadId }, "could not delete a session's CLI transcripts"),
+  );
+  return true;
+}
 
 const SESSION_COLUMNS = {
   id: threads.id,
@@ -3374,6 +3480,14 @@ registerResourceRoutes(app, {
   maxUploadBytes: config.UPLOAD_MAX_BYTES,
 });
 
+registerKnowledgeRoutes(app, {
+  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  workspaceAllows: (workspaceId, userId, permission) =>
+    workspaceService.allows(workspaceId, userId, permission),
+  knowledge,
+  maxUploadBytes: config.UPLOAD_MAX_BYTES,
+});
+
 registerWorkspaceMemberRoutes(app, {
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
   members: new WorkspaceMemberService(db, workspaceService, config.SECRET_KEY),
@@ -3988,7 +4102,56 @@ app.post<{ Params: { hash: string }; Querystring: { name?: string; type?: string
         request.query.type ?? "application/octet-stream",
         request.body,
       );
-      return reply.code(201).send({ upload });
+      return reply.code(201).send(await stagedWithText(project.id, upload));
+    } catch (error) {
+      return fileFailure(error, reply);
+    }
+  },
+);
+
+/**
+ * A staged upload as the composer receives it: the record, and the text read
+ * out of it, up to what one message could ever inline. The composer decides
+ * how much of that the chosen model's window has room for; the rest is read
+ * from the workspace copy (`UploadStore.materialize`).
+ */
+async function stagedWithText(
+  projectId: string,
+  upload: StagedUpload,
+): Promise<{ upload: StagedUpload; text?: string; textTruncated?: boolean }> {
+  const text = upload.extract ? await uploads.readText(projectId, upload.id) : null;
+  if (!text) return { upload };
+  const cut = text.length > MAX_INLINE_ATTACHMENT_CHARS;
+  return { upload, text: cut ? text.slice(0, MAX_INLINE_ATTACHMENT_CHARS) : text, textTruncated: cut || upload.extract!.truncated };
+}
+
+const UploadLink = z.object({ url: z.string().min(1).max(4096) });
+
+/**
+ * A link, staged as an attachment: the server fetches it (`link-fetch.ts`,
+ * public addresses only) and stages what came back -- a page, a PDF, a
+ * spreadsheet -- so it is read the same way a dropped file is, by whichever
+ * model answers. Throttled: each call is a request out of the harness.
+ */
+app.post<{ Params: { hash: string } }>(
+  "/api/projects/:hash/uploads/link",
+  { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+  async (request, reply) => {
+    const project = await projectFor(request);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const parsed = UploadLink.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: "a url is required" });
+
+    let link;
+    try {
+      link = await fetchLink(parsed.data.url, { maxBytes: config.UPLOAD_MAX_BYTES });
+    } catch (error) {
+      if (error instanceof LinkError) return reply.code(422).send({ error: `Could not read the link: ${error.message}` });
+      throw error;
+    }
+    try {
+      const upload = await uploads.stage(project.id, link.name, link.contentType, link.bytes, { sourceUrl: link.finalUrl });
+      return reply.code(201).send(await stagedWithText(project.id, upload));
     } catch (error) {
       return fileFailure(error, reply);
     }
@@ -4070,6 +4233,20 @@ app.get<{ Params: { hash: string; id: string } }>(
 
     const upload = await uploads.find(project.id, request.params.id);
     if (!upload) return reply.code(404).send({ error: "that upload is no longer staged" });
+
+    // A document's extracted text first: a PDF or a workbook previews as what
+    // the model reads, which is the useful thing to check before sending.
+    const extracted = upload.extract && upload.extract.kind !== "text" ? await uploads.readText(project.id, upload.id) : null;
+    if (extracted) {
+      const cut = extracted.length > UPLOAD_TEXT_PREVIEW_BYTES;
+      return {
+        name: upload.name,
+        size: upload.size,
+        text: cut ? extracted.slice(0, UPLOAD_TEXT_PREVIEW_BYTES) : extracted,
+        truncated: cut || upload.extract!.truncated,
+        summary: upload.extract!.summary,
+      };
+    }
 
     const file = await uploads.readBytes(project.id, request.params.id);
     if (!file) return reply.code(404).send({ error: "that upload is no longer staged" });
@@ -5091,6 +5268,26 @@ await bridgeLeases
   .listen(BRIDGE_SOCKET)
   .catch((error: unknown) => app.log.warn({ err: error, path: BRIDGE_SOCKET }, "could not open the OMP bridge's scheduler socket"));
 await agentTurns.messaging?.recover();
+
+// What deleted work left behind before deleting cleaned up after itself:
+// subagent sessions whose parent is gone, the CLIs' transcripts of projects
+// that no longer exist, and the `.knowledge/` copies older versions put in
+// every tree. In the background; each part on its own.
+void (async () => {
+  const orphans = await db
+    .select({ id: threads.id })
+    .from(threads)
+    // Qualified by hand: Drizzle leaves a one-table select's columns bare, and
+    // a bare `parent_thread_id` would bind to the subquery's own row.
+    .where(sql`"threads"."parent_thread_id" is not null and not exists (select 1 from "threads" p where p."id" = "threads"."parent_thread_id")`);
+  for (const orphan of orphans) await deleteThreadsCompletely(orphan.id);
+  const live = new Set((await db.select({ id: projects.id }).from(projects)).map((row) => row.id));
+  const transcripts = await removeOrphanCliFiles(config.CREDS_ROOT, config.WORKSPACE_ROOT, (id) => live.has(id));
+  const copies = await knowledge.removeLegacyCopies();
+  if (orphans.length || transcripts || copies) {
+    app.log.info({ orphans: orphans.length, transcripts, copies }, "removed what deleted sessions and projects left behind");
+  }
+})().catch((error: unknown) => app.log.error({ err: error }, "could not clean up after deleted sessions"));
 
 // A base branch that does not exist in the project's repository -- the old
 // `"main"` default on a repository whose branch is `master`, or a clone that

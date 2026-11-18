@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Command, HANDOVER_CONTINUE, REQUIRED_SCOPE, type Membership } from "@ucch/protocol";
+import { Command, REQUIRED_SCOPE, type Membership } from "@ucch/protocol";
 import {
   decide,
   type DecisionContext,
@@ -325,6 +325,14 @@ describe("thread.send", () => {
     });
   });
 
+  it("records plan mode's stage on the message, in place of a pipeline mode", () => {
+    for (const plan of ["draft", "run"] as const) {
+      const d = run({ project: project(), thread: thread() }, { type: "thread.send", threadId: THREAD, text: "add a dark mode", plan, mode: "research" });
+      expect(d).toMatchObject({ ok: true, events: [{ type: "user.message", plan }] });
+      expect((d as { events: { mode?: string }[] }).events[0]).not.toHaveProperty("mode");
+    }
+  });
+
   // On a CLI provider the reactor runs the research first and hands the CLI
   // the brief, so the mode is allowed on any thread -- bound ones included.
   it("allows research on a CLI provider, requested or bound", () => {
@@ -439,9 +447,18 @@ describe("thread.compact and thread.handoff", () => {
           fromProvider: provider,
           targetProvider: provider,
           focus: "the parser",
-          message: HANDOVER_CONTINUE,
           reason: "context",
         },
+      ],
+    });
+  });
+
+  it("marks the server's own handover as quiet, and sends nothing after it", () => {
+    const d = run({ project: project(), thread: thread({ provider: "claude" }) }, { type: "thread.handoff", threadId: THREAD, auto: true });
+    expect(d).toEqual({
+      ok: true,
+      events: [
+        { type: "thread.harness_switch_requested", threadId: THREAD, fromProvider: "claude", targetProvider: "claude", reason: "context", auto: true },
       ],
     });
   });
@@ -943,6 +960,11 @@ describe("agent session messages", () => {
     expect(decide(state, command, ctx)).toMatchObject({ ok: false, error: { code: "forbidden" } });
     expect(decide({ ...state, messageSource: { ...source, projectId: WORKSPACE } }, command, { ...ctx, internal: true })).toMatchObject({ ok: false, error: { code: "not_found" } });
     expect(decide({ ...state, messageSource: undefined }, command, { ...ctx, internal: true })).toMatchObject({ ok: false });
+  });
+  it("accepts a source in another project of the same workspace, and no other", () => {
+    const elsewhere = { ...source, projectId: "99999999-9999-4999-8999-999999999999" };
+    expect(decide({ ...state, messageSource: { ...elsewhere, workspaceId: state.project.workspaceId } }, command, { ...ctx, internal: true })).toMatchObject({ ok: true });
+    expect(decide({ ...state, messageSource: { ...elsewhere, workspaceId: "99999999-9999-4999-8999-999999999998" } }, command, { ...ctx, internal: true })).toMatchObject({ ok: false, error: { code: "not_found" } });
   });
   it("requires execution rights even for internal deliveries", () => {
     expect(decide({ ...state, workspace: workspace({ membership: member({ role: "viewer" }) }) }, command, { ...ctx, internal: true })).toMatchObject({ ok: false, error: { code: "forbidden" } });

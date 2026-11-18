@@ -488,6 +488,42 @@ describe("the context window", () => {
     expect(state.messages.at(-1)?.switched).toMatchObject({ context: true, brief: "Did A; next B." });
   });
 
+  it("marks a proposed plan and draws it without its tags", () => {
+    const state = log(
+      { type: "user.message", threadId: THREAD, text: "add dark mode", plan: "draft" },
+      { type: "turn.started", threadId: THREAD, turnId: TURN },
+      { type: "agent.text_delta", threadId: THREAD, turnId: TURN, text: "Here it is.\n<proposed_plan>\n1. Add tokens\n</proposed_plan>" },
+    );
+    expect(state.messages[0]).toMatchObject({ role: "user", plan: "draft" });
+    const answer = state.messages.at(-1)!;
+    expect(answer.proposedPlan).toBe("1. Add tokens");
+    const prose = answer.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
+    expect(prose).not.toContain("proposed_plan");
+    expect(prose).toContain("1. Add tokens");
+  });
+
+  it("goes on without a row or a notice when the server hands over by itself", () => {
+    const requested = { type: "thread.harness_switch_requested", threadId: THREAD, fromProvider: "claude", targetProvider: "claude", reason: "context", auto: true } as const;
+    const before = log(completed(160_000, 400));
+    const pending = log(completed(160_000, 400), requested);
+    expect(pending.switching).toBeNull();
+    const state = log(completed(160_000, 400), requested, {
+      type: "thread.harness_switched",
+      threadId: THREAD,
+      fromProvider: "claude",
+      toProvider: "claude",
+      brief: "Did A; next B.",
+      reason: "context",
+      auto: true,
+    });
+    expect(state.contextTokens).toBeNull();
+    expect(state.messages).toHaveLength(before.messages.length);
+    expect(state.messages.some((m) => m.switched)).toBe(false);
+    const failed = log(completed(160_000, 400), requested, { type: "thread.harness_switch_failed", threadId: THREAD, error: "busy" });
+    expect(failed.compactionError).toBeNull();
+    expect(failed.running).toBe(false);
+  });
+
   it("is the last turn's prompt plus what the model wrote back", () => {
     expect(log(completed(12_000, 400)).contextTokens).toBe(12_400);
   });

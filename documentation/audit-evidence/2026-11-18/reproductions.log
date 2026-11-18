@@ -1,0 +1,4 @@
+{"check":"public-secret","path":".env","status":404,"body":{"error":"not found"}}
+{"check":"public-secret","path":".env/.","status":200,"body":{"path":".env/.","content":"AUDIT_DUMMY_SECRET=example"}}
+{"check":"ticket-after-revocation","accepted":true}
+{"check":"link-fetch-loopback","body":"AUDIT_LOOPBACK_ONLY"}

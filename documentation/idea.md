@@ -11,6 +11,7 @@
 - create function for s3 bucket storage for the code.
 - create a option for the user to commit in main everytime or create a branch anytime inside the new project workspace after every change.
 - creaet function for the user to install sub system inside different vpses so that the user can loadbalance the agents and hosting.
+- inside session based workspace, add section to add knowledge base, each knowledge base is like a folder with documents. each knowledge base has a graph knowledge  for everything. inside the chat section for every session based, the user can choose between the knowledge section. they can also choose if the ai can only search by book or by web also.
 
 ## UI UX
 

@@ -1,4 +1,4 @@
-import { can, effectiveCredentialSource, HANDOVER_CONTINUE, normalizeWorkspacePath, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
+import { can, effectiveCredentialSource, normalizeWorkspacePath, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
 import type {
   Command,
   ContainerState,
@@ -92,7 +92,7 @@ export interface DecisionState {
   thread?: ThreadSnapshot;
   turn?: TurnSnapshot;
   subagent?: { id: string; provider?: string; childThreadId?: string; resumeHandle?: string };
-  messageSource?: { id: string; projectId: string; hash?: string | null };
+  messageSource?: { id: string; projectId: string; workspaceId?: string | null; hash?: string | null };
   profile?: ProfileSnapshot;
 }
 
@@ -312,8 +312,12 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
       if (!ctx.internal) return fail("forbidden", "only a running agent can send an agent message");
-      if (!state.messageSource || state.messageSource.id !== command.fromThreadId || state.messageSource.projectId !== thread.value.projectId) {
-        return fail("not_found", "source session not found in this project");
+      // Any session of the same workspace: in a session workspace each
+      // session is its own project, and they still talk to one another.
+      const sameWorkspace = state.messageSource?.projectId === thread.value.projectId ||
+        (Boolean(state.messageSource?.workspaceId) && state.messageSource?.workspaceId === state.project?.workspaceId);
+      if (!state.messageSource || state.messageSource.id !== command.fromThreadId || !sameWorkspace) {
+        return fail("not_found", "source session not found in this workspace");
       }
       return ok([{ type: "agent.session_message", threadId: command.threadId, fromThreadId: command.fromThreadId,
         messageId: ctx.newId(), fromHash: state.messageSource.hash, text: command.text, depth: command.depth, ...(command.replyTo ? { replyTo: command.replyTo } : {}) }]);
@@ -336,7 +340,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if (command.subagentId && !followable) {
         return fail("invalid", "This native subagent is not available for follow-up in this session.");
       }
-      if (command.subagentId && command.mode) return fail("invalid", "A subagent follow-up uses its existing task mode");
+      if (command.subagentId && (command.mode || command.plan)) return fail("invalid", "A subagent follow-up uses its existing task mode");
 
       // One turn at a time per thread. Queueing a second would interleave two
       // agents editing the same working tree. A `queued` thread has a message
@@ -382,7 +386,8 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           // Only when there are some: an ordinary message keeps the shape it
           // has always had, and so does the log.
           ...(command.images?.length ? { images: command.images } : {}),
-          ...(command.mode ? { mode: command.mode } : {}),
+          // A plan turn is a coding turn: its stage, not a pipeline mode.
+          ...(command.plan ? { plan: command.plan } : command.mode ? { mode: command.mode } : {}),
         },
       ]);
     }
@@ -496,6 +501,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       // A handover on any other harness: the server writes the brief from
       // the log and the thread's next turn opens a fresh session with it,
       // as a harness switch does -- only to the harness it is already on.
+      // It sends nothing itself: the person's next message is that turn.
       if (method === "handoff" && thread.value.provider && thread.value.provider !== "omp") {
         if (busy) return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
         const unready = worktreeRefusal(thread.value);
@@ -507,9 +513,8 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
             fromProvider: thread.value.provider,
             targetProvider: thread.value.provider,
             ...(command.focus ? { focus: command.focus } : {}),
-            // The fresh session carries the work on at once, from the brief.
-            message: HANDOVER_CONTINUE,
             reason: "context",
+            ...(command.type === "thread.handoff" && command.auto ? { auto: true } : {}),
           },
         ]);
       }

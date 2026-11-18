@@ -175,6 +175,32 @@ export class ProjectGit {
   }
 
   /**
+   * Gives a settled session its checkout back, so it can run again: on its
+   * own branch when settling kept it, else on a new one forked from the
+   * base, where its merged work already is.
+   */
+  restoreWorktree(projectId: string, hash: string, branch: string, baseBranch: string): Promise<string> {
+    return this.withLock(projectId, async () => {
+      const tree = sessionTree(this.workspaceRoot, projectId, hash);
+      await this.git(projectId, ["worktree", "prune"]).catch(() => {});
+      await mkdir(dirname(tree), { recursive: true });
+      try {
+        if ((await this.branchExists(projectId, branch)) === "local") {
+          await this.git(projectId, ["worktree", "add", "--", tree, branch]);
+        } else {
+          const start = (await this.branchExists(projectId, baseBranch)) === "remote" ? `origin/${baseBranch}` : baseBranch;
+          await this.git(projectId, ["worktree", "add", "-b", branch, "--", tree, start]);
+        }
+      } catch (error) {
+        await rm(tree, { recursive: true, force: true }).catch(() => {});
+        await this.git(projectId, ["worktree", "prune"]).catch(() => {});
+        throw error;
+      }
+      return tree;
+    });
+  }
+
+  /**
    * Removes a session's worktree and, when asked, its branch. Never touches
    * any other branch.
    */

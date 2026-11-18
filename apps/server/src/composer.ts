@@ -41,6 +41,11 @@ export class ComposerStore {
   }
 
   /** Empties it after a send. Not checked against a rev: the message is already on its way. */
+  /** Drops a deleted thread's draft altogether. */
+  forget(threadId: string): void {
+    this.#drafts.delete(threadId);
+  }
+
   clear(threadId: string): ComposerState {
     return this.#put(threadId, EMPTY_COMPOSER_DRAFT, null);
   }

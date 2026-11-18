@@ -10,15 +10,15 @@
 import { CONTEXT_HANDOVER_RATIO } from "@ucch/protocol/plain";
 
 /**
- * Where a session hands over (`CONTEXT_HANDOVER_RATIO`): the server makes
- * one by itself once a turn ends past it, so the ring should never read
- * much above it.
+ * Where a session folds its context (`CONTEXT_HANDOVER_RATIO`): every
+ * harness compacts itself there mid-turn and carries on, so the ring should
+ * never read much above it.
  */
 export const HANDOVER_RATIO = CONTEXT_HANDOVER_RATIO;
 
 /**
  * Where the ring changes colour: amber as the handover line nears, red at
- * it -- the next turn's end hands over.
+ * it -- the session is about to fold its context on its own.
  */
 export const WARN_RATIO = 0.45;
 export const FULL_RATIO = HANDOVER_RATIO;

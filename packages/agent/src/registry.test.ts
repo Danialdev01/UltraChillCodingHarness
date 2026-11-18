@@ -216,3 +216,15 @@ describe("hostToolsFor", () => {
     });
   });
 });
+
+describe("web gate", () => {
+  it("withholds every web tool when the web is off, and only those", () => {
+    const on = toolsFor("standard").map((t) => t.name);
+    const off = toolsFor("standard", { web: false }).map((t) => t.name);
+    expect(on).toContain("web_search");
+    expect(off).not.toContain("web_search");
+    expect(off).not.toContain("web_fetch");
+    expect(on.filter((n) => n !== "web_search" && n !== "web_fetch")).toEqual(off);
+    expect(toolsFor("research", { web: false }).map((t) => t.name)).not.toContain("research_search");
+  });
+});

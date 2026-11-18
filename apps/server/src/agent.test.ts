@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
-import { DomainEvent, HANDOVER_CONTINUE, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
+import { DomainEvent, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
 import {
   ClaudeNormaliser,
   createProviders,
@@ -21,6 +21,7 @@ import {
 import {
   AgentTurnReactor,
   claudePromptNeedsPerson,
+  latestProposedPlan,
   ompInstructions,
   resolveModel,
   resolveProvider,
@@ -183,15 +184,18 @@ function reactorWith(extra: Partial<AgentOptions>, ...rows: unknown[][]) {
   chain.limit = next;
   chain.then = (resolve: (value: unknown) => void, reject: (error: unknown) => void) => next().then(resolve, reject);
   const db = { select: () => chain } as unknown as Database;
+  /** The thread's log as `threadHistory` reads it; empty unless a test fills it. */
+  const history: DomainEvent[] = [];
   const store = {
     append: async (_target: unknown, batch: DomainEvent[]) => {
       appended.push(batch);
       return [];
     },
+    threadHistory: async () => history.map((event, i) => ({ id: String(i), threadId: THREAD, projectId: PROJECT, seq: i, createdAt: "", event })),
   } as unknown as EventStore;
   const options = { workspaceRoot: "/nonexistent-ucch-test-root", ...extra } as unknown as AgentOptions;
   const errors: unknown[] = [];
-  return { agent: new AgentTurnReactor(db, store, options, (error) => errors.push(error)), appended, errors };
+  return { agent: new AgentTurnReactor(db, store, options, (error) => errors.push(error)), appended, errors, history };
 }
 
 const send: Command = { type: "thread.send", threadId: THREAD, text: "hi" };
@@ -1009,7 +1013,7 @@ describe("an OMP turn", () => {
       await eventually(() => readdir(join(creds, USER, "omp", "run")), []);
     });
 
-    it.each(["compact", "handoff"] as const)("%s: carries the work on from the brief only after a handover", async (method) => {
+    it.each(["compact", "handoff"] as const)("%s: sends no turn of its own afterwards", async (method) => {
       const bound = await boundThread();
       const principal = { userId: USER, sessionId: "s", scopes: ["read", "write", "exec"] as ("read" | "write" | "exec")[] };
       const dispatched: Command[] = [];
@@ -1021,11 +1025,8 @@ describe("an OMP turn", () => {
       );
       await until(appended, finished);
       await new Promise((r) => setTimeout(r, 50));
-      expect(dispatched).toEqual(
-        method === "handoff"
-          ? [{ type: "thread.send", threadId: THREAD, text: HANDOVER_CONTINUE, model: "anthropic/claude-sonnet-4.5" }]
-          : [],
-      );
+      // The next message the person sends is the first turn on the brief.
+      expect(dispatched).toEqual([]);
     });
 
     it("frees the thread with the reason when there is nothing to fold", async () => {
@@ -1710,6 +1711,19 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     expect(run.seen[0]?.input).toMatchObject({ resumeToken: "parent-session", subagentId: "parent-session:/root/alpha", prompt: expect.stringContaining("Update the task") });
   });
 
+  it("plans read-only with the plan rules, then runs the proposed plan", async () => {
+    const draft = bridgeReactor(keyed, {}, false);
+    await turn(draft, { ...ask, text: "add dark mode", plan: "draft" }, { type: "user.message", threadId: THREAD, text: "add dark mode", plan: "draft" });
+    expect(draft.seen[0]?.input.readOnly).toBe(true);
+    expect(draft.seen[0]?.input.prompt).toMatch(/<plan-mode>[\s\S]*add dark mode/);
+
+    const run = bridgeReactor(keyed, {}, false);
+    run.history.push({ type: "agent.text_delta", threadId: THREAD, turnId: "33333333-3333-4333-8333-333333333333", text: "<proposed_plan>\n1. Add tokens\n</proposed_plan>" });
+    await turn(run, { ...ask, text: "Run the plan.", plan: "run" }, { type: "user.message", threadId: THREAD, text: "Run the plan.", plan: "run" });
+    expect(run.seen[0]?.input.readOnly).toBeUndefined();
+    expect(run.seen[0]?.input.prompt).toMatch(/<approved-plan>\n1\. Add tokens\n<\/approved-plan>[\s\S]*Run the plan\./);
+  });
+
   it("passes a follow-up to a Claude Code subagent through its parent session, with the recorded handle", async () => {
     const run = bridgeReactor(keyed, {}, false, "claude", { ...thread, provider: "claude", providerSessionId: "parent-session" });
     await turn(run, { type: "thread.send", threadId: THREAD, text: "Check the auth routes too", provider: "claude", subagentId: "toolu_agent" },
@@ -1978,5 +1992,22 @@ describe("sinceCleared", () => {
     expect(
       sinceCleared([ev("user.message"), ev("thread.context_cleared"), ev("agent.message"), ev("thread.context_cleared"), ev("user.message")]),
     ).toEqual([ev("user.message")]);
+  });
+});
+
+describe("latestProposedPlan", () => {
+  const T = "22222222-2222-4222-8222-222222222222";
+  const delta = (turnId: string, text: string): DomainEvent => ({ type: "agent.text_delta", threadId: T, turnId, text });
+  it("is the newest turn's finished plan, whole across its deltas", () => {
+    const a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const c = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    expect(latestProposedPlan([])).toBeNull();
+    const events = [
+      delta(a, "<proposed_plan>first</proposed_plan>"),
+      delta(b, "<proposed_"), delta(b, "plan>\n1. second\n</proposed"), delta(b, "_plan>"),
+      delta(c, "Which database? Postgres or SQLite?"),
+    ];
+    expect(latestProposedPlan(events)).toBe("1. second");
   });
 });

@@ -18,10 +18,10 @@ import {
  * One ring at every width: the share used, drawn round a circle with the
  * percentage inside. Pressing it opens the reading and a hand -- a handover,
  * which replaces the history with a brief of the work so far, on the same
- * harness, and then carries the work on from that brief by itself. There is
- * no clearing: a handover keeps the work and drops the bloat, and the server
- * makes one by itself once a turn ends past the handover line, so the
- * session stays under it.
+ * harness, and then waits: the next message sent starts from that brief. There is
+ * no clearing: a handover keeps the work and drops the bloat. Nobody has to
+ * press it for long work: every harness compacts itself mid-turn at the
+ * handover line and keeps going, quietly, as the Claude Code CLI does.
  *
  * The number is the provider's own reading where it sends one (OMP, Claude
  * Code: after each model call, so the ring moves while the turn runs) and
@@ -146,12 +146,12 @@ export function ContextMeter({
           }}
         >
           {handingOver ? <Loader2Icon className="size-4 animate-spin" /> : <HandIcon className="size-4" />}
-          Hand over and continue
+          Hand over
         </Button>
         <p className="text-muted-foreground mt-1.5 text-xs">
           {disabled && disabledReason
             ? disabledReason
-            : "Replaces the history with a brief of the work so far, then carries the work on from it on the same harness. The transcript stays on screen."}
+            : "Replaces the history with a brief of the work so far on the same harness. Nothing is sent: your next message starts from the brief. The transcript stays on screen."}
         </p>
       </PopoverContent>
     </Popover>

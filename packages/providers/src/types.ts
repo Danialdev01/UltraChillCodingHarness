@@ -55,6 +55,20 @@ export interface RunContext {
   host: ProcessHost;
 }
 
+/**
+ * A picture the person attached, for a CLI that can be shown one. Both forms,
+ * because the CLIs take them differently: Claude Code as base64 in its
+ * stream-json message, Codex as a file path (`-i`). The path is the
+ * workspace copy under `.attachments/`.
+ */
+export interface ProviderImage {
+  /** Absolute path of the copy in the workspace. */
+  path: string;
+  mediaType: string;
+  /** Base64 bytes. */
+  data: string;
+}
+
 export interface ProviderRunInput {
   /** Continue this native worker through its owning harness session. */
   subagentId?: string;
@@ -62,6 +76,8 @@ export interface ProviderRunInput {
   subagentHandle?: string;
   ctx: RunContext;
   prompt: string;
+  /** Pictures attached to this message, shown to a CLI that can see them. */
+  images?: readonly ProviderImage[];
   projectId: string;
   threadId: string;
   turnId: string;
@@ -75,6 +91,23 @@ export interface ProviderRunInput {
   effort?: ReasoningEffort;
   /** How much the CLI may do unasked. A provider that cannot ask ignores it. */
   permissionMode?: AgentPermissionMode;
+  /**
+   * A plan-mode draft (`/plan`): the turn reads and plans, and changes
+   * nothing. Claude Code runs in its `plan` permission mode, Codex in a
+   * read-only sandbox; OMP is held to it by the server's strict mode.
+   */
+  readOnly?: boolean;
+  /**
+   * A knowledge-only turn: the chat chose to answer from its knowledge bases
+   * alone. Each CLI's own web tools are switched off where it allows.
+   */
+  noWeb?: boolean;
+  /**
+   * Folders outside the working tree the turn reads: its knowledge bases,
+   * kept once by the server. Claude Code is given each with `--add-dir`;
+   * Codex and OMP read outside their tree already.
+   */
+  readDirs?: string[];
   /**
    * The project's `.agent/` knowledge, as the native loop is given it. Each
    * provider hands it to its model the way its CLI allows: Claude Code as an

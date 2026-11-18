@@ -213,6 +213,13 @@ export type MessageImage = z.infer<typeof MessageImage>;
 export const MessageMode = z.enum(["research", "documentation"]);
 export type MessageMode = z.infer<typeof MessageMode>;
 
+/**
+ * Plan mode (`plan-mode.ts`): `draft` plans without changing anything and
+ * asks what it needs; `run` carries out the thread's newest proposed plan.
+ */
+export const PlanStage = z.enum(["draft", "run"]);
+export type PlanStage = z.infer<typeof PlanStage>;
+
 const AgentSessionMessage = z.object({
   type: z.literal("agent.session_message"),
   fromHash: z.string().nullable().optional(),
@@ -261,6 +268,8 @@ const UserMessage = z.object({
    * messages asked for research. Absent on an ordinary message.
    */
   mode: MessageMode.optional(),
+  /** Plan mode's stage, recorded for the same reason as `mode`. */
+  plan: PlanStage.optional(),
 });
 
 /**
@@ -371,6 +380,7 @@ const ContextInjected = z.object({
     "research",
     "documentation",
     "omp_bridge",
+    "knowledge",
   ]),
   content: z.string(),
   tokens: z.number().int().nonnegative().optional(),
@@ -480,6 +490,8 @@ const ThreadHarnessSwitched = z.object({
   toProfileId: z.string().uuid().nullable().optional(),
   /** The commit the work so far was saved in before the switch; absent without a worktree or a change. */
   checkpointSha: z.string().optional(),
+  /** The server's own (an automatic switch, or a quiet context handover): not a row in the chat when `reason` is `context`. */
+  auto: z.boolean().optional(),
 });
 
 const ThreadHarnessSwitchFailed = z.object({

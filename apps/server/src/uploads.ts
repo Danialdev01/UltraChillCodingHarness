@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { constants, type ReadStream } from "node:fs";
 import {
   access,
+  chmod,
   copyFile,
+  link,
+  lstat,
   mkdir,
   open,
   readdir,
@@ -11,17 +14,21 @@ import {
   rm,
   stat,
   unlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import {
   UnknownUploadError,
   UploadConflictError,
   type AttachedUpload,
   type StagedUpload,
+  type UploadExtract,
   type UploadStaging,
 } from "@ucch/agent";
 import { assertRealpathInside } from "@ucch/agent";
+import { ATTACHMENTS_DIR, attachmentPaths } from "@ucch/protocol/plain";
+import { estimateTokens, extractDocument, type ExtractOptions } from "./extract.js";
 import { PathError, type WorkspaceFiles } from "./files.js";
 
 export interface UploadChange {
@@ -80,12 +87,22 @@ export class UploadStore implements UploadStaging {
     return timer;
   }
 
-  /** Accepts bytes into staging and returns what the composer should show. */
+  /**
+   * Accepts bytes into staging and returns what the composer should show.
+   *
+   * Documents are read as they arrive (`extract.ts`): the text is kept beside
+   * the bytes as `{id}.txt` and summarised on the record, so the composer can
+   * inline it and the turn can write it into the workspace. A scanned PDF's
+   * first pages are staged as pictures of their own, for a model that can
+   * see. Reading never fails the upload -- a file it cannot read is still a
+   * file, offered by id and by path.
+   */
   async stage(
     projectId: string,
     name: string,
     contentType: string,
     bytes: Buffer,
+    options: { sourceUrl?: string; extract?: ExtractOptions | false } = {},
   ): Promise<StagedUpload> {
     if (bytes.length === 0) throw new PathError("the file is empty");
     if (bytes.length > this.limits.maxBytes) {
@@ -107,11 +124,139 @@ export class UploadStore implements UploadStaging {
       size: bytes.length,
       contentType: contentType.slice(0, 255) || "application/octet-stream",
       stagedAt: new Date().toISOString(),
+      ...(options.sourceUrl ? { sourceUrl: options.sourceUrl.slice(0, 2048) } : {}),
     };
 
     await writeFile(resolve(directory, upload.id), bytes);
+    if (options.extract !== false) {
+      const extract = await this.#extract(projectId, directory, upload, bytes, options.extract ?? {});
+      if (extract) upload.extract = extract;
+    }
     await writeFile(resolve(directory, `${upload.id}.json`), JSON.stringify(upload), "utf8");
     return upload;
+  }
+
+  async #extract(
+    projectId: string,
+    directory: string,
+    upload: StagedUpload,
+    bytes: Buffer,
+    options: ExtractOptions,
+  ): Promise<UploadExtract | null> {
+    const found = await extractDocument(upload.name, upload.contentType, bytes, options).catch(() => null);
+    if (!found) return null;
+    if (found.text) await writeFile(resolve(directory, `${upload.id}.txt`), found.text, "utf8");
+
+    const pageImages: NonNullable<UploadExtract["pageImages"]> = [];
+    const stem = upload.name.replace(/\.[^.]+$/, "");
+    for (const [i, png] of (found.pageImages ?? []).entries()) {
+      const page = await this.stage(projectId, `${stem}-page-${i + 1}.png`, "image/png", png, { extract: false });
+      pageImages.push({ id: page.id, name: page.name, type: page.contentType });
+    }
+
+    return {
+      kind: found.kind,
+      summary: found.summary,
+      chars: found.text.length,
+      tokens: estimateTokens(found.text),
+      truncated: found.truncated,
+      ...(found.warning ? { warning: found.warning } : {}),
+      ...(pageImages.length ? { pageImages } : {}),
+    };
+  }
+
+  /**
+   * A picture's description by a vision model (`describe-image.ts`), kept
+   * beside it so each one is described once however many turns read it.
+   */
+  async readDescription(projectId: string, uploadId: string): Promise<string | null> {
+    if (!isId(uploadId)) return null;
+    return readFile(resolve(this.#directory(projectId), `${uploadId}.description.txt`), "utf8").catch(() => null);
+  }
+
+  async saveDescription(projectId: string, uploadId: string, text: string): Promise<void> {
+    if (!isId(uploadId) || !(await this.find(projectId, uploadId))) return;
+    await writeFile(resolve(this.#directory(projectId), `${uploadId}.description.txt`), text, "utf8");
+  }
+
+  /**
+   * The text read out of a staged file, or null when there is none.
+   */
+  async readText(projectId: string, uploadId: string): Promise<string | null> {
+    if (!isId(uploadId)) return null;
+    try {
+      return await readFile(resolve(this.#directory(projectId), `${uploadId}.txt`), "utf8");
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Copies a staged file -- and the text read out of it -- into a workspace's
+   * `.attachments/` folder, where every harness can read it with its own
+   * tools: the native loop's `read_file`, Claude Code's `Read`, Codex's
+   * shell, OMP's `read`. The upload stays staged, so `attach_upload` can still
+   * place it in the project proper.
+   *
+   * The folder ignores itself (a `.gitignore` of `*`), so nothing in it
+   * reaches `git status`. A repository that ships its own `.attachments` as a
+   * symlink or a file is left alone: following it could write outside the
+   * workspace. Copies older than a week are pruned on the way, so the folder
+   * does not grow without end.
+   *
+   * Returns the workspace-relative paths written, or null when the upload is
+   * gone or the folder is not the harness's to write.
+   */
+  async materialize(
+    projectId: string,
+    uploadId: string,
+    root: string,
+  ): Promise<{ file: string; text: string | null } | null> {
+    const upload = await this.find(projectId, uploadId);
+    if (!upload) return null;
+
+    const folder = join(root, ATTACHMENTS_DIR);
+    const existing = await lstat(folder).catch(() => null);
+    if (existing && !existing.isDirectory()) return null;
+    if (!existing) {
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, ".gitignore"), "# Attachments copied in for the agent to read.\n*\n", "utf8");
+    } else {
+      await pruneOld(folder);
+    }
+    await assertRealpathInside(root, folder, () => new PathError("path escapes the workspace"));
+
+    const paths = attachmentPaths(upload.id, upload.name);
+    const file = join(root, paths.file);
+    const text = join(root, paths.text);
+    await mkdir(dirname(file), { recursive: true });
+    await assertRealpathInside(root, dirname(file), () => new PathError("path escapes the workspace"));
+
+    // A checkout can hold a symlink at the very path a copy goes to, and
+    // `copyFile` would follow it out of the workspace. Never write through one.
+    for (const path of [file, text]) {
+      if ((await lstat(path).catch(() => null))?.isSymbolicLink()) await unlink(path);
+    }
+
+    const directory = this.#directory(projectId);
+    const placed = await stat(file).catch(() => null);
+    if (!placed || placed.size !== upload.size) await placeShared(resolve(directory, upload.id), file);
+    else await utimes(dirname(file), new Date(), new Date()).catch(() => {});
+
+    // A plain-text file is its own text; a second copy would only be noise.
+    let wroteText = false;
+    if (upload.extract && upload.extract.chars > 0 && upload.extract.kind !== "text") {
+      const hasText = await stat(text).catch(() => null);
+      if (!hasText) {
+        try {
+          await placeShared(resolve(directory, `${upload.id}.txt`), text);
+          wroteText = true;
+        } catch {
+          // No sidecar is no text: the original is still there to read.
+        }
+      } else wroteText = true;
+    }
+    return { file: paths.file, text: wroteText ? paths.text : null };
   }
 
   async list(projectId: string): Promise<StagedUpload[]> {
@@ -190,6 +335,8 @@ export class UploadStore implements UploadStaging {
       await unlink(source);
     }
     await rm(resolve(directory, `${upload.id}.json`), { force: true });
+    await rm(resolve(directory, `${upload.id}.txt`), { force: true });
+    await rm(resolve(directory, `${upload.id}.description.txt`), { force: true });
 
     const relative = destination.slice(this.files.root(projectId).length + 1);
     this.onChange?.({ projectId, uploadId, change: "attached", path: relative });
@@ -269,6 +416,8 @@ export class UploadStore implements UploadStaging {
 
     await rm(resolve(directory, uploadId), { force: true });
     await rm(resolve(directory, `${uploadId}.json`), { force: true });
+    await rm(resolve(directory, `${uploadId}.txt`), { force: true });
+    await rm(resolve(directory, `${uploadId}.description.txt`), { force: true });
     this.onChange?.({ projectId, uploadId, change: "deleted" });
     return true;
   }
@@ -303,6 +452,8 @@ export class UploadStore implements UploadStaging {
         if (now - Date.parse(upload.stagedAt) < this.limits.ttlMs) continue;
         await rm(resolve(directory, upload.id), { force: true });
         await rm(resolve(directory, `${upload.id}.json`), { force: true });
+        await rm(resolve(directory, `${upload.id}.txt`), { force: true });
+        await rm(resolve(directory, `${upload.id}.description.txt`), { force: true });
         removed++;
       }
     }
@@ -397,6 +548,40 @@ export function safeName(name: string): string {
 /** UUIDs only: ids come from `randomUUID`, and anything else is a probe. */
 function isId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+/** How long a copy in `.attachments/` is kept after it was last placed. */
+const ATTACHMENT_COPY_TTL_MS = 7 * 24 * 3600_000;
+
+/** Drops `.attachments/<id>/` folders nobody has placed for a week. */
+async function pruneOld(folder: string, now = Date.now()): Promise<void> {
+  const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[0-9a-f]{8}$/.test(entry.name)) continue;
+    const info = await stat(join(folder, entry.name)).catch(() => null);
+    if (info && now - info.mtimeMs > ATTACHMENT_COPY_TTL_MS) {
+      await rm(join(folder, entry.name), { recursive: true, force: true });
+    }
+  }
+}
+
+/**
+ * Puts a staged file in a tree without a second copy of its bytes: a hard
+ * link to the staged one, made read-only so a tool cannot rewrite the
+ * original through it (one that deletes and recreates the file only breaks
+ * the link). Across filesystems, a clone where the filesystem has them, else
+ * a copy.
+ */
+async function placeShared(source: string, destination: string): Promise<void> {
+  await rm(destination, { force: true });
+  try {
+    await link(source, destination);
+    await chmod(destination, 0o444);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EXDEV" && code !== "EPERM" && code !== "EMLINK") throw error;
+    await copyFile(source, destination, constants.COPYFILE_FICLONE);
+  }
 }
 
 async function exists(path: string): Promise<boolean> {
