@@ -229,12 +229,14 @@ export function useGitState(project: Project): GitState {
         return result
       } catch (caught) {
         setLocalError(caught instanceof Error ? caught.message : `Could not ${label.toLowerCase()}.`)
+        // A failed operation can still fetch refs or leave a merge in progress.
+        await refresh()
         return null
       } finally {
         setBusy(null)
       }
     },
-    [queryClient, projectHash, sessionHash],
+    [queryClient, projectHash, sessionHash, refresh],
   )
 
   const loadMoreHistory = React.useCallback(async () => {

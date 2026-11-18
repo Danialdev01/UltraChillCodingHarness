@@ -15,7 +15,6 @@
 ## UI UX
 
 - create view for proper git tree managment view. I want the ability for the person to review changes, comment changes, merge changes, review pr and more.
-- create view for looking at the changes and commands ran like the claude code cli. (debugger and productivity look mode)
 
 ## Important
 

@@ -65,10 +65,11 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
   // rather than the workspace, which unmounts behind the chat, so coming
   // back lands where you left it.
   const [doc, setDoc] = React.useState<DocLocation>({ noteId: null, view: "notes" })
+  const [gitRepair, setGitRepair] = React.useState<{ token: number; text: string } | null>(null)
   return (
     <>
       <ChatPortal>
-        <ProjectChat project={project} session={session} />
+        <ProjectChat project={project} session={session} gitRepair={gitRepair} />
       </ChatPortal>
       {!docked && (
         // Relative, for the details card that floats at its top right.
@@ -96,7 +97,10 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
 
       {/* Mounted only while shown, like the editor: its socket and poll have
           no reason to run behind the chat. */}
-      {mode === "git" && <GitView project={project} session={session ?? null} />}
+      {mode === "git" && <GitView project={project} session={session ?? null} onFixWithAI={(text) => {
+        setGitRepair((previous) => ({ token: (previous?.token ?? 0) + 1, text }))
+        setMode("chat")
+      }} />}
     </>
   )
 }

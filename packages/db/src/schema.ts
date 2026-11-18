@@ -255,6 +255,8 @@ export const projects = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    /** User activity keeps a session workspace project even before its first turn. */
+    sessionUsedAt: timestamp("session_used_at", { withTimezone: true }),
     /**
      * Null for a project started empty rather than cloned. Nullable because
      * "no remote yet" is a real state: the working tree is a git repository
@@ -341,6 +343,8 @@ export const threads = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     title: text("title").notNull().default("Untitled"),
+    /** Typing, editing or opening a terminal makes this session worth keeping. */
+    usedAt: timestamp("used_at", { withTimezone: true }),
     /** idle | queued | running | cancelling | error */
     agentMessagesPaused: boolean("agent_messages_paused").notNull().default(false),
     status: text("status").notNull().default("idle"),

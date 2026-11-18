@@ -197,7 +197,7 @@ type ComposerMenuState = { kind: "mention"; mention: Mention } | { kind: "slash"
  * is the deltas that have arrived so far. Reloading mid-turn therefore shows
  * the same thread, because there is no local state to lose.
  */
-export function ProjectChat({ project, session }: { project: Project; session?: ProjectSession }) {
+export function ProjectChat({ project, session, gitRepair }: { project: Project; session?: ProjectSession; gitRepair?: { token: number; text: string } | null }) {
   const sessionId = session?.id ?? null;
   const sessionProvider = session?.provider ?? null;
   const transitionRouter = useTransitionRouter();
@@ -270,6 +270,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     return callback;
   }, []);
   const draftRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!gitRepair) return;
+    setDraft((current) => current.trim() ? `${current}\n\n${gitRepair.text}` : gitRepair.text);
+    setReference(null);
+    const frame = requestAnimationFrame(() => draftRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [gitRepair]);
   const fileRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -768,7 +775,11 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   const scrollToEnd = useCallback((behavior: ScrollBehavior = "smooth") => {
     followRef.current = true;
     setFollowing(true);
-    endRef.current?.scrollIntoView({ behavior });
+    // The list itself, never `scrollIntoView`: that scrolls every scrollable
+    // ancestor too -- the page box in the app shell among them -- and lifts
+    // the composer off the floor of the screen.
+    const el = listRef.current;
+    el?.scrollTo({ top: el.scrollHeight, behavior });
   }, []);
 
   useLayoutEffect(() => {
@@ -792,7 +803,13 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
 
   /** Scrolls a message to the top of the view, for the prompt arrows. */
   const jumpTo = useCallback((index: number) => {
-    blockRefs.current.get(index)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Measured against the list and scrolled there, for the same reason as
+    // `scrollToEnd`: `scrollIntoView` would move the page box as well.
+    const list = listRef.current;
+    const block = blockRefs.current.get(index);
+    if (!list || !block) return;
+    const top = block.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    list.scrollTo({ top: top - Number.parseFloat(getComputedStyle(list).paddingTop), behavior: "smooth" });
   }, []);
 
   /**
@@ -998,13 +1015,15 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
   const leftEmpty = useRef(true);
   leftEmpty.current = messages.length === 0 && draft.trim() === "" && attachments.length === 0;
   const sessionHash = session?.hash ?? null;
+  const standaloneSession = project.workspaceKind === "session";
   useEffect(() => {
-    if (!sessionHash) return;
-    keepSession(sessionHash);
+    if (!sessionHash && !standaloneSession) return;
+    const key = sessionHash ?? project.hash;
+    keepSession(key);
     return () => {
       if (leftEmpty.current) removeWhenLeft(project.hash, sessionHash);
     };
-  }, [project.hash, sessionHash]);
+  }, [project.hash, sessionHash, standaloneSession]);
 
   // Settled in another window, or from the sidebar: this session is gone,
   // so go to the project, which opens where it was left off.
@@ -1255,7 +1274,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     if (codeChat.initial) setDraft(codeChat.initial);
     // After the sidebar has had a frame to slide in and the dock to take
     // the element: focus on a node that is mid-move does not stick.
-    const id = requestAnimationFrame(() => draftRef.current?.focus());
+    const id = requestAnimationFrame(() => draftRef.current?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [codeChat?.token]);
@@ -1322,7 +1341,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
       enabled: widgetsEnabled,
       insert: (text) => {
         setDraft(text);
-        requestAnimationFrame(() => draftRef.current?.focus());
+        requestAnimationFrame(() => draftRef.current?.focus({ preventScroll: true }));
       },
       send: (text) => {
         sendAfterDraft.current = true;
@@ -1790,6 +1809,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
     // this box rather than against a screen it may only have a third of.
     <div
       ref={panelRef}
+      data-chat-panel=""
       className="@container relative flex min-h-0 flex-1 flex-col"
       onDragEnter={(e) => {
         if (!carriesFiles(e)) return;
@@ -1975,7 +1995,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
         onSave={(file) => {
           if (editing?.replaceId) void replaceAttachment(editing.replaceId, editing.source.uploadId, file);
           else void addFiles([file]);
-          requestAnimationFrame(() => draftRef.current?.focus());
+          requestAnimationFrame(() => draftRef.current?.focus({ preventScroll: true }));
         }}
       />
 
@@ -2492,7 +2512,7 @@ export function ProjectChat({ project, session }: { project: Project; session?: 
                   disabled={!threadId || sending}
                   onClick={() => {
                     setDraft(prompt);
-                    requestAnimationFrame(() => draftRef.current?.focus());
+                    requestAnimationFrame(() => draftRef.current?.focus({ preventScroll: true }));
                   }}
                   className="text-muted-foreground hover:text-foreground hover:bg-muted bg-background flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors disabled:opacity-50"
                 >

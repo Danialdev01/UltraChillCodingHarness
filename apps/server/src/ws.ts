@@ -126,7 +126,8 @@ export interface GatewayOptions {
   /** This server's build, told to every socket in `ready` so an outdated tab can know it is. */
   buildId?: string;
   /** After a command from a socket was handled, for the activity log. */
-  onDispatched?: (principal: Principal, clientId: string, command: Command, result: EngineResult) => void;
+  onDispatched?: (principal: Principal, clientId: string, command: Command, result: EngineResult) => void | Promise<void>;
+  onComposerActivity?: (threadId: string) => Promise<void>;
 }
 
 /**
@@ -287,7 +288,7 @@ export class WebSocketGateway {
           this.#composerChanged(frame.command.threadId, this.options.composer.clear(frame.command.threadId));
         }
         try {
-          this.options.onDispatched?.(conn.principal, conn.clientId, frame.command, result);
+          await this.options.onDispatched?.(conn.principal, conn.clientId, frame.command, result);
         } catch {
           // The log is a record of what happened, never a reason it did not.
         }
@@ -459,6 +460,9 @@ export class WebSocketGateway {
             message: "The prompt was changed in another window.",
           });
           return;
+        }
+        if (frame.draft.text || frame.draft.attachments.length || frame.draft.reference) {
+          await this.options.onComposerActivity?.(frame.threadId);
         }
         this.#composerChanged(frame.threadId, result.state, projectId);
         send(conn.socket, { kind: "ack", id: frame.id, events: [] });

@@ -115,7 +115,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
                   <div
                     id={MAIN_CONTENT_ID}
                     tabIndex={-1}
-                    className="ucch-page flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto [view-transition-name:page] focus-visible:outline-none"
+                    className="ucch-page flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto has-[[data-chat-panel]]:overflow-hidden [view-transition-name:page] focus-visible:outline-none"
                   >
                     {children}
                   </div>

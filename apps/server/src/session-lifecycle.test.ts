@@ -24,6 +24,8 @@ let lifecycle: SessionLifecycle;
 let sharers: { count: number; running: boolean };
 let settings: ProjectSettleSettings;
 let marked: SettleOutcome[];
+let activity: boolean;
+let refuseDelete: boolean;
 
 const sh = (argv: string[], cwd = repo) => runGit([...IDENTITY, ...argv], cwd, 20_000);
 const exists = (path: string) => stat(path).then(() => true, () => false);
@@ -63,6 +65,8 @@ beforeEach(async () => {
   await sh(["worktree", "add", "-q", "-b", `ucch/${HASH}`, tree, "main"]);
 
   turns = 0;
+  activity = false;
+  refuseDelete = false;
   sharers = { count: 0, running: false };
   deleted = [];
   announced = [];
@@ -74,8 +78,12 @@ beforeEach(async () => {
     projectSettings: async () => settings,
     markSettled: async (_session, outcome) => void marked.push(outcome),
     turnCount: async () => turns,
+    hasActivity: async () => activity,
     sharers: async () => sharers,
-    deleteThread: async (id) => void deleted.push(id),
+    deleteThread: async (id, onlyIfEmpty) => {
+      if (onlyIfEmpty && refuseDelete) return false;
+      deleted.push(id);
+    },
     credentials: async () => ({ token: null, author: AUTHOR }),
     announce: async (_projectId, event) => void announced.push(event),
   });
@@ -113,6 +121,34 @@ describe("removeIfEmpty", () => {
 
   it("keeps a running session", async () => {
     expect(await lifecycle.removeIfEmpty(session({ status: "running" }))).toBe(false);
+  });
+
+  it("keeps a session used for typing, file editing or a terminal even without turns", async () => {
+    expect(await lifecycle.removeIfEmpty(session({ usedAt: new Date() }))).toBe(false);
+    activity = true;
+    expect(await lifecycle.removeIfEmpty(session())).toBe(false);
+    expect(deleted).toEqual([]);
+    expect(await exists(tree)).toBe(true);
+  });
+
+  it("keeps a session whose worktree has not finished preparing", async () => {
+    expect(await lifecycle.removeIfEmpty(session({ worktreeState: "pending" }))).toBe(false);
+    expect(deleted).toEqual([]);
+  });
+
+  it("keeps a session when a sharer is running", async () => {
+    sharers = { count: 1, running: true };
+    expect(await lifecycle.removeIfEmpty(session())).toBe(false);
+    expect(deleted).toEqual([]);
+  });
+
+  it("leaves files and branch intact when the final database activity check refuses deletion", async () => {
+    refuseDelete = true;
+    expect(await lifecycle.removeIfEmpty(session())).toBe(false);
+    expect(deleted).toEqual([]);
+    expect(announced).toEqual([]);
+    expect(await exists(tree)).toBe(true);
+    expect(await sh(["branch", "--list", `ucch/${HASH}`])).toContain(`ucch/${HASH}`);
   });
 
   it("removes an empty session in the main checkout without touching it", async () => {

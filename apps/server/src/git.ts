@@ -379,13 +379,23 @@ export class GitService {
       await this.#widenRefspec(cwd);
       const before = await this.#head(cwd);
       // A pull that has to merge writes a commit, and a commit needs a name.
-      const out = await this.#git(cwd, [...identity(author), "pull", "--no-rebase", "origin"], {
-        token,
-        timeoutMs: REMOTE_TIMEOUT_MS,
-        okExitCodes: [0, 1],
-      });
-      const conflicts = /CONFLICT|Automatic merge failed/i.test(out) || (await this.#conflicted(cwd));
-      const changed = await this.#changedBetween(cwd, before, await this.#head(cwd));
+      try {
+        await this.#git(cwd, [...identity(author), "pull", "--no-rebase", "--ff", "--no-edit", "origin"], {
+          token,
+          timeoutMs: REMOTE_TIMEOUT_MS,
+        });
+      } catch (error) {
+        // Exit 1 also means a dirty tree, a refused fetch, etc. Only an
+        // actual unmerged index is a conflict the resolver can handle.
+        if (!(error instanceof GitError) || error.exitCode !== 1 || !(await this.#conflicted(cwd))) throw error;
+      }
+      const conflicts = await this.#conflicted(cwd);
+      // During a conflicted merge HEAD stays put, but files have changed.
+      const changed = conflicts
+        ? parseNameStatusZ(await this.#git(cwd, ["diff", "HEAD", "--name-status", "-z", "--"]))
+            .slice(0, MAX_CHANGED_PATHS)
+            .map((f): GitChangedPath => ({ path: f.path, change: f.status === "D" ? "deleted" : f.status === "A" ? "added" : "modified" }))
+        : await this.#changedBetween(cwd, before, await this.#head(cwd));
       return { conflicts, changed };
     });
   }

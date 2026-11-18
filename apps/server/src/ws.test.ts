@@ -6,7 +6,7 @@ import type { Command, Scope, ServerFrame } from "@ucch/protocol";
 import { EventBus } from "./bus.js";
 import { terminalFrame, WebSocketGateway } from "./ws.js";
 import type { AuthService, Principal } from "./auth.js";
-import type { ComposerStore } from "./composer.js";
+import { ComposerStore } from "./composer.js";
 import type { EventStore, RawStoredEvent } from "./eventstore.js";
 import type { OrchestrationEngine } from "./engine.js";
 import { PresenceStore } from "./presence.js";
@@ -41,6 +41,7 @@ let history: RawStoredEvent[];
 let duringRead: () => void;
 /** Turns ahead of THREAD's waiting one, as the scheduler would say. */
 let queued: number | null;
+let composerActivity: string[];
 const sockets: WebSocket[] = [];
 
 beforeEach(async () => {
@@ -52,6 +53,7 @@ beforeEach(async () => {
   history = [];
   duringRead = () => {};
   queued = null;
+  composerActivity = [];
   bus = new EventBus();
   const auth = {
     // The ticket is the user id, with the scopes after a colon.
@@ -104,7 +106,8 @@ beforeEach(async () => {
     onProjectWatch: (projectId, delta, tree) => watches.push(`${delta > 0 ? "+" : "-"}${projectId}${tree ? `/${tree}` : ""}`),
     buildId: "build-7",
     queuedAhead: (threadId) => (threadId === THREAD ? queued : null),
-    composer: { get: () => ({ rev: 0, draft: { text: "" }, origin: null }) } as unknown as ComposerStore,
+    composer: new ComposerStore(),
+    onComposerActivity: async (threadId) => { composerActivity.push(threadId); },
     presence: new PresenceStore(),
     terminals: {
       input: (terminalId, userId, data) => {
@@ -418,5 +421,32 @@ describe("thread replay", () => {
     const kinds = frames.map((f) => (f.kind === "push" ? f.event.type : f.kind));
     expect(kinds).toEqual(["replay", "composer.changed", "agent.queued", "ack"]);
     expect(frames[2]).toMatchObject({ seq: null, projectId: PROJECT, event: { type: "agent.queued", threadId: THREAD, ahead: 3 } });
+  });
+});
+
+
+describe("composer activity protects unused sessions", () => {
+  it("records typing before acknowledging the draft", async () => {
+    const alice = await connect();
+    alice.send({ kind: "composer", id: "draft", threadId: THREAD, baseRev: 0,
+      draft: { text: "Unsent work", attachments: [], reference: null } });
+    expect(await alice.acked("draft")).toContainEqual(expect.objectContaining({ kind: "ack", id: "draft" }));
+    expect(composerActivity).toEqual([THREAD]);
+  });
+
+  it("does not count untouched composer defaults as activity", async () => {
+    const alice = await connect();
+    alice.send({ kind: "composer", id: "draft", threadId: THREAD, baseRev: 0,
+      draft: { text: "", attachments: [], reference: null } });
+    await alice.acked("draft");
+    expect(composerActivity).toEqual([]);
+  });
+
+  it("does not mark a thread the caller cannot open", async () => {
+    const alice = await connect();
+    alice.send({ kind: "composer", id: "draft", threadId: "77777777-7777-4777-8777-777777777777", baseRev: 0,
+      draft: { text: "Work", attachments: [], reference: null } });
+    expect(await alice.acked("draft")).toContainEqual(expect.objectContaining({ kind: "error", code: "forbidden" }));
+    expect(composerActivity).toEqual([]);
   });
 });

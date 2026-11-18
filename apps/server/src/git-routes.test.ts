@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitCache } from "./git-cache.js";
-import { runGit } from "./git-exec.js";
+import { GitError, runGit } from "./git-exec.js";
 import { registerGitRoutes } from "./git-routes.js";
 import { GitService } from "./git.js";
 import type { ProjectSummary } from "./workspaces.js";
@@ -44,6 +44,17 @@ afterEach(async () => {
 });
 
 describe("git reads through the shared cache", () => {
+  it("returns a blocked pull's error and invalidates cached refs even on failure", async () => {
+    await app.inject({ method: "GET", url: "/api/projects/h/git/status" });
+    const status = vi.spyOn(git, "status");
+    vi.spyOn(git, "pull").mockRejectedValue(new GitError(["pull"], 1, "Local changes would be overwritten by merge"));
+    const response = await app.inject({ method: "POST", url: "/api/projects/h/git/pull", payload: {} });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toContain("would be overwritten");
+    await app.inject({ method: "GET", url: "/api/projects/h/git/status" });
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
   it("answers a viewer with the current version 304, without running git", async () => {
     const status = vi.spyOn(git, "status");
     const first = await app.inject({ method: "GET", url: "/api/projects/h/git/status" });

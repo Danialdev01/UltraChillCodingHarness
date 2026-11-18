@@ -36,6 +36,7 @@ import { relativeTime } from "@/lib/stats-format"
 import { targetOf } from "@/lib/project-target"
 import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
+import { gitRepairPrompt } from "@/lib/git-repair"
 import { usePresenceLocation } from "@/lib/realtime"
 
 import { ChangesList, StatusBadge } from "./changes-list"
@@ -65,9 +66,11 @@ import { useReviews } from "./use-reviews"
 export function GitView({
   project,
   session,
+  onFixWithAI,
 }: {
   project: Project
   session?: { id: string; baseBranch: string | null } | null
+  onFixWithAI?(prompt: string): void
 }) {
   usePresenceLocation(project.id, "git")
   const git = useGitState(project)
@@ -118,7 +121,14 @@ export function GitView({
         onCheckout={(branch, remote) => void git.mutate("Switch branch", () => gitCheckout(hash, branch, remote))}
         onCreateBranch={(name) => void git.mutate("Create branch", () => gitCreateBranch(hash, name))}
         onFetch={(unshallow) => void git.mutate(unshallow ? "Fetch full history" : "Fetch", () => gitFetch(hash, unshallow))}
-        onPull={() => void git.mutate("Pull", () => gitPull(hash))}
+        onPull={async () => {
+          const result = await git.mutate("Pull", () => gitPull(hash))
+          if (result?.conflicts) {
+            setTab("changes")
+            const file = result.status.files.find((file) => file.conflicted)
+            if (file) git.select({ kind: "change", path: file.path, scope: scopeFor(file) })
+          }
+        }}
         onPush={() => void git.mutate("Push", () => gitPush(hash))}
         onAddRemote={() => {
           git.clearError()
@@ -140,11 +150,19 @@ export function GitView({
         />
       )}
       {git.error && !connecting && (
-        <div className="bg-danger-soft text-destructive flex items-start gap-2 border-b px-3 py-2 text-xs">
+        <div role="alert" className="bg-danger-soft text-destructive flex items-start gap-2 border-b px-3 py-2 text-xs">
           <p className="min-w-0 flex-1 break-words whitespace-pre-wrap">{git.error}</p>
           <button type="button" onClick={git.clearError} aria-label="Dismiss" className="shrink-0 rounded p-0.5 hover:bg-danger-soft">
             <XIcon className="size-3.5" />
           </button>
+        </div>
+      )}
+      {onFixWithAI && (git.error || unresolved > 0 || merging) && !connecting && (
+        <div className="flex items-center gap-3 border-b px-3 py-2 text-xs">
+          <p className="text-muted-foreground min-w-0 flex-1">Open this session's chat to choose an AI harness and model, then send the Git issue for repair.</p>
+          <Button variant="outline" size="sm" disabled={git.busy !== null} onClick={() => onFixWithAI(gitRepairPrompt(status, git.error))}>
+            Fix with AI
+          </Button>
         </div>
       )}
       {reviews.loaded && (

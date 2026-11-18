@@ -14,6 +14,8 @@ describe("cacheEffect", () => {
     expect(effect.invalidate.map(prefixOf)).toContainEqual(["bootstrap"])
     // A rename: the open project page shows the new name.
     expect(effect.invalidate).toContainEqual(["project"])
+    // Removing a session workspace's project also removes its sidebar sessions.
+    expect(effect.invalidate).toContainEqual(["sessions"])
   })
 
   it("turns settings changes into invalidations, not page renders", () => {

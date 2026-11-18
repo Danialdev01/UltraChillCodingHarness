@@ -329,7 +329,8 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!tree) return reply.code(404).send({ error: "session not found" });
     return attempt(reply, async () => {
       const { token, author } = await remoteCredentials(project);
-      const { conflicts, changed } = await git.pull(tree, token, author);
+      // Even a refused merge may have fetched new remote refs.
+      const { conflicts, changed } = await git.pull(tree, token, author).finally(() => cache.invalidate(project.id));
       await fileEvents(project.id, tree, changed);
       return { conflicts, status: await fresh(project.id, tree) };
     });

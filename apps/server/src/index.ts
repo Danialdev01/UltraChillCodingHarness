@@ -8,8 +8,8 @@ import cookie from "@fastify/cookie";
 import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, inArray, lt, ne, notLike, or, sql } from "drizzle-orm";
-import { accountKeys, createDatabase, notes, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
+import { and, desc, eq, inArray, isNull, lt, ne, notLike, or, sql } from "drizzle-orm";
+import { accountKeys, createDatabase, events as dbEvents, notes, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
 import { HeavyJobGate } from "@ucch/agent";
 import {
   AgentPermissionMode,
@@ -39,7 +39,7 @@ import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.j
 import { WorktreeReactor } from "./worktrees.js";
 import { ProjectGit, SettleRefusedError } from "./project-git.js";
 import { projectDeletionCheck } from "./project-deletion.js";
-import { sessionFilesBeyondAgent } from "./session-settle.js";
+import { sessionFilesBeyondAgent, sessionProjectHasWork } from "./session-settle.js";
 import { projectOf, projectRoot, sessionTree, sessionTreesOf, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
 import {
   ConflictError,
@@ -703,8 +703,22 @@ const gateway = new WebSocketGateway(auth, engine, store, bus, {
     const profile = await auth.getProfile(userId);
     return profile ? { name: profile.name ?? profile.login ?? "Someone", avatarUrl: profile.avatarUrl ?? null } : null;
   },
-  onDispatched: (principal, clientId, command, result) => {
+  onComposerActivity: async (threadId) => {
+    const [thread] = await db.update(threads).set({ usedAt: new Date() })
+      .where(and(eq(threads.id, threadId), isNull(threads.usedAt)))
+      .returning({ projectId: threads.projectId });
+    if (thread) {
+      await db.update(projects).set({ sessionUsedAt: new Date() })
+        .where(and(eq(projects.id, thread.projectId), isNull(projects.sessionUsedAt)));
+    }
+  },
+  onDispatched: async (principal, clientId, command, result) => {
     if (!result.ok) return;
+    if (command.type === "terminal.create") {
+      await markSessionUsed(command.projectId, command.sessionHash);
+    } else if (command.type === "file.write") {
+      await markSessionUsed(command.projectId);
+    }
     // A new project lands on its own topic, which nobody watches yet: tell
     // the workspace, whose members' sidebars list it.
     if (command.type === "project.create") {
@@ -2440,6 +2454,18 @@ app.get<{ Querystring: { before?: string; limit?: string; action?: string } }>(
   },
 );
 
+/** Remember user work independently of chat turns, including a terminal that changed no files. */
+async function markSessionUsed(projectId: string, tree?: string): Promise<void> {
+  if (!tree) {
+    await db.update(projects).set({ sessionUsedAt: new Date() })
+      .where(and(eq(projects.id, projectId), isNull(projects.sessionUsedAt)));
+  }
+  await db.update(threads).set({ usedAt: new Date() }).where(and(
+    eq(threads.projectId, projectId), isNull(threads.usedAt),
+    tree ? inTree(tree) : isNull(threads.branch),
+  ));
+}
+
 /**
  * Records the change so every other view of this project hears about it.
  *
@@ -2456,6 +2482,7 @@ async function announceFileChange(
 ): Promise<void> {
   const projectId = projectOf(target);
   const worktreeId = worktreeIdOf(config.WORKSPACE_ROOT, target);
+  await markSessionUsed(projectId, worktreeId ?? undefined);
   await store
     .append({ projectId, threadId: null }, [
       { type: "file.changed", projectId, path, change, ...(origin ? { origin } : {}), ...(worktreeId ? { worktreeId } : {}) },
@@ -2540,6 +2567,11 @@ const sessionLifecycle = new SessionLifecycle({
       )
       .where(eq(threads.id, session.id));
   },
+  hasActivity: async (session) => {
+    const [row] = await db.select({ usedAt: threads.usedAt, status: threads.status }).from(threads).where(eq(threads.id, session.id)).limit(1);
+    const draft = composer.get(session.id).draft;
+    return !row || row.status !== "idle" || !!row.usedAt || presence.list(session.projectId).some((v) => v.location === `thread:${session.id}`) || !!draft.text || draft.attachments.length > 0 || !!draft.reference;
+  },
   turnCount: async (threadId) => {
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
@@ -2565,11 +2597,14 @@ const sessionLifecycle = new SessionLifecycle({
   },
   // The thread's turns go with it, and so does their spend: its project's
   // totals are summed again in the same transaction.
-  deleteThread: async (threadId) => {
+  deleteThread: async (threadId, onlyIfEmpty) => {
     const gone = await db.transaction(async (tx) => {
       const [row] = await tx
         .delete(threads)
-        .where(eq(threads.id, threadId))
+        .where(and(eq(threads.id, threadId), onlyIfEmpty ? and(
+          isNull(threads.usedAt), eq(threads.status, "idle"),
+          sql`not exists (select 1 from ${turns} where ${turns.threadId} = ${threads.id})`,
+        ) : undefined))
         .returning({ projectId: threads.projectId });
       if (row) await recomputeProjectStats(tx, row.projectId);
       return row;
@@ -2580,6 +2615,7 @@ const sessionLifecycle = new SessionLifecycle({
         .forget({ projectId: gone.projectId, threadId })
         .catch((error) => app.log.error({ err: error, threadId }, "could not delete a session's memory"));
     }
+    return !!gone;
   },
   // The same token the push route uses: the owner's, and only for a host it
   // belongs to.
@@ -2602,6 +2638,7 @@ const SESSION_COLUMNS = {
   hash: threads.hash,
   title: threads.title,
   status: threads.status,
+  usedAt: threads.usedAt,
   branch: threads.branch,
   baseBranch: threads.baseBranch,
   worktreeState: threads.worktreeState,
@@ -2678,17 +2715,81 @@ async function purgeExpiredSessionsNow(workspaceId: string): Promise<void> {
   }
 }
 
+/** A session workspace stores each session as a project: remove that container too. */
+async function removeEmptyWorkspaceSession(projectId: string): Promise<boolean> {
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project || project.repoUrl || project.sessionUsedAt || !project.workspaceId) return false;
+  const [workspace] = await db.select({ kind: workspaces.kind }).from(workspaces)
+    .where(eq(workspaces.id, project.workspaceId)).limit(1);
+  if (workspace?.kind !== "session" || presence.list(projectId).length > 0) return false;
+  // Initialization must have completed. Its recorded HEAD is the baseline,
+  // so committed work remains protected even when the checkout is clean.
+  const [cloned] = await db.select({ payload: dbEvents.payload }).from(dbEvents)
+    .where(and(eq(dbEvents.projectId, projectId), eq(dbEvents.type, "project.cloned")))
+    .orderBy(desc(dbEvents.id)).limit(1);
+  if (cloned?.payload.type !== "project.cloned") return false;
+  const sessions = await db.select(SESSION_COLUMNS).from(threads).where(eq(threads.projectId, projectId));
+  for (const session of sessions) {
+    const draft = composer.get(session.id).draft;
+    if (session.branch && session.worktreeState !== "ready") return false;
+    if (session.usedAt || draft.text || draft.attachments.length || draft.reference) return false;
+    if (!SessionLifecycle.isEmpty(await sessionLifecycle.inspect(session))) return false;
+  }
+  if (await sessionProjectHasWork(config.WORKSPACE_ROOT, projectId, cloned.payload.headSha, gitService)) return false;
+  if (presence.list(projectId).length > 0) return false;
+  // Recheck durable activity before deleting. Cascades remove events, turns,
+  // other project data rather than retaining tombstones.
+  const [removed] = await db.delete(projects).where(and(eq(projects.id, projectId), isNull(projects.sessionUsedAt),
+    sql`not exists (select 1 from ${threads} where ${threads.projectId} = ${projectId} and
+      (${threads.usedAt} is not null or ${threads.status} <> 'idle'))`,
+    sql`not exists (select 1 from ${turns} inner join ${threads} on ${threads.id} = ${turns.threadId}
+      where ${threads.projectId} = ${projectId})`,
+  )).returning({ id: projects.id });
+  if (!removed) return false;
+  await removeProjectFiles(projectId);
+  bus.publishToWorkspace(project.workspaceId, { type: "resource.changed", projectId: null, resource: "projects" });
+  void gateway.revalidate({ projectId }).catch((error) => app.log.error({ err: error }, "could not re-check access"));
+  return true;
+}
+
+app.delete<{ Params: { hash: string } }>("/api/projects/:hash/empty-session", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  const [owner] = await db.select({ userId: projects.userId }).from(projects).where(eq(projects.id, project.id)).limit(1);
+  // Creators can abandon their own unused session, including workspace members.
+  if (!can(project.membership, "project.write") ||
+      (owner?.userId !== principal.userId && !can(project.membership, "workspace.manage"))) {
+    return reply.code(403).send({ error: "you cannot remove this session" });
+  }
+  return { removed: await removeEmptyWorkspaceSession(project.id) };
+});
+
 /** How old an empty session has to be before the sweep takes it. */
 const EMPTY_SESSION_AGE_MS = 30 * 60_000;
 
 /**
- * Empty project sessions nobody is looking at, removed. Leaving a session
+ * Empty sessions nobody is looking at, removed in both workspace kinds. Leaving a session
  * removes it at once (the web app asks); this catches the ones left behind
- * by a closed tab. Only project workspaces' threads, never the Tasks
+ * by a closed tab. Session workspaces remove the project container too. Never the Tasks
  * board's, never one with a turn, never one someone has open -- and each is
  * inspected again before it goes, so an edit made meanwhile keeps it.
  */
 async function sweepEmptySessions(): Promise<void> {
+  const emptyProjects = await db.select({ id: projects.id }).from(projects)
+    .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+    .where(and(eq(workspaces.kind, "session"), isNull(projects.sessionUsedAt),
+      sql`not exists (select 1 from ${threads} where ${threads.projectId} = ${projects.id}
+        and (${threads.usedAt} is not null or ${threads.status} <> 'idle'))`,
+      sql`not exists (select 1 from ${turns} inner join ${threads} on ${threads.id} = ${turns.threadId}
+        where ${threads.projectId} = ${projects.id})`,
+      lt(projects.createdAt, new Date(Date.now() - EMPTY_SESSION_AGE_MS))))
+    .limit(200);
+  for (const project of emptyProjects) {
+    await removeEmptyWorkspaceSession(project.id)
+      .catch((error) => app.log.error({ err: error, projectId: project.id }, "could not sweep an empty workspace session"));
+  }
   const candidates: SessionRecord[] = await db
     .select(SESSION_COLUMNS)
     .from(threads)
@@ -2698,6 +2799,8 @@ async function sweepEmptySessions(): Promise<void> {
       and(
         eq(workspaces.kind, "project"),
         eq(threads.status, "idle"),
+        isNull(threads.usedAt),
+        isNull(threads.parentThreadId),
         lt(threads.createdAt, new Date(Date.now() - EMPTY_SESSION_AGE_MS)),
         notLike(threads.title, "Task: %"),
         notLike(threads.title, "Verify: %"),
@@ -4673,7 +4776,6 @@ app.delete<{ Params: { hash: string; sessionHash: string }; Querystring: { ifEmp
     try {
       if (request.query.ifEmpty === "1") {
         const removed = await sessionLifecycle.removeIfEmpty(session);
-        if (removed) await record("Removed an empty session");
         return { removed, pushed: null };
       }
       if (request.query.discard === "1") {

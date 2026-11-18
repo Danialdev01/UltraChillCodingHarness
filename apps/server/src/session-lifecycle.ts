@@ -10,6 +10,7 @@ export interface SessionRecord {
   hash: string;
   title: string;
   status: string;
+  usedAt?: Date | null;
   branch: string | null;
   baseBranch: string | null;
   worktreeState: string | null;
@@ -63,8 +64,10 @@ export interface SessionLifecycleDeps {
    * the hash it names). None when absent.
    */
   sharers?(session: SessionRecord): Promise<TreeSharers>;
+  /** Checks drafts/activity again immediately before automatic removal. */
+  hasActivity?(session: SessionRecord): Promise<boolean>;
   /** Deletes the thread row; its events and turns go with it. */
-  deleteThread(threadId: string): Promise<void>;
+  deleteThread(threadId: string, onlyIfEmpty?: boolean): Promise<void | boolean>;
   /** The token for origin (null when it does not apply) and whose name commits carry. */
   credentials(projectId: string): Promise<{ token: string | null; author: GitAuthor }>;
   /** Tells the project's open views. Never throws. */
@@ -137,10 +140,13 @@ export class SessionLifecycle {
 
   /** Removes the session only if it is empty. Never commits or pushes. */
   async removeIfEmpty(session: SessionRecord): Promise<boolean> {
+    if (session.usedAt || await this.deps.hasActivity?.(session)) return false;
+    // A worktree still being prepared cannot be inspected safely.
+    if (session.branch && session.worktreeState !== "ready") return false;
     const inspection = await this.inspect(session);
-    if (!SessionLifecycle.isEmpty(inspection)) return false;
-    await this.#remove(session, null, inspection.sharers.count > 0);
-    return true;
+    if (!SessionLifecycle.isEmpty(inspection) || inspection.sharers.running) return false;
+    if (await this.deps.hasActivity?.(session)) return false;
+    return this.#remove(session, null, inspection.sharers.count > 0, true);
   }
 
   /**
@@ -232,8 +238,8 @@ export class SessionLifecycle {
    * (logged, harmless) rather than a session pointing at a tree that is gone.
    * A worktree another session still works in is left to it.
    */
-  async #remove(session: SessionRecord, pushedBranch: string | null, shared: boolean): Promise<void> {
-    await this.deps.deleteThread(session.id);
+  async #remove(session: SessionRecord, pushedBranch: string | null, shared: boolean, onlyIfEmpty = false): Promise<boolean> {
+    if (await this.deps.deleteThread(session.id, onlyIfEmpty) === false) return false;
     // A settled session's worktree is gone already.
     if (session.branch && !shared && session.worktreeState !== "settled") {
       const tree = sessionTree(this.deps.workspaceRoot, session.projectId, treeHashOf(session));
@@ -251,5 +257,6 @@ export class SessionLifecycle {
       hash: session.hash,
       pushedBranch,
     });
+    return true;
   }
 }

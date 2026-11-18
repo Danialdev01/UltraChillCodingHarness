@@ -1,6 +1,19 @@
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { projectRoot } from "./trees.js";
+import type { GitService } from "./git.js";
+
+/** Automatic cleanup compares with the exact initialized commit, including README edits. */
+export async function sessionProjectHasWork(
+  workspaceRoot: string,
+  projectId: string,
+  initialHead: string,
+  git: Pick<GitService, "status" | "commitsSince">,
+): Promise<boolean> {
+  const status = await git.status(projectId);
+  if (status.files.length || await git.commitsSince(projectId, initialHead) > 0) return true;
+  return (await sessionFilesBeyondAgent(workspaceRoot, projectId)).count > 0;
+}
 
 /**
  * What a session workspace's session folder holds besides the harness's own

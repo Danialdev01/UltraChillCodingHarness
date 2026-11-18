@@ -130,30 +130,7 @@ export async function fetchSettleCheck(projectHash: string, sessionHash: string)
   }
 }
 
-/**
- * Leaving an empty session removes it -- a moment later, so that the same
- * session mounting again straight away (a re-render keyed the same, React's
- * development double mount) cancels it. The server checks again that it is
- * empty, so a race can only ever keep a session, never lose one.
- */
-const leaving = new Map<string, number>()
-
-export function removeWhenLeft(projectHash: string, sessionHash: string): void {
-  window.clearTimeout(leaving.get(sessionHash))
-  leaving.set(
-    sessionHash,
-    window.setTimeout(() => {
-      leaving.delete(sessionHash)
-      void settleProjectSession(projectHash, sessionHash, { ifEmpty: true }).catch(() => {})
-    }, 1500),
-  )
-}
-
-/** The session is on screen again: it is not being left after all. */
-export function keepSession(sessionHash: string): void {
-  window.clearTimeout(leaving.get(sessionHash))
-  leaving.delete(sessionHash)
-}
+export { keepSession, removeWhenLeft } from "./empty-session-cleanup"
 
 /** What changes a project's session list: one starting or going, its worktree, its turns. */
 const SESSION_EVENTS: ReadonlySet<DomainEvent["type"]> = new Set([

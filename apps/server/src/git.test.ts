@@ -408,6 +408,22 @@ describe("with a remote", () => {
     expect((await git.status(CLONE)).behind).toBe(0);
   });
 
+  it("pulls into the selected session worktree while preserving the project checkout", async () => {
+    const tree = join(root, ".worktrees", CLONE, "session-one");
+    await mkdir(join(tree, ".."), { recursive: true });
+    await sh(["worktree", "add", "-b", "ucch/session-one", tree, "origin/main"], clone);
+    await sh(["branch", "--set-upstream-to=origin/main", "ucch/session-one"], tree);
+    await write("session-update.ts", "from origin\n");
+    await commitAll("upstream update");
+    await sh(["push", "-q", bare, "main"]);
+    const target = { projectId: CLONE, tree };
+    expect((await git.pull(target, null, AUTHOR)).conflicts).toBe(false);
+    expect(await readFile(join(tree, "session-update.ts"), "utf8")).toBe("from origin\n");
+    await expect(stat(join(clone, "session-update.ts"))).rejects.toThrow();
+    expect((await git.status(target)).behind).toBe(0);
+    expect((await git.status(CLONE)).behind).toBe(1);
+  });
+
   it("reports a conflicting pull as conflicts rather than failing", async () => {
     await write("a.ts", "upstream\n");
     await commitAll("upstream");
@@ -416,9 +432,33 @@ describe("with a remote", () => {
     await commitAll("local", clone);
     const result = await git.pull(CLONE, null, AUTHOR);
     expect(result.conflicts).toBe(true);
+    expect(result.changed).toContainEqual({ path: "a.ts", change: "modified" });
     const status = await git.status(CLONE);
     expect(status.mergeInProgress).toBe(true);
     expect(status.files[0]).toMatchObject({ path: "a.ts", conflicted: true });
+  });
+
+  it("surfaces a pull blocked by local edits instead of reporting success", async () => {
+    await write("a.ts", "upstream\n");
+    await commitAll("upstream");
+    await sh(["push", "-q", bare, "main"]);
+    await write("a.ts", "unsaved local work\n", clone);
+    await expect(git.pull(CLONE, null, AUTHOR)).rejects.toThrow(/would be overwritten/);
+    expect(await readFile(join(clone, "a.ts"), "utf8")).toBe("unsaved local work\n");
+    expect((await git.status(CLONE)).mergeInProgress).toBe(false);
+  });
+
+  it("merges diverged branches without an editor even with pull.ff=only configured", async () => {
+    await write("remote.ts", "remote\n");
+    await commitAll("remote");
+    await sh(["push", "-q", bare, "main"]);
+    await write("local.ts", "local\n", clone);
+    await commitAll("local", clone);
+    await sh(["config", "pull.ff", "only"], clone);
+    expect((await git.pull(CLONE, null, AUTHOR)).conflicts).toBe(false);
+    expect(await readFile(join(clone, "remote.ts"), "utf8")).toBe("remote\n");
+    expect(await readFile(join(clone, "local.ts"), "utf8")).toBe("local\n");
+    expect((await git.status(CLONE)).behind).toBe(0);
   });
 
   it("checks out a remote branch as a tracking local one", async () => {
