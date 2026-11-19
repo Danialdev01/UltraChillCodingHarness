@@ -24,7 +24,7 @@ import { useWorkspaceHash } from "@/lib/workspace-context";
 /**
  * One-tap creation for the things you add most often.
  *
- * "New todo" opens the same dialog as a Tasks board, with no project picked:
+ * "New task" opens the same dialog as a Tasks board, with no project picked:
  * the dialog asks which one, and saving lands on that project's board.
  * Unavailable actions are rendered disabled with a tooltip saying so, rather
  * than omitted or wired to a no-op -- a button that looks live and silently
@@ -50,18 +50,18 @@ export function QuickActions({
   const session = useNewSession(workspaceId);
   const [creating, setCreating] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [todo, setTodo] = useState<TaskDialogState>(null);
+  const [taskDialog, setTaskDialog] = useState<TaskDialogState>(null);
   const [saving, setSaving] = useState(false);
   const [newSessionFor, setNewSessionFor] = useState<Project | null>(null);
   const router = useTransitionRouter();
   const ws = useWorkspaceHash();
   const openProjectHash = projectHashFromPath(usePathname());
 
-  async function saveTodo(input: TaskInput, projectHash: string) {
+  async function saveTask(input: TaskInput, projectHash: string) {
     setSaving(true);
     try {
       await createTask(projectHash, input);
-      setTodo(null);
+      setTaskDialog(null);
       router.push(projectPageHref(ws, projectHash, "tasks"));
     } finally {
       setSaving(false);
@@ -73,16 +73,16 @@ export function QuickActions({
       <div className={cn("grid gap-1", sessionWorkspace ? "grid-cols-3" : "grid-cols-4")}>
         <Action
           icon={ListTodoIcon}
-          label="New todo"
-          onClick={() => setTodo({ mode: "create" })}
+          label="New task"
+          onClick={() => setTaskDialog({ mode: "create" })}
           unavailable={
             !canWrite
               ? "Your role in this workspace is read-only"
               : projects.length > 0
                 ? undefined
                 : sessionWorkspace
-                  ? "Start a session to add a todo"
-                  : "Create a project to add a todo"
+                  ? "Start a session to add a task"
+                  : "Create a project to add a task"
           }
         />
         {sessionWorkspace ? (
@@ -137,11 +137,11 @@ export function QuickActions({
         />
       )}
       <TaskDialog
-        state={todo}
+        state={taskDialog}
         projects={projects}
         busy={saving}
-        onClose={() => setTodo(null)}
-        onSave={saveTodo}
+        onClose={() => setTaskDialog(null)}
+        onSave={saveTask}
       />
     </>
   );

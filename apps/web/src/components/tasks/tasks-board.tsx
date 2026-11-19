@@ -214,7 +214,7 @@ export function TasksBoard({ project: seed, projects }: { project: Project; proj
             : "Auto-run: off"}
         </TransitionLink>
         <Button size="sm" onClick={() => setDialog({ mode: "create" })}>
-          <PlusIcon /> New Todo
+          <PlusIcon /> New task
         </Button>
       </div>
 

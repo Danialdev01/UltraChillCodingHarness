@@ -35,6 +35,7 @@ const loaders = {
   deleteProject: () => import("@/components/delete-project-dialog"),
   task: () => import("@/components/tasks/task-dialog"),
   taskDetail: () => import("@/components/tasks/task-detail-dialog"),
+  tasksSheet: () => import("@/components/tasks/tasks-sheet"),
   preview: () => import("@/components/preview-dialog"),
   manageCommands: () => import("@/components/commands/manage-commands-dialog"),
   search: () => import("@/components/search-panel"),
@@ -57,6 +58,7 @@ export const CreateDatabaseDialog = dynamic(() => loaders.createDatabase().then(
 export const RenameSessionDialog = dynamic(() => loaders.renameSession().then((m) => m.RenameSessionDialog), { ssr: false })
 export const DeleteProjectDialog = dynamic(() => loaders.deleteProject().then((m) => m.DeleteProjectDialog), { ssr: false })
 export const TaskDialog = dynamic(() => loaders.task().then((m) => m.TaskDialog), { ssr: false })
+export const TasksSheet = dynamic(() => loaders.tasksSheet().then((m) => m.TasksSheet), { ssr: false })
 export const TaskDetailDialog = dynamic(() => loaders.taskDetail().then((m) => m.TaskDetailDialog), { ssr: false })
 export const PreviewDialog = dynamic(() => loaders.preview().then((m) => m.PreviewDialog), { ssr: false })
 export const ManageCommandsDialog = dynamic(() => loaders.manageCommands().then((m) => m.ManageCommandsDialog), { ssr: false })

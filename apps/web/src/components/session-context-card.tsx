@@ -23,6 +23,7 @@ import {
 import type { GitStatus } from "@ucch/protocol"
 
 import { useFilesPanel } from "@/components/files-panel"
+import { TasksSheet } from "@/components/on-demand"
 import { HarnessIcon } from "@/components/harness-icon"
 import { formatDuration } from "@/lib/chat-messages"
 import { fetchGitStatus } from "@/lib/git-api"
@@ -134,6 +135,8 @@ function CardBody({
 }) {
   const { setMode } = useFilesPanel()
   const ws = useWorkspaceHash()
+  // Null until first opened: the sheet stays unmounted until then.
+  const [tasksOpen, setTasksOpen] = React.useState<boolean | null>(null)
   const read = useGitStatus(project)
   const noRepo = read === "none"
   const status = read === "none" ? null : read
@@ -184,9 +187,15 @@ function CardBody({
           </span>
         </Row>
         {manageable && (
-          <Row icon={SquareKanbanIcon} to={projectPageHref(ws, project.hash, "tasks")} title="The project's task board">
-            <span>Tasks</span>
-          </Row>
+          <>
+            <Row icon={SquareKanbanIcon} onClick={() => setTasksOpen(true)} title="Every task in this workspace">
+              <span>Tasks</span>
+            </Row>
+            {/* Mounted once asked for, so its chunk and fetches wait for the first click. */}
+            {tasksOpen !== null && (
+              <TasksSheet open={tasksOpen} onOpenChange={setTasksOpen} currentProjectHash={project.hash} />
+            )}
+          </>
         )}
         {manageable && (
           <Row icon={HistoryIcon} to={projectPageHref(ws, project.hash, "timeline")} title="The project's timeline">

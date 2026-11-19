@@ -14,6 +14,29 @@ export const STAGE_LABELS: Record<TaskStage, string> = {
   done: "Done",
 }
 
+/**
+ * The four statuses a list of tasks shows, folded from the board's five
+ * stages: Research is where the plan is made, and Verification is still
+ * work under way until it says Done.
+ */
+export type TaskListStatus = "idea" | "planning" | "ongoing" | "done"
+
+export const STATUS_OF: Record<TaskStage, TaskListStatus> = {
+  idea: "idea",
+  research: "planning",
+  ongoing: "ongoing",
+  verification: "ongoing",
+  done: "done",
+}
+
+/** Coloured with the note palette, which carries its own light and dark shades. */
+export const STATUS_STYLE: Record<TaskListStatus, { label: string; className: string }> = {
+  idea: { label: "Idea", className: "bg-(--ucch-note-blue)/15 text-(--ucch-note-blue)" },
+  planning: { label: "Planning", className: "bg-(--ucch-note-orange)/15 text-(--ucch-note-orange)" },
+  ongoing: { label: "Ongoing", className: "bg-(--ucch-note-yellow)/15 text-(--ucch-note-yellow)" },
+  done: { label: "Done", className: "bg-(--ucch-note-green)/15 text-(--ucch-note-green)" },
+}
+
 /** One card on the board: its title, and what the pipeline is doing with it. */
 export function TaskCard({
   task,

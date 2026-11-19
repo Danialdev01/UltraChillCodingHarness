@@ -162,7 +162,7 @@ export function TaskDialog({
       onOpenChange={(open) => !open && onClose()}
       busy={busy}
       icon={editing ? PencilIcon : ListTodoIcon}
-      title={editing ? "Edit todo" : "New todo"}
+      title={editing ? "Edit task" : "New task"}
       description={
         editing
           ? "Change what the AI is working from."
