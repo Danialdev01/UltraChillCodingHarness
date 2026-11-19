@@ -21,6 +21,7 @@ import {
   projectUrl,
   ProviderId,
   readAgentSettings,
+  isSessionBranch,
   ResourceCopy,
   ThreadHash,
   WorkspaceHash,
@@ -1893,7 +1894,7 @@ app.patch<{ Params: { hash: string } }>("/api/projects/:hash", async (request, r
       return reply.code(403).send({ error: "you cannot change this project" });
     }
     if (baseBranch !== undefined) {
-      if (baseBranch.startsWith("ucch/")) {
+      if (isSessionBranch(baseBranch)) {
         return reply.code(400).send({ error: "a session's own branch cannot be the base branch" });
       }
       const where = await projectGit.branchExists(project.id, baseBranch).catch(() => null);

@@ -69,7 +69,7 @@ export function GitView({
   onFixWithAI,
 }: {
   project: Project
-  session?: { id: string; baseBranch: string | null } | null
+  session?: { id: string; baseBranch: string | null; branch?: string | null } | null
   onFixWithAI?(prompt: string): void
 }) {
   usePresenceLocation(project.id, "git")
@@ -138,6 +138,8 @@ export function GitView({
         }}
         projectRepo={git.projectRepo}
         inSession={!!project.sessionHash}
+        sessionBranch={project.sessionHash ? (session?.branch ?? null) : null}
+        defaultBranch={project.defaultBranch ?? null}
         review={{
           running: reviews.running,
           base,

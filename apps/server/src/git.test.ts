@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PathError } from "./files.js";
 import { GitError, runGit } from "./git-exec.js";
+import { SESSION_BRANCH_PREFIX, isReservedBranchName, isSessionBranch, sessionBranch } from "@ucch/protocol";
 import { GitRefError, GitService, parseForEachRef, parseLog, parseNameStatusZ, parseStatusV2 } from "./git.js";
 
 const PROJECT = "44444444-4444-4444-4444-444444444444";
@@ -94,6 +95,43 @@ describe("parseForEachRef", () => {
     expect(list.local[0]).toMatchObject({ upstream: "origin/main", current: true });
     expect(list.local[1]).toMatchObject({ upstream: null, current: false });
     expect(list.remote.map((b) => b.name)).toEqual(["origin/main"]);
+    expect(list.currentIsSession).toBe(false);
+  });
+
+  it("leaves sessions' ucch/* branches out, local and on any remote, but keeps the current one named", () => {
+    const out = [
+      "refs/heads/ucch/4288wdwogh82\0aaa\0\x002025-01-03T00:00:00+00:00\0*",
+      "refs/heads/production\0bbb\0origin/production\x002025-01-02T00:00:00+00:00\0 ",
+      "refs/heads/feature/ucch-ui\0ccc\0\x002025-01-02T00:00:00+00:00\0 ",
+      "refs/remotes/origin/HEAD\0bbb\0\x002025-01-01T00:00:00+00:00\0 ",
+      "refs/remotes/origin/production\0bbb\0\x002025-01-01T00:00:00+00:00\0 ",
+      "refs/remotes/origin/ucch/ksst6fsvyto1\0ddd\0\x002025-01-01T00:00:00+00:00\0 ",
+      "refs/remotes/upstream/ucch/jz7xxeaptrmv\0eee\0\x002025-01-01T00:00:00+00:00\0 ",
+      "refs/remotes/upstream/develop\0fff\0\x002025-01-01T00:00:00+00:00\0 ",
+    ].join("\n");
+    const list = parseForEachRef(out);
+    expect(list.current).toBe("ucch/4288wdwogh82");
+    expect(list.currentIsSession).toBe(true);
+    // `feature/ucch-ui` only has ucch in it; the prefix is `ucch/` at the start.
+    expect(list.local.map((b) => b.name)).toEqual(["production", "feature/ucch-ui"]);
+    expect(list.remote.map((b) => b.name)).toEqual(["origin/production", "upstream/develop"]);
+  });
+});
+
+describe("isSessionBranch", () => {
+  it("knows a session's branch by its prefix, locally and on a remote", () => {
+    expect(SESSION_BRANCH_PREFIX).toBe("ucch/");
+    expect(sessionBranch("abc")).toBe("ucch/abc");
+    expect(isSessionBranch(sessionBranch("abc"))).toBe(true);
+    expect(isSessionBranch("main")).toBe(false);
+    expect(isSessionBranch("feature/ucch/x")).toBe(false);
+    expect(isSessionBranch("origin/ucch/abc", true)).toBe(true);
+    expect(isSessionBranch("origin/main", true)).toBe(false);
+    // A local branch whose name only looks like a remote one is not a session's.
+    expect(isSessionBranch("origin/ucch/abc")).toBe(false);
+    expect(isReservedBranchName("ucch")).toBe(true);
+    expect(isReservedBranchName("ucch/x")).toBe(true);
+    expect(isReservedBranchName("ucchy")).toBe(false);
   });
 });
 
@@ -291,6 +329,23 @@ describe("branches", () => {
   it("refuses a branch name that looks like an option", async () => {
     await expect(git.createBranch(PROJECT, "--force")).rejects.toThrow(GitRefError);
     await expect(git.checkout(PROJECT, "a..b")).rejects.toThrow(GitRefError);
+  });
+
+  it("refuses to create a branch under the sessions' reserved ucch/ prefix", async () => {
+    await expect(git.createBranch(PROJECT, "ucch/test")).rejects.toThrow(/reserved for UCCH session branches/);
+    await expect(git.createBranch(PROJECT, "ucch")).rejects.toThrow(/reserved for UCCH session branches/);
+    expect((await git.branches(PROJECT)).current).toBe("main");
+  });
+
+  it("lists a repository with a non-main default and session worktrees without the sessions' branches", async () => {
+    await sh(["branch", "-m", "main", "production"]);
+    await sh(["branch", "develop"]);
+    await sh(["branch", "ucch/aaaaaaaaaaaa"]);
+    await sh(["branch", "ucch/bbbbbbbbbbbb"]);
+    const list = await git.branches(PROJECT);
+    expect(list.current).toBe("production");
+    expect(list.currentIsSession).toBe(false);
+    expect(list.local.map((b) => b.name).sort()).toEqual(["develop", "production"]);
   });
 });
 

@@ -50,5 +50,48 @@ async function check(
   const repo = page.getByTestId("project-repo-branch");
   await expect(repo).toBeVisible();
   await expect(repo).toContainText("Project repo");
-  if (main.branch) await expect(repo).toContainText(main.branch);
+  const project = await projectOf(projectHash);
+  const expected = project?.defaultBranch ?? main.branch;
+  if (expected) await expect(repo).toContainText(expected);
+
+  // The picker: the project's branches only, the session's own branch apart.
+  const sessionHash = href.split("/").at(-1);
+  const { threads } = await api(`/api/projects/${projectHash}/threads`);
+  const sessionBranch: string = threads.find((t: { hash: string }) => t.hash === sessionHash).branch;
+  expect(sessionBranch).toMatch(/^ucch\//);
+  await page.getByText("Session branch").click();
+  const list = page.locator("[cmdk-list]");
+  await expect(page.getByTestId("current-session-branch")).toContainText(sessionBranch);
+  const listed = await list.locator("[cmdk-group]").filter({ hasNot: page.getByTestId("current-session-branch") }).locator("[cmdk-item]").allTextContents();
+  expect(listed.length).toBeGreaterThan(0);
+  expect(listed.filter((text) => /ucch\//.test(text))).toEqual([]);
+  if (project?.defaultBranch) await expect(page.getByTestId("default-branch-badge").first()).toBeVisible();
+
+  // Filtering for ucch finds nothing.
+  const filter = page.getByPlaceholder("Filter or create a branch…");
+  await filter.fill("ucch");
+  await expect(list.locator("[cmdk-item]")).toHaveCount(0);
+  await expect(page.getByTestId("reserved-branch-prefix")).toBeVisible();
+
+  // And ucch/ cannot be made by hand.
+  await filter.fill("ucch/test");
+  await expect(page.getByTestId("reserved-branch-prefix")).toContainText("reserved for UCCH session branches");
+  await expect(page.getByText("Create branch")).toHaveCount(0);
+  const refused = await fetch(`${API}/api/projects/${projectHash}/git/branches?session=${sessionHash}`, {
+    method: "POST",
+    headers: { cookie: `ucch_session=${COOKIE}`, "content-type": "application/json" },
+    body: JSON.stringify({ name: "ucch/test" }),
+  });
+  expect(refused.status).toBe(400);
+  expect((await refused.json()).error).toMatch(/reserved for UCCH session branches/);
+}
+
+async function projectOf(hash: string): Promise<{ defaultBranch?: string } | undefined> {
+  const { workspaces } = await api("/api/workspaces");
+  for (const ws of workspaces) {
+    const { projects } = await api(`/api/workspaces/${ws.id}/projects`).catch(() => ({ projects: [] }));
+    const found = projects.find((p: { hash: string }) => p.hash === hash);
+    if (found) return found;
+  }
+  return undefined;
 }

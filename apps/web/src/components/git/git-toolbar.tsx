@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import type { GitBranchList, GitStatus } from "@ucch/protocol"
+import { SESSION_BRANCH_PREFIX, isReservedBranchName, isSessionBranch, type GitBranchList, type GitStatus } from "@ucch/protocol"
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -61,6 +61,8 @@ export function GitToolbar({
   review,
   projectRepo,
   inSession = false,
+  sessionBranch = null,
+  defaultBranch = null,
 }: {
   status: GitStatus
   branches: GitBranchList | null
@@ -77,6 +79,10 @@ export function GitToolbar({
   projectRepo?: ProjectRepoBranch | null
   /** The view is of a session's worktree rather than the project's checkout. */
   inSession?: boolean
+  /** In a session: its own branch, `ucch/{hash}`, offered apart from the project's. */
+  sessionBranch?: string | null
+  /** The project's default (production) branch, from its settings. */
+  defaultBranch?: string | null
 }) {
   const sync = syncAction(status)
   return (
@@ -86,13 +92,15 @@ export function GitToolbar({
         branches={branches}
         disabled={busy !== null}
         inSession={inSession}
+        sessionBranch={sessionBranch}
+        defaultBranch={defaultBranch}
         onCheckout={onCheckout}
         onCreate={onCreateBranch}
       />
       {projectRepo && (
         <>
           <div className="bg-border w-px" />
-          <ProjectRepoSegment repo={projectRepo} base={review?.base ?? null} />
+          <ProjectRepoSegment repo={projectRepo} defaultBranch={defaultBranch} />
         </>
       )}
       <div className="bg-border w-px" />
@@ -139,17 +147,24 @@ export function GitToolbar({
 }
 
 /**
- * The branch the project's own repository is on, beside a session's: where
- * the session's work lands once it is merged. Read-only -- switching it from
- * here would move it under every other session.
+ * The project repository's default branch (Project Settings), beside a
+ * session's: where the session's work lands once it is settled. Falls back
+ * to the branch the main checkout is on when no default is set. Read-only --
+ * switching it from here would move it under every other session.
  */
-function ProjectRepoSegment({ repo, base }: { repo: ProjectRepoBranch; base: string | null }) {
-  const label = repo.detached ? "Detached HEAD" : (repo.branch ?? "No branch")
-  const subtitle = base && base !== repo.branch ? `Project repo · merges into ${base}` : "Project repo"
+function ProjectRepoSegment({ repo, defaultBranch }: { repo: ProjectRepoBranch; defaultBranch: string | null }) {
+  const checkedOut = repo.detached ? "Detached HEAD" : (repo.branch ?? "No branch")
+  const label = defaultBranch ?? checkedOut
+  const subtitle =
+    defaultBranch && repo.branch !== defaultBranch ? `Project repo · checkout on ${checkedOut}` : "Project repo"
   return (
     <div
       data-testid="project-repo-branch"
-      title={`The project's repository is on ${label}`}
+      title={
+        defaultBranch
+          ? `The project's default branch is ${defaultBranch}; its repository is on ${checkedOut}`
+          : `The project's repository is on ${checkedOut}`
+      }
       className="flex h-12 min-w-0 flex-1 items-center gap-3 px-3 sm:min-w-44 sm:flex-initial"
     >
       <span className="text-muted-foreground [&_svg]:size-4">
@@ -284,6 +299,8 @@ function BranchMenu({
   branches,
   disabled,
   inSession,
+  sessionBranch,
+  defaultBranch,
   onCheckout,
   onCreate,
 }: {
@@ -291,17 +308,32 @@ function BranchMenu({
   branches: GitBranchList | null
   disabled: boolean
   inSession: boolean
+  sessionBranch: string | null
+  defaultBranch: string | null
   onCheckout(branch: string, remote: boolean): void
   onCreate(name: string): void
 }) {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState("")
-  const local = branches?.local ?? []
+  // The server leaves sessions' branches out; a list it answered before
+  // that still could hold them, so they are left out here as well.
+  const local = (branches?.local ?? []).filter((b) => !isSessionBranch(b.name))
   const localNames = new Set(local.map((b) => b.name))
   // A remote branch that already has a local one is reached through the local.
-  const remote = (branches?.remote ?? []).filter((b) => !localNames.has(b.name.replace(/^[^/]+\//, "")))
+  const remote = (branches?.remote ?? []).filter(
+    (b) => !isSessionBranch(b.name, true) && !localNames.has(b.name.replace(/^[^/]+\//, "")),
+  )
   const trimmed = query.trim()
-  const canCreate = trimmed.length > 0 && !localNames.has(trimmed) && /^[^\s~^:?*[\\]+$/.test(trimmed) && !trimmed.startsWith("-")
+  // `ucch/` is the harness's: a branch made by hand there would pass for a session's.
+  const reserved = isReservedBranchName(trimmed)
+  const canCreate =
+    trimmed.length > 0 && !reserved && !localNames.has(trimmed) && /^[^\s~^:?*[\\]+$/.test(trimmed) && !trimmed.startsWith("-")
+  const isDefault = (name: string, remote: boolean) =>
+    !!defaultBranch && (remote ? name.replace(/^[^/]+\//, "") : name) === defaultBranch
+  // The session's own branch, apart from the project's: shown, never listed
+  // among them, and picked only to come back to it from elsewhere.
+  const ownBranch = inSession ? (sessionBranch ?? (branches?.currentIsSession ? branches.current : null)) : null
+  const onOwnBranch = !!ownBranch && status.branch === ownBranch
 
   const label = status.detached ? "Detached HEAD" : (status.branch ?? "No branch")
   return (
@@ -327,7 +359,38 @@ function BranchMenu({
         <Command>
           <CommandInput placeholder="Filter or create a branch…" value={query} onValueChange={setQuery} />
           <CommandList>
-            <CommandEmpty>{canCreate ? "" : "No branch matches that."}</CommandEmpty>
+            <CommandEmpty>{canCreate || reserved ? "" : "No branch matches that."}</CommandEmpty>
+            {reserved && (
+              <p data-testid="reserved-branch-prefix" role="alert" className="text-destructive px-3 py-2 text-sm">
+                “{SESSION_BRANCH_PREFIX.slice(0, -1)}” and names starting with “{SESSION_BRANCH_PREFIX}” are reserved for UCCH
+                session branches.
+              </p>
+            )}
+            {ownBranch && trimmed === "" && (
+              <>
+                <CommandGroup heading="Current session">
+                  <CommandItem
+                    value={`session ${ownBranch}`}
+                    forceMount
+                    disabled={onOwnBranch}
+                    data-testid="current-session-branch"
+                    onSelect={() => {
+                      setOpen(false)
+                      if (!onOwnBranch) onCheckout(ownBranch, false)
+                    }}
+                  >
+                    <GitBranchIcon className={cn(onOwnBranch && "text-ucch-active")} />
+                    <div className="grid min-w-0 flex-1 leading-tight">
+                      <span className="truncate font-mono text-xs">{ownBranch}</span>
+                      <span className="text-muted-foreground truncate text-xs">
+                        {onOwnBranch ? "This session's branch" : "This session's branch · switch back"}
+                      </span>
+                    </div>
+                  </CommandItem>
+                </CommandGroup>
+                <CommandSeparator />
+              </>
+            )}
             {canCreate && (
               <>
                 <CommandGroup>
@@ -362,7 +425,10 @@ function BranchMenu({
                   >
                     <GitBranchIcon className={cn(branch.current && "text-ucch-active")} />
                     <div className="grid min-w-0 flex-1 leading-tight">
-                      <span className="truncate">{branch.name}</span>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate">{branch.name}</span>
+                        {isDefault(branch.name, false) && <DefaultBadge />}
+                      </span>
                       <span className="text-muted-foreground truncate text-xs">
                         {branch.upstream ? `tracks ${branch.upstream}` : "local only"} · {relativeTime(branch.date)}
                       </span>
@@ -386,7 +452,10 @@ function BranchMenu({
                     >
                       <CloudUploadIcon />
                       <div className="grid min-w-0 flex-1 leading-tight">
-                        <span className="truncate">{branch.name}</span>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate">{branch.name}</span>
+                          {isDefault(branch.name, true) && <DefaultBadge />}
+                        </span>
                         <span className="text-muted-foreground truncate text-xs">{relativeTime(branch.date)}</span>
                       </div>
                     </CommandItem>
@@ -398,5 +467,18 @@ function BranchMenu({
         </Command>
       </PopoverContent>
     </Popover>
+  )
+}
+
+/** Marks the project's default (production) branch, as set in Project Settings. */
+function DefaultBadge() {
+  return (
+    <span
+      data-testid="default-branch-badge"
+      title="The project's default branch: sessions settle into it"
+      className="text-muted-foreground bg-background shrink-0 rounded border px-1 text-[0.65rem] leading-4"
+    >
+      default
+    </span>
   )
 }

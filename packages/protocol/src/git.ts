@@ -113,8 +113,15 @@ export const GitBranch = z.object({
 });
 export type GitBranch = z.infer<typeof GitBranch>;
 
+/**
+ * The project's branches. Sessions' own branches (`ucch/*`, on any remote
+ * too) are the harness's plumbing and are left out of `local` and `remote`;
+ * `current` still names the checked-out one, whichever it is, and
+ * `currentIsSession` says when that is a session's.
+ */
 export const GitBranchList = z.object({
   current: z.string().nullable(),
+  currentIsSession: z.boolean(),
   local: z.array(GitBranch),
   remote: z.array(GitBranch),
 });

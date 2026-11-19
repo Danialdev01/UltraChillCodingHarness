@@ -1,6 +1,9 @@
 import { access, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import {
+  SESSION_BRANCH_PREFIX,
+  isReservedBranchName,
+  isSessionBranch,
   normalizeWorkspacePath,
   type GitBranch,
   type GitBranchList,
@@ -336,6 +339,9 @@ export class GitService {
       if (remote) {
         const local = branch.replace(/^[^/]+\//, "");
         this.#branchName(local);
+        // Another session's pushed branch: checking it out here would put
+        // two sessions on one branch.
+        if (isSessionBranch(local)) throw new GitRefError(RESERVED_PREFIX);
         const have = await this.#git(cwd, ["branch", "--list", "--", local]);
         if (have.trim()) await this.#git(cwd, ["switch", "--", local]);
         else await this.#git(cwd, ["switch", "--track", "-c", local, `${this.#refName(branch)}`]);
@@ -348,6 +354,7 @@ export class GitService {
 
   createBranch(projectId: GitTarget, name: string): Promise<void> {
     return this.#serial(projectId, async (cwd) => {
+      if (isReservedBranchName(name)) throw new GitRefError(RESERVED_PREFIX);
       await this.#git(cwd, ["switch", "-c", this.#branchName(name)]);
     });
   }
@@ -401,6 +408,9 @@ export class GitService {
   }
 
   /** Pushes the current branch, publishing it when it has no upstream yet. */
+  // TODO: decide whether Publish should push a session's own `ucch/*`
+  // branch at all. It is how `origin/ucch/*` refs reach the remote (and every
+  // other clone); branch lists hide them, but they still pile up on origin.
   push(projectId: GitTarget, token: string | null): Promise<{ branch: string; remoteSha: string }> {
     return this.#serial(projectId, async (cwd) => {
       await this.#widenRefspec(cwd);
@@ -773,7 +783,14 @@ export function parseLog(out: string): GitCommit[] {
   return commits;
 }
 
-/** Reads `for-each-ref` over `refs/heads` and `refs/remotes`. */
+/** Why a `ucch/` branch cannot be made or checked out by hand. */
+export const RESERVED_PREFIX = `the "${SESSION_BRANCH_PREFIX}" prefix is reserved for UCCH session branches`;
+
+/**
+ * Reads `for-each-ref` over `refs/heads` and `refs/remotes`. Sessions'
+ * branches -- `ucch/*` and `<remote>/ucch/*` -- are not the project's and
+ * are dropped, as is `<remote>/HEAD`; `current` is kept whatever it is.
+ */
 export function parseForEachRef(out: string): GitBranchList {
   const local: GitBranch[] = [];
   const remote: GitBranch[] = [];
@@ -786,15 +803,16 @@ export function parseForEachRef(out: string): GitBranchList {
     if (refname.startsWith("refs/heads/")) {
       const name = refname.slice("refs/heads/".length);
       if (isCurrent) current = name;
+      if (isSessionBranch(name)) continue;
       local.push({ name, sha, upstream: upstream || null, date: date ?? "", current: isCurrent });
     } else if (refname.startsWith("refs/remotes/")) {
       const name = refname.slice("refs/remotes/".length);
       // `origin/HEAD` is a pointer at the default branch, not a branch.
-      if (name.endsWith("/HEAD")) continue;
+      if (name.endsWith("/HEAD") || isSessionBranch(name, true)) continue;
       remote.push({ name, sha, upstream: null, date: date ?? "", current: false });
     }
   }
-  return { current, local, remote };
+  return { current, currentIsSession: current !== null && isSessionBranch(current), local, remote };
 }
 
 /** Reads `--name-status -z`: a status, a path, and for renames the new path too. */

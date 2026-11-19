@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { isSessionBranch } from "@ucch/protocol"
 import { GitMergeIcon, GlobeIcon, Loader2Icon, MonitorPlayIcon, RulerIcon, SaveIcon, ShieldCheckIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -91,7 +92,7 @@ function GitSettings({ project }: { project: Project }) {
         const names = [
           ...list.local.map((b) => b.name),
           ...list.remote.map((b) => b.name.replace(/^origin\//, "")),
-        ].filter((name) => name && name !== "HEAD" && !name.startsWith("ucch/"))
+        ].filter((name) => name && name !== "HEAD" && !isSessionBranch(name))
         setBranches([...new Set(names)])
       },
       (e: unknown) => {
