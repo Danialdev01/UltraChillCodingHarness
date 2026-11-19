@@ -548,7 +548,6 @@ export function NewProjectDialog({
       busy={busy}
       icon={FolderPlusIcon}
       title="Create a new project"
-      description="Each project runs in an isolated workspace — the only place the agent can read or write."
       onSubmit={submit}
       footer={
         <FormDialogFooter hint="Isolated workspace" hintIcon={LockIcon} busy={busy} disabled={!command || Boolean(projectKeyError)}>
@@ -591,13 +590,13 @@ export function NewProjectDialog({
                   className="fd-mono min-w-0 grow bg-transparent px-2.5 text-[12.5px] text-(--fd-text) outline-none placeholder:text-(--fd-text-disabled) focus-visible:outline-none"
                 />
               </div>
-              <p className={HELPER}>
-                {source === "create"
-                  ? "Letters, numbers, dots, dashes and underscores. It also names the repository created for it."
-                  : source === "empty"
-                    ? "Letters, numbers, dots, dashes and underscores. It also names the local repository."
-                    : "How the project is listed. Follows the repository's name until you edit it."}
-              </p>
+              {source !== "git" && (
+                <p className={HELPER}>
+                  {source === "create"
+                    ? "Letters, numbers, dots, dashes and underscores. It also names the repository created for it."
+                    : "Letters, numbers, dots, dashes and underscores. It also names the local repository."}
+                </p>
+              )}
             </div>
 
             {/* Mode is the wider column: it has three options to the database's one trigger. */}
@@ -717,11 +716,9 @@ export function NewProjectDialog({
                   className={FIELD}
                 />
               </div>
-              <p className={cn(HELPER, "sm:col-span-2", projectKeyError && projectKeyConfirm && "text-destructive")}>
-                {projectKeyError && projectKeyConfirm
-                  ? projectKeyError
-                  : "Encrypts the environment variables in .agent/env.val. It cannot be recovered, and can also be set up later under Manage."}
-              </p>
+              {projectKeyError && projectKeyConfirm && (
+                <p className={cn(HELPER, "sm:col-span-2 text-destructive")}>{projectKeyError}</p>
+              )}
             </div>
 
             <div role="separator" className="h-px bg-(--fd-border-subtle)" />
@@ -998,32 +995,24 @@ export function NewProjectDialog({
               </OptionPanel>
             </OptionTabs>
 
-            <div className="flex items-start justify-between gap-4 rounded-[8px] border border-(--fd-border-subtle) bg-(--fd-field-muted) px-3 py-2.5">
+            <div className="flex items-center justify-between gap-4 rounded-[8px] border border-(--fd-border-subtle) bg-(--fd-field-muted) px-3 py-2.5">
               <div className="flex min-w-0 flex-col gap-1">
                 <span id="new-project-session-branches-label" className={cn(LABEL, "flex items-center gap-1.5")}>
                   <GitBranchIcon className="size-3.5 text-(--fd-icon-dim)" />
                   New branch for every session
                 </span>
-                <p className={HELPER}>
-                  {sessionBranches ? (
-                    <>
-                      Each session works on its own <Code>ucch/…</Code> branch in a separate
-                      worktree, and is merged into the base branch when you settle it.
-                    </>
-                  ) : (
-                    <>
-                      Every session commits straight to the base branch in the project&apos;s
-                      checkout. Changeable later in Project Settings.
-                    </>
-                  )}
-                </p>
+                {!sessionBranches && (
+                  <p className={HELPER}>
+                    Every session commits straight to the base branch in the project&apos;s
+                    checkout. Changeable later in Project Settings.
+                  </p>
+                )}
               </div>
               <Switch
                 checked={sessionBranches}
                 onCheckedChange={setSessionBranches}
                 disabled={busy}
                 aria-labelledby="new-project-session-branches-label"
-                className="mt-0.5"
               />
             </div>
 

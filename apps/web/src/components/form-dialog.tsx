@@ -63,7 +63,8 @@ export function FormDialog({
   busy?: boolean;
   icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
   title: React.ReactNode;
-  description: React.ReactNode;
+  /** A line under the title; omitted, there is none. */
+  description?: React.ReactNode;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   footer: React.ReactNode;
   children: React.ReactNode;
@@ -75,7 +76,12 @@ export function FormDialog({
         className="form-dialog flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden rounded-[13px] border border-(--fd-border) bg-(--fd-surface) p-0 text-(--fd-text) shadow-(--fd-shadow) ring-0 sm:max-w-[480px]"
       >
         <form onSubmit={onSubmit} className="flex min-h-0 flex-col">
-          <header className="flex items-start gap-3 border-b border-(--fd-border-subtle) px-5 pt-[18px] pb-4">
+          <header
+            className={cn(
+              "flex gap-3 border-b border-(--fd-border-subtle) px-5 pt-[18px] pb-4",
+              description ? "items-start" : "items-center",
+            )}
+          >
             <div className="grid size-8 shrink-0 place-items-center rounded-[8px] border border-(--fd-accent-tile-border) bg-(--fd-accent-tile)">
               <Icon className="size-4 text-(--fd-accent-soft)" strokeWidth={1.8} />
             </div>
@@ -83,9 +89,11 @@ export function FormDialog({
               <DialogPrimitive.Title className="text-[14.5px] leading-snug font-semibold tracking-[-0.01em] text-(--fd-text)">
                 {title}
               </DialogPrimitive.Title>
-              <DialogPrimitive.Description className="text-[12px] leading-normal text-(--fd-text-muted)">
-                {description}
-              </DialogPrimitive.Description>
+              {description && (
+                <DialogPrimitive.Description className="text-[12px] leading-normal text-(--fd-text-muted)">
+                  {description}
+                </DialogPrimitive.Description>
+              )}
             </div>
             <DialogPrimitive.Close
               aria-label="Close"
