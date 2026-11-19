@@ -3,7 +3,7 @@
 - create function for add function to add android and ios emulators
 - create function for multi server project handeling
 - create function for s3 bucket storage for the code.
-- create a option for the user to commit in main everytime or create a branch anytime inside the new project workspace after every change.
+<!-- - create a option for the user to commit in main everytime or create a branch anytime inside the new project workspace after every change. -->
 - creaet function for the user to install sub system inside different vpses so that the user can loadbalance the agents and hosting.
 - add a chat section and inside the chat section the ai can also give idea, it can connect to whatsapp and more. and the app can take the chat then turn it to a task.
 - add a multi view ssh manager section for all of my vps.
