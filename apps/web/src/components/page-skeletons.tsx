@@ -693,3 +693,35 @@ export function KnowledgeBaseSkeleton() {
     </div>
   )
 }
+
+/**
+ * The Terminal page before its servers are known: the tab strip with its
+ * Files and Agent buttons at their real height, and one pane's header over
+ * a screen of uneven lines.
+ */
+export function TerminalWorkspaceSkeleton() {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex h-10 shrink-0 items-center border-b">
+        <div className="flex h-full items-center gap-2 border-r px-3">
+          <Skeleton className="size-3.5 rounded-sm" />
+          <Skeleton className="h-3 w-24" />
+        </div>
+        <Skeleton className="ml-2 size-6 rounded-md" />
+        <div className="ml-auto flex items-center gap-2 px-2">
+          <Skeleton className="h-7 w-16 rounded-md" />
+          <Skeleton className="h-7 w-16 rounded-md" />
+        </div>
+      </div>
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b px-2">
+        <Skeleton className="size-2 rounded-full" />
+        <Skeleton className="h-3 w-28" />
+      </div>
+      <div className="flex flex-col gap-2 p-3">
+        {[46, 70, 32, 58, 24, 64, 40].map((w, i) => (
+          <Skeleton key={i} className="h-3" style={{ width: `${w}%` }} />
+        ))}
+      </div>
+    </div>
+  )
+}

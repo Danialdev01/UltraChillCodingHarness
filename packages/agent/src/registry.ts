@@ -296,6 +296,25 @@ export function schemasFor(
   return schemas;
 }
 
+const namedCache = new Map<string, { tools: readonly AnyTool[]; schemas: readonly ToolSchema[] }>();
+
+/**
+ * A fixed set of the registry's tools, by name, in place of a preset: for a
+ * turn whose executor is not a project -- the Terminal section's agent,
+ * working on an SSH host, gets the shell and the file tools and nothing that
+ * assumes a workspace. Frozen and cached like a preset's, so the tool block
+ * stays byte-identical across requests. Unknown names are ignored.
+ */
+export function namedToolset(names: readonly string[]): { tools: readonly AnyTool[]; schemas: readonly ToolSchema[] } {
+  const key = names.join("\0");
+  const cached = namedCache.get(key);
+  if (cached) return cached;
+  const tools = Object.freeze(ALL.filter((tool) => names.includes(tool.name)));
+  const entry = { tools, schemas: Object.freeze(tools.map((tool) => SCHEMAS.get(tool.name)!)) };
+  namedCache.set(key, entry);
+  return entry;
+}
+
 /** Looks a tool up by the name the model used. */
 export function toolByName(
   preset: ToolPreset,

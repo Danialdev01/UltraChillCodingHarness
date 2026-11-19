@@ -69,6 +69,11 @@ export class EventBus {
     };
   }
 
+  /** Whether any socket holds `topic` right now. */
+  watching(topic: Topic): boolean {
+    return this.#subscribers.has(topicKey(topic));
+  }
+
   /** The projects whose own topic somebody holds: the ones open in a view. */
   *subscribedProjects(): Iterable<string> {
     for (const key of this.#subscribers.keys()) {

@@ -1109,6 +1109,8 @@ const ProjectActivity = z.object({
 export const LiveResource = z.enum([
   "keys",
   "database_connections",
+  /** A workspace's saved SSH hosts (the Terminal section); `id` is the workspace. */
+  "ssh_hosts",
   "project_settings",
   "account_settings",
   "projects",
@@ -1203,9 +1205,23 @@ const PortClosed = z.object({
 
 const TerminalOutput = z.object({
   type: z.literal("terminal.output"),
-  projectId: z.string().uuid(),
+  /** Absent for a shell on a saved SSH host, which belongs to no project. */
+  projectId: z.string().uuid().optional(),
   terminalId: z.string(),
   data: z.string(),
+});
+
+/**
+ * One event of the agent that works on an SSH host (the Terminal section's
+ * chat), to its user's own topic. The inner event is the agent loop's own
+ * -- `agent.text_delta`, `agent.tool_started`, `agent.permission_requested`
+ * and the rest -- carrying `REMOTE_CHAT_PROJECT_ID` and the chat's id as its
+ * thread, so the browser folds it as it would a thread's.
+ */
+const RemoteChatEvent = z.object({
+  type: z.literal("remote_chat.event"),
+  chatId: z.string().uuid(),
+  event: z.record(z.string(), z.unknown()),
 });
 
 // -- Git and previews --------------------------------------------------------
@@ -1389,6 +1405,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   PortOpened,
   PortClosed,
   TerminalOutput,
+  RemoteChatEvent,
   GitCommitted,
   GitPushed,
   PreviewPublished,
@@ -1419,6 +1436,7 @@ export type StoredEvent = z.infer<typeof StoredEvent>;
  */
 const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "terminal.output",
+  "remote_chat.event",
   "agent.thinking_delta",
   "agent.text_delta",
   "agent.subagent_progress",

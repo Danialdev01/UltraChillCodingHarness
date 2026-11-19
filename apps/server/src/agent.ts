@@ -15,6 +15,7 @@ import {
   runTurn,
   type ApprovalDecision,
   type ApprovalRequest,
+  type Executor,
   type RegistryOptions,
   type DocumentsBackends,
   type ResearchBackends,
@@ -46,6 +47,7 @@ import {
   asksForWidget,
   needsApproval,
   readAgentSettings,
+  REMOTE_CHAT_PROJECT_ID,
   isModelImageType,
   parseAttachmentManifest,
   type CliProviderId,
@@ -2768,6 +2770,92 @@ export class AgentTurnReactor {
     }
 
     return { text: outcome.text, model, usage: outcome.usage, costUsd: outcome.costUsd };
+  }
+
+  /**
+   * A turn of the Terminal section's agent, which works on an SSH host
+   * rather than in a project: the caller brings the executor, the tools,
+   * the prompt, the gate and where the events go.
+   *
+   * Billed like a native turn in the workspace -- the person's own key, or
+   * the workspace's under a workspace credential policy -- on the model they
+   * picked or their default, and it takes a native turn's slot.
+   */
+  async runRemoteTurn(input: {
+    userId: string;
+    workspaceId: string;
+    chatId: string;
+    turnId: string;
+    model?: string;
+    history: readonly DomainEvent[];
+    executor: Executor;
+    systemPrompt: string;
+    toolset: readonly string[];
+    approve: (request: ApprovalRequest) => Promise<ApprovalDecision>;
+    append: (events: readonly DomainEvent[]) => Promise<void>;
+    publish: (event: DomainEvent) => void;
+    signal: AbortSignal;
+  }): Promise<{ text: string; model: string; usage: TokenUsage; costUsd: number }> {
+    const [person] = await this.db
+      .select({
+        id: users.id,
+        openrouterKeyEncrypted: accountOpenRouterKey,
+        defaultModel: users.defaultModel,
+        defaultProvider: users.defaultProvider,
+        agentPermissionMode: users.agentPermissionMode,
+      })
+      .from(users)
+      .where(eq(users.id, input.userId))
+      .limit(1);
+    if (!person) throw new Error("account not found");
+    const [workspace] = await this.db
+      .select({ policy: workspaces.credentialPolicy, workspaceKey: workspaces.openrouterKeyEncrypted })
+      .from(workspaces)
+      .where(eq(workspaces.id, input.workspaceId))
+      .limit(1);
+    let owner: TurnOwner = { ...person, personId: person.id };
+    if (workspace && effectiveCredentialSource(toPolicy(workspace.policy), null) === "workspace") {
+      owner = { ...owner, id: workspaceSubject(input.workspaceId), openrouterKeyEncrypted: workspace.workspaceKey };
+    }
+    const requested = resolveModel(input.model, owner.defaultModel, this.options.defaultModel);
+    const route = await this.#nativeRoute(owner, requested);
+    const [contextLength, canSeeImages] = await Promise.all([route.contextLength(), route.supportsImages()]);
+
+    const release = await this.#scheduler.acquire({
+      ownerId: owner.id,
+      kind: "native",
+      threadId: input.chatId,
+      signal: input.signal,
+    });
+    try {
+      const outcome = await runTurn({
+        projectId: REMOTE_CHAT_PROJECT_ID,
+        threadId: input.chatId,
+        turnId: input.turnId,
+        apiKey: route.apiKey,
+        model: route.model,
+        history: input.history,
+        stack: null,
+        preset: "minimal",
+        registry: { ...this.options.registry, widgets: false },
+        toolset: input.toolset,
+        systemPrompt: input.systemPrompt,
+        contextLength,
+        supportsImages: canSeeImages,
+        searchModel: this.options.searchModel,
+        maxIterations: this.options.maxIterations,
+        executor: input.executor,
+        complete: route.complete,
+        signal: input.signal,
+        approve: input.approve,
+        append: input.append,
+        publish: input.publish,
+        onDiagnostic: (message) => this.onError(new Error(message)),
+      });
+      return { text: outcome.text, model: requested, usage: outcome.usage, costUsd: outcome.costUsd };
+    } finally {
+      release();
+    }
   }
 
   /**

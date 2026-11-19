@@ -114,6 +114,9 @@ import { createRuntimeProviders } from "./runtimes/registry.js";
 import { TaskPipeline } from "./task-pipeline.js";
 import { TaskScheduler } from "./task-scheduler.js";
 import { registerDatabaseRoutes } from "./database-routes.js";
+import { registerSshRoutes } from "./ssh-routes.js";
+import { SshHostService, SshPool } from "./ssh-hosts.js";
+import { RemoteChatReactor } from "./remote-chat.js";
 import { registerResourceRoutes, resourceFailure } from "./resource-routes.js";
 import { KnowledgeService } from "./knowledge.js";
 import { registerKnowledgeRoutes } from "./knowledge-routes.js";
@@ -533,6 +536,9 @@ async function ownerCredentials(
  * appended against the project alone.
  */
 const databaseConnections = new DatabaseConnectionService(db);
+/** The Terminal section's SSH hosts, and one shared connection per host for files and the agent. */
+const sshHosts = new SshHostService(db);
+const sshPool = new SshPool();
 /** The workspace's shared Resources: its own disk storage plus any S3 buckets it adds. */
 const resourceStores = new ResourceStoreService(db, config.WORKSPACE_ROOT, config.SECRET_KEY);
 
@@ -648,6 +654,12 @@ const terminals = new TerminalReactor(
     },
   },
   (projectId, event) => {
+    // A shell on an SSH host belongs to no project, so there is no stream to
+    // append to: straight to the terminal's own topic.
+    if (projectId === null) {
+      bus.publish({ seq: null, projectId: "", threadId: null, event });
+      return;
+    }
     // `terminal.output` is transient: this publishes to whoever is watching
     // the tab and writes nothing to the log.
     void store.append({ projectId, threadId: null }, [event]).catch((error) => {
@@ -2421,12 +2433,15 @@ app.addHook("preHandler", async (request) => {
   if (READ_METHODS.has(request.method)) return;
   const url = request.routeOptions.url ?? "";
   const params = request.params as { id?: string; hash?: string };
-  if (!url.startsWith("/api/database-connections/:id") && url !== "/api/projects/:hash") return;
+  const sshHost = url === "/api/ssh-hosts/:id" || url === "/api/ssh-hosts/:id/retrust";
+  if (!url.startsWith("/api/database-connections/:id") && url !== "/api/projects/:hash" && !sshHost) return;
   const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
   if (!principal) return;
-  const workspaceId = url.startsWith("/api/database-connections/:id")
-    ? params.id && (await databaseConnections.findForUser(params.id, principal.userId))?.workspaceId
-    : params.hash && (await workspaceService.findByHash(params.hash, principal.userId))?.workspaceId;
+  const workspaceId = sshHost
+    ? params.id && (await sshHosts.get(params.id).catch(() => null))?.workspaceId
+    : url.startsWith("/api/database-connections/:id")
+      ? params.id && (await databaseConnections.findForUser(params.id, principal.userId))?.workspaceId
+      : params.hash && (await workspaceService.findByHash(params.hash, principal.userId))?.workspaceId;
   if (workspaceId) workspaceOfRequest.set(request, workspaceId);
 });
 
@@ -3482,6 +3497,29 @@ registerDatabaseRoutes(app, {
   secretKey: config.SECRET_KEY,
   probe,
   adapterFor,
+});
+
+/**
+ * The agent beside the Terminal section's shells: native turns on an SSH
+ * host, their events to the person's own topic.
+ */
+const remoteChats = new RemoteChatReactor(
+  (input) => agentTurns.runRemoteTurn(input),
+  (userId, event) => bus.publishToUser(userId, event),
+  (error) => app.log.error({ err: error }, "remote agent turn failed"),
+);
+
+registerSshRoutes(app, {
+  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  workspaceAllows: (workspaceId, userId, permission) =>
+    workspaceService.allows(workspaceId, userId, permission),
+  hosts: sshHosts,
+  pool: sshPool,
+  terminals,
+  watched: (terminalId) => bus.watching({ name: "terminal", terminalId }),
+  chats: remoteChats,
+  secretKey: config.SECRET_KEY,
+  maxUploadBytes: config.UPLOAD_MAX_BYTES,
 });
 
 registerResourceRoutes(app, {
@@ -5366,6 +5404,8 @@ const shutdown = async (signal: string) => {
   // unfinished turn next time, rather than the SIGINT the stop button sends.
   // Waits for their OMP bridge files to be deleted: they hold a key.
   await terminals.closeAll();
+  remoteChats.stopAll();
+  sshPool.closeAll();
   await fileWatcher.closeAll();
   await agentTurns.killAll();
   await bridgeLeases.close();

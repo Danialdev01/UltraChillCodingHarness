@@ -62,12 +62,25 @@ const IDLE_TIMEOUT_MS = 15 * 60_000;
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 
+/**
+ * What a terminal runs: a local pty, or a shell on an SSH host
+ * (`ssh-terminal.ts`). The reactor needs only this much of either.
+ */
+export interface TerminalProcess {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(): void;
+  onData(listener: (data: string) => void): unknown;
+  onExit(listener: (event: { exitCode: number; signal?: number | string }) => void): unknown;
+}
+
 interface Session {
   id: string;
-  projectId: string;
+  /** Null for a shell on a saved SSH host, which belongs to no project. */
+  projectId: string | null;
   /** Who opened it. Nobody else may write to it, resize it, or close it. */
   userId: string;
-  pty: pty.IPty;
+  pty: TerminalProcess;
   idleTimer: NodeJS.Timeout;
   /** Its OMP bridge's files and token, once written; see `TerminalOptions.ompBridge`. */
   bridge?: Promise<{ dispose(): Promise<void> } | null>;
@@ -172,8 +185,8 @@ export class TerminalReactor {
 
   constructor(
     private readonly options: TerminalOptions,
-    /** Publishes `terminal.output`, which is transient and never stored. */
-    private readonly publish: (projectId: string, event: DomainEvent) => void,
+    /** Publishes `terminal.output`, which is transient and never stored. Null: no project. */
+    private readonly publish: (projectId: string | null, event: DomainEvent) => void,
     private readonly onError: (error: unknown) => void = () => {},
   ) {}
 
@@ -277,6 +290,11 @@ export class TerminalReactor {
    * Whether `userId` may watch terminal `terminalId`'s output: its owner
    * once it runs, and before that whoever watched it first.
    */
+  /** Whether a shell is running under this id. */
+  has(terminalId: string): boolean {
+    return this.#sessions.has(terminalId);
+  }
+
   mayWatch(terminalId: string, userId: string): boolean {
     const session = this.#sessions.get(terminalId);
     if (session) return session.userId === userId;
@@ -304,6 +322,41 @@ export class TerminalReactor {
       /* already gone */
     }
     void this.#closeBridge(session);
+  }
+
+  /**
+   * Starts a terminal on something other than this machine -- a shell on a
+   * saved SSH host -- under the same rules as a local one: the id's claim,
+   * the early input, the limits, the idle timeout, the output's topic.
+   *
+   * `start` makes the process at the size the screen already has. It must
+   * return at once (an SSH shell connects in the background, buffering what
+   * is typed meanwhile), for the reason `#open` is synchronous.
+   */
+  openRemote(terminalId: string, userId: string, cols: number, rows: number, start: (cols: number, rows: number) => TerminalProcess): boolean {
+    if (this.#sessions.has(terminalId)) return false;
+    const claim = this.#claims.get(terminalId);
+    if (claim && claim.userId !== userId) return false;
+    this.#claims.delete(terminalId);
+    const early = this.#early.get(terminalId);
+    this.#early.delete(terminalId);
+
+    const refused = this.#overLimit(null, userId);
+    if (refused) {
+      this.#say(null, terminalId, `${refused} Close one to open another.\r\n`);
+      return true;
+    }
+    const size = early?.size ?? { cols, rows };
+    let child: TerminalProcess;
+    try {
+      child = start(size.cols, size.rows);
+    } catch (error) {
+      this.onError(error);
+      this.#say(null, terminalId, `Could not start the terminal: ${error instanceof Error ? error.message : String(error)}\r\n`);
+      return true;
+    }
+    this.#attach(terminalId, null, userId, child, early);
+    return true;
   }
 
   /** Stop a deleted project's shells and command processes, and remove their bridge files. */
@@ -394,6 +447,30 @@ export class TerminalReactor {
       env: launch.env,
     });
 
+    const session = this.#attach(terminalId, projectId, userId, child, early, () => {
+      // A command button's command, typed at the prompt as if by hand: the
+      // shell stays afterwards, to read the output, ctrl-C it, or run it again.
+      if (launch.input) child.write(launch.input);
+    });
+    if (bridged) {
+      session.bridge = bridged
+        .open({ projectId, subject: credentialSubject, userId, terminalId, cwd: launch.cwd })
+        .catch((error: unknown) => {
+          this.onError(error);
+          return null;
+        });
+    }
+  }
+
+  /** Registers a started process as a terminal and wires its output, exit and early input. */
+  #attach(
+    terminalId: string,
+    projectId: string | null,
+    userId: string,
+    child: TerminalProcess,
+    early: EarlyInput | undefined,
+    beforeEarly?: () => void,
+  ): Session {
     const session: Session = {
       id: terminalId,
       projectId,
@@ -403,14 +480,6 @@ export class TerminalReactor {
     };
     session.idleTimer.unref();
     this.#sessions.set(terminalId, session);
-    if (bridged) {
-      session.bridge = bridged
-        .open({ projectId, subject: credentialSubject, userId, terminalId, cwd: launch.cwd })
-        .catch((error: unknown) => {
-          this.onError(error);
-          return null;
-        });
-    }
 
     child.onData((data) => {
       // Split rather than truncated: a chunk cut in half mid-escape-sequence
@@ -423,15 +492,13 @@ export class TerminalReactor {
 
     child.onExit(({ exitCode, signal }) => {
       clearTimeout(session.idleTimer);
-      this.#sessions.delete(terminalId);
+      if (this.#sessions.get(terminalId) === session) this.#sessions.delete(terminalId);
       void this.#closeBridge(session);
       const how = signal ? `signal ${signal}` : `code ${exitCode}`;
       this.#say(projectId, terminalId, `\r\n\x1b[2m[exited with ${how}]\x1b[0m\r\n`);
     });
 
-    // A command button's command, typed at the prompt as if by hand: the
-    // shell stays afterwards, to read the output, ctrl-C it, or run it again.
-    if (launch.input) child.write(launch.input);
+    beforeEarly?.();
 
     // What was typed while the shell was starting, at the size the screen
     // had by then.
@@ -439,6 +506,7 @@ export class TerminalReactor {
       if (early.size) this.#resize(session, early.size.cols, early.size.rows);
       for (const chunk of early.chunks) child.write(chunk);
     }
+    return session;
   }
 
   /**
@@ -564,12 +632,12 @@ export class TerminalReactor {
   }
 
   /** Which limit one more terminal would go over, as the terminal says it; null when none. */
-  #overLimit(projectId: string, userId: string): string | null {
+  #overLimit(projectId: string | null, userId: string): string | null {
     const open = [...this.#sessions.values()];
     const perProject = this.options.maxPerProject ?? MAX_SESSIONS_PER_PROJECT;
     const perUser = this.options.maxPerUser ?? MAX_SESSIONS_PER_USER;
     const total = this.options.maxTotal ?? MAX_SESSIONS_TOTAL;
-    if (open.filter((s) => s.projectId === projectId).length >= perProject) {
+    if (projectId !== null && open.filter((s) => s.projectId === projectId).length >= perProject) {
       return `This project already has ${perProject} terminals open, its limit.`;
     }
     if (open.filter((s) => s.userId === userId).length >= perUser) {
@@ -579,8 +647,13 @@ export class TerminalReactor {
     return null;
   }
 
-  #say(projectId: string, terminalId: string, data: string): void {
-    this.publish(projectId, { type: "terminal.output", projectId, terminalId, data });
+  #say(projectId: string | null, terminalId: string, data: string): void {
+    this.publish(projectId, {
+      type: "terminal.output",
+      ...(projectId !== null ? { projectId } : {}),
+      terminalId,
+      data,
+    });
   }
 }
 

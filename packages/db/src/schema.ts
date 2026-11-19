@@ -670,6 +670,41 @@ export const databaseConnections = pgTable(
 );
 
 /**
+ * A machine the workspace reaches over SSH: the Terminal section's servers,
+ * their shells, their files over SFTP, and the agent that works on them.
+ *
+ * The password or private key (and a key's passphrase) is stored like a
+ * database password -- AES-256-GCM under `SECRET_KEY` -- and decrypted only
+ * on the server, for the moment a connection is made. `hostKeySha256` is the
+ * server's host key as first seen (trust on first use): a later connection
+ * presenting another key is refused until a manager re-trusts the host.
+ */
+export const sshHosts = pgTable(
+  "ssh_hosts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    host: text("host").notNull(),
+    port: integer("port").notNull(),
+    username: text("username").notNull(),
+    /** `password` or `key`; the route validates, the column does not. */
+    authMethod: text("auth_method").notNull(),
+    /** The password, or the private key in OpenSSH/PEM form. */
+    secretEncrypted: text("secret_encrypted").notNull(),
+    /** A private key's passphrase, when it has one. */
+    passphraseEncrypted: text("passphrase_encrypted"),
+    /** `SHA256:` fingerprint of the host key as first seen; null until then. */
+    hostKeySha256: text("host_key_sha256"),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("ssh_hosts_workspace_idx").on(t.workspaceId)],
+);
+
+/**
  * An S3 bucket (or any S3-compatible service) the workspace keeps shared
  * Resources in, beside its own disk storage -- which is built in and has no
  * row. The secret key is stored like a database password: AES-256-GCM under
@@ -1122,6 +1157,7 @@ export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type DatabaseConnection = typeof databaseConnections.$inferSelect;
 export type ResourceStoreRow = typeof resourceStores.$inferSelect;
+export type SshHostRow = typeof sshHosts.$inferSelect;
 export type KnowledgeBaseRow = typeof knowledgeBases.$inferSelect;
 export type KnowledgeDocumentRow = typeof knowledgeDocuments.$inferSelect;
 

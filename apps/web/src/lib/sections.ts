@@ -11,10 +11,10 @@ import {
   ListTodoIcon,
   PaletteIcon,
   Settings2Icon,
-  RocketIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
   SquareKanbanIcon,
+  SquareTerminalIcon,
   StickyNoteIcon,
   UserRoundIcon,
   UsersRoundIcon,
@@ -120,11 +120,14 @@ export const SECTIONS = [
     DatabaseIcon,
     "MySQL and PostgreSQL servers this workspace can reach, and the databases behind each one.",
   ),
+  // Servers reached over SSH: shells in tabs and splits, their files, and
+  // an agent that works on them. The old Publish placeholder's address
+  // redirects here.
   section(
-    "publish",
-    "Publish",
-    RocketIcon,
-    "Published previews and their shareable URLs, with expiry. Arrives with previews.",
+    "terminal",
+    "Terminal",
+    SquareTerminalIcon,
+    "SSH servers this workspace can reach: shells in tabs and side-by-side splits, their files, and an agent that works on them.",
   ),
   section(
     "todo",

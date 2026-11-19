@@ -197,4 +197,4 @@ export function QuickMenuPalette({
 const UNBUILT = [{ label: "New workspace todo", icon: ListTodoIcon }] as const;
 
 /** Sections whose page is still a placeholder: reachable, and marked so. */
-const SOON_SECTIONS: ReadonlySet<string> = new Set(["publish", "todo"]);
+const SOON_SECTIONS: ReadonlySet<string> = new Set(["todo"]);

@@ -140,7 +140,7 @@ export async function buildPrompt(input: PromptInput): Promise<{
  * than it was read. Left unmarked it is simply the volatile tail: the turn
  * pays for the tree and reads everything before it back.
  */
-function segmentsFor(parts: readonly PromptPart[]): TextPart[] {
+export function segmentsFor(parts: readonly PromptPart[]): TextPart[] {
   // The last part that is not the tree: the project-context boundary.
   let boundary = -1;
   parts.forEach((part, i) => {

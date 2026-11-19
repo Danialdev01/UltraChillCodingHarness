@@ -20,6 +20,13 @@ export const qk = {
     all: ["connections"] as const,
     list: (workspaceId: string) => ["connections", "list", workspaceId] as const,
   },
+  /** The Terminal section: a workspace's SSH hosts, and each host's folders. */
+  sshHosts: {
+    all: ["ssh-hosts"] as const,
+    list: (workspaceId: string) => ["ssh-hosts", "list", workspaceId] as const,
+    folder: (hostId: string, path: string) => ["ssh-hosts", "folder", hostId, path] as const,
+    host: (hostId: string) => ["ssh-hosts", "folder", hostId] as const,
+  },
   database: {
     all: ["database"] as const,
     databases: (connectionId: string) => ["database", "databases", connectionId] as const,

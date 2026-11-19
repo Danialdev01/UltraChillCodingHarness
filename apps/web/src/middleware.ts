@@ -27,7 +27,7 @@ const WORKSPACE_PATH = /^\/([a-z0-9]{12})(?:\/|$)/;
  * named. Old links and bookmarks are sent on to the last workspace open,
  * or to the workspace list when there is none to go to.
  */
-const ROOT_SECTION = /^\/(?:dashboard|code|database|publish|todo|workspace-settings)(?:\/.*)?$/;
+const ROOT_SECTION = /^\/(?:dashboard|code|database|terminal|publish|todo|workspace-settings)(?:\/.*)?$/;
 
 export function middleware(request: NextRequest) {
   const match = PUBLIC_SLUG.exec(request.nextUrl.pathname);

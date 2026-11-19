@@ -38,6 +38,7 @@ const RESOURCES: Record<LiveResource, CacheEffect> = {
   // A rename is one of these: the project's own copy is stale too.
   projects: { invalidate: [qk.bootstrap(), qk.projects.all, qk.project.all, qk.sessions.all] },
   database_connections: { invalidate: [qk.bootstrap(), qk.connections.all, qk.database.all] },
+  ssh_hosts: { invalidate: [qk.sshHosts.all] },
   database_data: { invalidate: [qk.database.all] },
   workspace_members: { invalidate: [qk.members.all, qk.bootstrap()] },
   keys: { invalidate: [qk.keys.all] },

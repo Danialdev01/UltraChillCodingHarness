@@ -2,9 +2,9 @@ import { parseToolArguments } from "./arguments.js";
 import type { ToolCall } from "./completion.js";
 import { bindDocuments } from "./documents.js";
 import type { TurnInput } from "./loop.js";
-import { toolByName } from "./registry.js";
+import { namedToolset, toolByName } from "./registry.js";
 import { bindResearch } from "./research.js";
-import type { ToolContext } from "./tool.js";
+import type { AnyTool, ToolContext } from "./tool.js";
 import { clamp, describe } from "./tools/format.js";
 import { openrouterPluginProvider } from "./web.js";
 
@@ -32,6 +32,7 @@ export type ToolRunInput = Pick<
   | "searchModel"
   | "preset"
   | "registry"
+  | "toolset"
   | "executor"
   | "complete"
   | "signal"
@@ -78,7 +79,7 @@ export async function runTool(call: ToolCall, input: ToolRunInput): Promise<Tool
   // records its own result rather than being dropped.
   if (input.signal.aborted) return finish(`${name} was not run: the turn was cancelled.`, true);
 
-  const tool = toolByName(input.preset, name, input.registry);
+  const tool = turnTool(input, name);
   if (!tool) {
     return finish(
       `There is no tool called ${JSON.stringify(name)}. Use one of the tools you were given.`,
@@ -186,4 +187,13 @@ export async function runTool(call: ToolCall, input: ToolRunInput): Promise<Tool
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** The tool a turn offers under `name`: from its named toolset when it has one, else its preset. */
+export function turnTool(
+  input: Pick<ToolRunInput, "preset" | "registry" | "toolset">,
+  name: string,
+): AnyTool | undefined {
+  if (input.toolset) return namedToolset(input.toolset).tools.find((tool) => tool.name === name);
+  return toolByName(input.preset, name, input.registry);
 }

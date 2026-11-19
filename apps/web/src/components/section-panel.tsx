@@ -8,6 +8,7 @@ import {
 } from "lucide-react"
 
 import { ConnectionsPanel } from "@/components/database/connections-panel"
+import { SshHostsPanel } from "@/components/terminal/ssh-hosts-panel"
 import { KnowledgePanel } from "@/components/knowledge/knowledge-panel"
 import { SessionSidebar } from "@/components/session-sidebar/session-sidebar"
 import {
@@ -239,6 +240,10 @@ export function SectionPanel({
         onNavigate={onNavigate}
       />
     )
+  }
+
+  if (section.id === "terminal" && workspaceId) {
+    return <SshHostsPanel workspaceId={workspaceId} compact={compact} onNavigate={onNavigate} />
   }
 
   if (section.id === "knowledge" && workspaceId) {

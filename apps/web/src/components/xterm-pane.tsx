@@ -195,7 +195,7 @@ function isEditable(node: HTMLElement): boolean {
  * background. xterm's defaults are tuned for black, so its blue vanishes on
  * dark and its yellow on light; bright-black ("gray") is the usual casualty.
  */
-function xtermTheme(tokens: Tokens, mode: Mode) {
+export function xtermTheme(tokens: Tokens, mode: Mode) {
   const background = tokens.background!
   return {
     background,

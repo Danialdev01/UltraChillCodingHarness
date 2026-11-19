@@ -10,11 +10,11 @@ import {
   COMPACT_RATIO,
   PRUNE_RATIO,
 } from "./context.js";
-import { buildPrompt } from "./prompt.js";
-import { schemasFor, toolByName, type RegistryOptions, type ToolPreset } from "./registry.js";
+import { buildPrompt, segmentsFor } from "./prompt.js";
+import { namedToolset, schemasFor, type RegistryOptions, type ToolPreset } from "./registry.js";
 import type { DocumentsBackends } from "./documents.js";
 import type { ResearchBackends } from "./research.js";
-import { runTool, type ToolOutcome } from "./run-tool.js";
+import { runTool, turnTool, type ToolOutcome } from "./run-tool.js";
 import { rebuild } from "./session-log.js";
 import { executionModeOf, type AnyTool } from "./tool.js";
 import type { UploadStaging } from "./uploads.js";
@@ -57,6 +57,17 @@ export interface TurnInput {
   stack: string | null;
   preset: ToolPreset;
   registry: RegistryOptions;
+  /**
+   * The registry's tools by name, in place of `preset`'s (`namedToolset`).
+   * For an executor that is not a project's workspace.
+   */
+  toolset?: readonly string[];
+  /**
+   * The whole system prompt, in place of the harness rules and the project's
+   * context, which `buildPrompt` would read through the executor. For a
+   * turn that is not working in a project.
+   */
+  systemPrompt?: string;
   /**
    * The model's window, from the catalogue. Null or absent means the
    * catalogue does not publish one, and context management then does
@@ -178,15 +189,20 @@ export interface TurnOutcome {
 export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
   const { threadId, turnId, signal } = input;
 
-  const prompt = await buildPrompt({
-    executor: input.executor,
-    stack: input.stack,
-    ...(input.mode ? { mode: input.mode } : {}),
-    // One switch for the prompt and the tool: `show_widget` is in the
-    // registry exactly when the rules that teach it are in the prompt.
-    widgets: input.registry.widgets ?? true,
-    signal,
-  });
+  const prompt = input.systemPrompt
+    ? (() => {
+        const parts = [{ source: "system_prompt" as const, content: input.systemPrompt! }];
+        return { parts, segments: segmentsFor(parts) };
+      })()
+    : await buildPrompt({
+        executor: input.executor,
+        stack: input.stack,
+        ...(input.mode ? { mode: input.mode } : {}),
+        // One switch for the prompt and the tool: `show_widget` is in the
+        // registry exactly when the rules that teach it are in the prompt.
+        widgets: input.registry.widgets ?? true,
+        signal,
+      });
 
   // Recorded before it is used, so the log says exactly what the model was
   // shown rather than approximately.
@@ -217,7 +233,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
   // A message asking for a visual is told, on that message, to answer with a
   // widget. On the message rather than in the system prompt, which stays
   // byte-identical for the cache; and only on this turn's.
-  if (input.registry.widgets ?? true) {
+  if (!input.toolset && (input.registry.widgets ?? true)) {
     const asked = input.history.findLast((event) => event.type === "user.message");
     const last = messages.at(-1);
     if (asked?.type === "user.message" && asksForWidget(asked.text) && last?.role === "user") {
@@ -231,7 +247,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
 
   // The frozen per-preset array, passed straight through: the same object
   // every request is what keeps the cached prefix byte-identical.
-  const tools = schemasFor(input.preset, input.registry);
+  const tools = input.toolset ? namedToolset(input.toolset).schemas : schemasFor(input.preset, input.registry);
 
   const usage: TokenUsage = {
     inputTokens: 0,
@@ -652,7 +668,7 @@ async function dispatch(
   };
 
   for (const [index, call] of calls.entries()) {
-    const tool: AnyTool | undefined = toolByName(input.preset, call.function.name, input.registry);
+    const tool: AnyTool | undefined = turnTool(input, call.function.name);
     if (executionModeOf(tool) === "exclusive") {
       await drain();
       results[index] = await runTool(call, input);

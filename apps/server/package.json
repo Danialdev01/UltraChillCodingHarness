@@ -29,6 +29,7 @@
     "marked": "17.0.6",
     "mysql2": "^3.11.0",
     "postgres": "^3.4.5",
+    "ssh2": "^1.17.0",
     "ws": "^8.18.0",
     "y-protocols": "1.0.7",
     "yjs": "13.6.33",
@@ -40,6 +41,7 @@
     "@tiptap/pm": "3.31.3",
     "@tiptap/starter-kit": "3.31.3",
     "@tiptap/y-tiptap": "3.0.10",
+    "@types/ssh2": "^1.15.6",
     "@types/ws": "^8.5.13",
     "esbuild": "0.28.2"
   }

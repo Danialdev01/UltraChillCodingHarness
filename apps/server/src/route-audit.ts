@@ -87,6 +87,9 @@ const IGNORED = new Set([
   "POST /api/internal/collab/files/read",
   "POST /api/auth/login",
   "POST /api/auth/logout",
+  // Answering or stopping the server agent: the commands it runs are the record.
+  "POST /api/remote-chats/:chatId/permission",
+  "POST /api/remote-chats/:chatId/stop",
   // Confirming a password changes nothing; the reveal it unlocks is logged.
   "POST /api/account/reauth",
   // Checking a project key, or reading one value with it, changes nothing.
@@ -405,6 +408,21 @@ const TABLE: Record<string, Describe> = {
   "DELETE /api/agent-profiles/:id": () => account("settings.profiles", "Deleted a subscription account"),
   "DELETE /api/agent-profiles/:id/credentials": () => account("settings.credentials", "Signed a subscription account out"),
 
+  // -- SSH hosts (the Terminal section) -----------------------------------------
+  // Paths only, never contents: a file's bytes or an agent's message stay out of the history.
+  "POST /api/workspaces/:id/ssh-hosts": (_p, b) => ssh("ssh.host_add", `Added server ${quoted(b?.name, "")}`.trim(), undefined, "ssh_hosts"),
+  "PATCH /api/ssh-hosts/:id": (p) => ssh("ssh.host_update", "Changed a server", p.id, "ssh_hosts"),
+  "POST /api/ssh-hosts/:id/retrust": (p) => ssh("ssh.host_retrust", "Re-trusted a server's host key", p.id, "ssh_hosts"),
+  "DELETE /api/ssh-hosts/:id": (p) => ssh("ssh.host_remove", "Removed a server", p.id, "ssh_hosts"),
+  "POST /api/ssh-hosts/:id/terminals": (p) => ssh("ssh.terminal_open", "Opened a terminal on a server", p.id),
+  "POST /api/ssh-hosts/:id/files": (p, _b, q) => ssh("ssh.file_upload", `Uploaded ${str(q.path) ?? "a file"} to a server`, p.id),
+  "PUT /api/ssh-hosts/:id/files/text": (p, b) => ssh("ssh.file_save", `Saved ${str(b?.path) ?? "a file"} on a server`, p.id),
+  "POST /api/ssh-hosts/:id/files/folder": (p, b) => ssh("ssh.folder_create", `Created folder ${str(b?.path) ?? ""} on a server`.replace("  ", " "), p.id),
+  "PATCH /api/ssh-hosts/:id/files/move": (p, b) =>
+    ssh("ssh.file_move", `Moved ${str(b?.from) ?? "a file"} to ${str(b?.to) ?? "another path"} on a server`, p.id),
+  "DELETE /api/ssh-hosts/:id/files": (p, _b, q) => ssh("ssh.file_delete", `Deleted ${str(q.path) ?? "a file"} on a server`, p.id),
+  "POST /api/ssh-hosts/:id/chat": (p) => ssh("ssh.agent_message", "Asked the agent to work on a server", p.id),
+
   // -- Database connections --------------------------------------------------
   "POST /api/workspaces/:id/database-connections": (_p, b) =>
     database("database.connect", `Added connection ${quoted(b?.name, "")}`.trim()),
@@ -415,6 +433,17 @@ const TABLE: Record<string, Describe> = {
   "DELETE /api/database-connections/:id/databases/:db": (p) =>
     database("database.drop", `Dropped database ${p.db ?? ""}`.trim(), p.id),
 };
+
+function ssh(action: string, summary: string, id?: string, resource?: LiveResource): ReturnType<Describe> {
+  return {
+    action,
+    targetType: "ssh_host",
+    targetId: id ?? null,
+    summary,
+    ...(resource ? { resource } : {}),
+    scope: "account",
+  };
+}
 
 function account(action: string, summary: string): ReturnType<Describe> {
   return { action, targetType: "account", summary, resource: "account_settings", scope: "account" };
