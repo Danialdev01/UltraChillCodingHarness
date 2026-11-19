@@ -7,6 +7,7 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   CloudUploadIcon,
+  FolderGit2Icon,
   GitBranchIcon,
   HistoryIcon,
   Loader2Icon,
@@ -35,6 +36,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { relativeTime } from "@/lib/stats-format"
 import { cn } from "@/lib/utils"
 
+import type { ProjectRepoBranch } from "./use-git-state"
+
 /**
  * The strip along the top: which branch, and the one button that talks to
  * the remote.
@@ -56,6 +59,8 @@ export function GitToolbar({
   onPush,
   onAddRemote,
   review,
+  projectRepo,
+  inSession = false,
 }: {
   status: GitStatus
   branches: GitBranchList | null
@@ -68,11 +73,28 @@ export function GitToolbar({
   onAddRemote(): void
   /** OMP's code review (OM7.8): of the working tree, or of the branch since `base`. */
   review?: { running: boolean; base: string | null; onReview(scope: "uncommitted" | "branch"): void }
+  /** In a session: the branch the project's own repository is on. */
+  projectRepo?: ProjectRepoBranch | null
+  /** The view is of a session's worktree rather than the project's checkout. */
+  inSession?: boolean
 }) {
   const sync = syncAction(status)
   return (
     <div className="flex items-stretch gap-px border-b bg-muted/40">
-      <BranchMenu status={status} branches={branches} disabled={busy !== null} onCheckout={onCheckout} onCreate={onCreateBranch} />
+      <BranchMenu
+        status={status}
+        branches={branches}
+        disabled={busy !== null}
+        inSession={inSession}
+        onCheckout={onCheckout}
+        onCreate={onCreateBranch}
+      />
+      {projectRepo && (
+        <>
+          <div className="bg-border w-px" />
+          <ProjectRepoSegment repo={projectRepo} base={review?.base ?? null} />
+        </>
+      )}
       <div className="bg-border w-px" />
       <ToolbarButton
         icon={busy === sync.busyLabel ? <Loader2Icon className="animate-spin" /> : sync.icon}
@@ -112,6 +134,31 @@ export function GitToolbar({
           />
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * The branch the project's own repository is on, beside a session's: where
+ * the session's work lands once it is merged. Read-only -- switching it from
+ * here would move it under every other session.
+ */
+function ProjectRepoSegment({ repo, base }: { repo: ProjectRepoBranch; base: string | null }) {
+  const label = repo.detached ? "Detached HEAD" : (repo.branch ?? "No branch")
+  const subtitle = base && base !== repo.branch ? `Project repo · merges into ${base}` : "Project repo"
+  return (
+    <div
+      data-testid="project-repo-branch"
+      title={`The project's repository is on ${label}`}
+      className="flex h-12 min-w-0 flex-1 items-center gap-3 px-3 sm:min-w-44 sm:flex-initial"
+    >
+      <span className="text-muted-foreground [&_svg]:size-4">
+        <FolderGit2Icon />
+      </span>
+      <span className="grid min-w-0 flex-1 text-left leading-tight">
+        <span className="truncate text-sm font-medium">{label}</span>
+        <span className="text-muted-foreground truncate text-xs">{repo.unborn ? "Project repo · no commits yet" : subtitle}</span>
+      </span>
     </div>
   )
 }
@@ -236,12 +283,14 @@ function BranchMenu({
   status,
   branches,
   disabled,
+  inSession,
   onCheckout,
   onCreate,
 }: {
   status: GitStatus
   branches: GitBranchList | null
   disabled: boolean
+  inSession: boolean
   onCheckout(branch: string, remote: boolean): void
   onCreate(name: string): void
 }) {
@@ -268,7 +317,7 @@ function BranchMenu({
           <ToolbarButton
             icon={<GitBranchIcon />}
             title={label}
-            subtitle={status.unborn ? "No commits yet" : "Current branch"}
+            subtitle={status.unborn ? "No commits yet" : inSession ? "Session branch" : "Current branch"}
             disabled={disabled}
             trailing={<ChevronDownIcon className="text-muted-foreground size-3.5" />}
           />

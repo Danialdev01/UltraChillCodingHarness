@@ -50,6 +50,18 @@ export interface GitState {
    */
   mutate<T extends GitStatus | { status: GitStatus }>(label: string, work: () => Promise<T>): Promise<T | null>
   clearError(): void
+  /**
+   * In a session's worktree: the branch the project's own repository (its
+   * main checkout) is on, which is where the session's work gets merged.
+   * Null outside a session, or until it is read.
+   */
+  projectRepo: ProjectRepoBranch | null
+}
+
+export interface ProjectRepoBranch {
+  branch: string | null
+  detached: boolean
+  unborn: boolean
 }
 
 /** The pages of history read past the first, and which first page they follow. */
@@ -87,6 +99,23 @@ export function useGitState(project: Project): GitState {
   const statusQuery = useQuery({ queryKey: statusKey, queryFn: () => fetchGitStatus(hash), ...live })
   const branchesQuery = useQuery({ queryKey: branchesKey, queryFn: () => fetchGitBranches(hash), ...live })
   const logQuery = useQuery({ queryKey: logKey, queryFn: () => fetchGitLog(hash, 0, 50), ...live })
+  // The main checkout's status, beside a session's: only its branch is
+  // shown. Same key as the project's own Git view, so the two share it, and
+  // `qk.git.all` invalidates it like the rest. Its failure is not the view's.
+  const projectStatusQuery = useQuery({
+    queryKey: qk.git.read("status", projectHash, null),
+    queryFn: () => fetchGitStatus(projectHash),
+    enabled: sessionHash !== null,
+    ...live,
+  })
+  const projectStatus = sessionHash !== null ? (projectStatusQuery.data ?? null) : null
+  const projectRepo = React.useMemo<ProjectRepoBranch | null>(
+    () =>
+      projectStatus
+        ? { branch: projectStatus.branch, detached: projectStatus.detached, unborn: projectStatus.unborn }
+        : null,
+    [projectStatus],
+  )
   const status = statusQuery.data ?? null
   const branches = branchesQuery.data ?? null
   const log0 = logQuery.data ?? null
@@ -273,6 +302,7 @@ export function useGitState(project: Project): GitState {
       setLocalError(null)
       setDismissed(readError)
     },
+    projectRepo,
   }
 }
 

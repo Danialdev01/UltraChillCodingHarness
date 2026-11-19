@@ -111,6 +111,8 @@ export function GitView({
   const { status } = git
   const unresolved = status.files.filter((f) => f.conflicted).length
   const merging = status.mergeInProgress || status.rebaseInProgress
+  // What settling merges into: the project's base as set now.
+  const base = project.defaultBranch ?? session?.baseBranch ?? null
 
   return (
     <div data-slot="git-view" className="flex min-h-0 flex-1 flex-col">
@@ -134,10 +136,11 @@ export function GitView({
           git.clearError()
           setConnecting(true)
         }}
+        projectRepo={git.projectRepo}
+        inSession={!!project.sessionHash}
         review={{
           running: reviews.running,
-          // What settling merges into: the project's base as set now.
-          base: project.defaultBranch ?? session?.baseBranch ?? null,
+          base,
           onReview: (scope) => void reviews.run(scope),
         }}
       />
