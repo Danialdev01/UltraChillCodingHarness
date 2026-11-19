@@ -85,16 +85,30 @@ async function get(
   token: string,
   options: GithubOptions | undefined,
 ): Promise<unknown> {
+  return send("GET", path, token, options);
+}
+
+/** One authenticated call of any method; a body goes as JSON. */
+async function send(
+  method: "GET" | "POST",
+  path: string,
+  token: string,
+  options: GithubOptions | undefined,
+  body?: unknown,
+): Promise<unknown> {
   const call = options?.fetch ?? fetch;
   let response: Response;
   try {
     response = await call(`${BASE}${path}`, {
+      method,
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${token}`,
         "x-github-api-version": "2022-11-28",
         "user-agent": "ucch",
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
   } catch (error) {
@@ -111,6 +125,23 @@ async function get(
   }
   if (response.status === 404) {
     throw new GithubError("GitHub has no such repository, or the token cannot see it.", 404);
+  }
+  // A refused create: the name is taken or not allowed. GitHub's own words
+  // are the useful part, so they are passed on.
+  if (response.status === 422) {
+    const detail = (await response.json().catch(() => null)) as {
+      message?: unknown;
+      errors?: { message?: unknown }[];
+    } | null;
+    const reason = detail?.errors?.find((e) => typeof e?.message === "string")?.message;
+    throw new GithubError(
+      typeof reason === "string"
+        ? `GitHub refused it: ${reason}.`
+        : typeof detail?.message === "string"
+          ? `GitHub refused it: ${detail.message}.`
+          : "GitHub refused it.",
+      422,
+    );
   }
   // A 403 with the remaining count at zero is the rate limit; a 403 without
   // it is a scope the token does not have, and the two need different fixes.
@@ -208,6 +239,69 @@ export async function identify(token: string, options?: GithubOptions): Promise<
   const body = (await get("/user", token, options)) as { login?: unknown; name?: unknown };
   if (typeof body?.login !== "string") throw new GithubError("GitHub answered no account.", 502);
   return { login: body.login, name: typeof body.name === "string" ? body.name : null };
+}
+
+/** Somewhere a repository can be created: the account itself, or one of its organisations. */
+export interface GithubOwner {
+  login: string;
+  kind: "user" | "org";
+}
+
+/**
+ * Where this token can create repositories: its own account first, then the
+ * organisations it belongs to. Whether an organisation lets members create
+ * repositories is its own setting, which GitHub only reveals by refusing.
+ */
+export async function listOwners(token: string, options?: GithubOptions): Promise<GithubOwner[]> {
+  const [me, orgs] = await Promise.all([
+    identify(token, options),
+    get(`/user/orgs?per_page=${PER_PAGE}`, token, options),
+  ]);
+  const owners: GithubOwner[] = [{ login: me.login, kind: "user" }];
+  if (Array.isArray(orgs)) {
+    for (const entry of orgs) {
+      const login = (entry as { login?: unknown })?.login;
+      if (typeof login === "string" && login) owners.push({ login, kind: "org" });
+    }
+  }
+  return owners;
+}
+
+export interface CreateRepoInput {
+  /** The account's login, or an organisation's: which endpoint is used depends on it. */
+  owner: string;
+  name: string;
+  private: boolean;
+  description?: string;
+  /** Commit a README, so the repository has a default branch to clone. */
+  autoInit: boolean;
+}
+
+/**
+ * Creates a repository on GitHub and answers with it as the list would.
+ *
+ * `/user/repos` for the token's own account, `/orgs/{org}/repos` for an
+ * organisation -- GitHub has no single endpoint that takes an owner.
+ */
+export async function createRepo(
+  token: string,
+  input: CreateRepoInput,
+  options?: GithubOptions,
+): Promise<GithubRepo> {
+  const me = await identify(token, options);
+  const path =
+    input.owner.toLowerCase() === me.login.toLowerCase()
+      ? "/user/repos"
+      : `/orgs/${encodeURIComponent(input.owner)}/repos`;
+  const body = await send("POST", path, token, options, {
+    name: input.name,
+    private: input.private,
+    auto_init: input.autoInit,
+    ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+  });
+  const repo = toRepo(body);
+  if (!repo) throw new GithubError("GitHub answered no repository.", 502);
+  return repo;
 }
 
 /** One entry of `/user/repos`, or null when it is not shaped like one. */

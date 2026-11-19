@@ -58,6 +58,8 @@ const ProjectCreated = z.object({
   mode: ProjectMode.optional(),
   /** The development database the clone reactor creates for it, if any. */
   database: ProjectDatabase.nullable().optional(),
+  /** Each session on a branch of its own; absent (older events) reads as true. */
+  sessionBranches: z.boolean().optional(),
 });
 
 const ProjectCloned = z.object({

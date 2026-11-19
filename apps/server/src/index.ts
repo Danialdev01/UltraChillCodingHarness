@@ -28,6 +28,8 @@ import {
   type ChangeOrigin,
   type Command,
   type DomainEvent,
+  type GitAccount,
+  type GitProvider,
   type ProjectTask,
 } from "@ucch/protocol";
 import { HostProcessHost, createProviders } from "@ucch/providers";
@@ -136,10 +138,13 @@ import { COLLAB_SECRET_HEADER, collabSecret } from "./collab/secret.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 import {
   GithubError,
+  createRepo,
   identify,
   listBranches,
+  listOwners,
   listRepos,
   tokenAppliesTo,
+  type GithubRepo,
 } from "./github.js";
 import {
   SessionBusyError,
@@ -1873,6 +1878,7 @@ const ProjectPatch = z
     baseBranch: z.string().trim().min(1).max(250).optional(),
     autoPushBase: z.boolean().optional(),
     deleteBranchOnSettle: z.boolean().optional(),
+    sessionBranches: z.boolean().optional(),
   })
   .refine((body) => Object.values(body).some((v) => v !== undefined), { message: "nothing to change" });
 
@@ -1884,12 +1890,17 @@ app.patch<{ Params: { hash: string } }>("/api/projects/:hash", async (request, r
   if (!parsed.success) {
     return reply.code(400).send({ error: "a name of 1-100 characters, or a git setting, is required" });
   }
-  const { name, baseBranch, autoPushBase, deleteBranchOnSettle } = parsed.data;
+  const { name, baseBranch, autoPushBase, deleteBranchOnSettle, sessionBranches } = parsed.data;
 
   let project = await workspaceService.findByHash(request.params.hash, principal.userId);
   if (!project) return reply.code(404).send({ error: "project not found" });
 
-  if (baseBranch !== undefined || autoPushBase !== undefined || deleteBranchOnSettle !== undefined) {
+  if (
+    baseBranch !== undefined ||
+    autoPushBase !== undefined ||
+    deleteBranchOnSettle !== undefined ||
+    sessionBranches !== undefined
+  ) {
     if (!can(project.membership, "project.write")) {
       return reply.code(403).send({ error: "you cannot change this project" });
     }
@@ -1902,7 +1913,7 @@ app.patch<{ Params: { hash: string } }>("/api/projects/:hash", async (request, r
         return reply.code(400).send({ error: `there is no branch "${baseBranch}" in this project, locally or on origin` });
       }
     }
-    await workspaceService.setGitSettings(project.id, { baseBranch, autoPushBase, deleteBranchOnSettle });
+    await workspaceService.setGitSettings(project.id, { baseBranch, autoPushBase, deleteBranchOnSettle, sessionBranches });
   }
   if (name !== undefined) {
     project = (await workspaceService.renameProject(request.params.hash, principal.userId, name)) ?? project;
@@ -1914,6 +1925,7 @@ app.patch<{ Params: { hash: string } }>("/api/projects/:hash", async (request, r
     ...(baseBranch !== undefined ? { baseBranch } : {}),
     ...(autoPushBase !== undefined ? { autoPushBase } : {}),
     ...(deleteBranchOnSettle !== undefined ? { deleteBranchOnSettle } : {}),
+    ...(sessionBranches !== undefined ? { sessionBranches } : {}),
   };
 });
 
@@ -4770,6 +4782,114 @@ app.get<{ Params: { owner: string; repo: string } }>(
     }
   },
 );
+
+/**
+ * Every git host an account can be connected to, and which are.
+ *
+ * GitHub is the only integration so far: GitLab and Gitea come back
+ * `available: false`, which the new-project dialog shows as "Coming soon".
+ * A GitHub token that no longer works reads as not connected rather than an
+ * error -- the dialog's answer is the same, go and fix it in Settings.
+ */
+app.get("/api/git/accounts", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const token = await githubTokenFor(principal.userId);
+  const who = token ? await identify(token).catch(() => null) : null;
+  const accounts: GitAccount[] = [
+    { provider: "github", available: true, connected: Boolean(who), login: who?.login ?? null, name: who?.name ?? null },
+    { provider: "gitlab", available: false, connected: false, login: null, name: null },
+    { provider: "gitea", available: false, connected: false, login: null, name: null },
+  ];
+  return { accounts };
+});
+
+/**
+ * The repositories of every connected account, in one list.
+ *
+ * Each is tagged with the provider and account it came from. One account
+ * failing does not empty the list: its error is reported beside the rest.
+ * No account at all is an empty list, not a 412 -- the dialog's Git tab still
+ * takes a pasted URL without one.
+ */
+app.get("/api/git/repos", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const accounts: { provider: GitProvider; login: string; name: string | null }[] = [];
+  const repos: (GithubRepo & { provider: GitProvider; accountLogin: string })[] = [];
+  const errors: { provider: GitProvider; error: string }[] = [];
+
+  const token = await githubTokenFor(principal.userId);
+  if (token) {
+    try {
+      const [who, list] = await Promise.all([identify(token), listRepos(token)]);
+      accounts.push({ provider: "github", login: who.login, name: who.name });
+      for (const repo of list) repos.push({ ...repo, provider: "github", accountLogin: who.login });
+    } catch (error) {
+      if (!(error instanceof GithubError)) app.log.error({ err: error }, "github call failed");
+      errors.push({
+        provider: "github",
+        error: error instanceof GithubError ? error.message : "GitHub could not be reached.",
+      });
+    }
+  }
+
+  return { accounts, repos, errors };
+});
+
+/** Where the token can create a repository: its own account, then its organisations. */
+app.get("/api/github/owners", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const token = await githubTokenFor(principal.userId);
+  if (!token) return reply.code(412).send({ error: "No GitHub token is configured.", needsToken: true });
+
+  try {
+    return { owners: await listOwners(token) };
+  } catch (error) {
+    return githubFailure(error, reply);
+  }
+});
+
+const CreateGithubRepo = z.object({
+  owner: z.string().trim().min(1).max(100),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .regex(/^[A-Za-z0-9._-]+$/)
+    .refine((v) => v !== "." && v !== ".."),
+  private: z.boolean().default(true),
+  description: z.string().max(350).optional(),
+  autoInit: z.boolean().default(true),
+});
+
+/**
+ * Creates a repository on GitHub for the New Repo tab, which then clones it
+ * through `project.create` like any other.
+ */
+app.post("/api/github/repos", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+
+  const parsed = CreateGithubRepo.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.code(400).send({ error: "an owner and a repository name (letters, digits, . - _) are required" });
+  }
+
+  const token = await githubTokenFor(principal.userId);
+  if (!token) return reply.code(412).send({ error: "No GitHub token is configured.", needsToken: true });
+
+  try {
+    return { repo: await createRepo(token, parsed.data) };
+  } catch (error) {
+    return githubFailure(error, reply);
+  }
+});
 
 /**
  * OpenRouter's catalogue, for the model picker.

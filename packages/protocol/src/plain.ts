@@ -28,6 +28,7 @@ export * from "./project-command-limits.js";
 export * from "./runtime-names.js";
 export * from "./model-routing.js";
 export * from "./widgets.js";
+export * from "./git-providers.js";
 export * from "./context-budget.js";
 export * from "./attachments.js";
 

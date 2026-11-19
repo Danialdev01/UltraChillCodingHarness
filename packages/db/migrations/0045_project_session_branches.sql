@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "session_branches" boolean DEFAULT true NOT NULL;

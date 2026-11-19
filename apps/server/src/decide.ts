@@ -32,6 +32,8 @@ export interface ProjectSnapshot {
   workspaceId: string;
   containerState: ContainerState;
   defaultBranch: string;
+  /** False: sessions share the project's checkout instead of forking `ucch/{hash}`. */
+  sessionBranches?: boolean;
   /** `work` or `personal`: the only accounts its turns may run on. Null: any. */
   requiredContext?: string | null;
 }
@@ -170,6 +172,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           defaultBranch: command.branch ?? "main",
           mode,
           database: command.database ?? null,
+          sessionBranches: command.sessionBranches ?? true,
         },
       ]);
     }
@@ -302,8 +305,12 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           hash,
           ...(command.profileId ? { profileId: command.profileId } : {}),
           // A parallel session: its own worktree, on its own branch, so two
-          // sessions forked from the same base never share a checkout.
-          ...(command.baseBranch ? { baseBranch: command.baseBranch, branch: sessionBranch(hash) } : {}),
+          // sessions forked from the same base never share a checkout --
+          // unless the project commits straight to its base, when the
+          // session works in the project's checkout like the first one does.
+          ...(command.baseBranch && project.value.sessionBranches !== false
+            ? { baseBranch: command.baseBranch, branch: sessionBranch(hash) }
+            : {}),
         },
       ]);
     }

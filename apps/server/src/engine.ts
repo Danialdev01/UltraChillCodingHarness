@@ -297,6 +297,7 @@ export class OrchestrationEngine {
           workspaceId: row.project.workspaceId,
           containerState: row.project.containerState as ContainerState,
           defaultBranch: row.project.defaultBranch,
+          sessionBranches: row.project.sessionBranches,
           requiredContext: row.project.requiredContext,
         };
       }
@@ -419,6 +420,7 @@ export async function applyProjection(
           name: event.name,
           repoUrl: event.repoUrl,
           defaultBranch: event.defaultBranch,
+          sessionBranches: event.sessionBranches ?? true,
         });
         await tx.insert(projectStats).values({ projectId: event.projectId });
         break;

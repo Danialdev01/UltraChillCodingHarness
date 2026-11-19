@@ -56,6 +56,8 @@ export interface ProjectSummary {
   defaultBranch?: string;
   autoPushBase?: boolean;
   deleteBranchOnSettle?: boolean;
+  /** Each session on `ucch/{hash}` in a worktree; false: they share the checkout. */
+  sessionBranches?: boolean;
 }
 
 /**
@@ -72,6 +74,7 @@ export interface ProjectRow extends ProjectSummary {
   defaultBranch: string;
   autoPushBase: boolean;
   deleteBranchOnSettle: boolean;
+  sessionBranches: boolean;
   lastActiveAt: Date;
   createdAt: Date;
   /** Whether a turn is in flight in any of this project's threads. */
@@ -321,12 +324,13 @@ export class WorkspaceService {
   /** The base branch and settle options, as Project Settings sets them. */
   async setGitSettings(
     projectId: string,
-    settings: { baseBranch?: string; autoPushBase?: boolean; deleteBranchOnSettle?: boolean },
+    settings: { baseBranch?: string; autoPushBase?: boolean; deleteBranchOnSettle?: boolean; sessionBranches?: boolean },
   ): Promise<void> {
     const set: Partial<typeof projects.$inferInsert> = {};
     if (settings.baseBranch !== undefined) set.defaultBranch = settings.baseBranch;
     if (settings.autoPushBase !== undefined) set.autoPushBase = settings.autoPushBase;
     if (settings.deleteBranchOnSettle !== undefined) set.deleteBranchOnSettle = settings.deleteBranchOnSettle;
+    if (settings.sessionBranches !== undefined) set.sessionBranches = settings.sessionBranches;
     if (Object.keys(set).length === 0) return;
     await this.db.update(projects).set(set).where(eq(projects.id, projectId));
   }
@@ -367,6 +371,7 @@ export class WorkspaceService {
         defaultBranch: projects.defaultBranch,
         autoPushBase: projects.autoPushBase,
         deleteBranchOnSettle: projects.deleteBranchOnSettle,
+        sessionBranches: projects.sessionBranches,
       })
       .from(projects)
       .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
@@ -425,6 +430,7 @@ export class WorkspaceService {
         defaultBranch: projects.defaultBranch,
         autoPushBase: projects.autoPushBase,
         deleteBranchOnSettle: projects.deleteBranchOnSettle,
+        sessionBranches: projects.sessionBranches,
         lastActiveAt: projects.lastActiveAt,
         createdAt: projects.createdAt,
         running: sql<boolean>`exists (

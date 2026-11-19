@@ -276,6 +276,11 @@ export const projects = pgTable(
     /** Delete `ucch/{hash}` once a session is merged and its worktree removed. */
     deleteBranchOnSettle: boolean("delete_branch_on_settle").notNull().default(true),
     /**
+     * Each session works on `ucch/{hash}` in a worktree of its own. Off: new
+     * sessions share the project's checkout and commit to the base branch.
+     */
+    sessionBranches: boolean("session_branches").notNull().default(true),
+    /**
      * Detected stack, as `detectStack` in apps/server/src/clone.ts names it:
      * a framework (laravel, nextjs, nuxt, react, django, rails, …), else a
      * language or runtime (node, python, rust, go, php, …), else static, or

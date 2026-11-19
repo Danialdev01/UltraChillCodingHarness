@@ -316,6 +316,13 @@
       "when": 1794988567703,
       "tag": "0044_knowledge_document_bigint_size",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1795054855708,
+      "tag": "0045_project_session_branches",
+      "breakpoints": true
     }
   ]
 }

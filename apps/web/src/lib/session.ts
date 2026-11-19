@@ -155,6 +155,8 @@ export interface Project {
   autoPushBase?: boolean;
   /** Delete a settled session's `ucch/{hash}` branch. */
   deleteBranchOnSettle?: boolean;
+  /** Each session on a `ucch/{hash}` branch of its own; false: they commit to the base. */
+  sessionBranches?: boolean;
   /** ISO strings: JSON has no date, and nothing here needs one. */
   lastActiveAt?: string;
   createdAt?: string;

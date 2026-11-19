@@ -32,6 +32,12 @@ const ProjectCreate = z.object({
   mode: ProjectMode.optional(),
   /** A database to create on the shared dev server. Development projects only. */
   database: ProjectDatabase.optional(),
+  /**
+   * Whether each session gets a branch (`ucch/{hash}`) and worktree of its
+   * own. False: sessions work in the project's checkout and commit straight
+   * to the base branch. True when absent.
+   */
+  sessionBranches: z.boolean().optional(),
 });
 
 const ProjectStart = z.object({
