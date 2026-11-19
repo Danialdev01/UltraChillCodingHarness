@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { FingerprintIcon, KeyRoundIcon, ServerIcon, UploadIcon } from "lucide-react"
+import { EyeIcon, EyeOffIcon, FingerprintIcon, KeyRoundIcon, ServerIcon, UploadIcon } from "lucide-react"
 import type { SshAuthMethod, SshHostSummary } from "@ucch/protocol"
 
 import {
@@ -193,7 +193,16 @@ export function SshHostDialog({
       </FormField>
 
       <FormField label="Sign in with" labelId="ssh-auth-label">
-        <Segmented options={AUTH_OPTIONS} value={authMethod} onChange={setAuthMethod} labelledBy="ssh-auth-label" />
+        <Segmented
+          options={AUTH_OPTIONS}
+          value={authMethod}
+          onChange={(method) => {
+            // A password is not a key: never carry one into the other's field.
+            if (method !== authMethod) setSecret("")
+            setAuthMethod(method)
+          }}
+          labelledBy="ssh-auth-label"
+        />
       </FormField>
 
       {authMethod === "password" ? (
@@ -202,13 +211,12 @@ export function SshHostDialog({
           htmlFor="ssh-password"
           helper={editing && !methodChanged ? "Leave empty to keep the saved password." : undefined}
         >
-          <input
+          <SecretInput
             id="ssh-password"
-            type="password"
-            className={FIELD}
+            label="password"
+            open={open}
             value={secret}
-            onChange={(e) => setSecret(e.target.value)}
-            autoComplete="new-password"
+            onChange={setSecret}
             placeholder={editing && !methodChanged ? "••••••••" : undefined}
           />
         </FormField>
@@ -262,13 +270,12 @@ export function SshHostDialog({
             htmlFor="ssh-passphrase"
             helper={editing && host.hasPassphrase && !secret ? "Leave empty to keep the saved passphrase." : undefined}
           >
-            <input
+            <SecretInput
               id="ssh-passphrase"
-              type="password"
-              className={FIELD}
+              label="passphrase"
+              open={open}
               value={passphrase}
-              onChange={(e) => setPassphrase(e.target.value)}
-              autoComplete="new-password"
+              onChange={setPassphrase}
             />
           </FormField>
         </>
@@ -286,5 +293,58 @@ export function SshHostDialog({
         </p>
       )}
     </FormDialog>
+  )
+}
+
+/**
+ * A password field with an eye button that shows what was typed. Hidden
+ * again each time the dialog opens, so a value is never left on screen.
+ */
+function SecretInput({
+  id,
+  label,
+  open,
+  value,
+  onChange,
+  placeholder,
+}: {
+  id: string
+  label: string
+  open: boolean
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  const [shown, setShown] = React.useState(false)
+  React.useEffect(() => {
+    if (open) setShown(false)
+  }, [open])
+  const action = `${shown ? "Hide" : "Show"} ${label}`
+  return (
+    <div className="relative">
+      <input
+        id={id}
+        type={shown ? "text" : "password"}
+        className={cn(FIELD, "pr-9")}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        // Not a login to this site: keep password managers from saving it.
+        autoComplete="new-password"
+        spellCheck={false}
+        data-1p-ignore
+        data-lpignore="true"
+      />
+      <button
+        type="button"
+        onClick={() => setShown((v) => !v)}
+        aria-label={action}
+        aria-pressed={shown}
+        title={action}
+        className="text-muted-foreground hover:text-foreground focus-visible:ring-ucch-active/40 absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-md focus-visible:ring-2 focus-visible:outline-none"
+      >
+        {shown ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+      </button>
+    </div>
   )
 }
