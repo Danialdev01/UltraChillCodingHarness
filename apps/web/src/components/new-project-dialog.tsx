@@ -6,25 +6,37 @@ import {
   DatabaseIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  GitForkIcon,
+  LinkIcon,
   LockIcon,
   Loader2Icon,
   PlusIcon,
   SearchIcon,
+  UsersIcon,
 } from "lucide-react";
 import {
   DATABASE_ENGINE_LABELS,
   DEV_DATABASE_NAME,
+  GIT_PROVIDER_LABELS,
   PROJECT_MODE_LABELS,
   PROJECT_MODES,
   suggestDevDatabaseName,
   PROJECT_KEY_MAX,
   PROJECT_KEY_MIN,
 } from "@ucch/protocol/plain";
-import type { DevDatabaseName, ProjectMode, DatabaseEngine, ProjectDatabase } from "@ucch/protocol";
+import type {
+  DevDatabaseName,
+  GitAccount,
+  GitProvider,
+  ProjectMode,
+  DatabaseEngine,
+  ProjectDatabase,
+} from "@ucch/protocol";
 
 import { GithubMark } from "@/components/github-mark";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Command,
   CommandEmpty,
@@ -37,6 +49,7 @@ import {
   Callout,
   Code,
   FIELD,
+  FOCUS,
   FormDialog,
   FormDialogFooter,
   HELPER,
@@ -45,6 +58,7 @@ import {
   OptionTabs,
   PopoverSelect,
   Segmented,
+  TEXTAREA,
 } from "@/components/form-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createProject } from "@/lib/create-project";
@@ -53,11 +67,16 @@ import { unlockProject } from "@/lib/project-key-store";
 import { newKeyProblem } from "@/lib/project-key";
 import {
   NoGithubToken,
+  createGithubRepo,
   fetchBranches,
-  fetchRepos,
+  fetchGitAccounts,
+  fetchGitRepos,
+  fetchGithubOwners,
   isValidRepoName,
   suggestRepoName,
-  type GithubAccount,
+  type GitRepo,
+  type GitReposError,
+  type GithubOwner,
   type GithubRepo,
 } from "@/lib/github-api";
 import { useToast } from "@/lib/realtime";
@@ -67,12 +86,12 @@ import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions";
 import { useProjectHref } from "@/lib/workspace-context";
 
 /** Where the code for a new project comes from. */
-type Source = "github" | "custom" | "new";
+type Source = "git" | "create" | "empty";
 
 const SOURCES = [
-  { value: "github", title: "GitHub", hint: "Import a repo" },
-  { value: "custom", title: "Git URL", hint: "Any remote" },
-  { value: "new", title: "Empty", hint: "Start fresh" },
+  { value: "git", title: "Git", hint: "Import a repo" },
+  { value: "create", title: "New Repo", hint: "Create on a host" },
+  { value: "empty", title: "Empty", hint: "No git remote" },
 ] as const;
 
 /** Short enough for three segments side by side; the full label is the accessible name. */
@@ -91,6 +110,16 @@ const DATABASE_OPTIONS: { value: DatabaseEngine | ""; label: string }[] = [
   })),
 ];
 
+type Visibility = "private" | "public";
+
+const VISIBILITY_OPTIONS = [
+  { value: "private", label: "Private" },
+  { value: "public", label: "Public" },
+] as const;
+
+/** The combined list's identity for a repository: two accounts can share a full name. */
+const repoKey = (repo: GitRepo) => `${repo.provider}:${repo.fullName}`;
+
 /**
  * Starting a project, from one of three places.
  *
@@ -98,12 +127,15 @@ const DATABASE_OPTIONS: { value: DatabaseEngine | ""; label: string }[] = [
  * project, the database it gets on the shared dev server -- and where its code
  * comes from below that.
  *
- * The three tabs are three different things the person already has: an account
- * full of repositories, a URL, or nothing at all. They converge on one command
- * -- `project.create` -- and the only difference in what is sent is whether
- * there is a `repoUrl` on it. A project with none is initialised as a git
- * repository on disk instead of cloned, which is what makes it pushable to
- * GitHub (or anywhere else) later.
+ * - **Git** imports an existing repository: chosen from every connected
+ *   account's repositories in one list, or pasted as a URL from anywhere.
+ * - **New Repo** creates a repository on a connected host first, then clones
+ *   it, so the project has a remote to push to from its first session.
+ * - **Empty** starts a local repository with no remote at all.
+ *
+ * All three converge on one command -- `project.create` -- and differ only in
+ * whether a `repoUrl` is on it. Whether sessions branch is a project setting
+ * sent with it, and changeable later in Project Settings.
  *
  * The dialog stays open until the work lands, then goes to the project. A
  * redirect at `project.created` would arrive on an empty file tree and read as
@@ -121,8 +153,8 @@ export function NewProjectDialog({
   const router = useTransitionRouter();
   const hrefOf = useProjectHref();
   const toast = useToast();
-  const [source, setSource] = React.useState<Source>("github");
-  const [stage, setStage] = React.useState<"idle" | "creating" | "cloning">("idle");
+  const [source, setSource] = React.useState<Source>("git");
+  const [stage, setStage] = React.useState<"idle" | "repo" | "creating" | "cloning">("idle");
   const [error, setError] = React.useState<string | null>(null);
 
   /** The name the project takes, whichever tab its code comes from. */
@@ -140,31 +172,54 @@ export function NewProjectDialog({
   /** Optional; encrypts the project's environment variables. Set up once the project exists. */
   const [projectKey, setProjectKey] = React.useState("");
   const [projectKeyConfirm, setProjectKeyConfirm] = React.useState("");
+  /** Each session on a `ucch/{hash}` branch of its own; off, they commit to the base branch. */
+  const [sessionBranches, setSessionBranches] = React.useState(true);
 
-  // -- The GitHub tab --------------------------------------------------------
-  const [account, setAccount] = React.useState<GithubAccount | null>(null);
-  const [repos, setRepos] = React.useState<GithubRepo[] | null>(null);
+  // -- The Git tab: every connected account's repositories ---------------------
+  const [gitAccounts, setGitAccounts] = React.useState<
+    { provider: GitProvider; login: string; name: string | null }[]
+  >([]);
+  /** Null until the list arrives. */
+  const [repos, setRepos] = React.useState<GitRepo[] | null>(null);
+  /** The whole request failing; one account failing is in `accountErrors`. */
   const [reposError, setReposError] = React.useState<string | null>(null);
-  /** True when the account has no token: a state to act on, not an error. */
-  const [needsToken, setNeedsToken] = React.useState(false);
-  const [picked, setPicked] = React.useState<GithubRepo | null>(null);
-  const [ghBranches, setGhBranches] = React.useState<string[]>([]);
-  const [ghBranch, setGhBranch] = React.useState("");
-  const [ghBranchesLoading, setGhBranchesLoading] = React.useState(false);
+  const [accountErrors, setAccountErrors] = React.useState<GitReposError[]>([]);
+  /** Choose from the accounts' list, or paste a URL from anywhere. */
+  const [gitMode, setGitMode] = React.useState<"list" | "url">("list");
+  const [picked, setPicked] = React.useState<GitRepo | null>(null);
+  const [pickedBranches, setPickedBranches] = React.useState<string[]>([]);
+  const [pickedBranch, setPickedBranch] = React.useState("");
+  const [pickedBranchesLoading, setPickedBranchesLoading] = React.useState(false);
 
-  // -- The custom-repository tab --------------------------------------------
+  // -- The Git tab, by URL -----------------------------------------------------
   const [repoUrl, setRepoUrl] = React.useState("");
   const [branch, setBranch] = React.useState("");
   const [branches, setBranches] = React.useState<string[]>([]);
   const [checking, setChecking] = React.useState(false);
   const [refsError, setRefsError] = React.useState<string | null>(null);
 
+  // -- The New Repo tab --------------------------------------------------------
+  /** Every host, integrated or not, connected or not. Null until read. */
+  const [hosts, setHosts] = React.useState<GitAccount[] | null>(null);
+  const [hostsError, setHostsError] = React.useState<string | null>(null);
+  const [host, setHost] = React.useState<GitProvider>("github");
+  const [owners, setOwners] = React.useState<GithubOwner[] | null>(null);
+  const [ownersError, setOwnersError] = React.useState<string | null>(null);
+  const [owner, setOwner] = React.useState("");
+  const [visibility, setVisibility] = React.useState<Visibility>("private");
+  const [description, setDescription] = React.useState("");
+  /**
+   * The repository this dialog already created, so a retry after the clone
+   * failed reuses it instead of being refused for a name that is now taken.
+   */
+  const createdRepo = React.useRef<GithubRepo | null>(null);
+
   // A fresh dialog every time: a half-filled form from last week is not a
-  // head start. The repository list is dropped with it, so a repository
+  // head start. The repository lists are dropped with it, so a repository
   // created since the last visit is offered on the next one.
   React.useEffect(() => {
     if (open) return;
-    setSource("github");
+    setSource("git");
     setStage("idle");
     setError(null);
     setName("");
@@ -175,46 +230,104 @@ export function NewProjectDialog({
     setDbNameTouched(false);
     setProjectKey("");
     setProjectKeyConfirm("");
-    setAccount(null);
+    setSessionBranches(true);
+    setGitAccounts([]);
     setRepos(null);
     setReposError(null);
-    setNeedsToken(false);
+    setAccountErrors([]);
+    setGitMode("list");
     setPicked(null);
-    setGhBranches([]);
-    setGhBranch("");
+    setPickedBranches([]);
+    setPickedBranch("");
     setRepoUrl("");
     setBranch("");
     setBranches([]);
     setRefsError(null);
+    setHosts(null);
+    setHostsError(null);
+    setHost("github");
+    setOwners(null);
+    setOwnersError(null);
+    setOwner("");
+    setVisibility("private");
+    setDescription("");
+    createdRepo.current = null;
   }, [open]);
 
   /**
-   * Reads the account's repositories, once, when the tab that needs them is
-   * first looked at.
-   *
-   * Lazily rather than on open: it is three API calls to GitHub, and somebody
-   * who came here to paste a URL should not pay for them.
+   * Reads every connected account's repositories, once, when the Git tab is
+   * first looked at -- it is several calls to each host, and somebody who came
+   * to start an empty project should not pay for them.
    */
   React.useEffect(() => {
-    if (!open || source !== "github" || repos !== null || reposError || needsToken) return;
+    if (!open || source !== "git" || repos !== null || reposError) return;
 
     let cancelled = false;
-    void fetchRepos()
-      .then(({ account: who, repos: list }) => {
+    void fetchGitRepos()
+      .then(({ accounts, repos: list, errors }) => {
         if (cancelled) return;
-        setAccount(who);
+        setGitAccounts(accounts);
         setRepos(list);
+        setAccountErrors(errors);
+        // Nothing connected: the list has nothing to offer, the URL does.
+        if (accounts.length === 0 && errors.length === 0) setGitMode("url");
       })
       .catch((e: unknown) => {
-        if (cancelled) return;
-        if (e instanceof NoGithubToken) setNeedsToken(true);
-        else setReposError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setReposError(e instanceof Error ? e.message : String(e));
       });
 
     return () => {
       cancelled = true;
     };
-  }, [open, source, repos, reposError, needsToken]);
+  }, [open, source, repos, reposError]);
+
+  /** Reads which hosts exist and are connected, when the New Repo tab is first looked at. */
+  React.useEffect(() => {
+    if (!open || source !== "create" || hosts !== null || hostsError) return;
+
+    let cancelled = false;
+    void fetchGitAccounts()
+      .then((list) => {
+        if (cancelled) return;
+        setHosts(list);
+        // The first host that can actually take a repository.
+        const usable = list.find((h) => h.available && h.connected);
+        if (usable) setHost(usable.provider);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setHostsError(e instanceof Error ? e.message : String(e));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, source, hosts, hostsError]);
+
+  const hostAccount = hosts?.find((h) => h.provider === host) ?? null;
+  const hostUsable = Boolean(hostAccount?.available && hostAccount.connected);
+
+  /** Reads where the chosen host can create a repository: the account, then its organisations. */
+  React.useEffect(() => {
+    if (!open || source !== "create" || !hostUsable || host !== "github" || owners !== null || ownersError) return;
+
+    let cancelled = false;
+    void fetchGithubOwners()
+      .then((list) => {
+        if (cancelled) return;
+        setOwners(list);
+        setOwner((current) => current || list[0]?.login || "");
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setOwnersError(
+          e instanceof NoGithubToken ? "No GitHub token is configured." : e instanceof Error ? e.message : String(e),
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, source, hostUsable, host, owners, ownersError]);
 
   /**
    * Reads the chosen repository's branches.
@@ -225,22 +338,24 @@ export function NewProjectDialog({
    */
   React.useEffect(() => {
     if (!picked) {
-      setGhBranches([]);
-      setGhBranch("");
+      setPickedBranches([]);
+      setPickedBranch("");
       return;
     }
 
-    setGhBranch(picked.defaultBranch);
-    setGhBranches([picked.defaultBranch]);
-    setGhBranchesLoading(true);
+    setPickedBranch(picked.defaultBranch);
+    setPickedBranches([picked.defaultBranch]);
+    // GitHub's API is the only branch reader with a token behind it so far.
+    if (picked.provider !== "github") return;
+    setPickedBranchesLoading(true);
 
     let cancelled = false;
     void fetchBranches(picked.owner, picked.name)
       .then(({ branches: list, defaultBranch }) => {
         if (cancelled) return;
-        setGhBranches(list);
+        setPickedBranches(list);
         // The repository's own default wins over the list's first entry.
-        setGhBranch(defaultBranch ?? picked.defaultBranch);
+        setPickedBranch(defaultBranch ?? picked.defaultBranch);
       })
       .catch((e: unknown) => {
         // The default from the repository is still selected and still clones,
@@ -248,7 +363,7 @@ export function NewProjectDialog({
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       })
       .finally(() => {
-        if (!cancelled) setGhBranchesLoading(false);
+        if (!cancelled) setPickedBranchesLoading(false);
       });
 
     return () => {
@@ -306,13 +421,12 @@ export function NewProjectDialog({
     return () => clearTimeout(timer);
   }, [repoUrl]);
 
-  // The name follows whichever repository the current tab names, until it is
+  // The name follows whichever repository the Git tab names, until it is
   // edited and then it is yours.
   React.useEffect(() => {
-    if (nameTouched) return;
-    if (source === "github") setName(picked?.name ?? "");
-    if (source === "custom") setName(deriveProjectName(repoUrl));
-  }, [source, picked, repoUrl, nameTouched]);
+    if (nameTouched || source !== "git") return;
+    setName(gitMode === "list" ? picked?.name ?? "" : deriveProjectName(repoUrl));
+  }, [source, gitMode, picked, repoUrl, nameTouched]);
 
   // The database is named after the project until somebody names it.
   React.useEffect(() => {
@@ -324,8 +438,14 @@ export function NewProjectDialog({
   const dbNameValid = !database || DEV_DATABASE_NAME.test(dbName);
 
   const busy = stage !== "idle";
+  /** The tabs whose name is also a repository's, and so must be a valid one. */
+  const nameIsRepoName = source === "create" || source === "empty";
 
-  /** What this tab would send, or null when it is not ready to send anything. */
+  /**
+   * What this tab would send, or null when it is not ready to send anything.
+   * New Repo's `repoUrl` is not known until the repository exists, so it is
+   * added at submit.
+   */
   const command = React.useMemo(():
     | {
         repoUrl?: string;
@@ -333,25 +453,27 @@ export function NewProjectDialog({
         branch?: string;
         mode: ProjectMode;
         database?: ProjectDatabase;
+        sessionBranches: boolean;
       }
     | null => {
     if (!dbNameValid) return null;
-    const what = { mode, ...(database ? { database } : {}) };
-    if (source === "github") {
+    const what = { mode, sessionBranches, ...(database ? { database } : {}) };
+    if (source === "git" && gitMode === "list") {
       if (!picked || !name.trim()) return null;
-      return { repoUrl: picked.cloneUrl, name: name.trim(), branch: ghBranch || picked.defaultBranch, ...what };
+      return { repoUrl: picked.cloneUrl, name: name.trim(), branch: pickedBranch || picked.defaultBranch, ...what };
     }
-    if (source === "custom") {
+    if (source === "git") {
       const url = repoUrl.trim();
       if (!looksLikeRepoUrl(url) || !name.trim()) return null;
       return { repoUrl: url, name: name.trim(), ...(branch ? { branch } : {}), ...what };
     }
+    if (source === "create" && (!hostUsable || !owner)) return null;
     // No `repoUrl` at all: the server reads its absence as "start one".
     if (!isValidRepoName(name)) return null;
     return { name: name.trim(), ...what };
     // `database` is rebuilt each render; its parts are the real dependencies.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, picked, name, ghBranch, repoUrl, branch, mode, engine, dbName, dbNameValid]);
+  }, [source, gitMode, picked, name, pickedBranch, repoUrl, branch, mode, engine, dbName, dbNameValid, sessionBranches, hostUsable, owner]);
 
   // Blank is fine: the key is optional. Typed, it must be one that can be set up.
   const projectKeyError = projectKey || projectKeyConfirm ? newKeyProblem(projectKey, projectKeyConfirm) : null;
@@ -363,7 +485,26 @@ export function NewProjectDialog({
     setError(null);
 
     try {
-      const created = await createProject({ workspaceId, ...command }, setStage);
+      let toSend = command;
+      if (source === "create") {
+        setStage("repo");
+        // Created with a README so it has a default branch to clone.
+        const previous = createdRepo.current;
+        const repo =
+          previous && previous.owner.toLowerCase() === owner.toLowerCase() && previous.name === command.name
+            ? previous
+            : await createGithubRepo({
+                owner,
+                name: command.name,
+                private: visibility === "private",
+                ...(description.trim() ? { description: description.trim() } : {}),
+                autoInit: true,
+              });
+        createdRepo.current = repo;
+        toSend = { ...command, repoUrl: repo.cloneUrl, branch: repo.defaultBranch };
+      }
+
+      const created = await createProject({ workspaceId, ...toSend }, setStage);
 
       // The project is fine without its database, so it opens either way and
       // the reason travels with it.
@@ -389,7 +530,13 @@ export function NewProjectDialog({
       // The sidebar hears of the new project as `resource.changed{projects}`.
       router.push(hrefOf(created.hash));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(
+        e instanceof NoGithubToken
+          ? "No GitHub token is configured. Add one in Settings → API."
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
       setStage("idle");
     }
   }
@@ -401,17 +548,18 @@ export function NewProjectDialog({
       busy={busy}
       icon={FolderPlusIcon}
       title="Create a new project"
-      description="Each project runs in an isolated workspace — the only place the agent can read or write."
       onSubmit={submit}
       footer={
         <FormDialogFooter hint="Isolated workspace" hintIcon={LockIcon} busy={busy} disabled={!command || Boolean(projectKeyError)}>
-          {stage === "cloning"
-            ? source === "new"
-              ? "Initialising…"
-              : "Cloning…"
-            : stage === "creating"
-              ? "Creating…"
-              : "Create project"}
+          {stage === "repo"
+            ? "Creating repository…"
+            : stage === "cloning"
+              ? source === "empty"
+                ? "Initialising…"
+                : "Cloning…"
+              : stage === "creating"
+                ? "Creating…"
+                : "Create project"}
         </FormDialogFooter>
       }
     >
@@ -420,9 +568,9 @@ export function NewProjectDialog({
                 Project name
               </label>
               <div className="flex h-[34px] overflow-hidden rounded-[8px] border border-(--fd-border-field) bg-(--fd-field) transition-[border-color,box-shadow] focus-within:border-(--fd-accent) focus-within:ring-[3px] focus-within:ring-(--fd-ring)">
-                {account && (
+                {source === "create" && owner && (
                   <span className="fd-mono flex shrink-0 items-center border-r border-(--fd-prefix-border) bg-(--fd-prefix) px-2.5 text-[11.5px] text-(--fd-icon-dim) select-none">
-                    {account.login} /
+                    {owner} /
                   </span>
                 )}
                 <input
@@ -430,9 +578,9 @@ export function NewProjectDialog({
                   value={name}
                   onChange={(e) => {
                     setNameTouched(true);
-                    // A started repository's name is its directory's name, so it
-                    // is corrected as it is typed, as GitHub does.
-                    setName(source === "new" ? suggestRepoName(e.target.value) : e.target.value);
+                    // A new repository's name is its directory's name, so it is
+                    // corrected as it is typed, as GitHub does.
+                    setName(nameIsRepoName ? suggestRepoName(e.target.value) : e.target.value);
                   }}
                   placeholder="my-project"
                   spellCheck={false}
@@ -442,11 +590,13 @@ export function NewProjectDialog({
                   className="fd-mono min-w-0 grow bg-transparent px-2.5 text-[12.5px] text-(--fd-text) outline-none placeholder:text-(--fd-text-disabled) focus-visible:outline-none"
                 />
               </div>
-              <p className={HELPER}>
-                {source === "new"
-                  ? "Letters, numbers, dots, dashes and underscores. It also names the new repository."
-                  : "How the project is listed. Follows the repository's name until you edit it."}
-              </p>
+              {source !== "git" && (
+                <p className={HELPER}>
+                  {source === "create"
+                    ? "Letters, numbers, dots, dashes and underscores. It also names the repository created for it."
+                    : "Letters, numbers, dots, dashes and underscores. It also names the local repository."}
+                </p>
+              )}
             </div>
 
             {/* Mode is the wider column: it has three options to the database's one trigger. */}
@@ -566,11 +716,9 @@ export function NewProjectDialog({
                   className={FIELD}
                 />
               </div>
-              <p className={cn(HELPER, "sm:col-span-2", projectKeyError && projectKeyConfirm && "text-destructive")}>
-                {projectKeyError && projectKeyConfirm
-                  ? projectKeyError
-                  : "Encrypts the environment variables in .agent/env.val. It cannot be recovered, and can also be set up later under Manage."}
-              </p>
+              {projectKeyError && projectKeyConfirm && (
+                <p className={cn(HELPER, "sm:col-span-2 text-destructive")}>{projectKeyError}</p>
+              )}
             </div>
 
             <div role="separator" className="h-px bg-(--fd-border-subtle)" />
@@ -579,11 +727,14 @@ export function NewProjectDialog({
               value={source}
               onChange={(value) => {
                 setSource(value);
-                // The name belongs to whichever source produced it, so an
-                // untouched one is re-derived by the effect above rather than
-                // carried over. A typed one is kept, made fit to name a
-                // repository if needed.
-                if (value === "new") setName((current) => suggestRepoName(current));
+                // An untouched name is re-derived by the effect above rather
+                // than carried over; a typed one is kept, made fit to name a
+                // repository where the tab needs one.
+                if (value === "create" || value === "empty") {
+                  setName((current) => suggestRepoName(current));
+                } else if (!nameTouched) {
+                  setName("");
+                }
                 setError(null);
               }}
               label="Source code"
@@ -592,22 +743,23 @@ export function NewProjectDialog({
               disabled={busy}
             >
 
-              <OptionPanel value="github">
-                {needsToken ? (
-                  <NoToken />
-                ) : (
+              <OptionPanel value="git">
+                {gitMode === "list" ? (
                   <>
                     <div className="flex flex-col gap-1.5">
                       <div className="flex items-center justify-between gap-2.5">
                         <span id="new-project-repo-label" className={LABEL}>
                           Repository
                         </span>
-                        {account && (
-                          <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-(--fd-text-muted)">
-                            <GithubMark className="size-3 shrink-0" />
-                            <span className="truncate">
-                              {account.login} · {repos?.length ?? 0} repos
-                            </span>
+                        {gitAccounts.length > 0 && (
+                          <span className="flex min-w-0 items-center gap-2 text-[11px] text-(--fd-text-muted)">
+                            {gitAccounts.map((a) => (
+                              <span key={`${a.provider}:${a.login}`} className="flex min-w-0 items-center gap-1">
+                                <ProviderMark provider={a.provider} className="size-3 shrink-0" />
+                                <span className="truncate">{a.login}</span>
+                              </span>
+                            ))}
+                            <span className="shrink-0">· {repos?.length ?? 0} repos</span>
                           </span>
                         )}
                       </div>
@@ -624,86 +776,245 @@ export function NewProjectDialog({
                           {reposError}
                         </p>
                       )}
+                      {accountErrors.map((e) => (
+                        <p key={e.provider} role="alert" className="text-destructive text-[11.5px]">
+                          {GIT_PROVIDER_LABELS[e.provider]}: {e.error}
+                        </p>
+                      ))}
                     </div>
 
                     <div className="flex flex-col gap-1.5">
                       <span
-                        id="new-project-gh-branch-label"
+                        id="new-project-picked-branch-label"
                         className={cn(LABEL, !picked && "text-(--fd-text-faint)")}
                       >
                         Branch
                       </span>
                       <BranchPicker
-                        branches={ghBranches}
-                        value={ghBranch}
-                        onChange={setGhBranch}
+                        branches={pickedBranches}
+                        value={pickedBranch}
+                        onChange={setPickedBranch}
                         disabled={busy || !picked}
-                        loading={ghBranchesLoading}
+                        loading={pickedBranchesLoading}
                         placeholder="Select a repository first"
-                        labelledBy="new-project-gh-branch-label"
+                        labelledBy="new-project-picked-branch-label"
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {repos !== null && gitAccounts.length === 0 && accountErrors.length === 0 && (
+                      <NoGitAccount>
+                        Connect GitHub to pick from your repositories (GitLab and Gitea are
+                        coming). A URL from any host the server can reach works without one.
+                      </NoGitAccount>
+                    )}
+                    <div className="flex flex-col gap-1.5">
+                      <label htmlFor="new-project-url" className={LABEL}>
+                        Git URL
+                      </label>
+                      <input
+                        id="new-project-url"
+                        value={repoUrl}
+                        onChange={(e) => setRepoUrl(e.target.value)}
+                        placeholder="https://gitlab.example.com/team/repo.git"
+                        spellCheck={false}
+                        autoComplete="off"
+                        disabled={busy}
+                        className={cn(FIELD, "fd-mono text-[11.5px] placeholder:text-(--fd-text-disabled)")}
+                      />
+                      {checking ? (
+                        <p className={cn(HELPER, "flex items-center gap-1.5")}>
+                          <Loader2Icon className="size-3 animate-spin" />
+                          Reading the repository&apos;s branches…
+                        </p>
+                      ) : refsError ? (
+                        <p role="alert" className="text-destructive text-[11.5px]">
+                          {refsError}
+                        </p>
+                      ) : (
+                        <p className={HELPER}>HTTPS or SSH, from any host the server can reach.</p>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <span
+                        id="new-project-branch-label"
+                        className={cn(LABEL, branches.length === 0 && "text-(--fd-text-faint)")}
+                      >
+                        Branch
+                      </span>
+                      <BranchPicker
+                        branches={branches}
+                        value={branch}
+                        onChange={setBranch}
+                        disabled={busy}
+                        loading={checking}
+                        placeholder="Paste a Git URL first"
+                        labelledBy="new-project-branch-label"
                       />
                     </div>
                   </>
                 )}
+
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setGitMode((m) => (m === "list" ? "url" : "list"));
+                    setError(null);
+                  }}
+                  className={cn(
+                    "flex w-fit items-center gap-1.5 rounded-[4px] text-[11.5px] text-(--fd-text-muted) hover:text-(--fd-text) disabled:opacity-60",
+                    FOCUS,
+                  )}
+                >
+                  {gitMode === "list" ? (
+                    <>
+                      <LinkIcon className="size-3" />
+                      Use a Git URL instead
+                    </>
+                  ) : (
+                    <>
+                      <SearchIcon className="size-3" />
+                      Choose from your connected accounts
+                    </>
+                  )}
+                </button>
               </OptionPanel>
 
-              <OptionPanel value="custom">
+              <OptionPanel value="create">
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="new-project-url" className={LABEL}>
-                    Git URL
-                  </label>
-                  <input
-                    id="new-project-url"
-                    value={repoUrl}
-                    onChange={(e) => setRepoUrl(e.target.value)}
-                    placeholder="https://gitlab.example.com/team/repo.git"
-                    spellCheck={false}
-                    autoComplete="off"
+                  <span id="new-project-host-label" className={LABEL}>
+                    Create on
+                  </span>
+                  <HostChoice
+                    hosts={hosts}
+                    value={host}
+                    onChange={(next) => {
+                      setHost(next);
+                      setError(null);
+                    }}
                     disabled={busy}
-                    className={cn(FIELD, "fd-mono text-[11.5px] placeholder:text-(--fd-text-disabled)")}
+                    labelledBy="new-project-host-label"
                   />
-                  {checking ? (
-                    <p className={cn(HELPER, "flex items-center gap-1.5")}>
-                      <Loader2Icon className="size-3 animate-spin" />
-                      Reading the repository&apos;s branches…
-                    </p>
-                  ) : refsError ? (
+                  {hostsError && (
                     <p role="alert" className="text-destructive text-[11.5px]">
-                      {refsError}
+                      {hostsError}
                     </p>
-                  ) : (
-                    <p className={HELPER}>HTTPS or SSH, from any host the server can reach.</p>
                   )}
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <span
-                    id="new-project-branch-label"
-                    className={cn(LABEL, branches.length === 0 && "text-(--fd-text-faint)")}
-                  >
-                    Branch
-                  </span>
-                  <BranchPicker
-                    branches={branches}
-                    value={branch}
-                    onChange={setBranch}
-                    disabled={busy}
-                    loading={checking}
-                    placeholder="Paste a Git URL first"
-                    labelledBy="new-project-branch-label"
-                  />
-                </div>
+                {hosts !== null && !hostUsable ? (
+                  <NoGitAccount>
+                    {hostAccount?.available === false
+                      ? `${GIT_PROVIDER_LABELS[host]} is not integrated yet.`
+                      : `Connect ${GIT_PROVIDER_LABELS[host]} in Settings to create repositories on it.`}{" "}
+                    The Empty tab starts a project without a remote.
+                  </NoGitAccount>
+                ) : (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+                      <div className="flex flex-col gap-1.5">
+                        <span id="new-project-owner-label" className={LABEL}>
+                          Owner
+                        </span>
+                        {owners === null && !ownersError ? (
+                          <Skeleton className="h-[34px] w-full rounded-[8px]" />
+                        ) : (
+                          <PopoverSelect
+                            value={owner}
+                            options={(owners ?? []).map((o) => ({
+                              value: o.login,
+                              label: o.login,
+                              hint: o.kind === "org" ? "Organisation" : "You",
+                            }))}
+                            onChange={setOwner}
+                            heading="Create the repository under"
+                            icon={UsersIcon}
+                            placeholder="Choose an owner"
+                            disabled={busy || !owners?.length}
+                            labelledBy="new-project-owner-label"
+                            searchable={(owners?.length ?? 0) > 6}
+                          />
+                        )}
+                        {ownersError && (
+                          <p role="alert" className="text-destructive text-[11.5px]">
+                            {ownersError}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <span id="new-project-visibility-label" className={LABEL}>
+                          Visibility
+                        </span>
+                        <Segmented
+                          options={VISIBILITY_OPTIONS}
+                          value={visibility}
+                          onChange={setVisibility}
+                          disabled={busy}
+                          labelledBy="new-project-visibility-label"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label htmlFor="new-project-description" className={LABEL}>
+                        Description <span className="text-(--fd-text-disabled)">· optional</span>
+                      </label>
+                      <textarea
+                        id="new-project-description"
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        maxLength={350}
+                        rows={2}
+                        disabled={busy}
+                        className={cn(TEXTAREA, "min-h-14 placeholder:text-(--fd-text-disabled)")}
+                        placeholder="What this repository is for"
+                      />
+                    </div>
+
+                    <Callout icon={GitForkIcon} accent className="p-3">
+                      Created as{" "}
+                      <Code>
+                        {owner || "owner"}/{name || "name"}
+                      </Code>{" "}
+                      with a README on {GIT_PROVIDER_LABELS[host]}&apos;s default branch, then
+                      cloned into the workspace with its remote already set.
+                    </Callout>
+                  </>
+                )}
               </OptionPanel>
 
-              <OptionPanel value="new">
+              <OptionPanel value="empty">
                 <Callout icon={PlusIcon} accent className="p-3">
                   An empty repository named after the project is started in the workspace, on{" "}
-                  <Code>main</Code> with one commit. Nothing is created on{" "}
-                  <span className="text-(--fd-text-label)">{account?.login ?? "GitHub"}</span> until
-                  you add a remote and push.
+                  <Code>main</Code> with one commit, and no remote. Add one and push whenever
+                  you&apos;re ready.
                 </Callout>
               </OptionPanel>
             </OptionTabs>
+
+            <div className="flex items-center justify-between gap-4 rounded-[8px] border border-(--fd-border-subtle) bg-(--fd-field-muted) px-3 py-2.5">
+              <div className="flex min-w-0 flex-col gap-1">
+                <span id="new-project-session-branches-label" className={cn(LABEL, "flex items-center gap-1.5")}>
+                  <GitBranchIcon className="size-3.5 text-(--fd-icon-dim)" />
+                  New branch for every session
+                </span>
+                {!sessionBranches && (
+                  <p className={HELPER}>
+                    Every session commits straight to the base branch in the project&apos;s
+                    checkout. Changeable later in Project Settings.
+                  </p>
+                )}
+              </div>
+              <Switch
+                checked={sessionBranches}
+                onCheckedChange={setSessionBranches}
+                disabled={busy}
+                aria-labelledby="new-project-session-branches-label"
+              />
+            </div>
 
             {error && (
               <p role="alert" className="text-destructive text-[11.5px]">
@@ -714,37 +1025,102 @@ export function NewProjectDialog({
   );
 }
 
+/** A git host's mark. GitHub has its own glyph; the others a generic one until they are integrated. */
+function ProviderMark({ provider, className }: { provider: GitProvider; className?: string }) {
+  if (provider === "github") return <GithubMark className={className} />;
+  return <GitBranchIcon className={className} />;
+}
+
 /**
- * What the GitHub tab shows with no token behind it.
+ * The hosts a repository can be created on, side by side.
  *
- * A route to the fix rather than an error: the tab cannot work, and the thing
- * that would make it work is two clicks away.
+ * Every host is shown, so it is clear what is coming: one not integrated yet
+ * says so, and one not connected says where to connect it.
  */
-function NoToken() {
+function HostChoice({
+  hosts,
+  value,
+  onChange,
+  disabled,
+  labelledBy,
+}: {
+  /** Null until read. */
+  hosts: GitAccount[] | null;
+  value: GitProvider;
+  onChange: (provider: GitProvider) => void;
+  disabled?: boolean;
+  labelledBy: string;
+}) {
+  if (hosts === null) {
+    return (
+      <div className="grid grid-cols-3 gap-1.5">
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-[46px] rounded-[8px]" />
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-lg border border-dashed p-6 text-center">
-      <GithubMark className="text-muted-foreground mx-auto size-4" />
-      <p className="mt-3 text-sm font-medium">No GitHub token</p>
-      <p className="text-muted-foreground mx-auto mt-1 max-w-sm text-sm">
-        Add one in Settings to list the repositories you can see and clone the private ones. Until
-        then, the other two tabs work without it.
-      </p>
+    <div role="radiogroup" aria-labelledby={labelledBy} className="grid grid-cols-3 gap-1.5">
+      {hosts.map((h) => {
+        const checked = h.provider === value;
+        const status = !h.available ? "Coming soon" : h.connected ? h.login ?? "Connected" : "Not connected";
+        return (
+          <button
+            key={h.provider}
+            type="button"
+            role="radio"
+            aria-checked={checked}
+            disabled={disabled || !h.available}
+            onClick={() => onChange(h.provider)}
+            className={cn(
+              "flex min-w-0 flex-col items-start gap-[3px] rounded-[8px] border border-(--fd-border) bg-(--fd-field) px-2.5 py-2 text-left transition-[border-color,box-shadow,background-color] disabled:cursor-not-allowed disabled:border-dashed disabled:opacity-60",
+              FOCUS,
+              checked
+                ? "border-(--fd-accent) bg-(--fd-accent-tint) ring-[3px] ring-(--fd-ring-soft)"
+                : "enabled:hover:border-(--fd-border-hover)",
+            )}
+          >
+            <span className="flex items-center gap-1.5 text-[12px] font-medium text-(--fd-text)">
+              <ProviderMark provider={h.provider} className="size-3.5 shrink-0" />
+              {GIT_PROVIDER_LABELS[h.provider]}
+            </span>
+            <span className="max-w-full truncate text-[11px] text-(--fd-text-muted)">{status}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * What a tab shows when it needs an account that is not connected.
+ *
+ * A route to the fix rather than an error: the thing that would make it work
+ * is two clicks away.
+ */
+function NoGitAccount({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-[8px] border border-dashed border-(--fd-border) px-3 py-2.5">
+      <p className="min-w-0 text-[11.5px] leading-[1.55] text-(--fd-text-muted)">{children}</p>
       {/* `nativeButton={false}` because this renders an <a>: Base UI assumes a
           native <button> otherwise and the anchor loses button semantics. */}
       <Button
         variant="outline"
+        size="sm"
         nativeButton={false}
         render={<TransitionLink href="/setting/api" />}
-        className="mt-4"
+        className="shrink-0"
       >
-        Open API settings
+        Settings
       </Button>
     </div>
   );
 }
 
 /**
- * The repository, chosen from the account's own list.
+ * The repository, chosen from every connected account's repositories at once.
  *
  * Searchable because an account with two hundred repositories is not navigable
  * any other way, and filtered here rather than at GitHub: the list is already
@@ -760,9 +1136,9 @@ function RepoPicker({
   labelledBy,
 }: {
   /** Null until the list arrives. */
-  repos: GithubRepo[] | null;
-  value: GithubRepo | null;
-  onChange: (repo: GithubRepo) => void;
+  repos: GitRepo[] | null;
+  value: GitRepo | null;
+  onChange: (repo: GitRepo) => void;
   disabled?: boolean;
   error: string | null;
   labelledBy: string;
@@ -774,7 +1150,7 @@ function RepoPicker({
     const list = repos ?? [];
     const needle = query.trim().toLowerCase();
     const hit = needle
-      ? list.filter((repo) => repo.fullName.toLowerCase().includes(needle))
+      ? list.filter((repo) => `${repo.fullName} ${repo.provider}`.toLowerCase().includes(needle))
       : list;
     // Capped for the DOM's sake, not the search's: the filter runs over every
     // repository, and only the rendering is limited.
@@ -803,7 +1179,11 @@ function RepoPicker({
           />
         }
       >
-        <SearchIcon className="size-3.5 shrink-0 text-(--fd-text-muted)" />
+        {value ? (
+          <ProviderMark provider={value.provider} className="size-3.5 shrink-0 text-(--fd-text-muted)" />
+        ) : (
+          <SearchIcon className="size-3.5 shrink-0 text-(--fd-text-muted)" />
+        )}
         <span className={cn("min-w-0 grow truncate", !value && "text-(--fd-text-faint)")}>
           {value?.fullName ??
             (loading
@@ -824,7 +1204,7 @@ function RepoPicker({
       <PopoverContent className="w-(--anchor-width) p-0">
         <Command shouldFilter={false}>
           <CommandInput
-            placeholder="Search your repositories…"
+            placeholder="Search repositories across your accounts…"
             value={query}
             onValueChange={setQuery}
           />
@@ -833,14 +1213,15 @@ function RepoPicker({
             <CommandGroup>
               {matches.map((repo) => (
                 <CommandItem
-                  key={repo.fullName}
-                  value={repo.fullName}
-                  data-checked={repo.fullName === value?.fullName}
+                  key={repoKey(repo)}
+                  value={repoKey(repo)}
+                  data-checked={value ? repoKey(repo) === repoKey(value) : false}
                   onSelect={() => {
                     onChange(repo);
                     setOpen(false);
                   }}
                 >
+                  <ProviderMark provider={repo.provider} className="text-muted-foreground size-3 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{repo.fullName}</span>
                   {repo.private && <LockIcon className="text-muted-foreground size-3 shrink-0" />}
                 </CommandItem>

@@ -7,6 +7,8 @@
  * a token at all, which is what `NoGithubToken` exists to say.
  */
 
+import type { GitAccount, GitProvider } from "@ucch/protocol";
+
 /** A repository the account can see. Mirrors the server's `GithubRepo`. */
 export interface GithubRepo {
   fullName: string;
@@ -17,12 +19,6 @@ export interface GithubRepo {
   cloneUrl: string;
   description: string | null;
   pushedAt: string | null;
-}
-
-/** Whose repositories these are. */
-export interface GithubAccount {
-  login: string;
-  name: string | null;
 }
 
 /**
@@ -49,11 +45,71 @@ async function fail(response: Response, fallback: string): Promise<never> {
   throw new Error(body.error ?? fallback);
 }
 
-/** The repositories this account can see, and which account that is. */
-export async function fetchRepos(): Promise<{ account: GithubAccount; repos: GithubRepo[] }> {
-  const response = await fetch("/api/github/repos", { credentials: "include" });
+/** A repository from any connected git account, tagged with where it came from. */
+export interface GitRepo extends GithubRepo {
+  provider: GitProvider;
+  /** The login of the connected account that lists it. */
+  accountLogin: string;
+}
+
+/** One connected account's repositories failing, reported beside the rest. */
+export interface GitReposError {
+  provider: GitProvider;
+  error: string;
+}
+
+/**
+ * Every connected account's repositories, as one list.
+ *
+ * No account connected is an empty list rather than an error: the Git tab
+ * still takes a pasted URL without one.
+ */
+export async function fetchGitRepos(): Promise<{
+  accounts: { provider: GitProvider; login: string; name: string | null }[];
+  repos: GitRepo[];
+  errors: GitReposError[];
+}> {
+  const response = await fetch("/api/git/repos", { credentials: "include" });
   if (!response.ok) await fail(response, "Could not read your repositories.");
-  return (await response.json()) as { account: GithubAccount; repos: GithubRepo[] };
+  return (await response.json()) as Awaited<ReturnType<typeof fetchGitRepos>>;
+}
+
+/** Every git host, whether it is integrated yet, and whether it is connected. */
+export async function fetchGitAccounts(): Promise<GitAccount[]> {
+  const response = await fetch("/api/git/accounts", { credentials: "include" });
+  if (!response.ok) await fail(response, "Could not read your git accounts.");
+  return ((await response.json()) as { accounts: GitAccount[] }).accounts;
+}
+
+/** Somewhere a GitHub repository can be created: the account, or an organisation. */
+export interface GithubOwner {
+  login: string;
+  kind: "user" | "org";
+}
+
+/** Where the GitHub token can create repositories, the account itself first. */
+export async function fetchGithubOwners(): Promise<GithubOwner[]> {
+  const response = await fetch("/api/github/owners", { credentials: "include" });
+  if (!response.ok) await fail(response, "Could not read where you can create repositories.");
+  return ((await response.json()) as { owners: GithubOwner[] }).owners;
+}
+
+/** Creates a repository on GitHub, answered as the repository list would show it. */
+export async function createGithubRepo(input: {
+  owner: string;
+  name: string;
+  private: boolean;
+  description?: string;
+  autoInit: boolean;
+}): Promise<GithubRepo> {
+  const response = await fetch("/api/github/repos", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) await fail(response, "Could not create the repository.");
+  return ((await response.json()) as { repo: GithubRepo }).repo;
 }
 
 /**
