@@ -63,26 +63,28 @@
 
 ## Tasks
 
+Implementation review (2026-11-21): checked items have their implementation wired into the runtime. Unchecked items are partially implemented; the remaining differences are recorded below. Checkmarks do not imply that live CLI, database or browser verification has passed. The comparison sections above describe the original baseline.
+
 ### Phase 1: Exact, persisted readings (fixes gaps 1–5, 10)
 
-- [ ] **1.1 One usage contract.** Document in `packages/protocol` (`TokenUsage`) that `inputTokens` = **uncached** input, and `cacheReadInputTokens` / `cacheCreationInputTokens` are separate.
+- [x] **1.1 One usage contract.** Document in `packages/protocol` (`TokenUsage`) that `inputTokens` = **uncached** input, and `cacheReadInputTokens` / `cacheCreationInputTokens` are separate.
   - Change `mapCodexUsage` (`packages/providers/src/codex.ts:650`) to `input = input_tokens − cached_input_tokens`.
   - Change the OpenRouter `readUsage` (`apps/server/src/openrouter.ts:622`) the same way.
   - `project_stats.tokens` (`engine.ts:729`) then stays correct as written.
   - Add a unit test for each provider mapping.
-- [ ] **1.2 `ContextReading` type** in `packages/protocol/src/context-budget.ts`: `{ usedTokens, windowTokens, compactThreshold?, cacheExpiresAt?, cachedTokens?, status, harness, model, at }`.
+- [x] **1.2 `ContextReading` type** in `packages/protocol/src/context-budget.ts`: `{ usedTokens, windowTokens, compactThreshold?, cacheExpiresAt?, cachedTokens?, status, harness, model, at }`.
   - Add a helper `occupancy(lastCallUsage)` = input + cacheRead + cacheCreation + output. The Claude normaliser already does this in `#contextReading` (`claude.ts:529`), so move it there.
-- [ ] **1.3 Codex: read real per-call usage.** After each Codex turn, read the last `token_count` event from the session's rollout file under the account's `CODEX_HOME/sessions/**/rollout-*-<sessionId>.jsonl`. That event carries `info.last_token_usage` and `info.model_context_window`. Emit `context.usage` from it.
+- [x] **1.3 Codex: read real per-call usage.** After each Codex turn, read the last `token_count` event from the session's rollout file under the account's `CODEX_HOME/sessions/**/rollout-*-<sessionId>.jsonl`. That event carries `info.last_token_usage` and `info.model_context_window`. Emit `context.usage` from it.
   - Reuse the path logic in `cli-session-files.ts`.
   - First check with a fixture from the installed Codex version: whether `turn.completed.usage` is per-turn or cumulative, and the rollout event shape. Record the result in a comment.
   - Fallback when there is no rollout: `status: "unavailable"`, which triggers nothing.
   - Remove the `turn_completed` occupancy path at `agent.ts:2251`.
   - The window comes from `model_context_window`, so `cliContextWindow("codex")` becomes a fallback only.
-- [ ] **1.4 Persist the latest reading.** Add a `threads.context_reading jsonb` column (Drizzle migration in `packages/db`; watch out for tsx watch applying migrations mid-edit). It is written by a `context.usage` projection in `engine.ts` (throttled: last value per turn plus on `turn_completed`). Clear it on `thread.context_cleared` and `thread.harness_switched`.
+- [x] **1.4 Persist the latest reading.** Add a `threads.context_reading jsonb` column (Drizzle migration in `packages/db`; watch out for tsx watch applying migrations mid-edit). It is written by a `context.usage` projection in `engine.ts` (throttled: last value per turn plus on `turn_completed`). Clear it on `thread.context_cleared` and `thread.harness_switched`.
   - Serve it with the thread snapshot, so `ThreadStore` starts from it after a reload.
   - Remove the `contextTokens = input + output` fallback in `chat-messages.ts:781`.
-- [ ] **1.5 Server reads the persisted reading.** `#handOverIfFull` and Phase 3 logic read `threads.context_reading` instead of the in-memory `#contextAtEnd`, so restarts no longer skip the check.
-- [ ] **1.6 Web.**
+- [x] **1.5 Server reads the persisted reading.** `#handOverIfFull` and Phase 3 logic read `threads.context_reading` instead of the in-memory `#contextAtEnd`, so restarts no longer skip the check.
+- [x] **1.6 Web.**
   - `thread-store.ts`: reset the reading on `harness_switched`.
   - `context-meter-store.ts`: key it by `threadId`.
   - The meter (`context-meter.tsx`, `session-context-card.tsx`) shows the compaction line from `compactThreshold` when there is one, and "unknown" for `unavailable`.
@@ -99,18 +101,18 @@
 - [ ] **2.3 Fixed prefix per session.** Compute the Claude `--append-system-prompt` text once per session and store `{text, sha256}` with the session (an event payload on `agent.session_started`, or a column next to `provider_session_id`). Resumed turns reuse the stored text unchanged.
   - Knowledge that changed mid-session (`.agent/` notes) goes in the user message as `<project-knowledge-update>` with only the diff, and only when the hash changed.
   - Log the hash on every turn.
-- [ ] **2.4 Fixed tool set per session.** Open the bridge MCP with the same tool list for the life of a session (decide once at session start), so `--mcp-config` doesn't change mid-session.
+- [x] **2.4 Fixed tool set per session.** Open the bridge MCP with the same tool list for the life of a session (decide once at session start), so `--mcp-config` doesn't change mid-session.
   - Check that Claude Code defers UCCH bridge tools behind ToolSearch.
   - Mark only the essentials as `_meta["anthropic/alwaysLoad"]`, as t3code does.
-- [ ] **2.5 Stop resending guides on Codex.** Remove the per-turn append of `COLLABORATION_GUIDE` / `UCCH_AGENT_GUIDE` in resumed Codex prompts (`agent.ts:2207`). Re-send them once, only on the first turn after a Codex compaction, which is detected from the rollout `compacted` event (1.3). This coordinates with plan1 §Codex resume, which owns the text.
+- [x] **2.5 Stop resending guides on Codex.** Remove the per-turn append of `COLLABORATION_GUIDE` / `UCCH_AGENT_GUIDE` in resumed Codex prompts (`agent.ts:2207`). Re-send them once, only on the first turn after a Codex compaction, which is detected from the rollout `compacted` event (1.3). This coordinates with plan1 §Codex resume, which owns the text.
 - [ ] **2.6 Size budget test.** Snapshot the bytes of the Claude append, the Codex instructions and the bridge tool list (name + description + inputSchema) in `packages/protocol/src/agent-context-budget.json`. A test fails when any of them grows without the JSON being updated. This shares the harness from plan1 §1.x.
 
 ### Phase 3: Compact inside the session, at the right time (fixes gaps 8, 9)
 
-- [ ] **3.1 Raise the mid-turn line.** Let each CLI compact at its default (Claude: window − 33k, Codex: its own default). Drop `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=55` and the Codex override, or make them a per-thread setting ("Compact early", default off).
+- [x] **3.1 Raise the mid-turn line.** Let each CLI compact at its default (Claude: window − 33k, Codex: its own default). Drop `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=55` and the Codex override, or make them a per-thread setting ("Compact early", default off).
   - Rationale: every compaction makes the cache cold, so compacting less often at a later point is cheaper. The server now prevents overflow (3.2, 3.3).
   - Update `CONTEXT_HANDOVER_RATIO` docs and `context-window.ts` colour lines (warn and full) to match the reported `compactThreshold`.
-- [ ] **3.2 In-session compaction instead of handover.** When a turn ends at or above the force line, `#handOverIfFull` → `thread.compact`:
+- [x] **3.2 In-session compaction instead of handover.** When a turn ends at or above the force line, `#handOverIfFull` → `thread.compact`:
   - **Claude:** send `/compact` as the next turn of the same session (`claude -p --resume <id>` with the stream-json input `/compact`; confirm that the installed CLI supports slash commands in headless mode). Read the `compact_boundary` line, which the normaliser already handles (`claude.ts:611`), and record a visible "Context compacted" item.
   - **Codex:** check whether `codex exec resume <id> "/compact"` compacts. If not, use `codex app-server` `thread/compact/start` (the app-server client already exists at `codex.ts:46` / `:141`).
   - **OMP:** already has a manual compact (`decide.ts:528`). Use it here as well.
@@ -125,19 +127,49 @@
   - `#writeBrief` (`agent.ts:1636`) uses the thread's own harness in one-shot mode (`claude -p` / `codex exec`) when OMP or the OpenRouter key is missing.
   - If that also fails, it falls back to the deterministic `conversationRecap` instead of failing silently. Surface the failure as a thread notice.
   - Both the brief and the recap use t3code's `handoffBudget` formula: cap 16k tokens and keep a work reserve. Port the formula to `context-budget.ts`.
-- [ ] **3.6 Recap and transcript hygiene.**
+- [x] **3.6 Recap and transcript hygiene.**
   - `conversationRecap` input uses `sinceCleared` (`agent.ts:1268`), matching the brief.
   - `cliTranscriptExists` checks the project folder that `claude --resume` will look in, derived from the turn's cwd.
-- [ ] **3.7 Ask on resume** (optional, Claude). When a resumed session's reading is ≥ 200k and its cache has expired (it was idle longer than the TTL), ask once in the thread: "This session is Xh old and uses N tokens — compact before continuing?" The answers are compact / keep / don't ask again (per-thread setting). This uses the existing `agent.permission_requested` style UI.
+- [x] **3.7 Ask on resume** (optional, Claude). When a resumed session's reading is ≥ 200k and its cache has expired (it was idle longer than the TTL), ask once in the thread: "This session is Xh old and uses N tokens — compact before continuing?" The answers are compact / keep / don't ask again (per-thread setting). This uses the existing `agent.permission_requested` style UI.
 
 ### Phase 4: Restart integrity (gap 11)
 
-- [ ] **4.1** At startup, threads found `running` get an `agent.turn_failed { reason: "server restarted" }` event before being set to idle (`index.ts:186-194`), so the log and UI show the interrupted turn.
+- [x] **4.1** At startup, threads found `running` get an `agent.turn_failed { reason: "server restarted" }` event before being set to idle (`index.ts:186-194`), so the log and UI show the interrupted turn.
 
 ### Out of scope (noted for later)
 
 - A long-lived Claude process per thread (t3code's live `query`), with stdin kept open across turns. It would save startup time and the MCP reconnect on each turn, but it changes the process model. Measure 2.2 hit rates first: if `--resume` already gets close to full cache hits, it is not worth the extra complexity.
 - Moving Codex turns from `exec` to `app-server` completely. Do it only if 1.3 or 3.2 prove the rollout or exec route unreliable.
+
+## Implementation review evidence (2026-11-21)
+
+13 of 20 tasks are implemented; 7 remain partial against the requirements as written.
+
+| Completed tasks | Implementation checked |
+|---|---|
+| 1.1–1.3 | `events.ts` documents uncached input; `mapCodexUsage` and OpenRouter `readUsage` separate cache tokens. `context-budget.ts` defines readings and occupancy. `codex-rollout.ts` documents the 0.170.0 fixture; `withCodexContext` reads per-call rollout usage and the real window, and emits unavailable when absent. |
+| 1.4–1.5 | Migration `0047_thread_context_reading.sql` adds the columns. `agent.ts` carries the last reading into the end-of-turn projection; `engine.ts` writes and clears it. `ws.ts` sends it after replay. `#handOverIfFull` reads the database column. The billing-derived meter fallback is removed. |
+| 1.6 | `ThreadStore` clears readings on harness switches, and `context-meter-store.ts` keys readings by thread. The meter handles unknown readings and compaction lines. Its displayed line is the earlier of the reported threshold and the server's 75% force line. |
+| 2.4–2.5 | `#runCli` reuses stored tool flags. Claude enables ToolSearch; the bridge selectively sets `anthropic/alwaysLoad`. Codex resumed prompts omit guides; rollout compactions mark the stored prefix for one resend. |
+| 3.1–3.2 | Provider argv/environment no longer force early vendor compaction. `decide.ts` maps automatic handoff to compaction; `#compactSession` uses Claude `/compact` or Codex app-server compaction, and OMP uses maintenance. Automatic compaction failures can dispatch a fallback handover. CLI compatibility findings are documented in provider code and fixtures. |
+| 3.6–3.7 | Missing-transcript recaps use `sinceCleared`; Claude transcript lookup uses the turn cwd. Expired large Claude sessions receive a compact/keep/never choice, with the opt-out persisted per thread. |
+| 4.1 | Startup calls `failInterruptedTurns` in `restart-recovery.ts`, appending `agent.turn_failed` for open interrupted turns before returning threads to idle. |
+
+Remaining work on unchecked tasks:
+
+- **2.1:** Claude captures message-start timing, split TTLs and cache-hit refreshes. However, `cacheExpiry` assumes five minutes when creation tokens exist without a TTL breakdown (`creationTotal > 0`); the plan requires unknown expiry otherwise. Reconcile that fallback with the stated contract.
+- **2.2:** Claude emits the first call's hit ratio, resumed warm-cache misses log the prefix hash, and the session tooltip shows cache warmth. Codex `withCodexContext` emits only last-call cached tokens, without a first-call `cacheHitRatio`; OMP also lacks that metric. CLI coverage is incomplete.
+- **2.3:** Prefix text/hash persistence, per-turn hash logging and knowledge diffs exist. `planSessionPrefix` deliberately rebuilds Claude's prefix on model, effort or bridge changes even with the same resume token (`session-prefix.test.ts` explicitly tests this). That differs from keeping the text unchanged for the entire native session; either enforce the invariant or document an accepted exception in the task.
+- **2.6:** Instruction and bridge size snapshots/tests exist in `apps/server/src/agent-context-budget.json` and `packages/omp-bridge/src/tools-budget.json`. Both tests allow 5% growth without updating a snapshot, whereas the task requires a failure on any growth. The split snapshot locations are an implementation adaptation.
+- **3.3:** Database due times, startup re-arming, the enabled setting, threshold calculation and most skip rules exist. `#idleCompactDue` does not compare the reading's model with the current model, and its background-work check covers child threads and reactor runs rather than all background work. Idle compaction records compaction events/dividers without creating the separate turn requested here.
+- **3.4:** `overWindow` implements the formula, but the dispatch check in `#turn` runs only for resumed, top-level Claude/Codex sessions. OMP and subagent turns do not pass through this preflight. A failed preflight compaction is caught and the message still proceeds without a successful-compaction or handover guarantee.
+- **3.5:** Own-harness brief generation, deterministic recap fallback and failure notices exist, along with the shared budget formula. `#writeBrief` does not account for the destination's fixed prefix or attachments. Its clipping helper appends a truncation notice after taking the full character budget, so the final brief can exceed that budget; UTF-8 bytes are also not enforced by this character slice. Complete budget enforcement before marking the task done.
+
+Validation performed for this review:
+
+- **15 focused test files passed: 442 tests.** Coverage includes usage mappings, rollout fixtures, occupancy/cache/idle/budget helpers, prefix stability, size budgets, projection helpers, decisions, transcript lookup, handoff helpers and web stores.
+- **4 additional test files: 177 passed, 3 failed.** WebSocket replay, native-loop and bridge tests passed. `apps/server/src/agent.test.ts` failed three OMP assertions (one normal turn and compact/handoff maintenance): each expects `thresholdTokens: null`, while the runtime reports `110000` for a 200k window. These expectations need review against the intended OMP threshold behavior.
+- Fresh/dev database migration application, real server restarts, authenticated live CLI behavior, browser scenarios and before/after metrics were **not run**. The migration and startup wiring were inspected, not exercised against a database.
 
 ## Verification
 
