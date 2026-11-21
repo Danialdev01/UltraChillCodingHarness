@@ -38,14 +38,21 @@ import { forbiddenEnvPresent } from "./types.js";
  * server builds the environment and `runCli` refuses one that carries it.
  */
 
-/** Models the composer offers. Aliases: the CLI resolves them to a version. */
 /** What `--effort` accepts. Every model on the list takes every level. */
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
+/**
+ * Models the composer offers, by their versioned ids rather than the CLI's
+ * aliases (`opus`, `sonnet`): the picker says which version runs, and a
+ * session keeps it when the alias moves on. The first is the default. A
+ * model the account cannot use (Fable needs usage credits on a
+ * subscription) fails its turn with the CLI's own explanation.
+ */
 export const CLAUDE_MODELS = [
-  { id: "sonnet", name: "Claude Sonnet", efforts: CLAUDE_EFFORTS },
-  { id: "opus", name: "Claude Opus", efforts: CLAUDE_EFFORTS },
-  { id: "haiku", name: "Claude Haiku", efforts: CLAUDE_EFFORTS },
+  { id: "claude-sonnet-5-5", name: "Sonnet 5.5", efforts: CLAUDE_EFFORTS },
+  { id: "claude-opus-5-5", name: "Opus 5.5", efforts: CLAUDE_EFFORTS },
+  { id: "claude-fable-5-2", name: "Fable 5.2", efforts: CLAUDE_EFFORTS },
+  { id: "claude-haiku-5-5", name: "Haiku 5.5", efforts: CLAUDE_EFFORTS },
 ] as const;
 
 /** Flags that exist only from certain CLI versions on. Detected, not assumed. */

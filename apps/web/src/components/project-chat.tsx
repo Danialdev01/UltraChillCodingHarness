@@ -430,9 +430,13 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     if (!cli || catalogue.length === 0) return;
     if (catalogue.some((m) => m.id === cliModel)) return;
     const remembered = readLastModel(cliKey);
-    setCliModel(
-      remembered && catalogue.some((m) => m.id === remembered) ? remembered : catalogue[0]!.id,
-    );
+    // A choice saved as a CLI alias (`opus`, from before the list named
+    // versions) carries over to that family's model on the list.
+    const family = remembered?.replace(/\[[^\]]*\]$/, "");
+    const kept =
+      catalogue.find((m) => m.id === remembered) ??
+      (family ? catalogue.find((m) => m.id.startsWith(`claude-${family}-`)) : undefined);
+    setCliModel(kept?.id ?? catalogue[0]!.id);
   }, [cli, catalogue, cliModel, cliKey]);
 
   const activeModel = cli ? cliModel : model;
