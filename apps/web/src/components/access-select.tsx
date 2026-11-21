@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { CheckIcon, ChevronDownIcon, LockKeyholeIcon, LockKeyholeOpenIcon, ShieldIcon } from "lucide-react"
+import { CheckIcon, LockKeyholeIcon, LockKeyholeOpenIcon, ShieldIcon } from "lucide-react"
 import type { AgentPermissionMode } from "@ucch/protocol"
 
 import { PERMISSION_CHOICES } from "@/components/agent-permission-settings"
@@ -72,8 +72,8 @@ export function AccessSelect({ disabled }: { disabled?: boolean }) {
     }
   }
 
-  // Until it has loaded there is nothing true to show; the row keeps its
-  // place with the icon alone.
+  // The current mode's icon alone, as a button: its name is in the tooltip
+  // and the menu. Until it has loaded the shield holds the place.
   const current = PERMISSION_CHOICES.find((c) => c.id === mode)
   const Icon = mode ? ICONS[mode] : ShieldIcon
 
@@ -83,16 +83,16 @@ export function AccessSelect({ disabled }: { disabled?: boolean }) {
         disabled={disabled || mode === null || busy}
         title={current ? `Access: ${current.label}. ${current.hint}` : "Access"}
         className={cn(
-          "text-muted-foreground hover:text-foreground hover:bg-muted aria-expanded:bg-muted flex h-7 min-w-0 shrink-0 items-center @lg:shrink gap-1 rounded-md px-1.5 text-xs transition-colors disabled:opacity-60",
+          "text-muted-foreground hover:text-foreground hover:bg-muted aria-expanded:bg-muted grid size-7 shrink-0 place-items-center rounded-md transition-colors disabled:opacity-60",
           mode === "allow_all" && "text-warning hover:text-warning",
         )}
       >
-        <Icon className="size-3.5 shrink-0" />
-        <span className="hidden truncate @lg:inline">{current?.label ?? "Access"}</span>
-        <ChevronDownIcon className="text-muted-foreground hidden size-3 shrink-0 @lg:block" />
-        <span className="sr-only">Change what the agent may do without asking</span>
+        <Icon className="size-3.5" />
+        <span className="sr-only">
+          {current ? `Access: ${current.label}. ` : ""}Change what the agent may do without asking
+        </span>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top" className="w-72">
+      <DropdownMenuContent align="end" side="top" className="w-72">
         <DropdownMenuGroup>
           <DropdownMenuLabel>Access</DropdownMenuLabel>
           {PERMISSION_CHOICES.map((choice) => {
