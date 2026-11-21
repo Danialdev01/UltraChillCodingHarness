@@ -74,6 +74,16 @@ describe("the omp bridge", () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual(["ucch_agent"]);
     expect(tools[0]!.inputSchema.required).toEqual(["description", "task"]);
+    // Never deferred behind Claude Code's ToolSearch (plan2 §2.4).
+    expect(tools[0]!._meta).toEqual({ "anthropic/alwaysLoad": true });
+  });
+
+  it("leaves every tool but the essentials to ToolSearch", async () => {
+    const client = await connect({ UCCH_OMP_BIN: FAKE_OMP, UCCH_BRIDGE_SUBAGENTS: "1", UCCH_WIDGETS: "1", UCCH_BRIDGE_MESSAGING: "1" });
+    const { tools } = await client.listTools();
+    const pinned = tools.filter((tool) => tool._meta?.["anthropic/alwaysLoad"] === true).map((tool) => tool.name);
+    expect(pinned.sort()).toEqual(["show_widget", "ucch_agent"]);
+    expect(tools.length).toBeGreaterThan(pinned.length);
   });
 
   it("offers show_widget only when widgets are allowed, and answers it without running anything", async () => {

@@ -928,7 +928,6 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     running: turnRunning,
     active,
     prompts,
-    contextTokens,
     compacting,
     compactionError,
     handingOff,
@@ -1648,10 +1647,14 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
   // which draws it as a bar beside the chat on wide screens.
   const contextReading = useMemo<ContextReading>(
     () => ({
-      tokens: measuredContext?.usedTokens ?? contextTokens,
+      // The provider's own reading only (plan2 §1.4): a turn's usage is a
+      // sum over its calls, not how full the context is.
+      tokens: measuredContext?.usedTokens ?? null,
       limit: windowTokens,
       threshold: measuredWindow?.thresholdTokens ?? null,
       live: measuredContext !== null,
+      unknown: measuredContext?.status === "unavailable",
+      cacheExpiresAt: measuredContext?.cacheExpiresAt ?? null,
       handingOver: compacting !== null || switching !== null,
       disabledReason: !hasRun
         ? "Nothing to hand over until the agent has replied."
@@ -1662,13 +1665,16 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
       // out what the running turn adds.
       disabled: running || sending || !threadId || !hasRun,
     }),
-    [measuredContext, measuredWindow, contextTokens, windowTokens, compacting, switching, hasRun, running, sending, threadId],
+    [measuredContext, measuredWindow, windowTokens, compacting, switching, hasRun, running, sending, threadId],
   );
   const handover = useCallback(() => void compactThread("handoff", ""), [compactThread]);
   useEffect(() => {
-    publishContextReading(contextReading, handover);
-  }, [contextReading, handover]);
-  useEffect(() => () => publishContextReading(null), []);
+    if (threadId) publishContextReading(threadId, contextReading, handover);
+  }, [threadId, contextReading, handover]);
+  useEffect(() => {
+    if (!threadId) return;
+    return () => publishContextReading(threadId, null);
+  }, [threadId]);
 
   const switchHarness = useCallback(
     async (target: ProviderId) => {
@@ -2094,6 +2100,11 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                 href={threadHref(continuedIn.hash)}
                 label={`${continuedIn.limit ? "Usage limit reached. " : ""}Continued in a new thread on ${providerLabel(continuedIn.provider ?? "")}`}
               />
+            )}
+            {continuedIn?.briefNote && (
+              <p className="text-warning text-center text-xs" data-testid="brief-note">
+                {continuedIn.briefNote}
+              </p>
             )}
 
             <div ref={endRef} />
@@ -2609,6 +2620,8 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                   limit={contextReading.limit}
                   threshold={contextReading.threshold}
                   live={contextReading.live}
+                  unknown={contextReading.unknown}
+                  cacheExpiresAt={contextReading.cacheExpiresAt}
                   onHandover={handover}
                   handingOver={contextReading.handingOver}
                   disabledReason={contextReading.disabledReason}
@@ -3289,6 +3302,11 @@ function HarnessSwitchRow({ ref, change }: { ref: Ref<HTMLDivElement>; change: H
         </summary>
         <p className="mt-1 rounded-md border px-3 py-2 whitespace-pre-wrap">{change.brief.trim()}</p>
       </details>
+      {change.briefNote && (
+        <p className="text-warning mt-0.5 text-center text-xs" data-testid="brief-note">
+          {change.briefNote}
+        </p>
+      )}
     </div>
   );
 }

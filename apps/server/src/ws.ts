@@ -9,6 +9,7 @@ import {
   TERMINAL_INPUT_MAX,
   THREAD_WINDOW,
   type Command,
+  type ContextReading,
   type DomainEvent,
   type ServerFrame,
   type StoredEvent,
@@ -18,7 +19,7 @@ import type { AuthService, Principal } from "./auth.js";
 import type { EventBus, Topic } from "./bus.js";
 import type { ComposerState, ComposerStore } from "./composer.js";
 import type { EventStore } from "./eventstore.js";
-import type { OrchestrationEngine, EngineResult } from "./engine.js";
+import { usageEventOf, type OrchestrationEngine, type EngineResult } from "./engine.js";
 import { registry } from "./metrics.js";
 import type { PresenceStore } from "./presence.js";
 import type { TerminalReactor } from "./terminals.js";
@@ -123,6 +124,12 @@ export interface GatewayOptions {
   terminals?: Pick<TerminalReactor, "input" | "resize">;
   /** How many turns are ahead of the thread's waiting one, or null; see `TurnScheduler.aheadOf`. */
   queuedAhead?: (threadId: string) => number | null;
+  /**
+   * The thread's kept context reading (`threads.context_reading`, plan2
+   * §1.4): sent after the replay, which holds no `context.usage` (it is
+   * never stored), so the meter shows after a reload what it showed before.
+   */
+  contextReading?: (threadId: string) => Promise<ContextReading | null>;
   /** This server's build, told to every socket in `ready` so an outdated tab can know it is. */
   buildId?: string;
   /** After a command from a socket was handled, for the activity log. */
@@ -414,6 +421,16 @@ export class WebSocketGateway {
             seq: null,
             event: composerEvent(threadProject, frame.topic.threadId, state),
           });
+          const reading = await this.options.contextReading?.(frame.topic.threadId).catch(() => null);
+          if (reading) {
+            send(conn.socket, {
+              kind: "push",
+              subscriptionId,
+              seq: null,
+              projectId: threadProject,
+              event: usageEventOf(frame.topic.threadId, reading),
+            });
+          }
           const ahead = this.options.queuedAhead?.(frame.topic.threadId) ?? null;
           if (ahead !== null) {
             send(conn.socket, {

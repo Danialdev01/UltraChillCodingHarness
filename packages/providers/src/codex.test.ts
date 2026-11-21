@@ -119,13 +119,10 @@ describe("codexArgv", () => {
     expect(argv).not.toContain("--skip-git-repo-check");
   });
 
-  it("compacts its own context mid-turn at the handover line, on new and resumed turns", () => {
+  it("leaves mid-turn compaction at Codex's own default, on new and resumed turns (plan2 §3.1)", () => {
     for (const resumeToken of [undefined, "th-1"]) {
       const argv = codexArgv({ bin: "codex", isRepo: true, caps, resumeToken });
-      const index = argv.indexOf(`model_auto_compact_token_limit=${Math.floor(272_000 * 0.55)}`);
-      expect(index).toBeGreaterThan(0);
-      expect(argv[index - 1]).toBe("-c");
-      if (resumeToken) expect(index).toBeLessThan(argv.indexOf("resume"));
+      expect(argv.some((arg) => arg.startsWith("model_auto_compact_token_limit"))).toBe(false);
     }
   });
 
@@ -169,7 +166,7 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
   it("is unchanged with the bridge off", () => {
     expect(codexArgv({ bin: "codex", isRepo: false, caps, resumeToken: "th-1", model: "gpt-5" })).toEqual([
       "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--skip-git-repo-check",
-      "--ignore-rules", "--model", "gpt-5", "-c", "model_auto_compact_token_limit=149600", "resume", "th-1",
+      "--ignore-rules", "--model", "gpt-5", "resume", "th-1",
     ]);
   });
 
@@ -182,10 +179,10 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
       "-c", 'mcp_servers.omp.default_tools_approval_mode="approve"',
     ];
     expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp })).toEqual([
-      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", "-c", "model_auto_compact_token_limit=149600", ...flags,
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", ...flags,
     ]);
     expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp, resumeToken: "th-1" })).toEqual([
-      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", "-c", "model_auto_compact_token_limit=149600", ...flags, "resume", "th-1",
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", ...flags, "resume", "th-1",
     ]);
   });
 
@@ -265,7 +262,8 @@ describe("CodexNormaliser", () => {
       threadId: ids.threadId,
       turnId: ids.turnId,
       stopReason: "end_turn",
-      usage: { inputTokens: 24763, outputTokens: 122, cacheReadInputTokens: 24448, cacheCreationInputTokens: 0 },
+      // Codex counts the cached prefix inside input_tokens; UCCH's input is uncached.
+      usage: { inputTokens: 24763 - 24448, outputTokens: 122, cacheReadInputTokens: 24448, cacheCreationInputTokens: 0 },
       costUsd: 0,
     });
   });

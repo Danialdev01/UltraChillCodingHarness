@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  cacheWarmLabel,
+  compactionLine,
   contextPercent,
   contextUsage,
   formatContextTokens,
@@ -86,5 +88,29 @@ describe("the percentage", () => {
     expect(contextPercent(0.0002)).toBe(1);
     expect(contextPercent(0.251)).toBe(26);
     expect(contextPercent(1)).toBe(100);
+  });
+});
+
+describe("the line the ring turns red at (plan2 §3.1)", () => {
+  it("is where the session is folded next: its own line, or the server's first", () => {
+    // Claude Code compacts at 967k of 1M, but the server compacts at 75%.
+    expect(compactionLine(0.967)).toBe(FULL_RATIO);
+    // OMP folds at 55%.
+    expect(compactionLine(0.55)).toBe(0.55);
+    expect(compactionLine(null)).toBe(FULL_RATIO);
+    expect(contextUsage(560, 1000, 550).tone).toBe("full");
+    expect(contextUsage(445, 1000, 550).tone).toBe("warn");
+    expect(contextUsage(430, 1000, 550).tone).toBe("normal");
+    expect(contextUsage(700, 1000, 967).tone).toBe("warn");
+  });
+});
+
+describe("cacheWarmLabel (plan2 §2.2)", () => {
+  const now = Date.parse("2026-11-21T10:00:00Z");
+  it("says how long the prompt cache stays warm, and nothing once it has run out", () => {
+    expect(cacheWarmLabel("2026-11-21T10:04:10.000Z", now)).toBe("cache warm · 5m left");
+    expect(cacheWarmLabel("2026-11-21T11:30:00.000Z", now)).toBe("cache warm · 1h 30m left");
+    expect(cacheWarmLabel("2026-11-21T09:59:00.000Z", now)).toBeNull();
+    expect(cacheWarmLabel(null, now)).toBeNull();
   });
 });

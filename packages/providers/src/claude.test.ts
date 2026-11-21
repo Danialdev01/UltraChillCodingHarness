@@ -562,8 +562,10 @@ describe("ClaudeNormaliser on a text-only turn", () => {
   });
 
   it("produces the same events when the stream is split mid-line", () => {
-    const whole = feed(new ClaudeNormaliser({ ...ids, workspace: WORKSPACE }), fixture("text"));
-    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    // One clock for both: readings carry when they were taken.
+    const now = () => 1_795_257_000_000;
+    const whole = feed(new ClaudeNormaliser({ ...ids, workspace: WORKSPACE, now }), fixture("text"));
+    const normaliser = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE, now });
     const splitter = splitLines();
     const events: DomainEvent[] = [];
     const text = fixture("text");
@@ -834,8 +836,9 @@ describe("ClaudeProvider.run", () => {
       message: { role: "user", content: "say pong" },
     });
     expect(host.spawned[0]?.env.CLAUDE_CONFIG_DIR).toBe("/creds");
-    // The CLI folds its own context mid-turn at the handover line.
-    expect(host.spawned[0]?.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe("55");
+    // The CLI compacts at its own default (plan2 §3.1), and defers MCP tools.
+    expect(host.spawned[0]?.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBeUndefined();
+    expect(host.spawned[0]?.env.ENABLE_TOOL_SEARCH).toBe("true");
     expect(events[0]?.type).toBe("agent.session_started");
     expect(events.at(-1)?.type).toBe("agent.turn_completed");
   });
@@ -947,3 +950,65 @@ describe("context window", () => {
     expect(readings(events)).toEqual([{ used: 1000, window: 1_000_000 }]);
   });
 });
+
+describe("prompt cache and compaction readings (plan2 §2.1, §2.2, §3.2)", () => {
+  const start = (usage: Record<string, unknown>) =>
+    JSON.stringify({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { usage } } });
+  const answer = (id: string, usage: Record<string, unknown>) =>
+    JSON.stringify({ type: "assistant", message: { id, role: "assistant", content: [{ type: "text", text: "ok" }], usage } });
+  const usages = (events: DomainEvent[]) => events.filter((e): e is Extract<DomainEvent, { type: "context.usage" }> => e.type === "context.usage");
+
+  it("dates the cache from the request's start, by the lifetime it was written with", () => {
+    let now = Date.parse("2026-11-21T10:00:00Z");
+    const n = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE, model: "claude-opus-5-5", now: () => now });
+    // The first call wrote an hour's cache (2.1.330, a subscription).
+    n.push(start({ input_tokens: 2, cache_creation_input_tokens: 20333, cache_read_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 20333 } }));
+    now += 4_000;
+    const [first] = usages(n.push(answer("m1", { input_tokens: 2, cache_creation_input_tokens: 20333, cache_read_input_tokens: 0, output_tokens: 4 })));
+    expect(first).toMatchObject({
+      usedTokens: 20339,
+      thresholdTokens: 1_000_000 - 33_000,
+      cacheExpiresAt: "2026-11-21T11:00:00.000Z",
+      cacheTtlMs: 3_600_000,
+      cacheHitRatio: 0,
+      harness: "claude",
+      status: "complete",
+    });
+    // A later call that only reads refreshes it for the same hour; the ratio stays the first call's.
+    now = Date.parse("2026-11-21T10:10:00Z");
+    n.push(start({ input_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 20339 }));
+    const [second] = usages(n.push(answer("m2", { input_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 20339, output_tokens: 7 })));
+    expect(second).toMatchObject({ cacheExpiresAt: "2026-11-21T11:10:00.000Z", cachedTokens: 20339, cacheHitRatio: 0 });
+  });
+
+  it("takes the previous turn's lifetime for a resumed turn that only reads, and knows nothing without one", () => {
+    const now = Date.parse("2026-11-21T12:00:00Z");
+    const resumed = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE, now: () => now, cacheTtlMs: 300_000 });
+    resumed.push(start({ input_tokens: 10, cache_read_input_tokens: 90, cache_creation_input_tokens: 0 }));
+    expect(usages(resumed.push(answer("m1", { input_tokens: 10, cache_read_input_tokens: 90, output_tokens: 1 })))[0]).toMatchObject({
+      cacheExpiresAt: "2026-11-21T12:05:00.000Z",
+      cacheHitRatio: 0.9,
+    });
+    const fresh = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE, now: () => now });
+    fresh.push(start({ input_tokens: 10, cache_read_input_tokens: 90, cache_creation_input_tokens: 0 }));
+    expect(usages(fresh.push(answer("m1", { input_tokens: 10, cache_read_input_tokens: 90, output_tokens: 1 })))[0]).toMatchObject({ cacheExpiresAt: null });
+  });
+
+  it("draws the divider for a `/compact` with the CLI's summary and sizes, and reads the folded size", () => {
+    const n = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const events = feed(n, fixture("compact"));
+    const divider = events.find((e) => e.type === "context.injected");
+    expect(divider).toMatchObject({
+      type: "context.injected",
+      turnId: ids.turnId,
+      source: "compaction",
+      compaction: { method: "manual", tokensBefore: 20339, tokensAfter: 5832 },
+    });
+    expect(divider?.type === "context.injected" && divider.content).toMatch(/^This session is being continued/);
+    expect(usages(events).at(-1)).toMatchObject({ usedTokens: 5832, cacheExpiresAt: null });
+    expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed", stopReason: "end_turn" });
+    // One divider, not one per line after it.
+    expect(events.filter((e) => e.type === "context.injected")).toHaveLength(1);
+  });
+});
+

@@ -76,15 +76,12 @@ describe("assembleCliInstructions", () => {
     expect(instructions!.length).toBeLessThan(30_000);
   });
 
-  it("hands a resumed Codex session no rules again, and only the coordination guides whose tools it has", () => {
+  it("hands a resumed Codex session nothing again, not even the coordination guides (plan2 §2.5)", () => {
     const resumed = { provider: "codex" as const, fresh: false };
     expect(assemble(resumed)).toEqual({ instructions: null, injected: [] });
     expect(assemble({ ...resumed, bridge: { omp: true }, offersSubagents: true, widgets: true })).toEqual({ instructions: null, injected: [] });
-    const coordinated = assemble({ ...resumed, messaging: true, offersSubagents: true, bridge: { omp: false } });
-    expect(coordinated.instructions).toBe(`${COLLABORATION_GUIDE}\n\n${UCCH_AGENT_GUIDE}`);
-    expect(coordinated.injected).toEqual([{ source: "omp_bridge", content: coordinated.instructions }]);
-    // No bridge: no messaging tools to describe, and `ucch_agent` is reported missing.
-    expect(assemble({ ...resumed, messaging: true, offersSubagents: true }).instructions).toBe(UCCH_AGENT_UNAVAILABLE_NOTE);
+    expect(assemble({ ...resumed, messaging: true, offersSubagents: true, bridge: { omp: false } })).toEqual({ instructions: null, injected: [] });
+    expect(assemble({ ...resumed, messaging: true, offersSubagents: true })).toEqual({ instructions: null, injected: [] });
   });
 
   it("logs an OMP turn's appended prompt as one row, byte for byte", () => {
@@ -147,7 +144,6 @@ describe("the assembled instructions", () => {
     ["claude subagent", { subagent: true }],
     ["claude with every tool", { bridge: { omp: true }, offersSubagents: true, messaging: true, widgets: true }],
     ["codex new session", { provider: "codex", model: "gpt-6", effort: "medium" }],
-    ["codex resumed and coordinated", { provider: "codex", fresh: false, bridge: { omp: false }, offersSubagents: true, messaging: true }],
     ["omp default", { provider: "omp", model: "openai/gpt-5", effort: undefined }],
     ["omp research", { provider: "omp", model: "openai/gpt-5", mode: "research" }],
     ["omp plan draft", { provider: "omp", model: "openai/gpt-5", planDraft: true }],

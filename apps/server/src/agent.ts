@@ -3,7 +3,7 @@ import { contextAllowed, toRef, toView, type AgentProfiles } from "./agent-profi
 import type { ProfileRef } from "./profile-ref.js";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
 import {
   HostExecutor,
@@ -23,6 +23,17 @@ import {
 import {
   AgentPermissionMode,
   cliContextWindow,
+  estimateTokens,
+  handoffBudgetChars,
+  handoffBudgetTokens,
+  IDLE_COMPACT_LEAD_MS,
+  idleCompactAt,
+  idleCompactionSkip,
+  offerCompactOnResume,
+  overWindow,
+  readingNeedsCompaction,
+  type ContextReading,
+  type SessionPrefix,
   DEFAULT_AGENT_PERMISSION_MODE,
   effectiveCredentialSource,
   isTransient,
@@ -30,7 +41,6 @@ import {
   isOpenRouterLimit,
   isUcchAgentTool,
   limitFallback,
-  needsHandover,
   planDraftPrompt,
   planRunPrompt,
   proposedPlanIn,
@@ -76,13 +86,13 @@ import { decryptSecret } from "./crypto.js";
 import { ensureProjectInfo, readProjectKnowledge } from "./dev-database.js";
 import { workspaceSubject, type ProviderService } from "./providers.js";
 import { toPolicy } from "./workspaces.js";
-import { applyProjection } from "./engine.js";
+import { applyProjection, readingOf } from "./engine.js";
 import { treeFor, worktreeIdOf } from "./trees.js";
 import type { Principal } from "./auth.js";
 import type { EngineResult } from "./engine.js";
 import { cliTranscriptExists } from "./cli-session-files.js";
 import { conversationRecap, exchangesOf } from "./thread-transcript.js";
-import { buildHandoffBrief, handoffMessage, handoffTitle, type BriefAsker } from "./omp-handoff.js";
+import { buildHandoffBrief, handoffMessage, handoffPrompt, handoffTitle, renderTranscript, type BriefAsker } from "./omp-handoff.js";
 import { messageText, RETAIN_PROMPT, retainStdin } from "./omp-memory.js";
 import { runReview } from "./omp-review.js";
 import { runGit } from "./git-exec.js";
@@ -104,13 +114,18 @@ import { accountOpenRouterKey, anonCatalogue, baseUrlFor, parseKeyedModel, type 
 import type { Complete } from "@ucch/agent";
 import { ChoiceWaiters, accountBlocker, harnessAvailability, harnessLabel, limitOptions, type LimitAccount } from "./choices.js";
 import { AgentMessaging, COLLABORATION_GUIDE } from "./agent-messaging.js";
-import { assembleCliInstructions } from "./cli-instructions.js";
+import { assembleCliInstructions, planSessionPrefix } from "./cli-instructions.js";
 export { ompInstructions } from "./cli-instructions.js";
 import { SubagentRunner, type SubagentCall, type SubagentRequest } from "./subagents.js";
 import type { OpenedMemory, SessionMemory } from "./session-memory.js";
 
 export interface AgentOptions {
   secretKey: string | undefined;
+  /**
+   * How long before a Claude Code session's prompt cache runs out its idle
+   * compaction starts (plan2 §3.3). `IDLE_COMPACT_LEAD_MS` when absent.
+   */
+  idleCompactLeadMs?: number;
   /**
    * A stored OpenRouter key was decrypted for a call: its ciphertext, for
    * the account's "last used" (`KeyUsage.touchCiphertext`). Never the key.
@@ -294,6 +309,8 @@ const UCCH_AGENT_HOST_TOOL = {
 };
 
 const EFFORTS: ReadonlySet<string> = new Set(["off", "low", "medium", "high", "xhigh", "max"]);
+const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+
 function isEffort(value: string): value is ReasoningEffort {
   return EFFORTS.has(value);
 }
@@ -369,12 +386,11 @@ export class AgentTurnReactor {
   /** The CLI run per thread, for delivering a permission answer to it. */
   readonly #cliByThread = new Map<string, AgentRun>();
   /**
-   * How full each Claude Code or Codex thread's session was at its last
-   * turn's end, for the handover after it (`#handOverIfFull`). Claude's is
-   * its last model call (`context.usage`); Codex reports none, so its
-   * turn's usage stands in.
+   * Idle compactions armed, per thread (plan2 §3.3). The due time itself is
+   * `threads.idle_compact_at`, so a restart re-arms them
+   * (`rearmIdleCompactions`); this is only the timer.
    */
-  readonly #contextAtEnd = new Map<string, { usedTokens: number; windowTokens: number | null }>();
+  readonly #idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
    * Threads whose prompt someone answered with "Allow All": every later
@@ -580,7 +596,7 @@ export class AgentTurnReactor {
         continue;
       }
       if (event.type === "thread.compaction_requested") {
-        void this.#compact(event.threadId, event.method, event.focus).catch(this.onError);
+        void this.#compact(event.threadId, event.method, event.focus, { auto: event.auto === true, idle: event.idle === true }).catch(this.onError);
         continue;
       }
       if (event.type === "thread.handoff_requested") {
@@ -722,6 +738,8 @@ export class AgentTurnReactor {
 
   /** Hard-stops every CLI run: the teardown path, not the stop button. */
   async killAll(): Promise<void> {
+    for (const timer of this.#idleTimers.values()) clearTimeout(timer);
+    this.#idleTimers.clear();
     this.messaging?.shutdown();
     this.#subagents?.shutdown();
     await Promise.all([...this.#cliRuns].map((run) => run.kill().catch(() => {})));
@@ -748,8 +766,13 @@ export class AgentTurnReactor {
     }
     // After the turn has let go of the thread: the handoff claims it anew.
     if (limited) await this.#handOffOnLimit(threadId, limited, text, principal);
-    else if (!controller.signal.aborted) await this.#handOverIfFull(threadId, principal).catch(this.onError);
-    else this.#contextAtEnd.delete(threadId);
+    else if (!controller.signal.aborted) {
+      const compacting = await this.#handOverIfFull(threadId, principal).catch((error: unknown) => {
+        this.onError(error);
+        return false;
+      });
+      if (!compacting) await this.#scheduleIdleCompaction(threadId).catch(this.onError);
+    }
   }
 
   /**
@@ -764,37 +787,188 @@ export class AgentTurnReactor {
   }
 
   /**
-   * The fallback when a session ended its turn past the fallback line
-   * (`CONTEXT_FORCE_RATIO`): a brief of the work so far replaces the
-   * history, on the same harness, before the next message is sent. Quiet
-   * (`auto`): no row in the chat and no message of its own -- the person's
-   * next message is the first turn on the brief.
+   * A session that ended its turn past the server's line
+   * (`CONTEXT_FORCE_RATIO`) is compacted in its own session before the next
+   * message (plan2 §3.2): `thread.handoff { auto }`, which `decide` turns
+   * into a compaction for Claude Code, Codex and OMP -- the CLI's own
+   * `/compact`, Codex's app server, OMP's command. Quiet (`auto`): a divider
+   * in the chat and nothing else. A handover to a new session is only the
+   * fallback, when the compaction fails (`#compact`).
    *
-   * Every harness keeps under the handover line itself, mid-turn, so long
-   * work runs on without stopping: Claude Code and Codex by their own
-   * auto-compaction, set to that line (`claudeContextEnv`, `codexArgv`), OMP
-   * by its overlay's threshold, the native loop by its compactor. This is
-   * only for a Claude Code or Codex session whose compaction did not run or
-   * did not fold enough.
+   * The reading is the thread's own (`threads.context_reading`), so a
+   * restart between a turn and this check loses nothing; an unavailable one
+   * triggers nothing.
+   *
+   * Each harness also keeps under its own line mid-turn, so long work runs
+   * on: Claude Code and Codex by their auto-compaction at their defaults,
+   * OMP by its overlay's threshold, the native loop by its compactor (which
+   * is why native threads are left alone here).
    *
    * A thread sent another message meanwhile refuses it (busy): the turn
-   * after that one tries again.
+   * after that one tries again. True when a compaction was asked for.
    */
-  async #handOverIfFull(threadId: string, principal: Principal | undefined): Promise<void> {
-    const reading = this.#contextAtEnd.get(threadId);
-    this.#contextAtEnd.delete(threadId);
+  async #handOverIfFull(threadId: string, principal: Principal | undefined): Promise<boolean> {
     const dispatch = this.options.dispatch;
-    if (!reading || !dispatch || !principal || !needsHandover(reading.usedTokens, reading.windowTokens)) return;
+    if (!dispatch) return false;
     const [thread] = await this.db
-      .select({ provider: threads.provider, parentThreadId: threads.parentThreadId })
+      .select({
+        provider: threads.provider,
+        parentThreadId: threads.parentThreadId,
+        contextReading: threads.contextReading,
+        projectId: threads.projectId,
+        createdByUserId: threads.createdByUserId,
+      })
       .from(threads)
       .where(eq(threads.id, threadId))
       .limit(1);
-    if (!thread || thread.parentThreadId || (thread.provider !== "claude" && thread.provider !== "codex")) return;
-    const result = await dispatch(principal, { type: "thread.handoff", threadId, auto: true });
-    if (!result.ok) this.onError(new Error(`automatic handover of ${threadId} refused: ${result.message}`));
+    if (!thread || thread.parentThreadId) return false;
+    if (thread.provider !== "claude" && thread.provider !== "codex" && thread.provider !== "omp") return false;
+    if (!readingNeedsCompaction(thread.contextReading)) return false;
+    const by = principal ?? (await this.#internalPrincipal(thread));
+    if (!by) return false;
+    const result = await dispatch(by, { type: "thread.handoff", threadId, auto: true });
+    if (!result.ok) this.onError(new Error(`automatic compaction of ${threadId} refused: ${result.message}`));
+    return result.ok;
   }
 
+  /**
+   * The server acting on a thread by itself -- an idle compaction, the
+   * handover after a failed one -- as the person it bills: the thread's
+   * creator, or the project's owner. Marked internal, which is what lets
+   * `decide` take the commands only the server may send.
+   */
+  async #internalPrincipal(thread: { projectId: string; createdByUserId: string | null }): Promise<Principal | null> {
+    let userId = thread.createdByUserId;
+    if (!userId) {
+      const [project] = await this.db.select({ userId: projects.userId }).from(projects).where(eq(projects.id, thread.projectId)).limit(1);
+      userId = project?.userId ?? null;
+    }
+    return userId ? { userId, sessionId: "agent-context", scopes: ["exec"], internal: true } : null;
+  }
+
+  /**
+   * After a Claude Code turn: when its session is big enough to be worth
+   * folding and its prompt cache's expiry is known, a `/compact` is armed
+   * for just before the cache runs out (plan2 §3.3, after t3code's
+   * `idleCompactionWindow`), so the compaction reads the history from the
+   * cache rather than paying for it again -- and the person's next message
+   * starts on the summary, not on a cold full history. The due time is kept
+   * with the thread (`threads.idle_compact_at`); a new turn clears it.
+   */
+  async #scheduleIdleCompaction(threadId: string): Promise<void> {
+    const [row] = await this.db
+      .select({
+        provider: threads.provider,
+        parentThreadId: threads.parentThreadId,
+        contextReading: threads.contextReading,
+        agent: workspaces.agentSettings,
+      })
+      .from(threads)
+      .innerJoin(projects, eq(projects.id, threads.projectId))
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .where(eq(threads.id, threadId))
+      .limit(1);
+    if (!row || row.parentThreadId || row.provider !== "claude") return;
+    if (!readAgentSettings(row.agent).idleCompaction.enabled) return;
+    const at = idleCompactAt(row.contextReading, Date.now(), this.#idleLead());
+    if (at === null) return;
+    await this.db.update(threads).set({ idleCompactAt: new Date(at) }).where(eq(threads.id, threadId));
+    this.#armIdle(threadId, at);
+  }
+
+  #idleLead(): number {
+    return this.options.idleCompactLeadMs ?? IDLE_COMPACT_LEAD_MS;
+  }
+
+  #armIdle(threadId: string, at: number): void {
+    this.#clearIdle(threadId);
+    const timer = setTimeout(() => {
+      this.#idleTimers.delete(threadId);
+      void this.#idleCompactDue(threadId, at).catch(this.onError);
+    }, Math.max(0, at - Date.now()));
+    timer.unref?.();
+    this.#idleTimers.set(threadId, timer);
+  }
+
+  #clearIdle(threadId: string): void {
+    const timer = this.#idleTimers.get(threadId);
+    if (timer) clearTimeout(timer);
+    this.#idleTimers.delete(threadId);
+  }
+
+  /**
+   * Arms again every idle compaction a restart dropped: the due times kept
+   * with the threads. One whose cache has run out meanwhile is cleared --
+   * it would read nothing from the cache any more.
+   */
+  async rearmIdleCompactions(): Promise<number> {
+    const rows = await this.db
+      .select({ id: threads.id, at: threads.idleCompactAt })
+      .from(threads)
+      .where(isNotNull(threads.idleCompactAt));
+    let armed = 0;
+    for (const row of rows) {
+      const at = row.at?.getTime();
+      if (at === undefined) continue;
+      if (at + this.#idleLead() <= Date.now()) {
+        await this.db.update(threads).set({ idleCompactAt: null }).where(eq(threads.id, row.id));
+        continue;
+      }
+      this.#armIdle(row.id, at);
+      armed++;
+    }
+    return armed;
+  }
+
+  /**
+   * An idle compaction's moment: the skip rules (`idleCompactionSkip`),
+   * then `thread.compact { idle }` as the server. Whatever happens the due
+   * time is spent, unless a newer one replaced it.
+   */
+  async #idleCompactDue(threadId: string, at: number): Promise<void> {
+    const [row] = await this.db
+      .select({
+        status: threads.status,
+        archivedAt: threads.archivedAt,
+        provider: threads.provider,
+        providerSessionId: threads.providerSessionId,
+        contextReading: threads.contextReading,
+        idleCompactAt: threads.idleCompactAt,
+        projectId: threads.projectId,
+        createdByUserId: threads.createdByUserId,
+        agent: workspaces.agentSettings,
+      })
+      .from(threads)
+      .innerJoin(projects, eq(projects.id, threads.projectId))
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .where(eq(threads.id, threadId))
+      .limit(1);
+    if (!row) return;
+    const newerTurn = row.idleCompactAt?.getTime() !== at;
+    if (newerTurn) return;
+    await this.db.update(threads).set({ idleCompactAt: null }).where(eq(threads.id, threadId));
+    const history = (await this.store.threadHistory(threadId)).map((stored) => stored.event);
+    const [running] = await this.db
+      .select({ n: count() })
+      .from(threads)
+      .where(and(eq(threads.parentThreadId, threadId), inArray(threads.status, ["queued", "running", "cancelling"])));
+    const skip = idleCompactionSkip({
+      enabled: readAgentSettings(row.agent).idleCompaction.enabled,
+      status: row.status,
+      archived: row.archivedAt !== null,
+      pendingRequests: openRequests(history),
+      backgroundWork: (running?.n ?? 0) > 0 || this.#running.has(threadId),
+      lastWasCompaction: lastWasCompaction(history),
+      harnessChanged: row.provider !== "claude" || row.contextReading?.harness !== row.provider || !row.providerSessionId,
+      newerTurn,
+    });
+    if (skip) return;
+    const dispatch = this.options.dispatch;
+    const principal = await this.#internalPrincipal(row);
+    if (!dispatch || !principal) return;
+    const result = await dispatch(principal, { type: "thread.compact", threadId, idle: true });
+    if (!result.ok) this.onError(new Error(`idle compaction of ${threadId} refused: ${result.message}`));
+  }
   /**
    * A turn stopped on a usage limit (solution §5.4, OM4.6): a Claude Code or
    * Codex plan's, or the OpenRouter key's. The session carries on, in the
@@ -965,6 +1139,8 @@ export class AgentTurnReactor {
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
     // Nothing to release: the thread, and its status, went with it.
     if (!thread) return;
+    // A message came first: an idle compaction armed for it is overtaken.
+    this.#clearIdle(threadId);
 
     // Until `turn.started`, the thread is `queued` and refuses every other
     // message: each way out before it says so, or the thread stays stuck.
@@ -1020,6 +1196,10 @@ export class AgentTurnReactor {
     let limitResetsAt: string | null = null;
     // Who runs it, once resolved below: the subagent count's label.
     let runsOn: ProviderId = "native";
+    // The turn's latest context reading, kept with the thread when the turn
+    // ends (plan2 §1.4): `context.usage` is never stored as an event, and
+    // one write per model call would be one per streamed call.
+    let reading: Extract<DomainEvent, { type: "context.usage" }> | null = null;
     const write = (batch: readonly DomainEvent[]) => {
       if (batch.length === 0) return Promise.resolve([]);
       if (batch.some((event) => event.type === "agent.turn_failed" && event.limit)) {
@@ -1030,6 +1210,7 @@ export class AgentTurnReactor {
         }
       }
       for (const event of batch) {
+        if (event.type === "context.usage") reading = event;
         if (event.type === "agent.subagent_finished") subagentsTotal.inc({ provider: runsOn, status: event.status });
         // The CLI's own usage reading: the meters' only source for Claude.
         if (event.type === "agent.rate_limit" && owner) {
@@ -1053,10 +1234,15 @@ export class AgentTurnReactor {
       // with it the empty transaction that would otherwise be opened once
       // per streamed token.
       const durable = events.some((event) => !isTransient(event.type));
+      // The turn's end carries its last reading into the projection, which
+      // keeps it with the thread; the event itself went out when it came.
+      const ends = events.some((event) => event.type === "agent.turn_completed" || event.type === "agent.turn_failed");
+      const projected = ends && reading ? [reading, ...events] : events;
+      if (ends) reading = null;
       return this.store.append(
         target,
         events,
-        durable ? (tx) => applyProjection(tx, events, null) : undefined,
+        durable ? (tx) => applyProjection(tx, projected, null) : undefined,
       );
     };
     // Tokens go out in runs rather than one frame each. Native, CLI and
@@ -1254,24 +1440,78 @@ export class AgentTurnReactor {
         // after 30 days, and a settled session reopened weeks later asks for
         // one -- cannot be resumed: `--resume` would fail the turn at once.
         // A new session starts instead, with a recap of the conversation.
+        // Looked for where the CLI will look: its folder for this tree.
         let resumeToken = thread.providerSessionId;
         if (resumeToken && !subagentId && (provider === "claude" || provider === "codex") && this.options.providers) {
           const providers = this.options.providers;
           const token = resumeToken;
           // A check that cannot run keeps the session: resuming is the usual case.
           const gone = await Promise.resolve()
-            .then(() => cliTranscriptExists(providers.credsDir(owner.id, provider, profile), provider, token))
+            .then(() => cliTranscriptExists(providers.credsDir(owner.id, provider, profile), provider, token, workspace))
             .then((exists) => !exists, () => false);
           if (gone) {
             resumeToken = null;
-            const exchanges = exchangesOf(await this.store.threadHistory(threadId));
+            // What the agent could still see: nothing from before a clear.
+            const history = await this.store.threadHistory(threadId);
+            const exchanges = exchangesOf(sinceCleared(history.map((stored) => stored.event)).map((event) => ({ event })));
             // The message being sent is the last exchange, not yet answered.
             if (exchanges.at(-1)?.reply === "") exchanges.pop();
-            const recap = conversationRecap(exchanges);
+            // Within what the new session can hold beside the message and its work (plan2 §3.5).
+            const budget = handoffBudgetTokens({
+              windowTokens: cliContextWindow(provider, cliModel ?? null),
+              messageTokens: estimateTokens(prompt.length),
+              images: pictures.length,
+              files: Math.max(0, (images?.length ?? 0) - pictures.length),
+            });
+            const recap = conversationRecap(exchanges, handoffBudgetChars(budget));
             if (recap) {
               await append([{ type: "context.injected", threadId, source: "system_prompt", content: recap }]);
               prompt = `<earlier-conversation>\n${recap}\n</earlier-conversation>\n\n${prompt}`;
             }
+          }
+        }
+
+        // A resumed session that will not fit this message, or one big and
+        // idle past its cache's life, is compacted in place first
+        // (plan2 §3.4, §3.7) -- under this turn, so the divider is its own.
+        // What the thread keeps of the session, as the CLI turn reads it.
+        const session = { sessionPrefix: thread.sessionPrefix ?? null, contextReading: thread.contextReading ?? null };
+        if (resumeToken && !subagentId && !thread.parentThreadId && (provider === "claude" || provider === "codex")) {
+          const reading = thread.contextReading?.harness === provider ? thread.contextReading : null;
+          let compactFirst = false;
+          if (provider === "claude" && !thread.resumeCompactPromptOff && offerCompactOnResume(reading, Date.now())) {
+            compactFirst = (await this.#askCompactOnResume(threadId, reading!, controller.signal, append)) === "compact";
+          }
+          const files = Math.max(0, (images?.length ?? 0) - pictures.length);
+          if (!compactFirst && overWindow({ reading, messageTokens: estimateTokens(prompt.length), images: pictures.length, files })) {
+            compactFirst = true;
+          }
+          if (compactFirst && !controller.signal.aborted) {
+            const made = await this.#compactSession(
+              { ...thread, providerSessionId: resumeToken },
+              owner,
+              provider,
+              profile,
+              controller.signal,
+              { turnId },
+            ).catch((error: unknown) => {
+              // The CLI still folds its own context mid-turn: the turn goes on.
+              this.onError(new Error(`compacting ${threadId} before its turn failed: ${error instanceof Error ? error.message : String(error)}`));
+              return [] as DomainEvent[];
+            });
+            if (made.length > 0) {
+              await append(made);
+              const folded = made.find((event) => event.type === "context.usage");
+              if (folded?.type === "context.usage") session.contextReading = readingOf(folded);
+              // Codex's history lost its instructions with the rest (plan2 §2.5).
+              if (provider === "codex" && session.sessionPrefix) session.sessionPrefix = { ...session.sessionPrefix, resend: true };
+            }
+          }
+          if (controller.signal.aborted) {
+            await append([
+              { type: "agent.turn_completed", threadId, turnId, stopReason: "cancelled", usage: researched?.usage ?? ZERO_USAGE, costUsd: researched?.costUsd ?? 0 },
+            ]);
+            return;
           }
         }
 
@@ -1300,6 +1540,7 @@ export class AgentTurnReactor {
           ...(turnKnowledge?.dirs.length ? { readDirs: turnKnowledge.dirs } : {}),
           ...(researched ? { researched } : {}),
           ...(pictures.length ? { images: pictures } : {}),
+          session,
         });
         // A plan's usage limit (Claude Code, Codex) or the OpenRouter key's (OMP).
         return limited ? provider : undefined;
@@ -1433,20 +1674,175 @@ export class AgentTurnReactor {
   }
 
   /**
-   * `thread.compact` / `thread.handoff` (solution §5.3): OMP's own command
-   * on the thread's session, in a short process of its own, between turns.
-   * No turn opens -- nothing is asked of the model but the summary -- so
-   * what it made lands as a `context.injected` with no turn, which the chat
-   * draws under the last answer, and the reading the meter shows after it.
+   * A big Claude Code session whose cache ran out while it sat idle (plan2
+   * §3.7): before its message goes, the person is asked once whether to
+   * compact it first -- sent as it is, the whole history is paid for again
+   * at full price. "Don't ask again" is the thread's
+   * (`threads.resume_compact_prompt_off`). A stop answers it as "keep".
+   */
+  async #askCompactOnResume(
+    threadId: string,
+    reading: ContextReading,
+    signal: AbortSignal,
+    append: (events: readonly DomainEvent[]) => Promise<unknown>,
+  ): Promise<string | null> {
+    const requestId = randomUUID();
+    const idleMs = Math.max(0, Date.now() - Date.parse(reading.at));
+    const age = idleMs >= 3_600_000 ? `${Math.round(idleMs / 3_600_000)}h` : `${Math.max(1, Math.round(idleMs / 60_000))}m`;
+    const tokens = `${Math.round((reading.usedTokens ?? 0) / 1000)}k`;
+    await append([
+      {
+        type: "agent.choice_requested",
+        threadId,
+        requestId,
+        kind: "resume_compact",
+        title: `This session is ${age} old and uses ${tokens} tokens — compact before continuing?`,
+        detail:
+          "Its prompt cache has expired, so this message would send the whole conversation again at full price. Compacting folds it into a summary in the same session first.",
+        options: [
+          { id: "compact", label: "Compact first" },
+          { id: "keep", label: "Keep as is" },
+          { id: "never", label: "Don't ask again" },
+        ],
+      },
+    ]);
+    const answer = await this.#choices.wait(requestId, signal);
+    await append([{ type: "agent.choice_resolved", threadId, requestId, optionId: answer.optionId }]);
+    if (answer.optionId === "never") {
+      await this.db.update(threads).set({ resumeCompactPromptOff: true }).where(eq(threads.id, threadId));
+    }
+    return answer.optionId;
+  }
+
+  /**
+   * Compacts a Claude Code or Codex session in place (plan2 §3.2), and
+   * returns what it made: the chat's "Context compacted" divider and the
+   * reading after it.
    *
-   * It takes an OMP slot like a turn, and a stop reaches it like a turn's
+   * - Claude Code: `/compact` as a turn of the same session (`--resume`,
+   *   the message on stream-json stdin, which 2.1.330 runs headless), with
+   *   the session's own prefix and tools, so the summary's call reads the
+   *   history from the cache. Its `compact_boundary` and the summary after
+   *   it are the divider (`ClaudeNormaliser`).
+   * - Codex: the app server's `thread/compact/start` (`compactCodexThread`):
+   *   `exec` sends `/compact` to the model as a message. Its history lost
+   *   the first turn's instructions with it, so the next turn hands them
+   *   over again (`SessionPrefix.resend`).
+   *
+   * `turn`: under a turn (§3.4, §3.7), whose slot it runs in; otherwise the
+   * caller holds one. Nothing is billed: the CLI reports the summary's call
+   * as no usage, and between turns there is no turn to bill.
+   */
+  async #compactSession(
+    thread: typeof threads.$inferSelect,
+    owner: TurnOwner,
+    provider: "claude" | "codex",
+    profile: ProfileRef | null,
+    signal: AbortSignal,
+    turn?: { turnId: string },
+  ): Promise<DomainEvent[]> {
+    const providers = this.options.providers;
+    if (!providers || !this.options.cliEnabled) throw new Error(`${harnessLabel(provider)} is disabled on this server`);
+    const resumeToken = thread.providerSessionId;
+    if (!resumeToken) throw new Error("there is no conversation to compact yet");
+    const workspace = treeFor(this.options.workspaceRoot, thread.projectId, thread);
+    const prefix = thread.sessionPrefix?.provider === provider && thread.sessionPrefix.sessionId === resumeToken ? thread.sessionPrefix : null;
+    // What the session runs on: its prefix names it, else its last turn did.
+    const [last] = await this.db
+      .select({ model: turns.model })
+      .from(turns)
+      .where(eq(turns.threadId, thread.id))
+      .orderBy(desc(turns.seq))
+      .limit(1);
+    const model = prefix?.model ?? last?.model ?? undefined;
+    const ids = turn ? { turnId: turn.turnId } : {};
+
+    if (provider === "codex") {
+      const resolved = await providers.resolve(owner.id, "codex", profile ? { profile } : {});
+      const codex = resolved.provider as { compact?: (input: import("@ucch/providers").ProviderCompactInput) => Promise<DomainEvent[]> };
+      if (!codex.compact) throw new Error("this server's Codex provider cannot compact a session");
+      const made = await codex.compact({
+        ctx: resolved.ctx(workspace),
+        threadId: thread.id,
+        resumeToken,
+        ...(model ? { model } : {}),
+        signal,
+      });
+      if (prefix) {
+        await this.db.update(threads).set({ sessionPrefix: { ...prefix, resend: true } }).where(eq(threads.id, thread.id));
+      }
+      return made.map((event) => ({ ...event, ...ids }));
+    }
+
+    const [project] = await this.db
+      .select({ agent: workspaces.agentSettings, ompTrusted: projects.ompTrusted })
+      .from(projects)
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .where(eq(projects.id, thread.projectId))
+      .limit(1);
+    const kept: DomainEvent[] = [];
+    let failure: string | null = null;
+    let compacted = false;
+    await this.#runCli("claude", {
+      ownerId: owner.id,
+      owner,
+      profile,
+      threadId: thread.id,
+      // The bridge and the config files are named by it; nothing is stored under it.
+      turnId: turn?.turnId ?? randomUUID(),
+      projectId: thread.projectId,
+      workspace,
+      text: "/compact",
+      resumeToken,
+      model,
+      effort: prefix?.effort && isEffort(prefix.effort) ? prefix.effort : undefined,
+      signal,
+      agentSettings: readAgentSettings(project?.agent),
+      trusted: project?.ompTrusted === true,
+      subagent: Boolean(thread.parentThreadId),
+      compaction: true,
+      session: { sessionPrefix: thread.sessionPrefix ?? null, contextReading: thread.contextReading ?? null },
+      // Only the compaction's own record: no turn opened, so nothing that
+      // closes or belongs to one may land.
+      append: async (events) => {
+        for (const event of events) {
+          if (event.type === "agent.turn_failed") failure = event.error;
+          else if (event.type === "agent.turn_completed" && event.stopReason === "cancelled") failure = "Stopped.";
+          else if (event.type === "context.injected" && event.source === "compaction") {
+            compacted = true;
+            kept.push(turn ? event : withoutTurn(event));
+          } else if (event.type === "context.usage") {
+            kept.push(turn ? event : withoutTurn(event));
+          }
+        }
+      },
+    });
+    if (failure) throw new Error(failure);
+    if (!compacted) throw new Error("Claude Code answered /compact without compacting the session");
+    return kept;
+  }
+
+  /**
+   * `thread.compact` / `thread.handoff` (solution §5.3, plan2 §3.2), between
+   * turns: the session's own compaction -- Claude Code's `/compact`,
+   * Codex's app server (`#compactSession`), or OMP's command in a short
+   * process of its own. No turn opens -- nothing is asked of the model but
+   * the summary -- so what it made lands as a `context.injected` with no
+   * turn, which the chat draws under the last answer, and the reading the
+   * meter shows after it.
+   *
+   * It takes a slot like a turn, and a stop reaches it like a turn's
    * (`#running`). Every way out ends with `thread.compaction_finished`,
-   * which is what frees the thread the request claimed.
+   * which is what frees the thread the request claimed. One the server
+   * asked for (`auto`) that fails hands the session over instead, as a
+   * brief on the same harness (`thread.handoff { fallback }`); an idle one
+   * that fails is left: nothing is waiting on it.
    */
   async #compact(
     threadId: string,
     method: "compact" | "handoff",
     focus: string | undefined,
+    flags: { auto: boolean; idle: boolean } = { auto: false, idle: false },
   ): Promise<void> {
     const controller = new AbortController();
     this.#running.set(threadId, controller);
@@ -1465,60 +1861,69 @@ export class AgentTurnReactor {
     try {
       const owner = await this.#owner(thread.projectId, thread);
       if (!owner) throw new Error("there is nobody to bill this thread to");
-      if (!thread.providerSessionId) throw new Error("this thread has no OMP session to compact yet");
-      const providers = this.options.providers;
-      if (!providers || !this.options.cliEnabled) throw new Error("OMP is disabled on this server");
-      // The key first: a missing one says where to add it.
-      const openrouterKey = this.#decryptKey(owner.openrouterKeyEncrypted);
-      release = await this.#scheduler.acquire({ ownerId: owner.id, kind: "omp", threadId, signal: controller.signal });
-      // The model the session last ran on: the summary is written by it, as
-      // one OMP made mid-turn would be.
-      const [last] = await this.db
-        .select({ model: turns.model })
-        .from(turns)
-        .where(eq(turns.threadId, threadId))
-        .orderBy(desc(turns.seq))
-        .limit(1);
-      const model = last?.model ?? resolveModel(undefined, owner.defaultModel, this.options.defaultModel);
-      const permissionMode = this.#modeFor(threadId, owner);
-      const resolved = await providers.resolve(owner.id, "omp", { openrouterKey, ompPreset: "standard" });
-      const provider = resolved.provider as { maintain?(input: OmpMaintenanceInput): Promise<DomainEvent[]> };
-      if (!provider.maintain) throw new Error("this server's OMP provider cannot compact a session");
-      const written = await writeOmpOverlay(providers.ompRunDir(owner.id), randomUUID(), {
-        settings: { ...DEFAULT_OMP_SETTINGS, models: { default: model } },
-        preset: "standard",
-        permissionMode,
-        // Untrusted whatever the project: compacting needs no language
-        // server or debugger, so none of the repository's config runs.
-        trusted: false,
-        workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
-        webSearch: false,
-        hostTools: [],
-      });
-      overlay = written;
-      made = await provider.maintain({
-        ctx: resolved.ctx(treeFor(this.options.workspaceRoot, thread.projectId, thread)),
-        threadId,
-        resumeToken: thread.providerSessionId,
-        model,
-        permissionMode,
-        omp: {
-          overlayPath: written.path,
-          sessionDir: providers.ompSessionDir(owner.id, thread.projectId),
-          guardHookPath: providers.ompGuardHook(owner.id),
+      if (thread.provider === "claude" || thread.provider === "codex") {
+        const provider = thread.provider;
+        release = await this.#scheduler.acquire({ ownerId: owner.id, kind: turnKindOf(provider), threadId, signal: controller.signal });
+        const account = await this.#profileFor(thread.projectId, owner, thread.profileId, provider);
+        made = await this.#compactSession(thread, owner, provider, account ? toRef(account) : null, controller.signal);
+      } else {
+        if (!thread.providerSessionId) throw new Error("this thread has no OMP session to compact yet");
+        const providers = this.options.providers;
+        if (!providers || !this.options.cliEnabled) throw new Error("OMP is disabled on this server");
+        // The key first: a missing one says where to add it.
+        const openrouterKey = this.#decryptKey(owner.openrouterKeyEncrypted);
+        release = await this.#scheduler.acquire({ ownerId: owner.id, kind: "omp", threadId, signal: controller.signal });
+        // The model the session last ran on: the summary is written by it, as
+        // one OMP made mid-turn would be.
+        const [last] = await this.db
+          .select({ model: turns.model })
+          .from(turns)
+          .where(eq(turns.threadId, threadId))
+          .orderBy(desc(turns.seq))
+          .limit(1);
+        const model = last?.model ?? resolveModel(undefined, owner.defaultModel, this.options.defaultModel);
+        const permissionMode = this.#modeFor(threadId, owner);
+        const resolved = await providers.resolve(owner.id, "omp", { openrouterKey, ompPreset: "standard" });
+        const provider = resolved.provider as { maintain?(input: OmpMaintenanceInput): Promise<DomainEvent[]> };
+        if (!provider.maintain) throw new Error("this server's OMP provider cannot compact a session");
+        const written = await writeOmpOverlay(providers.ompRunDir(owner.id), randomUUID(), {
+          settings: { ...DEFAULT_OMP_SETTINGS, models: { default: model } },
+          preset: "standard",
+          permissionMode,
+          // Untrusted whatever the project: compacting needs no language
+          // server or debugger, so none of the repository's config runs.
           trusted: false,
-          contextThreshold: written.contextThreshold,
-        },
-        method,
-        ...(focus ? { focus } : {}),
-        signal: controller.signal,
-      });
+          workersPerTurn: this.options.ompWorkersPerTurn ?? 4,
+          webSearch: false,
+          hostTools: [],
+        });
+        overlay = written;
+        made = await provider.maintain({
+          ctx: resolved.ctx(treeFor(this.options.workspaceRoot, thread.projectId, thread)),
+          threadId,
+          resumeToken: thread.providerSessionId,
+          model,
+          permissionMode,
+          omp: {
+            overlayPath: written.path,
+            sessionDir: providers.ompSessionDir(owner.id, thread.projectId),
+            guardHookPath: providers.ompGuardHook(owner.id),
+            trusted: false,
+            contextThreshold: written.contextThreshold,
+          },
+          method,
+          ...(focus ? { focus } : {}),
+          signal: controller.signal,
+        });
+      }
     } catch (caught) {
       error = controller.signal.aborted ? "Stopped." : caught instanceof Error ? caught.message : String(caught);
     } finally {
       release?.();
       await overlay?.dispose().catch(this.onError);
       if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
+      // The due time this was armed for is spent, however it went.
+      if (flags.idle) await this.db.update(threads).set({ idleCompactAt: null }).where(eq(threads.id, threadId)).catch(this.onError);
       const events: DomainEvent[] = [
         ...made,
         { type: "thread.compaction_finished", threadId, method, ...(error ? { error: error.slice(0, 2_000) } : {}) },
@@ -1530,6 +1935,13 @@ export class AgentTurnReactor {
     // Neither method asks the model anything more: a handover replaces the
     // context with its brief and then waits, so the person's next message
     // is the first turn on it.
+    if (error && flags.auto && !flags.idle && !controller.signal.aborted) {
+      const dispatch = this.options.dispatch;
+      const principal = await this.#internalPrincipal(thread);
+      if (!dispatch || !principal) return;
+      const result = await dispatch(principal, { type: "thread.handoff", threadId, auto: true, fallback: true });
+      if (!result.ok) this.onError(new Error(`handover of ${threadId} after a failed compaction refused: ${result.message}`));
+    }
   }
 
   /**
@@ -1572,7 +1984,10 @@ export class AgentTurnReactor {
     try {
       const dispatch = this.options.dispatch;
       if (!dispatch || !principal) throw new Error("this server cannot start a thread for a handoff");
-      const brief = await this.#writeBrief(thread, event.focus, controller.signal);
+      const { brief, note } = await this.#writeBrief(thread, event.focus, controller.signal, {
+        provider: event.targetProvider,
+        message: event.message,
+      });
       stopped();
 
       const created = await dispatch(principal, {
@@ -1596,6 +2011,7 @@ export class AgentTurnReactor {
         toHash: made.hash,
         targetProvider: event.targetProvider,
         brief,
+        ...(note ? { briefNote: note } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
       };
       // Linked before its first message, so the new thread's log opens
@@ -1628,20 +2044,77 @@ export class AgentTurnReactor {
   }
 
   /**
-   * The brief of a thread's work so far (solution §5.4): its log as a
-   * transcript, on stdin to a one-shot `omp -p --no-session --no-tools` on
-   * the overlay's `smol` role -- the server's compaction model, never the
-   * coding one. OMP writes it whichever harnesses are on either side, so it
-   * bills as an OMP call does: the account's OpenRouter key, and an OMP slot.
+   * The brief of a thread's work so far (solution §5.4, plan2 §3.5), for the
+   * session that carries it on, written by the first of these that can:
+   *
+   * 1. OMP: the log as a transcript, on stdin to a one-shot
+   *    `omp -p --no-session --no-tools` on the overlay's `smol` role, billed
+   *    as an OMP call is (the account's OpenRouter key, an OMP slot);
+   * 2. the thread's own harness, one-shot (`claude -p`, `codex exec
+   *    --ephemeral`), on its subscription, when OMP or the key is missing;
+   * 3. the conversation itself, as it was said (`conversationRecap`), when
+   *    neither could -- never a handover that fails for want of a writer.
+   *
+   * Every one is held to what the new session can take beside the message
+   * and its work (`handoffBudgetTokens`, after t3code's `handoffBudget`).
+   * `note` says why it is not OMP's, for the thread to show.
    */
-  async #writeBrief(thread: typeof threads.$inferSelect, focus: string | undefined, signal: AbortSignal): Promise<string> {
+  async #writeBrief(
+    thread: typeof threads.$inferSelect,
+    focus: string | undefined,
+    signal: AbortSignal,
+    target: { provider: ProviderId; model?: string | undefined; message?: string | undefined },
+  ): Promise<{ brief: string; note?: string }> {
+    const history = await this.store.threadHistory(thread.id);
+    // What the agent can still see: nothing from before a clear.
+    const events = sinceCleared(history.map((stored) => stored.event));
+    const tokens = handoffBudgetTokens({
+      windowTokens: cliContextWindow(target.provider, target.model ?? null) ?? (target.provider === "native" || target.provider === "omp" ? 128_000 : null),
+      messageTokens: estimateTokens(target.message?.length ?? 0),
+    });
+    const chars = handoffBudgetChars(tokens);
+    const clip = (text: string) => (text.length > chars ? `${text.slice(0, chars)}\n\n[… the brief ran past its budget and was cut]` : text);
+    const failures: string[] = [];
+    const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+    try {
+      return { brief: clip(await this.#ompBrief(thread, events, focus, signal, tokens)) };
+    } catch (error) {
+      if (signal.aborted) throw new Error("Stopped.");
+      failures.push(`OMP could not write it: ${reason(error)}`);
+    }
+    const own = thread.provider;
+    if (own === "claude" || own === "codex") {
+      try {
+        const brief = await this.#harnessBrief(thread, own, events, focus, signal, tokens);
+        return { brief: clip(brief), note: `${harnessLabel(own)} wrote this brief: ${failures.join("; ")}.` };
+      } catch (error) {
+        if (signal.aborted) throw new Error("Stopped.");
+        failures.push(`${harnessLabel(own)} could not either: ${reason(error)}`);
+      }
+    }
+    const recap = conversationRecap(exchangesOf(events.map((event) => ({ event }))), chars);
+    if (!recap) throw new Error(`this thread has nothing to hand off yet (${failures.join("; ")})`);
+    return {
+      brief: recap,
+      note: `No brief could be written, so the conversation so far was handed over as it was said. ${failures.join("; ")}.`.slice(0, 2_000),
+    };
+  }
+
+  /** The brief as OMP writes it: the first way `#writeBrief` tries. */
+  async #ompBrief(
+    thread: typeof threads.$inferSelect,
+    events: readonly DomainEvent[],
+    focus: string | undefined,
+    signal: AbortSignal,
+    tokens: number,
+  ): Promise<string> {
     const owner = await this.#owner(thread.projectId, thread);
     if (!owner) throw new Error("there is nobody to bill this thread to");
     const providers = this.options.providers;
-    if (!providers || !this.options.cliEnabled) throw new Error("a handoff's brief is written by OMP, which is disabled on this server");
+    if (!providers || !this.options.cliEnabled) throw new Error("OMP is disabled on this server");
     // The key first: a missing one says where to add it.
     const openrouterKey = this.#decryptKey(owner.openrouterKeyEncrypted);
-    const history = await this.store.threadHistory(thread.id);
     const release = await this.#scheduler.acquire({ ownerId: owner.id, kind: "omp", threadId: thread.id, signal });
     let overlay: { dispose(): Promise<void> } | undefined;
     try {
@@ -1664,15 +2137,52 @@ export class AgentTurnReactor {
         omp: omp as BriefAsker,
         ctx: resolved.ctx(treeFor(this.options.workspaceRoot, thread.projectId, thread)),
         files: { overlayPath: written.path, guardHookPath: providers.ompGuardHook(owner.id) },
-        // What the agent can still see: nothing from before a clear.
-        events: sinceCleared(history.map((stored) => stored.event)),
+        events,
         ...(focus ? { focus } : {}),
+        briefTokens: tokens,
         signal,
       });
     } finally {
       // The slot was for OMP; whatever turn follows takes its own.
       release();
       await overlay?.dispose().catch(this.onError);
+    }
+  }
+
+  /**
+   * The brief as the thread's own Claude Code or Codex writes it, one-shot
+   * on its subscription: no tools, no session kept (`ask`). On a slot of
+   * the harness's, like a turn.
+   */
+  async #harnessBrief(
+    thread: typeof threads.$inferSelect,
+    provider: "claude" | "codex",
+    events: readonly DomainEvent[],
+    focus: string | undefined,
+    signal: AbortSignal,
+    tokens: number,
+  ): Promise<string> {
+    const owner = await this.#owner(thread.projectId, thread);
+    if (!owner) throw new Error("there is nobody to bill this thread to");
+    const providers = this.options.providers;
+    if (!providers || !this.options.cliEnabled) throw new Error(`${harnessLabel(provider)} is disabled on this server`);
+    const transcript = renderTranscript(events);
+    if (!transcript) throw new Error("this thread has nothing to hand off yet");
+    const account = await this.#profileFor(thread.projectId, owner, thread.profileId, provider);
+    const profile = account ? toRef(account) : null;
+    const release = await this.#scheduler.acquire({ ownerId: owner.id, kind: turnKindOf(provider), threadId: thread.id, signal });
+    try {
+      if (signal.aborted) throw new Error("Stopped.");
+      const resolved = await providers.resolve(owner.id, provider, profile ? { profile } : {});
+      const asker = resolved.provider as { ask?: (input: import("@ucch/providers").ProviderAskInput) => Promise<string> };
+      if (!asker.ask) throw new Error(`this server's ${harnessLabel(provider)} provider cannot write a brief`);
+      return await asker.ask({
+        ctx: resolved.ctx(treeFor(this.options.workspaceRoot, thread.projectId, thread)),
+        prompt: `${handoffPrompt(focus, tokens)}\n\n<transcript>\n${transcript}\n</transcript>\n`,
+        signal,
+      });
+    } finally {
+      release();
     }
   }
 
@@ -1716,7 +2226,11 @@ export class AgentTurnReactor {
         this.onError(caught);
         return null;
       });
-      const brief = await this.#writeBrief(thread, event.focus, controller.signal);
+      const { brief, note } = await this.#writeBrief(thread, event.focus, controller.signal, {
+        provider: toProvider,
+        model: event.model,
+        message: event.message,
+      });
       if (controller.signal.aborted) throw new Error("Stopped.");
       switched = {
         type: "thread.harness_switched",
@@ -1725,6 +2239,7 @@ export class AgentTurnReactor {
         toProvider,
         ...(event.model ? { model: event.model } : {}),
         brief,
+        ...(note ? { briefNote: note } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
         ...(event.fromProfileId !== undefined ? { fromProfileId: event.fromProfileId } : {}),
         ...(event.toProfileId !== undefined ? { toProfileId: event.toProfileId } : {}),
@@ -2052,6 +2567,17 @@ export class AgentTurnReactor {
       images?: readonly ProviderImage[];
       /** A subagent's own session: it is not offered `ucch_agent`. */
       subagent?: boolean;
+      /**
+       * A `/compact` of the session (`#compactSession`): the session's own
+       * prefix and tools, and nothing of a turn's -- no knowledge update in
+       * front of the command, no log of the instructions, no retention.
+       */
+      compaction?: boolean;
+      /**
+       * What the thread keeps of its CLI session (`threads.session_prefix`,
+       * `threads.context_reading`), from the row the caller read.
+       */
+      session?: { sessionPrefix: SessionPrefix | null; contextReading: ContextReading | null };
     },
   ): Promise<void> {
     if (!this.options.providers || !this.options.cliEnabled) {
@@ -2074,27 +2600,40 @@ export class AgentTurnReactor {
         this.onError(error);
         return null;
       });
+      // A Claude Code or Codex session keeps what it started with (plan2
+      // §2.3, §2.4): the thread's stored prefix and tools, and the reading
+      // its last call left, whose cache lifetime this turn's carries on.
+      const session = provider === "claude" || provider === "codex" ? provider : null;
+      const kept = session && !input.subagentId ? input.session ?? null : null;
+      const stored =
+        kept?.sessionPrefix && kept.sessionPrefix.provider === session && input.resumeToken && kept.sessionPrefix.sessionId === input.resumeToken
+          ? kept.sessionPrefix
+          : null;
+      const previous = kept?.contextReading?.harness === session ? kept?.contextReading ?? null : null;
       // Before the instructions: whether the turn has the bridge decides
       // whether they carry its guide.
       // Subagents on any harness, for every session but a subagent's own.
-      const offersSubagents = this.#subagents !== null && !input.subagent;
-      const ompTools = input.agentSettings?.ompBridge.enabled === true;
+      // A resumed session's bridge carries the tools it started with, as far
+      // as the server can still give them: a setting changed mid-session
+      // takes effect in its next session, so the tool list -- the front of
+      // the cached prefix -- holds.
+      const offersSubagents = this.#subagents !== null && !input.subagent && (stored ? stored.tools.subagents : true);
+      const ompTools = stored ? stored.tools.omp : input.agentSettings?.ompBridge.enabled === true;
       // Interactive widgets: taught in the instructions (the fence works on
       // every harness), and `show_widget` on the bridge. Not for a
       // subagent, whose answer goes to its parent rather than the reader.
-      const widgets = widgetsOn(input.agentSettings) && !input.subagent;
-      if (provider !== "omp" && (ompTools || offersSubagents || widgets || this.messaging)) {
-        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets, messaging: Boolean(this.messaging) });
+      const widgets = !input.subagent && (stored ? stored.tools.widgets : widgetsOn(input.agentSettings));
+      const messaging = Boolean(this.messaging) && (stored ? stored.tools.messaging : true);
+      if (provider !== "omp" && (ompTools || offersSubagents || widgets || messaging)) {
+        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets, messaging });
       }
-      // Codex reads instructions only at the start of a session
-      // (`codexPrompt`); Claude Code and OMP are handed them every turn.
-      const fresh = !(provider === "codex" && input.resumeToken);
       // UCCH's rules, the guides for the tools this turn really has, and the
       // runtime info (`cli-instructions.ts`). Logged part by part, as the
       // native loop logs its prompt, so the thread says exactly what the
-      // CLI was handed on top of the message.
-      const { instructions, injected } = assembleCliInstructions({
-        provider,
+      // CLI was handed on top of the message. Claude Code and Codex are
+      // handed their session's fixed text (`planSessionPrefix`); OMP its
+      // every turn.
+      const build = {
         workspace: input.workspace,
         model: input.model,
         effort: input.effort,
@@ -2102,12 +2641,30 @@ export class AgentTurnReactor {
         mode: input.mode,
         planDraft: input.readOnly === true,
         subagent: input.subagent === true,
-        fresh,
         bridge: bridge ? { omp: bridge.omp } : null,
         offersSubagents,
-        messaging: Boolean(this.messaging),
+        messaging,
         widgets,
-      });
+      };
+      let instructions: string | null;
+      let injected: { source: "system_prompt" | "project_context" | "omp_bridge"; content: string }[];
+      let prefix: SessionPrefix | null = null;
+      let text = input.text;
+      if (session) {
+        const plan = planSessionPrefix({
+          stored: kept?.sessionPrefix ?? null,
+          resumeToken: input.resumeToken,
+          build: { ...build, provider: session },
+          tools: { omp: ompTools, subagents: offersSubagents, messaging, widgets },
+        });
+        instructions = plan.instructions;
+        injected = input.compaction ? [] : plan.injected;
+        if (plan.messagePrefix && !input.compaction) text = `${plan.messagePrefix}\n\n${input.text}`;
+        // A compaction tells the session nothing new: the notes it last saw stay the ones to diff from.
+        prefix = input.compaction && stored ? { ...plan.prefix, knowledge: stored.knowledge, knowledgeSha256: stored.knowledgeSha256 } : plan.prefix;
+      } else {
+        ({ instructions, injected } = assembleCliInstructions({ ...build, provider, fresh: true }));
+      }
       if (injected.length > 0) {
         await input.append(injected.map((part) => ({ type: "context.injected" as const, threadId: input.threadId, ...part })));
       }
@@ -2175,8 +2732,9 @@ export class AgentTurnReactor {
         ctx: resolved.ctx(input.workspace),
         ...(input.subagentId ? { subagentId: input.subagentId } : {}),
         ...(input.subagentHandle ? { subagentHandle: input.subagentHandle } : {}),
-        prompt: input.text,
+        prompt: text,
         ...(input.images?.length ? { images: input.images } : {}),
+        ...(previous?.cacheTtlMs ? { cacheTtlMs: previous.cacheTtlMs } : {}),
         projectId: input.projectId,
         threadId: input.threadId,
         turnId: input.turnId,
@@ -2212,18 +2770,37 @@ export class AgentTurnReactor {
       // The turn's final answer, for end-of-turn retention (OM7.2).
       let answer: string | null = null;
       let completed = false;
+      // The session the CLI named, for the prefix kept with it; and whether
+      // Codex compacted it mid-turn, which drops its instructions.
+      let sessionId: string | null = null;
+      let codexCompacted = false;
+      let firstReading = true;
+      const startedAt = Date.now();
       try {
         for await (const event of run.events) {
           if (event.type === "agent.message") answer = messageText(event.content) ?? answer;
           else if (event.type === "agent.turn_completed") completed = true;
-          if (!input.subagent && (provider === "claude" || provider === "codex")) {
-            if (event.type === "context.usage") {
-              this.#contextAtEnd.set(input.threadId, { usedTokens: event.usedTokens, windowTokens: event.windowTokens });
-            } else if (event.type === "agent.turn_completed" && provider === "codex") {
-              this.#contextAtEnd.set(input.threadId, {
-                usedTokens: event.usage.inputTokens + event.usage.outputTokens,
-                windowTokens: cliContextWindow(provider, input.model),
-              });
+          else if (event.type === "agent.session_started") {
+            sessionId = event.sessionId;
+            // Kept as soon as the session is named, before the turn's end
+            // goes out: a message sent the moment it does reads it.
+            if (prefix) await this.#keepPrefix(input.threadId, { ...prefix, sessionId });
+          }
+          else if (event.type === "context.injected" && event.source === "compaction" && provider === "codex") codexCompacted = true;
+          else if (event.type === "context.usage" && firstReading) {
+            firstReading = false;
+            // A resumed session's first call that read nothing from a cache
+            // that should have been warm: the prefix moved (plan2 §2.2). The
+            // operator's signal, as the native loop's canary is.
+            const warmUntil = previous?.cacheExpiresAt ? Date.parse(previous.cacheExpiresAt) : NaN;
+            if (input.resumeToken && event.cacheHitRatio === 0 && warmUntil > startedAt) {
+              this.onError(
+                new Error(
+                  `prompt cache missed on the first call of resumed ${provider} turn ${input.turnId} ` +
+                    `(thread ${input.threadId}, prefix sha256 ${prefix?.sha256 ?? "none"}): it should have been warm until ` +
+                    `${new Date(warmUntil).toISOString()} -- the session's prefix or tools changed`,
+                ),
+              );
             }
           }
           if (event.type === "agent.permission_requested") {
@@ -2258,8 +2835,16 @@ export class AgentTurnReactor {
         input.signal.removeEventListener("abort", onAbort);
         if (this.#cliPrompts.get(input.threadId) === open) this.#cliPrompts.delete(input.threadId);
       }
+      // The prefix, kept with the session it was handed to: the next turn
+      // that resumes it hands it the same bytes.
+      // Again only when it changed after that: no session named, or Codex
+      // compacted mid-turn and dropped the instructions with its history.
+      const keptSession = sessionId ?? input.resumeToken;
+      if (prefix && keptSession && (sessionId === null || codexCompacted)) {
+        await this.#keepPrefix(input.threadId, { ...prefix, sessionId: keptSession, resend: prefix.resend === true || codexCompacted });
+      }
       const memory = input.agentSettings?.memory;
-      if (provider !== "omp" && completed && answer && memory?.enabled && memory.retainCliTurns) {
+      if (provider !== "omp" && !input.compaction && completed && answer && memory?.enabled && memory.retainCliTurns) {
         // After the turn, on a slot of its own: the thread never waits on it.
         void this.#retainAnswer({ ...input, answer }).catch(this.onError);
       }
@@ -2273,6 +2858,16 @@ export class AgentTurnReactor {
       await overlay?.dispose().catch(this.onError);
       await bridge?.dispose().catch(this.onError);
       await recall?.close();
+    }
+  }
+
+  /** A session's prefix, kept with its thread (`threads.session_prefix`). */
+  async #keepPrefix(threadId: string, prefix: SessionPrefix): Promise<void> {
+    // Never the turn's failure: a prefix not kept is only a cache missed.
+    try {
+      await this.db.update(threads).set({ sessionPrefix: prefix }).where(eq(threads.id, threadId));
+    } catch (error) {
+      this.onError(error);
     }
   }
 
@@ -3090,6 +3685,41 @@ function shellCommandOf(input: unknown): string | null {
   if (typeof input !== "object" || input === null) return null;
   const command = (input as Record<string, unknown>).command;
   return typeof command === "string" ? command : null;
+}
+
+/** An event as one made between turns: the turn it was streamed under never opened. */
+function withoutTurn(event: DomainEvent): DomainEvent {
+  if (!("turnId" in event)) return event;
+  const { turnId: _turnId, ...rest } = event as DomainEvent & { turnId?: string };
+  return rest as DomainEvent;
+}
+
+/**
+ * Whether a thread's log has a question still open: a permission prompt
+ * or a choice card nobody answered. A new turn overtakes both; a finished
+ * one leaves no permission prompt open.
+ */
+export function openRequests(events: readonly DomainEvent[]): boolean {
+  const open = new Set<string>();
+  for (const event of events) {
+    if (event.type === "agent.permission_requested" || event.type === "agent.choice_requested") open.add(event.requestId);
+    else if (event.type === "agent.permission_resolved" || event.type === "agent.choice_resolved") open.delete(event.requestId);
+    else if (event.type === "turn.started") open.clear();
+    else if (event.type === "agent.turn_completed" || event.type === "agent.turn_failed") {
+      for (const prior of events) if (prior.type === "agent.permission_requested") open.delete(prior.requestId);
+    }
+  }
+  return open.size > 0;
+}
+
+/** Whether nothing was said since the session was last compacted: another compaction would fold nothing. */
+export function lastWasCompaction(events: readonly DomainEvent[]): boolean {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!;
+    if (event.type === "user.message" || event.type === "turn.started") return false;
+    if (event.type === "thread.compaction_finished") return !event.error;
+  }
+  return false;
 }
 
 /**

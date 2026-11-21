@@ -144,7 +144,7 @@ function CardBody({
   const status = read === "none" ? null : read
   const lineage = useLineage()
   const shells = useShellCalls()
-  const context = useContextReading()
+  const context = useContextReading(session?.id)
   const branch = status?.branch ?? session?.branch ?? project.defaultBranch ?? null
   const manageable = project.workspaceKind !== "session"
   const running = lineage.filter((entry) => entry.run.status === "running").length
@@ -283,7 +283,9 @@ function CardBody({
             limit={context.limit}
             threshold={context.threshold}
             live={context.live}
-            onHandover={requestHandover}
+            unknown={context.unknown}
+            cacheExpiresAt={context.cacheExpiresAt}
+            onHandover={() => session && requestHandover(session.id)}
             handingOver={context.handingOver}
             disabled={context.disabled}
             disabledReason={context.disabledReason}

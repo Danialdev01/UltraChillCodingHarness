@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
-import { DEFAULT_MODE_RULES, DomainEvent, UCCH_SUBAGENT_RULES, UCCH_WORKING_RULES, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_GUIDE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
+import { DEFAULT_MODE_RULES, DomainEvent, HANDOFF_CAP_TOKENS, UCCH_SUBAGENT_RULES, UCCH_WORKING_RULES, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_GUIDE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
 import {
   ClaudeNormaliser,
   createProviders,
@@ -177,6 +177,9 @@ const person = { id: USER, openrouterKeyEncrypted: null, defaultModel: null, def
  * The reactor against a database that answers its selects in order, and
  * a store that records what is appended instead of writing it.
  */
+/** A `db.update` that writes nothing. */
+const noUpdate = () => ({ set: () => ({ where: () => Promise.resolve([]) }) });
+
 function reactor(...rows: unknown[][]) {
   return reactorWith({}, ...rows);
 }
@@ -188,7 +191,8 @@ function reactorWith(extra: Partial<AgentOptions>, ...rows: unknown[][]) {
   for (const step of ["from", "innerJoin", "where", "orderBy"]) chain[step] = () => chain;
   chain.limit = next;
   chain.then = (resolve: (value: unknown) => void, reject: (error: unknown) => void) => next().then(resolve, reject);
-  const db = { select: () => chain } as unknown as Database;
+  // Writes the reactor makes on its own (a session's prefix, an idle compaction's due time) go nowhere.
+  const db = { select: () => chain, update: noUpdate } as unknown as Database;
   /** The thread's log as `threadHistory` reads it; empty unless a test fills it. */
   const history: DomainEvent[] = [];
   const store = {
@@ -300,7 +304,9 @@ describe("a turn over the server's limits", () => {
       expect(appended.flat().map((event) => event.type)).toEqual([
         "agent.queued",
         "turn.started",
-        // UCCH's rules, the widget rules and the runtime info (`cli-instructions.ts`).
+        // UCCH's rules, the widget rules and the runtime info (`cli-instructions.ts`),
+        // and the session prefix's hash (plan2 §2.3).
+        "context.injected",
         "context.injected",
         "context.injected",
         "context.injected",
@@ -1227,7 +1233,7 @@ describe("an OMP turn", () => {
       } as unknown as EventStore;
       const errors: unknown[] = [];
       const agent = new AgentTurnReactor(
-        { select: () => chain } as unknown as Database,
+        { select: () => chain, update: noUpdate } as unknown as Database,
         store,
         {
           workspaceRoot: join(root, "workspaces"),
@@ -1295,7 +1301,8 @@ describe("an OMP turn", () => {
         expect(asked!.argv).toEqual(expect.arrayContaining(["-p", "--no-session", "--no-tools", "--model", "@smol"]));
         expect(asked!.stdin).toContain(`Fix the parser bug (on ${from}).`);
         expect(asked!.stdin).toContain("## Files changed\n- src/parser.ts (modified)");
-        const brief = `## Goal\nFix the parser bug (on ${from}).\n## Done\nRead ${asked!.stdin.length} characters of transcript.\n## Next\nthe tests`;
+        // The fake echoes what follows "Focus on:" -- the focus, then the length the new session can take (plan2 §3.5).
+        const brief = `## Goal\nFix the parser bug (on ${from}).\n## Done\nRead ${asked!.stdin.length} characters of transcript.\n## Next\nthe tests\n\nKeep the brief under ${Math.floor(HANDOFF_CAP_TOKENS * 0.9)} tokens.`;
 
         // A new thread in this one's folder, then the brief as its first message, on the target.
         expect(dispatched).toEqual([
@@ -1335,7 +1342,7 @@ describe("an OMP turn", () => {
       ]);
     });
 
-    it("frees the thread with OMP's error, starting nothing", async () => {
+    it("hands the conversation over as it was said when no brief can be written, and says why (plan2 §3.5)", async () => {
       const saved = process.env.FAKE_OMP_PRINT_FAIL;
       process.env.FAKE_OMP_PRINT_FAIL = "No API key found for openrouter.";
       try {
@@ -1344,11 +1351,16 @@ describe("an OMP turn", () => {
           { type: "thread.handoff_requested", threadId: THREAD, targetProvider: "omp" },
         ], principal);
         const deadline = Date.now() + 10_000;
-        while (!appendedTo.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
-        expect(dispatched).toEqual([]);
-        expect(appendedTo).toEqual([
-          { threadId: THREAD, batch: [{ type: "thread.handoff_failed", threadId: THREAD, error: "error: No API key found for openrouter." }] },
-        ]);
+        while (!appendedTo.some((entry) => entry.threadId === THREAD) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+        const sent = dispatched.find((command) => command.type === "thread.send");
+        expect(sent).toMatchObject({ type: "thread.send", provider: "omp" });
+        expect(sent?.type === "thread.send" && sent.text).toContain("Fix the parser bug (on claude).");
+        expect(sent?.type === "thread.send" && sent.text).toContain("Fixed the off-by-one.");
+        const [handed] = appendedTo.find((entry) => entry.threadId === THREAD)!.batch;
+        expect(handed).toMatchObject({ type: "thread.handed_off", targetProvider: "omp" });
+        // Why it is not a brief: OMP failed, and so did the thread's own harness.
+        expect(handed?.type === "thread.handed_off" && handed.briefNote).toMatch(/OMP could not write it: error: No API key found for openrouter\./);
+        expect(handed?.type === "thread.handed_off" && handed.briefNote).toMatch(/Claude Code could not either/);
       } finally {
         if (saved === undefined) delete process.env.FAKE_OMP_PRINT_FAIL;
         else process.env.FAKE_OMP_PRINT_FAIL = saved;
@@ -1452,7 +1464,7 @@ describe("automatic switch on a usage limit (OM4.6)", () => {
       health: async () => cards,
     } as unknown as ProviderService;
     const agent = new AgentTurnReactor(
-      { select } as unknown as Database,
+      { select, update: noUpdate } as unknown as Database,
       store,
       {
         workspaceRoot: join(root, "workspaces"),

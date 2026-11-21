@@ -234,6 +234,8 @@ const ThreadCompact = z.object({
   type: z.literal("thread.compact"),
   threadId: z.string().uuid(),
   focus: z.string().trim().max(2_000).optional(),
+  /** Server-only: the session sat idle with its prompt cache about to run out (plan2 §3.3). */
+  idle: z.boolean().optional(),
 });
 
 /**
@@ -251,10 +253,16 @@ const ThreadHandoff = z.object({
   focus: z.string().trim().max(2_000).optional(),
   /**
    * The server handed over by itself: the session ended a turn past the
-   * fallback line (`CONTEXT_FORCE_RATIO`). Quiet -- the chat shows no row
-   * for it -- and, like any handover, it sends nothing.
+   * fallback line (`CONTEXT_FORCE_RATIO`). On every CLI that is a
+   * compaction in the same session, not a handover (plan2 §3.2); quiet, and
+   * it sends nothing.
    */
   auto: z.boolean().optional(),
+  /**
+   * Server-only, with `auto`: the session's own compaction could not run or
+   * failed, so it is handed over to a fresh session after all.
+   */
+  fallback: z.boolean().optional(),
 });
 
 /**

@@ -54,6 +54,7 @@ const CLI_CASES: Record<string, Partial<CliInstructionsInput>> = {
   "claude.every_tool": everyTool,
   "codex.default": { provider: "codex", model: "gpt-6" },
   "codex.every_tool": { provider: "codex", model: "gpt-6", ...everyTool },
+  // Nothing: its history holds the first turn's (plan2 §2.5).
   "codex.resumed_coordinated": { provider: "codex", model: "gpt-6", fresh: false, ...everyTool },
   "omp.default": { provider: "omp", model: "openai/gpt-5" },
   "omp.plan_draft": { provider: "omp", model: "openai/gpt-5", planDraft: true },
@@ -81,6 +82,10 @@ describe("the instructions each harness is handed", () => {
   const figures = measure();
   if (process.env.UCCH_UPDATE_CONTEXT_BUDGET === "1") writeFileSync(BUDGET_FILE, `${JSON.stringify(figures, null, 2)}\n`);
   const budget = JSON.parse(readFileSync(BUDGET_FILE, "utf8")) as Record<string, number>;
+
+  it("hands a resumed Codex session nothing every turn", () => {
+    expect(figures["codex.resumed_coordinated"]).toBe(0);
+  });
 
   it("has a recorded budget for every fixture, and none for a fixture that is gone", () => {
     expect(Object.keys(budget).sort()).toEqual(Object.keys(figures).sort());

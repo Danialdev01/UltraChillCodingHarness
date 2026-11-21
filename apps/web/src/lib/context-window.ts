@@ -1,27 +1,37 @@
 /**
  * How full the model's context window is.
  *
- * The number itself comes from the last completed turn's usage, which is what
- * the provider actually charged for; this decides how to say it. Kept pure
+ * The number itself is the provider's own reading of its last model call
+ * (`context.usage`); this decides how to say it. Kept pure
  * because the thresholds are a judgement worth stating once and testing,
  * rather than three magic numbers inside a className.
  */
 
-import { CONTEXT_HANDOVER_RATIO } from "@ucch/protocol/plain";
+import { CONTEXT_FORCE_RATIO, CONTEXT_HANDOVER_RATIO } from "@ucch/protocol/plain";
 
 /**
- * Where a session folds its context (`CONTEXT_HANDOVER_RATIO`): every
- * harness compacts itself there mid-turn and carries on, so the ring should
- * never read much above it.
+ * Where OMP and the native loop fold their context mid-turn
+ * (`CONTEXT_HANDOVER_RATIO`). Claude Code and Codex compact at their own
+ * defaults, which their readings report (`thresholdTokens`).
  */
 export const HANDOVER_RATIO = CONTEXT_HANDOVER_RATIO;
 
 /**
- * Where the ring changes colour: amber as the handover line nears, red at
- * it -- the session is about to fold its context on its own.
+ * Where the session is folded next, as a share of the window: the line the
+ * provider reported, or the server's own (`CONTEXT_FORCE_RATIO`, where it
+ * compacts a Claude Code or Codex session between turns) when that comes
+ * first or nothing was reported. The ring is red from there, and amber as
+ * it nears.
  */
-export const WARN_RATIO = 0.45;
-export const FULL_RATIO = HANDOVER_RATIO;
+export function compactionLine(thresholdRatio: number | null): number {
+  return Math.min(thresholdRatio ?? CONTEXT_FORCE_RATIO, CONTEXT_FORCE_RATIO);
+}
+
+/** Amber from this share of the way to the line. */
+export const WARN_SHARE = 0.8;
+/** The line when nothing is reported. */
+export const FULL_RATIO = CONTEXT_FORCE_RATIO;
+export const WARN_RATIO = FULL_RATIO * WARN_SHARE;
 
 export type ContextTone = "idle" | "normal" | "warn" | "full";
 
@@ -85,11 +95,12 @@ export function contextUsage(tokens: number | null, limit: number | null, thresh
   // Capped at 1: a provider counting a little differently from the published
   // window should overflow the bar's colour, never its width.
   const ratio = Math.min(1, tokens / limit);
+  const line = compactionLine(thresholdRatio);
   return {
     tokens,
     limit,
     ratio,
-    tone: ratio >= FULL_RATIO ? "full" : ratio >= WARN_RATIO ? "warn" : "normal",
+    tone: ratio >= line ? "full" : ratio >= line * WARN_SHARE ? "warn" : "normal",
     label: `${formatContextTokens(tokens)} / ${formatContextTokens(limit)}`,
     thresholdRatio,
   };
@@ -98,4 +109,16 @@ export function contextUsage(tokens: number | null, limit: number | null, thresh
 /** The percentage, for the tooltip. Rounded up so a used window never reads 0%. */
 export function contextPercent(ratio: number): number {
   return Math.min(100, Math.max(1, Math.ceil(ratio * 100)));
+}
+
+/**
+ * How long the session's prompt cache stays warm, for the tooltip
+ * ("cache warm · 12m left"), or null when it has run out or nobody knows.
+ */
+export function cacheWarmLabel(cacheExpiresAt: string | null | undefined, nowMs: number): string | null {
+  if (!cacheExpiresAt) return null;
+  const left = Date.parse(cacheExpiresAt) - nowMs;
+  if (!Number.isFinite(left) || left <= 0) return null;
+  const minutes = Math.ceil(left / 60_000);
+  return `cache warm · ${minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`} left`;
 }

@@ -614,26 +614,27 @@ class StreamState {
  * unfalsifiable -- it would have read zero whether caching worked or not.
  *
  * Where they sit varies by provider, so both the nested and the top-level
- * spellings are accepted. `inputTokens` is `prompt_tokens` exactly as
- * reported: for OpenAI-shaped providers that total already includes the
- * cached prefix, so these four numbers are what the provider said and not a
- * partition to be added up.
+ * spellings are accepted. OpenRouter's `prompt_tokens` is the whole input,
+ * the cached prefix it read and wrote included; UCCH's `inputTokens` is the
+ * uncached part alone (`TokenUsage`), so both are taken out of it here and
+ * the four numbers partition what was processed.
  */
-function readUsage(usage: RawUsage): TokenUsage {
+export function readUsage(usage: RawUsage): TokenUsage {
   const details = usage.prompt_tokens_details ?? {};
+  const prompt = usage.prompt_tokens ?? 0;
+  const cacheRead = Math.min(prompt, details.cached_tokens ?? usage.cached_tokens ?? 0);
+  // Not clamped to the prompt: a provider that reports the write apart from
+  // `prompt_tokens` still wrote it.
+  const cacheWrite = details.cache_write_tokens ?? usage.cache_write_tokens ?? usage.cache_creation_input_tokens ?? 0;
   return {
-    inputTokens: usage.prompt_tokens ?? 0,
+    inputTokens: Math.max(0, prompt - cacheRead - cacheWrite),
     outputTokens: usage.completion_tokens ?? 0,
-    cacheReadInputTokens: details.cached_tokens ?? usage.cached_tokens ?? 0,
-    cacheCreationInputTokens:
-      details.cache_write_tokens ??
-      usage.cache_write_tokens ??
-      usage.cache_creation_input_tokens ??
-      0,
+    cacheReadInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheWrite,
   };
 }
 
-interface RawUsage {
+export interface RawUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   cost?: number;

@@ -81,7 +81,9 @@ describe("Codex image artifacts", () => {
     ] }]);
     const events: DomainEvent[] = [];
     for await (const event of new CodexProvider("codex").run(input).events) events.push(event);
-    expect(events.map((e) => e.type)).toEqual(["agent.text_delta", "agent.message", "agent.turn_completed"]);
+    // No rollout: the context reading is unavailable, ahead of the turn's end.
+    expect(events.map((e) => e.type)).toEqual(["context.usage", "agent.text_delta", "agent.message", "agent.turn_completed"]);
+    expect(events[0]).toMatchObject({ type: "context.usage", usedTokens: null, status: "unavailable" });
   });
 
   it("does not display an image twice when Codex already included it in Markdown", async () => {

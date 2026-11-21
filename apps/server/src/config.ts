@@ -141,6 +141,12 @@ const Env = z.object({
    * `stopReason: "max_iterations"` rather than as a failure.
    */
   AGENT_MAX_ITERATIONS: z.coerce.number().int().positive().default(25),
+  /**
+   * How long before an idle Claude Code session's prompt cache runs out its
+   * compaction starts (plan2 §3.3), in ms. Two minutes unless set; a test
+   * sets it longer to see the compaction without waiting out the cache.
+   */
+  IDLE_COMPACT_LEAD_MS: z.coerce.number().int().positive().optional(),
 
   /**
    * Permits the `shell` plugin -- `bash` on the host, as the server user --

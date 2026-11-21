@@ -11,6 +11,7 @@ describe("readAgentSettings", () => {
         ompVerify: { enabled: false },
         memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
         widgets: { enabled: true },
+        idleCompaction: { enabled: true },
       });
     }
   });
@@ -23,6 +24,7 @@ describe("readAgentSettings", () => {
       ompVerify: { enabled: false },
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
       widgets: { enabled: true },
+      idleCompaction: { enabled: true },
     });
     expect(readAgentSettings({ isolatedFanOut: { enabled: true } }).isolatedFanOut).toEqual({ enabled: true });
     expect(readAgentSettings({ ompBridge: { enabled: true } }).ompBridge).toEqual({ enabled: true });
@@ -46,5 +48,12 @@ describe("limitFallback", () => {
     expect(limitFallback(on("claude"), "claude")).toBeNull();
     expect(limitFallback(on(null), "claude")).toBeNull();
     expect(limitFallback(readAgentSettings({ autoHandoff: { enabled: false, fallbackProvider: "codex" } }), "claude")).toBeNull();
+  });
+});
+
+describe("idle compaction (plan2 §3.3)", () => {
+  it("is on unless a workspace turns it off", () => {
+    expect(readAgentSettings({}).idleCompaction).toEqual({ enabled: true });
+    expect(readAgentSettings({ idleCompaction: { enabled: false } }).idleCompaction).toEqual({ enabled: false });
   });
 });

@@ -80,6 +80,7 @@ import { BASELINE_HEADERS, originAllowed } from "./http-guards.js";
 import { admitGithubUser } from "./github-admission.js";
 import { ProviderService, workspaceSubject } from "./providers.js";
 import { OrchestrationEngine, applyProjection, type Reactors } from "./engine.js";
+import { failInterruptedTurns } from "./restart-recovery.js";
 import { EventStore } from "./eventstore.js";
 import { WebSocketGateway } from "./ws.js";
 import { PreviewGateway } from "./preview.js";
@@ -182,16 +183,6 @@ const priorityProbe = probePriorityTools(childPriority);
 const wrapChild = priorityProbe.tools ? wrapperFor(priorityProbe.tools, childPriority) : unwrapped;
 const wrapTerminal = priorityProbe.tools ? wrapperFor(priorityProbe.tools, terminalPriority(childPriority)) : unwrapped;
 
-// A turn lives in this process, so nothing that was running before the
-// restart is running now. Left alone, those threads would sit in `running`
-// for ever and the one-turn-at-a-time guard -- which starts working with
-// `turn.started` -- would refuse every new message on them. `idle` rather
-// than `error`: the crash is the harness's, not the conversation's.
-const recovered = await db
-  .update(threads)
-  .set({ status: "idle" })
-  .where(inArray(threads.status, ["running", "cancelling"]))
-  .returning({ id: threads.id });
 
 // Before any reactor can want it: a missing or read-only workspace root
 // makes every clone and every file tool fail, and that is worth learning at
@@ -206,6 +197,11 @@ const store = new EventStore(db, bus, {
   historyCacheEvents: config.HISTORY_CACHE_EVENTS,
   historyCacheBytes: config.HISTORY_CACHE_MB * 1024 * 1024,
 });
+
+// A turn lives in this process, so nothing that was running before the
+// restart is running now: each one cut off is closed in its log as failed,
+// and its thread set back to idle (`failInterruptedTurns`, plan2 §4.1).
+const recovered = await failInterruptedTurns(db, store, (error) => console.error(error));
 
 /**
  * Per-project runtime versions (PHP today): installed once under
@@ -449,6 +445,7 @@ const agentTurns = new AgentTurnReactor(
     searchModel: config.SEARCH_MODEL,
     workspaceRoot: config.WORKSPACE_ROOT,
     maxIterations: config.AGENT_MAX_ITERATIONS,
+    ...(config.IDLE_COMPACT_LEAD_MS ? { idleCompactLeadMs: config.IDLE_COMPACT_LEAD_MS } : {}),
     uploads,
     research: researchBackends(config),
     documents,
@@ -745,6 +742,8 @@ const gateway = new WebSocketGateway(auth, engine, store, bus, {
   mayWatchTerminal: (userId, terminalId) => terminals.mayWatch(terminalId, userId),
   terminals,
   queuedAhead: (threadId) => turnScheduler.aheadOf(threadId),
+  contextReading: async (threadId) =>
+    (await db.select({ reading: threads.contextReading }).from(threads).where(eq(threads.id, threadId)).limit(1))[0]?.reading ?? null,
   // Unset unless the image was given one: with nothing to compare, a tab
   // is never told it is out of date.
   ...(process.env.BUILD_ID ? { buildId: process.env.BUILD_ID } : {}),
@@ -1102,6 +1101,13 @@ if (!existsSync(config.OMP_BRIDGE_BIN)) {
 if (recovered.length > 0) {
   app.log.warn({ threads: recovered.length }, "reset threads left running by a previous process");
 }
+// Idle compactions armed before the restart (plan2 §3.3): their due times are kept with the threads.
+void agentTurns
+  .rearmIdleCompactions()
+  .then((armed) => {
+    if (armed > 0) app.log.info({ threads: armed }, "re-armed idle compactions");
+  })
+  .catch((error: unknown) => app.log.error({ err: error }, "re-arming idle compactions failed"));
 if (dequeued.length > 0) {
   app.log.warn({ threads: dequeued.length }, "released threads left queued by a previous process");
 }

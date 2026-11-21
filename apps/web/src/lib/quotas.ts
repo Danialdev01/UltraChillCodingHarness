@@ -1,4 +1,8 @@
-import { FULL_RATIO, WARN_RATIO, type ContextTone } from "./context-window.js";
+import type { ContextTone } from "./context-window.js";
+
+/** Where a plan's bar turns amber, then red: a quarter left, then a tenth. */
+export const QUOTA_WARN_RATIO = 0.75;
+export const QUOTA_FULL_RATIO = 0.9;
 
 /**
  * The rail's three meters: what each harness has left of its allowance.
@@ -45,12 +49,15 @@ export function primaryWindow(quota: SessionQuota): QuotaWindow | null {
   return quota.windows.find((w) => w.id === "session") ?? quota.windows[0] ?? null;
 }
 
-/** Same thresholds as the context meter, so the two bars agree on what "nearly out" means. */
+/**
+ * A plan's bar, in the context meter's tones. Its own lines: the meter's
+ * follow where a session compacts, which says nothing about a plan's limit.
+ */
 export function quotaTone(usedPercent: number | null): ContextTone {
   if (usedPercent === null) return "idle";
   const ratio = usedPercent / 100;
-  if (ratio >= FULL_RATIO) return "full";
-  if (ratio >= WARN_RATIO) return "warn";
+  if (ratio >= QUOTA_FULL_RATIO) return "full";
+  if (ratio >= QUOTA_WARN_RATIO) return "warn";
   return "normal";
 }
 

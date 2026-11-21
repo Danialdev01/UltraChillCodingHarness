@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowRightLeftIcon, BotIcon, BrainIcon, GitForkIcon, KeyRoundIcon, ListChecksIcon, Loader2Icon, PlugIcon, SparklesIcon, TrashIcon } from "lucide-react"
+import { ArrowRightLeftIcon, BotIcon, FoldVerticalIcon, BrainIcon, GitForkIcon, KeyRoundIcon, ListChecksIcon, Loader2Icon, PlugIcon, SparklesIcon, TrashIcon } from "lucide-react"
 import type { CredentialPolicy, CredentialSource, ProviderId } from "@ucch/protocol"
 
 import { ProviderSettings } from "@/components/provider-settings"
@@ -90,6 +90,7 @@ export function WorkspaceHarnessSettings({
         <>
           <OmpBridgeSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
           <WidgetsSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
+          <IdleCompactionSection workspaceId={workspace.id} settings={settings} manages={manages} onChange={setSettings} />
         </>
       )}
       {settings && settings.credentialPolicy !== "member" && (
@@ -551,6 +552,50 @@ function WidgetsSection({
           aria-label="Allow interactive widgets"
         />
         Allow interactive widgets
+      </label>
+      {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
+      <Outcome error={error} done={done} />
+    </SettingsSection>
+  )
+}
+
+/**
+ * Idle compaction (plan2 §3.3): a big Claude Code session that sits idle
+ * is compacted in place just before its prompt cache runs out, so the
+ * summary is written from the cache and the next message starts small.
+ */
+function IdleCompactionSection({
+  workspaceId,
+  settings,
+  manages,
+  onChange,
+}: {
+  workspaceId: string
+  settings: HarnessSettings
+  manages: boolean
+  onChange: (settings: HarnessSettings) => void
+}) {
+  const { busy, error, done, run } = useOutcome()
+  const enabled = settings.agent.idleCompaction?.enabled !== false
+  const save = (next: boolean) =>
+    void run(async () => {
+      onChange(await setAgentSettings(workspaceId, { idleCompaction: { enabled: next } }))
+      return "Saved."
+    })
+
+  return (
+    <SettingsSection icon={FoldVerticalIcon} title="Compact idle sessions" description={<>When a Claude Code session over
+        200k tokens sits idle, compact it in the same session just before its prompt cache expires. The summary is
+        written while the history is still cached, and your next message starts from it instead of paying for the
+        whole conversation again.</>} bare>
+      <label className="mt-4 flex items-center gap-2 text-sm">
+        <Switch
+          checked={enabled}
+          disabled={!manages || busy}
+          onCheckedChange={(checked) => save(checked)}
+          aria-label="Compact idle sessions"
+        />
+        Compact idle sessions while their cache is warm
       </label>
       {!manages && <p className="text-muted-foreground mt-3 text-xs">Only an owner or admin can change this.</p>}
       <Outcome error={error} done={done} />

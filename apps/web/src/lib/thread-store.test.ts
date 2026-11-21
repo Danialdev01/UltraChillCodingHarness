@@ -152,6 +152,18 @@ describe("ThreadStore", () => {
     expect(store.contextUsage?.usedTokens).toBe(2500)
   })
 
+  it("drops the reading when a clear or a harness switch leaves its session behind (plan2 §1.6)", () => {
+    for (const ending of [
+      { type: "thread.context_cleared", threadId: THREAD },
+      { type: "thread.harness_switched", threadId: THREAD, fromProvider: "claude", toProvider: "codex", brief: "b" },
+    ] as DomainEvent[]) {
+      const store = new ThreadStore(THREAD)
+      store.push(live({ type: "context.usage", threadId: THREAD, usedTokens: 500_000, windowTokens: 1_000_000, thresholdTokens: 967_000 }))
+      store.push(durable(1, ending))
+      expect(store.contextUsage).toBeNull()
+    }
+  })
+
   it("says which layer changed", () => {
     const store = new ThreadStore(THREAD)
     store.push(started(1))

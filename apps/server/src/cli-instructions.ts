@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { DOCUMENTATION_RULES } from "@ucch/agent";
 import {
   buildRuntimeInfo,
@@ -12,6 +13,7 @@ import {
   type CliProviderId,
   type MessageMode,
   type ReasoningEffort,
+  type SessionPrefix,
 } from "@ucch/protocol";
 import { ompBridgeGuide } from "@ucch/providers";
 import { COLLABORATION_GUIDE } from "./agent-messaging.js";
@@ -102,7 +104,7 @@ export interface CliInstructionsInput {
   /**
    * The session is handed its instructions this turn: always for Claude
    * Code and OMP, only on a new session for Codex, which reads them from
-   * its history after that.
+   * its history after that (false: nothing at all).
    */
   fresh: boolean;
   /** The turn's MCP bridge, null when none was opened (not wanted, or its bundle is missing). */
@@ -159,20 +161,11 @@ export function assembleCliInstructions(input: CliInstructionsInput): CliInstruc
   const bridge = input.bridge;
   if (!input.fresh) {
     // A resumed Codex session: its history holds the first turn's
-    // instructions, so only the guides a coordinated session needs every
-    // turn go again, and only with their tools. UCCH's rules are not
-    // re-sent: `codex exec --json` reports no compaction, and the two ways
-    // UCCH itself empties a session (`thread.context_cleared`, a handover)
-    // start a new one, which is handed everything.
-    const guide = input.messaging
-      ? [
-          bridge ? COLLABORATION_GUIDE : null,
-          input.offersSubagents ? (bridge ? UCCH_AGENT_GUIDE : UCCH_AGENT_UNAVAILABLE_NOTE) : null,
-        ]
-          .filter((part): part is string => Boolean(part))
-          .join("\n\n")
-      : "";
-    return guide ? { instructions: guide, injected: [{ source: "omp_bridge", content: guide }] } : { instructions: null, injected: [] };
+    // instructions, guides and all, so nothing goes again (plan2 §2.5) --
+    // a guide sent every turn grows the context by itself every turn. After
+    // a compaction drops them, the session's stored text is sent once
+    // (`planSessionPrefix`).
+    return { instructions: null, injected: [] };
   }
 
   const knowledge = input.knowledge ? limitSection(input.knowledge.trimEnd(), MAX_CLI_KNOWLEDGE_BYTES) : null;
@@ -211,4 +204,198 @@ export function assembleCliInstructions(input: CliInstructionsInput): CliInstruc
   parts.push(runtime);
   injected.push({ source: "system_prompt", content: runtime });
   return { instructions: parts.join("\n\n"), injected };
+}
+
+/** sha256 of a text, hex. */
+export function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
+ * A line diff of `before` to `after`: kept lines with two spaces, removed
+ * with `-`, added with `+`, with unchanged runs longer than `context` lines
+ * on either side of a change folded to a count.
+ */
+export function lineDiff(before: string, after: string, context = 2): string {
+  const a = before.split("\n");
+  const b = after.split("\n");
+  // Longest common subsequence, from the end, so the walk below goes forward.
+  const lcs: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+    }
+  }
+  const ops: { op: " " | "-" | "+"; line: string }[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      ops.push({ op: " ", line: a[i]! });
+      i++;
+      j++;
+    } else if (i < a.length && (j === b.length || lcs[i + 1]![j]! >= lcs[i]![j + 1]!)) {
+      // Removals first, as a unified diff has them.
+      ops.push({ op: "-", line: a[i]! });
+      i++;
+    } else {
+      ops.push({ op: "+", line: b[j]! });
+      j++;
+    }
+  }
+  const changed = ops.map((entry) => entry.op !== " ");
+  const near = (index: number) => {
+    for (let k = Math.max(0, index - context); k <= Math.min(ops.length - 1, index + context); k++) if (changed[k]) return true;
+    return false;
+  };
+  const out: string[] = [];
+  let folded = 0;
+  ops.forEach((entry, index) => {
+    if (entry.op === " " && !near(index)) {
+      folded++;
+      return;
+    }
+    if (folded > 0) out.push(`  … ${folded} unchanged line${folded === 1 ? "" : "s"}`);
+    folded = 0;
+    out.push(`${entry.op === " " ? " " : entry.op} ${entry.line}`);
+  });
+  if (folded > 0) out.push(`  … ${folded} unchanged line${folded === 1 ? "" : "s"}`);
+  return out.join("\n");
+}
+
+/** What a resumed session is told when its `.agent/` notes changed under it: the change, not the notes again. */
+export function knowledgeUpdate(before: string | null, after: string | null): string {
+  const diff = limitSection(lineDiff(before ?? "", after ?? ""), MAX_CLI_KNOWLEDGE_BYTES);
+  return [
+    "<project-knowledge-update>",
+    "The project's .agent/ notes changed since this session started. This replaces what <project-knowledge> said where they differ: lines starting with - were removed, lines starting with + were added.",
+    diff,
+    "</project-knowledge-update>",
+  ].join("\n");
+}
+
+export interface SessionPrefixInput {
+  /** What the thread keeps (`threads.session_prefix`), or null. */
+  stored: SessionPrefix | null;
+  /** The session this turn resumes, or null for a new one. */
+  resumeToken: string | null;
+  /** How the instructions would be built for a new session (`fresh` is set here). */
+  build: Omit<CliInstructionsInput, "fresh" | "provider"> & { provider: "claude" | "codex" };
+  /** The tools the bridge was opened with. */
+  tools: SessionPrefix["tools"];
+}
+
+export interface SessionPrefixPlan {
+  /** What the CLI is handed this turn: the session's own text, or nothing on a resumed Codex turn. */
+  instructions: string | null;
+  /** What the thread's log records of it. */
+  injected: CliInstructions["injected"];
+  /** Goes in front of the message: the `.agent/` notes that changed, as a diff. */
+  messagePrefix: string | null;
+  /** What the thread keeps after this turn. */
+  prefix: SessionPrefix;
+  /** The stored text was kept: the cached prefix is unchanged. */
+  reused: boolean;
+}
+
+/** The parts of a session's prefix that must hold for its text to be kept. */
+export function sessionTools(tools: SessionPrefix["tools"]): string {
+  return `${tools.omp ? 1 : 0}${tools.subagents ? 1 : 0}${tools.messaging ? 1 : 0}${tools.widgets ? 1 : 0}`;
+}
+
+/**
+ * The instructions a Claude Code or Codex session is handed, fixed for the
+ * session's life (plan2 §2.3-2.5):
+ *
+ * - built once, when the session starts, and kept with the thread;
+ * - every resumed turn hands Claude Code the same text, byte for byte, so
+ *   `--append-system-prompt` -- and every cached token after it -- holds;
+ * - a resumed Codex turn is handed nothing (its history holds the first
+ *   turn's message), except once after a compaction dropped it (`resend`);
+ * - `.agent/` notes that changed go in the message as a diff, and only when
+ *   they changed;
+ * - a new model or effort, or a different bridge, starts a new prefix on
+ *   Claude Code: the runtime info names them, and a new model's cache is
+ *   cold whatever the text says.
+ */
+export function planSessionPrefix(input: SessionPrefixInput): SessionPrefixPlan {
+  const { stored, resumeToken, build } = input;
+  const provider = build.provider;
+  const knowledge = build.knowledge ? limitSection(build.knowledge.trimEnd(), MAX_CLI_KNOWLEDGE_BYTES) : null;
+  const knowledgeSha256 = knowledge === null ? null : sha256(knowledge);
+  const model = build.model ?? null;
+  const effort = build.effort ?? null;
+  const bridge = build.bridge ? { omp: build.bridge.omp } : null;
+  const sameSession = Boolean(stored && resumeToken && stored.provider === provider && stored.sessionId === resumeToken);
+  const sameShape =
+    stored !== null &&
+    sessionTools(stored.tools) === sessionTools(input.tools) &&
+    (stored.bridge === undefined || (stored.bridge?.omp ?? null) === (bridge?.omp ?? null));
+  // Codex's instructions are in its history, not a system prompt: a new
+  // model does not change what it already read.
+  const sameRun = provider === "codex" || (stored?.model === model && stored?.effort === effort);
+
+  if (stored && sameSession && sameShape && sameRun) {
+    const changed = stored.knowledgeSha256 !== knowledgeSha256;
+    const messagePrefix = changed ? knowledgeUpdate(stored.knowledge, knowledge) : null;
+    const resend = provider === "codex" && stored.resend === true;
+    const instructions = provider === "claude" || resend ? stored.text : null;
+    const injected: CliInstructions["injected"] = [
+      {
+        source: "system_prompt",
+        content: resend
+          ? `Session prefix sha256 ${stored.sha256}, sent again after the session was compacted.`
+          : `Session prefix sha256 ${stored.sha256}, unchanged.`,
+      },
+    ];
+    if (messagePrefix) injected.push({ source: "project_context", content: messagePrefix });
+    return {
+      instructions,
+      injected,
+      messagePrefix,
+      prefix: {
+        ...stored,
+        knowledge,
+        knowledgeSha256,
+        ...(provider === "codex" ? { model, effort } : {}),
+        resend: false,
+      },
+      reused: true,
+    };
+  }
+
+  const built = assembleCliInstructions({ ...build, fresh: true });
+  const text = built.instructions ?? "";
+  const hash = sha256(text);
+  const prefix: SessionPrefix = {
+    provider,
+    sessionId: resumeToken,
+    text,
+    sha256: hash,
+    knowledge,
+    knowledgeSha256,
+    model,
+    effort,
+    tools: input.tools,
+    bridge,
+    resend: false,
+  };
+  // A resumed Codex session read its instructions on its first turn: the
+  // text is kept for the turn after a compaction, not sent again now.
+  if (provider === "codex" && resumeToken) {
+    return {
+      instructions: null,
+      injected: [{ source: "system_prompt", content: `Session prefix sha256 ${hash}, kept for after a compaction.` }],
+      messagePrefix: null,
+      prefix,
+      reused: false,
+    };
+  }
+  return {
+    instructions: built.instructions,
+    injected: [...built.injected, { source: "system_prompt", content: `Session prefix sha256 ${hash}, new.` }],
+    messagePrefix: null,
+    prefix,
+    reused: false,
+  };
 }

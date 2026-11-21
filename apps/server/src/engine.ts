@@ -8,6 +8,7 @@ import {
   REQUIRED_SCOPE,
   type Command,
   type ContainerState,
+  type ContextReading,
   type DomainEvent,
   type ProviderId,
   type StoredEvent,
@@ -263,6 +264,7 @@ export class OrchestrationEngine {
           parentThreadId: row.parentThreadId,
           profileId: row.profileId,
           createdByUserId: row.createdByUserId,
+          providerSessionId: row.providerSessionId,
           hasActiveChildren: command.type === "thread.cancel" && (await this.db.select({ id: agentRuns.id }).from(agentRuns).where(and(eq(agentRuns.parentThreadId, row.id), eq(agentRuns.status, "running"))).limit(1)).length > 0,
         };
       }
@@ -466,7 +468,8 @@ export async function applyProjection(
         // Until this landed nothing ever set `running`, so `thread.cancel`
         // always failed its guard and `thread.send` never rejected a second
         // concurrent turn. Both guards start working here.
-        await tx.update(threads).set({ status: "running" }).where(eq(threads.id, event.threadId));
+        // A newer turn: whatever idle compaction was due is not any more.
+        await tx.update(threads).set({ status: "running", idleCompactAt: null }).where(eq(threads.id, event.threadId));
         // The first turn binds the thread to its backend; later ones cannot
         // move it (see `decide()`), so a set value is left alone.
         if (event.provider) {
@@ -641,8 +644,23 @@ export async function applyProjection(
 
       case "thread.context_cleared":
         // The provider stays bound; its session does not. The next turn
-        // opens a fresh one, with no `--resume`.
-        await tx.update(threads).set({ providerSessionId: null }).where(eq(threads.id, event.threadId));
+        // opens a fresh one, with no `--resume` -- and with it go the
+        // session's reading, its fixed prefix and any compaction due.
+        await tx
+          .update(threads)
+          .set({ providerSessionId: null, contextReading: null, sessionPrefix: null, idleCompactAt: null })
+          .where(eq(threads.id, event.threadId));
+        break;
+
+      case "context.usage":
+        // Transient on the wire, but its latest is the thread's: written
+        // when a batch carries it through the projection -- a turn's last
+        // reading with its end, a compaction's with its result -- not once
+        // per model call (plan2 §1.4).
+        await tx
+          .update(threads)
+          .set({ contextReading: readingOf(event) })
+          .where(eq(threads.id, event.threadId));
         break;
 
       case "thread.harness_switched":
@@ -653,6 +671,9 @@ export async function applyProjection(
           .set({
             provider: event.toProvider,
             providerSessionId: null,
+            contextReading: null,
+            sessionPrefix: null,
+            idleCompactAt: null,
             // Events from before accounts leave the binding as it was.
             ...(event.toProfileId !== undefined ? { profileId: existingProfile(event.toProfileId) } : {}),
           })
@@ -880,4 +901,42 @@ export interface Reactors {
  */
 function existingProfile(id: string | null | undefined) {
   return id ? sql<string | null>`(select ${agentProfiles.id} from ${agentProfiles} where ${agentProfiles.id} = ${id})` : null;
+}
+
+/** A `context.usage` as the thread keeps it (`threads.context_reading`). */
+export function readingOf(event: Extract<DomainEvent, { type: "context.usage" }>): ContextReading {
+  return {
+    usedTokens: event.usedTokens,
+    windowTokens: event.windowTokens,
+    compactThreshold: event.thresholdTokens,
+    ...(event.cacheExpiresAt !== undefined ? { cacheExpiresAt: event.cacheExpiresAt } : {}),
+    ...(event.cacheTtlMs !== undefined ? { cacheTtlMs: event.cacheTtlMs } : {}),
+    ...(event.cachedTokens !== undefined ? { cachedTokens: event.cachedTokens } : {}),
+    ...(event.cacheHitRatio !== undefined ? { cacheHitRatio: event.cacheHitRatio } : {}),
+    status: event.status ?? (event.usedTokens === null ? "unavailable" : "complete"),
+    harness: event.harness ?? null,
+    model: event.model ?? null,
+    at: event.at ?? new Date().toISOString(),
+    turnId: event.turnId ?? null,
+  };
+}
+
+/** The reverse: the event a client that opens the thread is sent for the kept reading. */
+export function usageEventOf(threadId: string, reading: ContextReading): Extract<DomainEvent, { type: "context.usage" }> {
+  return {
+    type: "context.usage",
+    threadId,
+    ...(reading.turnId ? { turnId: reading.turnId } : {}),
+    usedTokens: reading.usedTokens,
+    windowTokens: reading.windowTokens,
+    thresholdTokens: reading.compactThreshold,
+    status: reading.status,
+    ...(reading.cacheExpiresAt !== undefined ? { cacheExpiresAt: reading.cacheExpiresAt } : {}),
+    ...(reading.cacheTtlMs !== undefined ? { cacheTtlMs: reading.cacheTtlMs } : {}),
+    ...(reading.cachedTokens !== undefined ? { cachedTokens: reading.cachedTokens } : {}),
+    ...(reading.cacheHitRatio !== undefined ? { cacheHitRatio: reading.cacheHitRatio } : {}),
+    ...(reading.harness ? { harness: reading.harness } : {}),
+    model: reading.model,
+    at: reading.at,
+  };
 }

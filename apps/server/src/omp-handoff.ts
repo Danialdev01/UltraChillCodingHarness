@@ -50,9 +50,13 @@ export const HANDOFF_INSTRUCTION = [
 ].join("\n");
 
 /** The prompt argument: the fixed instruction and, when there is one, what to focus on. */
-export function handoffPrompt(focus?: string): string {
+export function handoffPrompt(focus?: string, briefTokens?: number): string {
   const trimmed = focus?.trim();
-  return trimmed ? `${HANDOFF_INSTRUCTION}\n\nFocus on: ${trimmed}` : HANDOFF_INSTRUCTION;
+  const parts = [HANDOFF_INSTRUCTION];
+  if (trimmed) parts.push(`Focus on: ${trimmed}`);
+  // What the new session can take beside its work (plan2 §3.5, `handoffBudgetTokens`).
+  if (briefTokens !== undefined) parts.push(`Keep the brief under ${Math.max(500, Math.floor(briefTokens * 0.9))} tokens.`);
+  return parts.join("\n\n");
 }
 
 /** A value, keeping the quotes it came in: `"x"` stays a string where a reader expects one. */
@@ -189,6 +193,8 @@ export async function buildHandoffBrief(input: {
   events: readonly DomainEvent[];
   focus?: string;
   maxTokens?: number;
+  /** How long the brief may be, in tokens; unsaid when absent. */
+  briefTokens?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<string> {
@@ -197,7 +203,7 @@ export async function buildHandoffBrief(input: {
   return input.omp.ask({
     ctx: input.ctx,
     omp: input.files,
-    prompt: handoffPrompt(input.focus),
+    prompt: handoffPrompt(input.focus, input.briefTokens),
     stdin: `<transcript>\n${transcript}\n</transcript>\n`,
     model: "@smol",
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),

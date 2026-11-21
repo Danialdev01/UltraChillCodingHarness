@@ -41,8 +41,10 @@ import { frameBatcher } from "./next-frame";
  * its turn starts or is dropped. Live state too: it changes `liveVersion`.
  *
  * `contextUsage` is the provider's newest measure of how full the context
- * is (`context.usage`, OMP threads), or null when none has been heard since
- * the page opened. Live state as well; a newer one replaces it.
+ * is (`context.usage`): live while a turn runs, and the reading the server
+ * keeps with the thread, sent after the replay, when the page opens. Null
+ * when there is none, and again after a clear or a harness switch. Live
+ * state as well; a newer one replaces it.
  */
 export class ThreadStore {
   readonly threadId: string;
@@ -92,8 +94,9 @@ export class ThreadStore {
     const event = row.event;
     if (!("threadId" in event) || event.threadId !== this.threadId) return;
     if (row.seq !== null) {
-      // The provider's last measure was of the context a clear just emptied.
-      if (event.type === "thread.context_cleared" && this.#contextUsage) {
+      // The provider's last measure was of the context a clear just emptied,
+      // or of the session a switch left behind (plan2 §1.6).
+      if ((event.type === "thread.context_cleared" || event.type === "thread.harness_switched") && this.#contextUsage) {
         this.#contextUsage = null;
         this.#changed("live");
       }

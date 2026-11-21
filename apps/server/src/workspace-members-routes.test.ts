@@ -246,6 +246,8 @@ describe("workspace member routes", () => {
       ompVerify: { enabled: false },
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
       widgets: { enabled: true },
+      // On unless turned off (plan2 §3.3).
+      idleCompaction: { enabled: true },
     });
     const bad = await app.inject({
       method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN),

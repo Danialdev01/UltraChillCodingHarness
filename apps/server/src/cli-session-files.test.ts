@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cliTranscriptExists, removeCliSessionFiles, removeOrphanCliFiles } from "./cli-session-files.js";
+import { claudeProjectFolder, cliTranscriptExists, removeCliSessionFiles, removeOrphanCliFiles } from "./cli-session-files.js";
 
 const SESSION = "3af04324-f8a0-49e8-b5a1-7fb487f9951b";
 const OTHER = "fc6fdfd5-29ad-4661-82b7-9082490e47b4";
@@ -76,5 +76,19 @@ describe("cliTranscriptExists", () => {
     expect(await cliTranscriptExists(codex, "codex", SESSION)).toBe(true);
     expect(await cliTranscriptExists(codex, "codex", OTHER)).toBe(false);
     expect(await cliTranscriptExists(join(creds, "missing"), "omp", SESSION)).toBe(true);
+  });
+
+  it("looks for Claude Code's only in the folder of the cwd it resumes in (plan2 §3.6)", async () => {
+    const claude = join(creds, "user", "claude");
+    const cwd = "/srv/work/ucch/project-1/.ucch-tree";
+    expect(claudeProjectFolder(cwd)).toBe("-srv-work-ucch-project-1--ucch-tree");
+    await put(join(claude, "projects", "-somewhere-else", `${SESSION}.jsonl`));
+    // In another project's folder: `claude --resume` run here would not find it.
+    expect(await cliTranscriptExists(claude, "claude", SESSION, cwd)).toBe(false);
+    await put(join(claude, "projects", claudeProjectFolder(cwd)!, `${SESSION}.jsonl`));
+    expect(await cliTranscriptExists(claude, "claude", SESSION, cwd)).toBe(true);
+    // A path the CLI would shorten with a hash: every folder is looked in.
+    expect(claudeProjectFolder(`/${"a".repeat(240)}`)).toBeNull();
+    expect(await cliTranscriptExists(claude, "claude", SESSION, `/${"a".repeat(240)}`)).toBe(true);
   });
 });

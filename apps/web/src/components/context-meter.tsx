@@ -6,10 +6,11 @@ import { HandIcon, Loader2Icon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
+  cacheWarmLabel,
+  compactionLine,
   contextPercent,
   contextUsage,
   formatContextTokens,
-  HANDOVER_RATIO,
 } from "@/lib/context-window"
 
 /**
@@ -23,15 +24,17 @@ import {
  * press it for long work: every harness compacts itself mid-turn at the
  * handover line and keeps going, quietly, as the Claude Code CLI does.
  *
- * The number is the provider's own reading where it sends one (OMP, Claude
- * Code: after each model call, so the ring moves while the turn runs) and
- * otherwise the last completed turn's usage, which lags by one turn.
+ * The number is the provider's own reading of its last model call, live
+ * while a turn runs and kept with the thread between turns. A provider that
+ * could not measure says so, and the ring says "unknown" rather than 0.
  */
 export function ContextMeter({
   tokens,
   limit,
   threshold = null,
   live = false,
+  unknown = false,
+  cacheExpiresAt = null,
   onHandover,
   handingOver,
   disabled,
@@ -45,6 +48,10 @@ export function ContextMeter({
   threshold?: number | null
   /** The provider measured it after its last model call, not a turn's usage. */
   live?: boolean
+  /** The provider could not measure it (`status: "unavailable"`). */
+  unknown?: boolean
+  /** When the session's prompt cache runs out, ISO, or null. */
+  cacheExpiresAt?: string | null
   onHandover: () => void
   /** A handover is being written. */
   handingOver: boolean
@@ -59,9 +66,13 @@ export function ContextMeter({
   variant?: "ring" | "bar"
   className?: string
 }) {
-  const handoverAt = threshold ?? (limit ? Math.floor(limit * HANDOVER_RATIO) : null)
-  const usage = contextUsage(tokens, limit, handoverAt)
+  const usage = contextUsage(unknown ? null : tokens, limit, threshold)
+  // Where the session is folded next: its own line, or the server's first.
+  const compactAt = limit ? Math.floor(limit * compactionLine(usage.thresholdRatio)) : null
   const [open, setOpen] = React.useState(false)
+  const now = useMinuteClock(Boolean(cacheExpiresAt))
+  const warm = now === null ? null : cacheWarmLabel(cacheExpiresAt, now)
+  const label = unknown ? "unknown" : usage.label
 
   const stroke =
     usage.tone === "full"
@@ -79,9 +90,8 @@ export function ContextMeter({
             <button
               type="button"
               title={
-                usage.ratio === null
-                  ? `Context: ${usage.label}`
-                  : `Context ${percent}% full (${usage.label} tokens)`
+                (usage.ratio === null ? `Context: ${label}` : `Context ${percent}% full (${label} tokens)`) +
+                (warm ? ` · ${warm}` : "")
               }
               className={`hover:bg-muted focus-visible:ring-ring flex w-full min-w-0 flex-col gap-1.5 rounded-md px-1.5 py-1.5 text-left outline-none focus-visible:ring-2 ${className ?? ""}`}
             />
@@ -95,7 +105,7 @@ export function ContextMeter({
                 usage.tone === "full" ? "text-destructive" : "text-muted-foreground"
               }`}
             >
-              {usage.tokens === null ? "0" : formatContextTokens(usage.tokens)}/
+              {unknown ? "?" : usage.tokens === null ? "0" : formatContextTokens(usage.tokens)}/
               {usage.limit === null ? "?" : formatContextTokens(usage.limit)}
             </span>
           </span>
@@ -104,11 +114,11 @@ export function ContextMeter({
               className={`absolute inset-y-0 left-0 rounded-full bg-current transition-[width] duration-500 ${stroke}`}
               style={{ width: `${Math.min(100, percent ?? 0)}%` }}
             />
-            {usage.thresholdRatio !== null && (
+            {usage.limit !== null && compactAt !== null && (
               <span
                 aria-hidden
                 className="bg-foreground/40 absolute inset-y-0 w-px"
-                style={{ left: `${usage.thresholdRatio * 100}%` }}
+                style={{ left: `${(compactAt / usage.limit) * 100}%` }}
               />
             )}
           </span>
@@ -119,9 +129,8 @@ export function ContextMeter({
             <button
               type="button"
               title={
-                usage.ratio === null
-                  ? `Context: ${usage.label}`
-                  : `Context ${percent}% full (${usage.label} tokens)`
+                (usage.ratio === null ? `Context: ${label}` : `Context ${percent}% full (${label} tokens)`) +
+                (warm ? ` · ${warm}` : "")
               }
               className={`hover:bg-muted relative flex size-7 shrink-0 items-center justify-center rounded-full ${className ?? ""}`}
             />
@@ -164,19 +173,22 @@ export function ContextMeter({
       <PopoverContent align="end" side={variant === "bar" ? "left" : "top"} className="w-72 p-3">
         <p className="text-sm font-medium">Context window</p>
         <p className="text-muted-foreground mt-1 text-xs">
-          {usage.tokens === null
+          {unknown
+            ? "Unknown — the session could not say how full its context is."
+            : usage.tokens === null
             ? "Nothing measured yet — the first reply will fill this in."
             : usage.limit === null
               ? `${formatContextTokens(usage.tokens)} tokens in this conversation. This model publishes no window size.`
               : `${usage.label} tokens used (${percent}%).`}
         </p>
-        {handoverAt !== null && usage.limit !== null && (
+        {compactAt !== null && usage.limit !== null && (
           <p className="text-muted-foreground text-xs">
-            Hands over by itself at {formatContextTokens(handoverAt)} tokens (
-            {Math.round((handoverAt / usage.limit) * 100)}%).
+            Compacts in the same session at {formatContextTokens(compactAt)} tokens (
+            {Math.round((compactAt / usage.limit) * 100)}%).
           </p>
         )}
-        {usage.tokens !== null && (
+        {warm && <p className="text-muted-foreground text-xs">Prompt {warm}.</p>}
+        {usage.tokens !== null && !unknown && (
           <p className="text-muted-foreground text-xs">
             {live
               ? "Measured by the session after the model's last call."
@@ -206,4 +218,17 @@ export function ContextMeter({
       </PopoverContent>
     </Popover>
   )
+}
+
+/** The time, a minute at a time, while `on`: for "cache warm · Nm left". Null until mounted. */
+function useMinuteClock(on: boolean): number | null {
+  const [now, setNow] = React.useState<number | null>(null)
+  React.useEffect(() => {
+    if (!on) return
+    const tick = () => setNow(Date.now())
+    tick()
+    const timer = setInterval(tick, 30_000)
+    return () => clearInterval(timer)
+  }, [on])
+  return on ? now : null
 }

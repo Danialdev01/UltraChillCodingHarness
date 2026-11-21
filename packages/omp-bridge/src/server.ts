@@ -18,6 +18,9 @@ import { showWidget } from "./tools/widget.js";
  * a one-line reason, which the calling CLI shows its model like any other
  * tool error (§10.2).
  */
+/** Claude Code's mark for a tool that is never deferred behind ToolSearch (2.1.330). */
+export const ALWAYS_LOAD = "anthropic/alwaysLoad";
+
 export function createBridgeServer(config: BridgeConfig, host: ProcessHost, parentEnv: NodeJS.ProcessEnv = process.env): McpServer {
   const server = new McpServer({ name: "omp", version: "0.0.0" });
 
@@ -59,7 +62,13 @@ export function createBridgeServer(config: BridgeConfig, host: ProcessHost, pare
   for (const definition of tools) {
     server.registerTool(
       definition.name,
-      { description: definition.description, inputSchema: definition.inputSchema, annotations: definition.annotations },
+      {
+        description: definition.description,
+        inputSchema: definition.inputSchema,
+        annotations: definition.annotations,
+        // Everything else waits behind ToolSearch (`ENABLE_TOOL_SEARCH`).
+        ...(definition.alwaysLoad ? { _meta: { [ALWAYS_LOAD]: true } } : {}),
+      },
       async (input: unknown): Promise<CallToolResult> => {
         try {
           return await definition.run(input as never, ctx);

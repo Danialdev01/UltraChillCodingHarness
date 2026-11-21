@@ -142,7 +142,7 @@ describe("turn.started", () => {
     expect(statements.filter((s) => s.table === "threads")).toEqual([
       { op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything(), agentMessagesPaused: false } },
       { op: "update", table: "threads", values: { title: "Hello" } },
-      { op: "update", table: "threads", values: { status: "running" } },
+      { op: "update", table: "threads", values: { status: "running", idleCompactAt: null } },
     ]);
   });
 
@@ -337,7 +337,7 @@ describe("thread status", () => {
       { type: "turn.started", threadId: THREAD, turnId: TURN, provider: "claude" },
     ]);
     const updates = statements.filter((s) => s.table === "threads");
-    expect(updates[0]).toEqual({ op: "update", table: "threads", values: { status: "running" } });
+    expect(updates[0]).toEqual({ op: "update", table: "threads", values: { status: "running", idleCompactAt: null } });
     // A coalesce, not a literal: an already-bound thread keeps its provider.
     expect(updates[1]?.values.provider).toBeTruthy();
     expect(updates[1]?.values.provider).not.toBe("claude");

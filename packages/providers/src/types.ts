@@ -83,6 +83,12 @@ export interface ProviderRunInput {
   turnId: string;
   /** The provider's own session id from a previous turn, to resume. */
   resumeToken?: string;
+  /**
+   * The lifetime of the prompt cache the session's last turn wrote, ms
+   * (`ContextReading.cacheTtlMs`): a first call that only reads from the
+   * cache refreshes it for that long.
+   */
+  cacheTtlMs?: number;
   model?: string;
   /**
    * How hard the model thinks. `off` and absent both mean the CLI's own
@@ -252,6 +258,38 @@ export interface AgentProvider {
   rateLimits?(ctx: RunContext): Promise<ProviderRateLimits>;
   /** Start or resume a turn. */
   run(input: ProviderRunInput): AgentRun;
+  /**
+   * Compacts an existing session in place, between turns (plan2 §3.2), when
+   * the CLI cannot be asked to by a turn's message: Codex, through its app
+   * server's `thread/compact/start`. Resolves with the compaction's divider
+   * and the reading after it; rejects with why it could not.
+   */
+  compact?(input: ProviderCompactInput): Promise<DomainEvent[]>;
+  /**
+   * One question, answered once, with no tools and no session left behind:
+   * the handover brief's fallback when OMP cannot write it (plan2 §3.5).
+   */
+  ask?(input: ProviderAskInput): Promise<string>;
+}
+
+export interface ProviderCompactInput {
+  ctx: RunContext;
+  threadId: string;
+  resumeToken: string;
+  /** The model the session runs, for its window until the CLI reports one. */
+  model?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface ProviderAskInput {
+  ctx: RunContext;
+  /** Everything the model is given, on stdin: the material, then the instruction. */
+  prompt: string;
+  /** A cheap model for the job; the CLI's default when absent. */
+  model?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 /**

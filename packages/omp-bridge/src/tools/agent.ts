@@ -10,6 +10,8 @@ import { tool } from "./tool.js";
  */
 export const ucchAgent = tool({
   name: UCCH_AGENT_TOOL,
+  // The instructions name it as the way to do this: found by its name, never searched for.
+  alwaysLoad: true,
   description: UCCH_AGENT_DESCRIPTION,
   inputSchema: {
     description: z.string().min(1).max(200).describe(UCCH_AGENT_ARGS.description),

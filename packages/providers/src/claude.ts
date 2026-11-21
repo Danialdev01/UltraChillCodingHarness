@@ -1,7 +1,10 @@
 import { isAbsolute, join, relative } from "node:path";
 import {
-  CONTEXT_HANDOVER_RATIO,
+  cacheExpiry,
+  cacheHitRatio,
+  claudeCompactThreshold,
   cliContextWindow,
+  occupancy,
   normalizeWorkspacePath,
   type AgentPermissionMode,
   type DomainEvent,
@@ -14,6 +17,7 @@ import type {
   AgentProvider,
   AgentRun,
   PermissionReply,
+  ProviderAskInput,
   ProviderHealth,
   ProviderImage,
   ProviderRunInput,
@@ -255,13 +259,21 @@ export const CLAUDE_PLAN_HELD_BACK = ["ExitPlanMode", "AskUserQuestion", "EnterP
 export const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"] as const;
 
 /**
- * The CLI's own auto-compact, at UCCH's line (`CONTEXT_HANDOVER_RATIO`)
- * rather than at the wall: a long turn folds its context and keeps going,
- * as the Claude Code CLI does, instead of crowding the window until the
- * server has to hand the session over between turns.
+ * How a Claude Code turn manages its context.
+ *
+ * No `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (plan2 §3.1): the CLI compacts at its
+ * own default, the window less its summary buffer
+ * (`claudeCompactThreshold`). Each compaction leaves the prompt cache cold,
+ * so compacting later and less often is the cheaper of the two; the server
+ * compacts between turns (`/compact`) before the window can fill.
+ *
+ * `ENABLE_TOOL_SEARCH=true`, as t3code forces it: every MCP tool -- the
+ * bridge's -- is deferred behind ToolSearch, so only the few the bridge
+ * marks `anthropic/alwaysLoad` sit in the prompt. 2.1.330 defers by default
+ * already; this keeps it so whatever the account's settings say.
  */
 export function claudeContextEnv(): Record<string, string> {
-  return { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: String(Math.round(CONTEXT_HANDOVER_RATIO * 100)) };
+  return { ENABLE_TOOL_SEARCH: "true" };
 }
 
 /** The tools that spawn a subagent: `Task`, renamed `Agent` by 2.1.316. */
@@ -369,7 +381,14 @@ interface Line {
     tool_use_id?: string;
   };
   parent_tool_use_id?: string | null;
-  event?: { type?: string; delta?: { type?: string; text?: string; thinking?: string } };
+  event?: {
+    type?: string;
+    delta?: { type?: string; text?: string; thinking?: string };
+    /** `message_start`: the request's usage, with what it wrote to the cache by lifetime. */
+    message?: { usage?: Record<string, unknown> };
+  };
+  /** `system` `compact_boundary`: what the compaction folded. */
+  compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number };
   message?: { id?: string; content?: Block[]; usage?: Record<string, unknown> };
   /** `system` `init`: the model the session runs, as the CLI resolved it. */
   model?: string;
@@ -455,6 +474,19 @@ export class ClaudeNormaliser implements Normaliser {
   #window: number | null = null;
   /** The last reading's token count, to send again when the window is learned. */
   #usedTokens: number | null = null;
+  /** What the last main-thread call read from the cache. */
+  #cachedTokens: number | null = null;
+  /**
+   * When the session's prompt cache runs out, ms, as of the last request
+   * (plan2 §2.1): its start plus the lifetime of what it wrote; a request
+   * that only read pushes it on by the lifetime it was written with.
+   */
+  #cacheExpiresAt: number | null = null;
+  #cacheTtlMs: number | null = null;
+  /** The turn's first call's cache hit ratio (plan2 §2.2); undefined until it is made. */
+  #firstHit: number | null | undefined = undefined;
+  /** A compaction folded the context; its divider waits for the summary the CLI prints next. */
+  #compaction: { trigger: string | null; pre: number | null; post: number | null } | null = null;
   #usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -473,9 +505,12 @@ export class ClaudeNormaliser implements Normaliser {
       now?: () => number;
       /** A follow-up turn to this subagent: its card, and the agentId the CLI continues it by. */
       followup?: { subagentId: string; handle: string };
+      /** The lifetime the session's cache was last written with, from the previous turn. */
+      cacheTtlMs?: number;
     },
   ) {
     if (ctx.followup) this.#tasks.set(ctx.followup.handle, ctx.followup.subagentId);
+    this.#cacheTtlMs = ctx.cacheTtlMs ?? null;
   }
 
   get sessionId(): string | null {
@@ -529,15 +564,40 @@ export class ClaudeNormaliser implements Normaliser {
   #contextReading(usage: Record<string, unknown> | undefined): DomainEvent[] {
     if (!usage) return [];
     const u = mapUsage(usage);
-    const usedTokens = u.inputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens + u.outputTokens;
+    const usedTokens = occupancy(u);
     if (usedTokens <= 0) return [];
     this.#usedTokens = usedTokens;
+    this.#cachedTokens = u.cacheReadInputTokens;
     return this.#contextEvent(usedTokens);
+  }
+
+  /**
+   * A request began (`message_start`, plan2 §2.1, §2.2): its start is when
+   * the cache it writes or reads starts counting down, and the turn's first
+   * one says how much of the resumed session came back from the cache.
+   */
+  #requestStarted(usage: Record<string, unknown> | undefined): void {
+    if (!usage) return;
+    const u = mapUsage(usage);
+    const creation = (usage.cache_creation ?? {}) as Record<string, unknown>;
+    const n = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0);
+    const expiry = cacheExpiry({
+      requestStartMs: this.#now(),
+      cacheRead: u.cacheReadInputTokens,
+      creation5m: n(creation.ephemeral_5m_input_tokens),
+      creation1h: n(creation.ephemeral_1h_input_tokens),
+      creationTotal: u.cacheCreationInputTokens,
+      previousTtlMs: this.#cacheTtlMs,
+    });
+    this.#cacheExpiresAt = expiry?.expiresAtMs ?? null;
+    if (expiry) this.#cacheTtlMs = expiry.ttlMs;
+    if (this.#firstHit === undefined) this.#firstHit = cacheHitRatio(u);
   }
 
   #contextEvent(usedTokens: number): DomainEvent[] {
     const windowTokens = this.#window ?? cliContextWindow("claude", this.#model ?? this.ctx.model ?? null);
-    const key = `${usedTokens}/${windowTokens}`;
+    const expiresAt = this.#cacheExpiresAt === null ? null : new Date(this.#cacheExpiresAt).toISOString();
+    const key = `${usedTokens}/${windowTokens}/${expiresAt}`;
     if (key === this.#contextKey) return [];
     this.#contextKey = key;
     return [
@@ -547,7 +607,42 @@ export class ClaudeNormaliser implements Normaliser {
         turnId: this.ctx.turnId,
         usedTokens,
         windowTokens,
-        thresholdTokens: windowTokens ? Math.floor(windowTokens * CONTEXT_HANDOVER_RATIO) : null,
+        thresholdTokens: windowTokens ? claudeCompactThreshold(windowTokens) : null,
+        // A window by name is a guess, not a missing part: only none at all is.
+        status: windowTokens ? "complete" : "partial",
+        cacheExpiresAt: expiresAt,
+        cacheTtlMs: this.#cacheTtlMs,
+        cachedTokens: this.#cachedTokens,
+        ...(this.#firstHit !== undefined ? { cacheHitRatio: this.#firstHit } : {}),
+        harness: "claude",
+        model: this.#model ?? this.ctx.model ?? null,
+        at: new Date(this.#now()).toISOString(),
+      },
+    ];
+  }
+
+  /**
+   * The chat's "Context compacted" divider for a compaction this run saw
+   * (`compact_boundary`): a `/compact` the server sent, or the CLI's own
+   * mid-turn auto-compact. `summary` is what the CLI wrote in its place,
+   * when it printed it.
+   */
+  #compactionDivider(summary: string): DomainEvent[] {
+    const pending = this.#compaction;
+    if (!pending) return [];
+    this.#compaction = null;
+    return [
+      {
+        type: "context.injected",
+        threadId: this.ctx.threadId,
+        turnId: this.ctx.turnId,
+        source: "compaction",
+        content: summary,
+        compaction: {
+          ...(pending.trigger ? { method: pending.trigger.slice(0, 40) } : {}),
+          ...(pending.pre !== null ? { tokensBefore: pending.pre } : {}),
+          ...(pending.post !== null ? { tokensAfter: pending.post } : {}),
+        },
       },
     ];
   }
@@ -606,11 +701,24 @@ export class ClaudeNormaliser implements Normaliser {
         if (line.subtype === "task_started" || line.subtype === "task_progress" || line.subtype === "task_notification") {
           return this.#taskLine(line);
         }
-        // The CLI folded its own context mid-turn (auto-compact): the turn
-        // goes on, and the next call's reading is the folded size.
+        // The CLI folded the context: its own auto-compact mid-turn, or the
+        // `/compact` the server sent (plan2 §3.2). The turn goes on; the
+        // folded size is the reading until the next call's, the prefix it
+        // cached is gone, and the summary it prints next goes in the divider.
         if (line.subtype === "compact_boundary") {
+          const meta = line.compact_metadata ?? {};
+          const tokens = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null);
+          const events = this.#compactionDivider("");
+          this.#compaction = { trigger: typeof meta.trigger === "string" ? meta.trigger : null, pre: tokens(meta.pre_tokens), post: tokens(meta.post_tokens) };
           this.#contextKey = null;
-          return [];
+          this.#cacheExpiresAt = null;
+          const post = this.#compaction.post;
+          if (post !== null && post > 0) {
+            this.#usedTokens = post;
+            this.#cachedTokens = null;
+            events.push(...this.#contextEvent(post));
+          }
+          return events;
         }
         if (line.subtype === "background_tasks_changed" && Array.isArray(line.tasks)) {
           this.#backgroundTasks = new Set(line.tasks.map((task) => task.task_id).filter((id): id is string => !!id));
@@ -641,6 +749,10 @@ export class ClaudeNormaliser implements Normaliser {
         // Subagent prose is not this turn's prose; its lines arrive whole
         // as assistant lines below, and become its progress.
         if (line.parent_tool_use_id) return [];
+        if (line.event?.type === "message_start") {
+          this.#requestStarted(line.event.message?.usage);
+          return [];
+        }
         const delta = line.event?.delta;
         if (line.event?.type !== "content_block_delta" || !delta) return [];
         if (delta.type === "text_delta" && delta.text) {
@@ -661,7 +773,8 @@ export class ClaudeNormaliser implements Normaliser {
         if (!line.parent_tool_use_id && isLimitLine(line)) this.#limited = true;
         if (line.parent_tool_use_id) return this.#subagentLine(line.parent_tool_use_id, line.message?.content ?? []);
         const blocks = line.message?.content ?? [];
-        const events: DomainEvent[] = [];
+        // The model is answering again: a compaction's summary did not come.
+        const events: DomainEvent[] = this.#compactionDivider("");
         const id = line.message?.id ?? "";
         if (this.#message && this.#message.id !== id) events.push(...this.#flushMessage());
         events.push(...this.#contextReading(line.message?.usage));
@@ -696,6 +809,12 @@ export class ClaudeNormaliser implements Normaliser {
       }
 
       case "user": {
+        // The summary a compaction left in the history's place (2.1.330:
+        // "This session is being continued from a previous conversation…").
+        const content = (line.message as { content?: unknown } | undefined)?.content;
+        if (typeof content === "string") {
+          return this.#compaction && !content.startsWith("<local-command-") ? this.#compactionDivider(content.trim()) : [];
+        }
         const events: DomainEvent[] = [];
         for (const block of line.message?.content ?? []) {
           if (block.type !== "tool_result" || !block.tool_use_id) continue;
@@ -762,7 +881,7 @@ export class ClaudeNormaliser implements Normaliser {
         // on the `result` that follows them.
         this.#learnWindow(line.modelUsage);
         if (!line.is_error && !this.#interrupted && this.#backgroundTasks.size > 0) {
-          const events = this.#flushMessage();
+          const events = [...this.#compactionDivider(""), ...this.#flushMessage()];
           if (this.#usedTokens !== null) events.push(...this.#contextEvent(this.#usedTokens));
           this.#usage = addUsage(this.#usage, mapUsage(line.usage));
           this.#heldResult = { costUsd: Math.max(0, line.total_cost_usd ?? 0) };
@@ -770,7 +889,7 @@ export class ClaudeNormaliser implements Normaliser {
           return events;
         }
         this.#closed = true;
-        const events = this.#flushMessage();
+        const events = [...this.#compactionDivider(""), ...this.#flushMessage()];
         // Read again with the window the CLI reported, if it differs from
         // the guess: the server's handover check reads the turn's last one.
         if (this.#usedTokens !== null) events.push(...this.#contextEvent(this.#usedTokens));
@@ -828,7 +947,7 @@ export class ClaudeNormaliser implements Normaliser {
     if (this.#closed) return [];
     this.#closed = true;
     const ids = { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
-    const events = this.#flushMessage();
+    const events = [...this.#compactionDivider(""), ...this.#flushMessage()];
     events.push(...this.#closePrompts());
     // It answered, then waited on background tasks and exited cleanly
     // without a second result: the answer stands.
@@ -1204,6 +1323,10 @@ export class ClaudeProvider implements AgentProvider {
     return health;
   }
 
+  ask(input: ProviderAskInput): Promise<string> {
+    return askClaude(input, this.bin);
+  }
+
   run(input: ProviderRunInput): AgentRun {
     // Assume the modern flags when nothing has probed yet: they exist on the
     // pinned version, and the settings page probes long before a turn runs.
@@ -1222,6 +1345,7 @@ export class ClaudeProvider implements AgentProvider {
       workspace: input.ctx.cwd,
       ...(input.model ? { model: input.model } : {}),
       ...(followup ? { followup } : {}),
+      ...(input.cacheTtlMs ? { cacheTtlMs: input.cacheTtlMs } : {}),
     });
     return runCli({
       provider: "claude",
@@ -1253,6 +1377,48 @@ export class ClaudeProvider implements AgentProvider {
       normaliser,
     });
   }
+}
+
+/** The model a one-shot answer runs on unless asked for another: the cheapest. */
+export const CLAUDE_ASK_MODEL = "claude-haiku-5-5";
+const CLAUDE_ASK_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * One answer from Claude Code with nothing left behind (plan2 §3.5): `-p`
+ * as text, no built-in tools, no MCP servers, the user's settings only, and
+ * no session saved. The prompt goes on stdin.
+ */
+export function claudeAskArgv(bin: string, model?: string): string[] {
+  return [
+    bin,
+    "-p",
+    "--output-format",
+    "text",
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "user",
+    "--no-session-persistence",
+    "--model",
+    model ?? CLAUDE_ASK_MODEL,
+  ];
+}
+
+export async function askClaude(input: ProviderAskInput, bin: string): Promise<string> {
+  const forbidden = forbiddenEnvPresent(input.ctx.env);
+  if (forbidden) throw new Error(`${forbidden} is set in the provider environment; refusing to bill an API key`);
+  const result = await input.ctx.host.run(
+    { argv: claudeAskArgv(bin, input.model), cwd: input.ctx.cwd, env: input.ctx.env, stdin: input.prompt },
+    { timeoutMs: input.timeoutMs ?? CLAUDE_ASK_TIMEOUT_MS, ...(input.signal ? { signal: input.signal } : {}) },
+  );
+  if (input.signal?.aborted) throw new Error("Stopped.");
+  const answer = result.stdout.trim();
+  if (result.code !== 0 || !answer) {
+    const why = result.stderr.trim().split("\n").at(-1) || answer || `claude exited ${result.code ?? result.signal}`;
+    throw new Error(explainClaudeError(why));
+  }
+  return answer;
 }
 
 /** One block of a stream-json user message. */

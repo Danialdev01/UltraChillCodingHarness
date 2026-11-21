@@ -9,9 +9,11 @@ import { Button } from "@/components/ui/button"
 import type { ChoicePrompt } from "@/lib/chat-messages"
 
 /**
- * A question from the server with fixed answers, above the composer: today,
+ * A question from the server with fixed answers, above the composer:
  * which harness carries on after a usage limit stopped this session's turn
- * (`harness_limit`) or one of its subagents (`subagent_limit`).
+ * (`harness_limit`) or one of its subagents (`subagent_limit`), or whether
+ * to compact a big session whose prompt cache ran out before its message
+ * goes (`resume_compact`, plan2 §3.7).
  *
  * Each option is a button. One that runs an OpenRouter model asks for the
  * model first, from the catalogue. The card goes when the answer is recorded
@@ -94,7 +96,13 @@ export function ChoicePromptCard({
           className="h-7 gap-1 text-xs"
           disabled={busy !== null}
           onClick={() => void reply("dismiss")}
-          title={choice.kind === "subagent_limit" ? "Stop the subagent; its parent is told it could not finish" : "Leave the session where it is"}
+          title={
+            choice.kind === "subagent_limit"
+              ? "Stop the subagent; its parent is told it could not finish"
+              : choice.kind === "resume_compact"
+                ? "Send the message to the session as it is"
+                : "Leave the session where it is"
+          }
         >
           <XIcon />
           Not now

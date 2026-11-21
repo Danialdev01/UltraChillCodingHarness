@@ -1,4 +1,4 @@
-import { asksForWidget, isModelImageType, WIDGET_TURN_NUDGE, type DomainEvent, type TokenUsage } from "@ucch/protocol";
+import { asksForWidget, cacheHitRatio, isModelImageType, occupancy, WIDGET_TURN_NUDGE, type DomainEvent, type TokenUsage } from "@ucch/protocol";
 import type { ChatMessage, Complete, ToolCall } from "./completion.js";
 import type { Executor } from "./executor.js";
 import {
@@ -332,11 +332,14 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
     // the whole conversation up to the previous request is a byte-identical
     // prefix -- if none of it came back cached, something in the prefix moved
     // and the layout is not doing what it was built to do.
+    // `inputTokens` is the uncached input (`TokenUsage`): what was written to
+    // the cache instead of read from it counts as sent too.
+    const sent = completion.usage.inputTokens + completion.usage.cacheCreationInputTokens;
     if (iterations > 1 && completion.usage.cacheReadInputTokens === 0) {
-      if (completion.usage.inputTokens > CACHE_CANARY_MIN_TOKENS) {
+      if (sent > CACHE_CANARY_MIN_TOKENS) {
         input.onDiagnostic?.(
           `prompt cache missed on iteration ${iterations} of turn ${turnId} ` +
-            `(${completion.usage.inputTokens} input tokens, none cached) -- ` +
+            `(${sent} input tokens, none cached) -- ` +
             `something in the prefix is changing between requests: check the system ` +
             `prompt for interpolated values, the tool schemas for reordering, and ` +
             `whether the conversation was pruned or compacted this turn`,
@@ -349,6 +352,26 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
     usage.cacheReadInputTokens += completion.usage.cacheReadInputTokens;
     usage.cacheCreationInputTokens += completion.usage.cacheCreationInputTokens;
     costUsd += completion.costUsd;
+
+    // How full the context is now: this call's own usage, never the turn's
+    // sum (plan2 §1.2). A provider that reported nothing measured nothing.
+    const used = occupancy(completion.usage);
+    const window = input.contextLength && input.contextLength > 0 ? input.contextLength : null;
+    const usable = usableTokens({ contextLength: input.contextLength ?? null, reserveTokens: CONTEXT_RESERVE_TOKENS });
+    input.publish({
+      type: "context.usage",
+      threadId,
+      turnId,
+      usedTokens: used > 0 ? used : null,
+      windowTokens: window,
+      thresholdTokens: usable ? Math.max(1, Math.floor(usable * COMPACT_RATIO)) : null,
+      status: used > 0 ? (window ? "complete" : "partial") : "unavailable",
+      cachedTokens: completion.usage.cacheReadInputTokens,
+      ...(iterations === 1 ? { cacheHitRatio: cacheHitRatio(completion.usage) } : {}),
+      harness: "native",
+      model: input.model,
+      at: new Date().toISOString(),
+    });
 
     const calls = completion.toolCalls;
     await input.append([

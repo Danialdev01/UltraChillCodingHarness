@@ -1,6 +1,8 @@
 import { CodexSubagents, withCodexSubagents } from "./codex-subagents.js";
-import { cliContextWindow, compactAtTokens, type DomainEvent, type ReasoningEffort, type TokenUsage } from "@ucch/protocol";
-import { CODEX_IMAGE_INSTRUCTIONS, rolloutImagePaths, withCodexImages } from "./codex-images.js";
+import { statSync } from "node:fs";
+import { cliContextWindow, codexCompactThreshold, occupancy, type DomainEvent, type ReasoningEffort, type TokenUsage } from "@ucch/protocol";
+import { CODEX_IMAGE_INSTRUCTIONS, codexRollout, rolloutImagePaths, withCodexImages } from "./codex-images.js";
+import { lastCallUsage, readCodexRollout, turnUsage } from "./codex-rollout.js";
 import { workspaceRelative } from "./claude.js";
 import type { ExitStatus } from "./process.js";
 import { exitedBySignal, runCli, type Normaliser } from "./run.js";
@@ -11,6 +13,8 @@ import type {
   ProviderModel,
   ProviderRateLimits,
   CodexMcpServer,
+  ProviderAskInput,
+  ProviderCompactInput,
   ProviderRunInput,
   RunContext,
 } from "./types.js";
@@ -261,10 +265,9 @@ export function codexArgv(input: {
   if (input.effort && input.effort !== "off") {
     argv.push("-c", `model_reasoning_effort=${JSON.stringify(input.effort)}`);
   }
-  // Codex's own auto-compaction, at UCCH's line rather than at the wall: a
-  // long turn folds its context and keeps going (CONTEXT_HANDOVER_RATIO).
-  const window = cliContextWindow("codex", input.model ?? null);
-  if (window) argv.push("-c", `model_auto_compact_token_limit=${compactAtTokens(window)}`);
+  // No `model_auto_compact_token_limit`: Codex compacts at its own default
+  // (plan2 §3.1). Every compaction leaves the cache cold, so fewer and later
+  // is cheaper; the server compacts between turns before the window fills.
   if (input.noWeb) argv.push("-c", 'web_search="disabled"');
   if (input.mcp) argv.push(...codexMcpArgs("omp", input.mcp));
   // Attached pictures, for the prompt on stdin. `--image` takes several
@@ -655,16 +658,96 @@ function describe(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * Codex's usage as `TokenUsage`. Codex counts the cached prefix inside
+ * `input_tokens`; UCCH's contract is uncached input apart from the cache
+ * (`TokenUsage`), so the cached part is taken out here.
+ *
+ * `turn.completed.usage` is the thread's running total on 0.170.0, not the
+ * turn's (`codex-rollout.ts`): `withCodexContext` replaces it with the
+ * turn's own share from the rollout whenever there is one.
+ */
 export function mapCodexUsage(usage: Record<string, unknown> | undefined): TokenUsage {
   const n = (key: string) => {
     const value = usage?.[key];
     return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
   };
+  const input = n("input_tokens");
+  const cached = Math.min(input, n("cached_input_tokens"));
   return {
-    inputTokens: n("input_tokens"),
+    inputTokens: input - cached,
     outputTokens: n("output_tokens"),
-    cacheReadInputTokens: n("cached_input_tokens"),
-    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: cached,
+    cacheCreationInputTokens: n("cache_write_input_tokens"),
+  };
+}
+
+/**
+ * A Codex turn's context reading and usage, from its rollout (plan2 §1.3):
+ * after the run's events end -- the terminal one held back -- the rollout
+ * written since the turn began is read for the last call's
+ * `last_token_usage` and the model's `model_context_window`, and a
+ * `context.usage` goes out ahead of the turn's end. The turn's usage is its
+ * own share of the running total. A compaction Codex made mid-turn becomes
+ * the chat's divider.
+ *
+ * No rollout, or no reading in it: the reading is `unavailable`, which shows
+ * as unknown and triggers nothing.
+ */
+export function withCodexContext(input: ProviderRunInput, start: () => AgentRun, sessionId: () => string | null, now: () => number = Date.now): AgentRun {
+  const previous = codexRollout(input.ctx.env.CODEX_HOME, input.resumeToken);
+  let offset = 0;
+  try {
+    if (previous) offset = statSync(previous).size;
+  } catch {}
+  const run = start();
+  const ids = { threadId: input.threadId, turnId: input.turnId };
+  return {
+    ...run,
+    events: {
+      async *[Symbol.asyncIterator]() {
+        const terminal: DomainEvent[] = [];
+        for await (const event of run.events) {
+          if (event.type === "agent.turn_completed" || event.type === "agent.turn_failed") terminal.push(event);
+          else yield event;
+        }
+        const rollout = codexRollout(input.ctx.env.CODEX_HOME, sessionId() ?? input.resumeToken);
+        const read = rollout ? await readCodexRollout(rollout, rollout === previous ? offset : 0) : null;
+        const reading = read?.reading;
+        const windowTokens = reading?.windowTokens ?? cliContextWindow("codex", input.model ?? null);
+        for (const compaction of reading?.compactions ?? []) {
+          yield {
+            type: "context.injected",
+            ...ids,
+            source: "compaction",
+            content: "",
+            compaction: { method: "auto", ...(compaction.tokensAfter !== null ? { tokensAfter: compaction.tokensAfter } : {}) },
+          };
+        }
+        const last = reading?.last ?? null;
+        const call = last ? lastCallUsage(last) : null;
+        const usedTokens = last ? last.total || occupancy(call!) : null;
+        yield {
+          type: "context.usage",
+          ...ids,
+          usedTokens: usedTokens && usedTokens > 0 ? usedTokens : null,
+          windowTokens,
+          thresholdTokens: windowTokens ? codexCompactThreshold(windowTokens) : null,
+          status: usedTokens && usedTokens > 0 ? (reading?.windowTokens ? "complete" : "partial") : "unavailable",
+          cachedTokens: call ? call.cacheReadInputTokens : null,
+          harness: "codex",
+          model: input.model ?? null,
+          at: new Date(now()).toISOString(),
+        };
+        for (const event of terminal) {
+          if (event.type === "agent.turn_completed" && reading?.total && event.stopReason !== "cancelled") {
+            yield { ...event, usage: turnUsage(reading.total, read!.before) };
+          } else {
+            yield event;
+          }
+        }
+      },
+    },
   };
 }
 
@@ -734,7 +817,7 @@ export class CodexProvider implements AgentProvider {
       turnId: input.turnId,
       workspace: input.ctx.cwd,
     });
-    return withCodexImages(input, () => withCodexSubagents(input, runCli({
+    return withCodexImages(input, () => withCodexContext(input, () => withCodexSubagents(input, runCli({
       provider: "codex",
       ctx: input.ctx,
       spec: {
@@ -753,6 +836,160 @@ export class CodexProvider implements AgentProvider {
         stdin: codexPrompt(input.subagentId ? codexSubagentPrompt(input.prompt, input.subagentId, input.resumeToken) : input.prompt, input.instructions),
       },
       normaliser,
-    }), normaliser.subagents, () => normaliser.sessionId), () => normaliser.sessionId, () => [...normaliser.imagePaths]);
+    }), normaliser.subagents, () => normaliser.sessionId), () => normaliser.sessionId), () => normaliser.sessionId, () => [...normaliser.imagePaths]);
   }
+
+  compact(input: ProviderCompactInput): Promise<DomainEvent[]> {
+    return compactCodexThread(input, this.bin);
+  }
+
+  ask(input: ProviderAskInput): Promise<string> {
+    return askCodex(input, this.bin);
+  }
+}
+
+/** How long a compaction may take before it is given up on. */
+const CODEX_COMPACT_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Compacts a Codex session in place (plan2 §3.2) through its app server:
+ * `thread/resume`, then `thread/compact/start`, until the compaction's turn
+ * completes. `codex exec resume <id> "/compact"` cannot do it: exec sends
+ * the text to the model as a message (`codex-rollout.ts`). The reading
+ * before is the resume's `thread/tokenUsage/updated`, the one after the
+ * compaction's.
+ */
+export async function compactCodexThread(input: ProviderCompactInput, bin: string): Promise<DomainEvent[]> {
+  if (!/^[a-zA-Z0-9-]+$/.test(input.resumeToken)) throw new Error("not a Codex session id");
+  const ctx = input.ctx;
+  const child = ctx.host.spawn({
+    argv: [bin, "app-server"], cwd: ctx.cwd, env: ctx.env, holdStdin: true,
+    stdin: JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "ucch", version: "1.0.0" } } }) + "\n",
+  });
+  const send = (message: object) => child.write(JSON.stringify(message) + "\n");
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Codex took too long to compact the session")), input.timeoutMs ?? CODEX_COMPACT_TIMEOUT_MS);
+  });
+  const stopped = new Promise<never>((_, reject) => {
+    if (input.signal?.aborted) reject(new Error("Stopped."));
+    input.signal?.addEventListener("abort", () => reject(new Error("Stopped.")), { once: true });
+  });
+  type Usage = { totalTokens?: number; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number };
+  let before: number | null = null;
+  let after: number | null = null;
+  let windowTokens: number | null = null;
+  let compacting = false;
+  let compacted = false;
+  try {
+    await Promise.race([timeout, stopped, (async () => {
+      for await (const { stream, line } of child.lines) {
+        if (stream !== "stdout") continue;
+        let message: { id?: number; error?: { message?: string }; method?: string; params?: Record<string, unknown> };
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.id === 1) {
+          if (message.error) throw new Error("Codex's app server refused to start");
+          send({ method: "initialized", params: {} });
+          send({ id: 2, method: "thread/resume", params: { threadId: input.resumeToken, excludeTurns: true } });
+          continue;
+        }
+        if (message.id === 2) {
+          if (message.error) throw new Error(`Codex could not open the session: ${message.error.message ?? "unknown error"}`);
+          compacting = true;
+          send({ id: 3, method: "thread/compact/start", params: { threadId: input.resumeToken } });
+          continue;
+        }
+        if (message.id === 3 && message.error) throw new Error(`Codex refused to compact: ${message.error.message ?? "unknown error"}`);
+        const params = message.params ?? {};
+        if (params.threadId !== undefined && params.threadId !== input.resumeToken) continue;
+        if (message.method === "thread/tokenUsage/updated") {
+          const usage = params.tokenUsage as { last?: Usage; total?: Usage; modelContextWindow?: number | null } | undefined;
+          const size = usage?.last?.totalTokens;
+          if (typeof usage?.modelContextWindow === "number" && usage.modelContextWindow > 0) windowTokens = usage.modelContextWindow;
+          if (typeof size === "number" && size >= 0) {
+            if (compacted) after = size;
+            else if (!compacting || before === null) before = size;
+            else after = size;
+          }
+          continue;
+        }
+        if (message.method === "item/completed" && (params.item as { type?: unknown } | undefined)?.type === "contextCompaction") {
+          compacted = true;
+          continue;
+        }
+        if (message.method === "thread/compacted") {
+          compacted = true;
+          continue;
+        }
+        if (message.method === "turn/completed" && compacting) {
+          const turn = params.turn as { status?: string; error?: { message?: string } | null } | undefined;
+          if (turn?.status && turn.status !== "completed") throw new Error(turn.error?.message || `Codex's compaction ${turn.status}`);
+          return;
+        }
+      }
+      throw new Error("Codex exited before the compaction finished");
+    })()]);
+  } finally {
+    clearTimeout(timer!);
+    child.endStdin();
+    child.signal("SIGKILL");
+    await child.exited;
+  }
+  const window = windowTokens ?? cliContextWindow("codex", input.model ?? null);
+  return [
+    {
+      type: "context.injected",
+      threadId: input.threadId,
+      source: "compaction",
+      content: "",
+      compaction: {
+        method: "compact",
+        ...(before !== null ? { tokensBefore: before } : {}),
+        ...(after !== null ? { tokensAfter: after } : {}),
+      },
+    },
+    {
+      type: "context.usage",
+      threadId: input.threadId,
+      usedTokens: after,
+      windowTokens: window,
+      thresholdTokens: window ? codexCompactThreshold(window) : null,
+      status: after === null ? "unavailable" : windowTokens ? "complete" : "partial",
+      harness: "codex",
+      model: input.model ?? null,
+      at: new Date().toISOString(),
+    },
+  ];
+}
+
+/** The most a one-shot Codex answer may take. */
+const CODEX_ASK_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * One answer from Codex, with nothing left behind: `exec --ephemeral` in a
+ * read-only sandbox with web search off, the prompt on stdin, the last
+ * message of the JSONL the answer (plan2 §3.5).
+ */
+export async function askCodex(input: ProviderAskInput, bin: string): Promise<string> {
+  const forbidden = forbiddenEnvPresent(input.ctx.env);
+  if (forbidden) throw new Error(`${forbidden} is set in the provider environment; refusing to bill an API key`);
+  const argv = [bin, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "-c", 'web_search="disabled"'];
+  if (input.model) argv.push("--model", input.model);
+  const result = await input.ctx.host.run(
+    { argv, cwd: input.ctx.cwd, env: input.ctx.env, stdin: input.prompt },
+    { timeoutMs: input.timeoutMs ?? CODEX_ASK_TIMEOUT_MS, ...(input.signal ? { signal: input.signal } : {}) },
+  );
+  if (input.signal?.aborted) throw new Error("Stopped.");
+  let answer = "";
+  let failure = "";
+  for (const raw of result.stdout.split("\n")) {
+    let line: Line;
+    try { line = JSON.parse(raw) as Line; } catch { continue; }
+    if (line.type === "item.completed" && line.item?.type === "agent_message" && line.item.text) answer = line.item.text;
+    if (line.type === "turn.failed" || line.type === "error") {
+      failure = typeof line.error === "string" ? line.error : (line.error?.message ?? line.message ?? failure);
+    }
+  }
+  if (answer.trim()) return answer.trim();
+  throw new Error(failure || result.stderr.trim().split("\n").at(-1) || `codex exited ${result.code ?? result.signal}`);
 }

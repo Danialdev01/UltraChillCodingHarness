@@ -223,7 +223,8 @@ describe("a recorded two-call parallel response", () => {
       ]);
       expect(result.finishReason).toBe("tool_calls");
       expect(result.usage).toEqual({
-        inputTokens: 1284,
+        // prompt_tokens less the cached prefix: uncached input (`TokenUsage`).
+        inputTokens: 1284 - 1024,
         outputTokens: 62,
         cacheReadInputTokens: 1024,
         cacheCreationInputTokens: 0,
@@ -248,7 +249,8 @@ describe("usage", () => {
     );
 
     expect((await run()).usage).toEqual({
-      inputTokens: 900,
+      // 900 prompt tokens, all of them read from or written to the cache.
+      inputTokens: 0,
       outputTokens: 40,
       cacheReadInputTokens: 850,
       cacheCreationInputTokens: 50,

@@ -19,7 +19,9 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import type {
+  ContextReading,
   DomainEvent,
+  SessionPrefix,
   NoteDoc,
   ReviewFinding,
   ReviewScope,
@@ -369,6 +371,24 @@ export const threads = pgTable(
      * conversation is this log.
      */
     providerSessionId: text("provider_session_id"),
+    /**
+     * The session's latest context reading (plan2 §1.4): a turn's last
+     * `context.usage`, or a compaction's. Served with the thread, so the
+     * meter reads the same after a reload, and read by the server's own
+     * checks, so a restart skips none. Cleared with the session.
+     */
+    contextReading: jsonb("context_reading").$type<ContextReading>(),
+    /**
+     * What the CLI session was started with and keeps for its whole life
+     * (plan2 §2.3, §2.4): the appended system prompt and its hash, the
+     * project knowledge it was handed, and the bridge's tool set. Resumed
+     * turns reuse it unchanged, so the cached prefix holds.
+     */
+    sessionPrefix: jsonb("session_prefix").$type<SessionPrefix>(),
+    /** When an idle compaction is due (plan2 §3.3); re-armed on startup. Null: none scheduled. */
+    idleCompactAt: timestamp("idle_compact_at", { withTimezone: true }),
+    /** "Don't ask again" on the offer to compact a stale session before it resumes (plan2 §3.7). */
+    resumeCompactPromptOff: boolean("resume_compact_prompt_off").notNull().default(false),
     /** Who started the thread; whose own subscription a `member` thread bills. */
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null",

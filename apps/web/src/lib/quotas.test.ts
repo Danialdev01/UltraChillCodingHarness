@@ -20,7 +20,7 @@ describe("which window the bar draws", () => {
 });
 
 describe("the bar's colour", () => {
-  it("turns at the context meter's thresholds", () => {
+  it("turns amber with a quarter left and red with a tenth", () => {
     expect(quotaTone(null)).toBe("idle");
     expect(quotaTone(0)).toBe("normal");
     expect(quotaTone(74)).toBe("normal");

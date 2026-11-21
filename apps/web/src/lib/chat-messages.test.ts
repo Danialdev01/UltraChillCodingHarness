@@ -442,7 +442,7 @@ describe("the running turn", () => {
   });
 });
 
-describe("the context window", () => {
+describe("a session's context and its handovers", () => {
   const completed = (input: number, output: number, turnId = TURN): DomainEvent => ({
     type: "agent.turn_completed",
     threadId: THREAD,
@@ -457,25 +457,21 @@ describe("the context window", () => {
     costUsd: 0,
   });
 
-  it("knows nothing until a turn has finished", () => {
-    expect(log({ type: "user.message", threadId: THREAD, text: "hi" }).contextTokens).toBeNull();
-    expect(
-      log(
-        { type: "turn.started", threadId: THREAD, turnId: TURN },
-        { type: "agent.text_delta", threadId: THREAD, turnId: TURN, text: "working" },
-      ).contextTokens,
-    ).toBeNull();
+  // No figure from a turn's usage (plan2 §1.4): its input+output is a sum
+  // over every call, not how full the context is. The meter reads the
+  // provider's own reading, kept with the thread (`ThreadStore.contextUsage`).
+  it("has no context figure of its own", () => {
+    expect("contextTokens" in log(completed(12_000, 400))).toBe(false);
   });
 
-  it("knows nothing again once the context is cleared", () => {
+  it("marks the clear and keeps the turn before it on screen", () => {
     const state = log(completed(12_000, 400), { type: "thread.context_cleared", threadId: THREAD });
-    expect(state.contextTokens).toBeNull();
     expect(state.messages.at(-1)).toMatchObject({ role: "assistant", cleared: true, streaming: false });
     // The turn before the clear is still on screen.
     expect(state.messages.some((m) => m.turnId === TURN)).toBe(true);
   });
 
-  it("knows nothing again once a handover has replaced the context with its brief", () => {
+  it("shows the brief a handover replaced the context with", () => {
     const state = log(completed(120_000, 400), {
       type: "thread.harness_switched",
       threadId: THREAD,
@@ -484,7 +480,6 @@ describe("the context window", () => {
       brief: "Did A; next B.",
       reason: "context",
     });
-    expect(state.contextTokens).toBeNull();
     expect(state.messages.at(-1)?.switched).toMatchObject({ context: true, brief: "Did A; next B." });
   });
 
@@ -516,45 +511,11 @@ describe("the context window", () => {
       reason: "context",
       auto: true,
     });
-    expect(state.contextTokens).toBeNull();
     expect(state.messages).toHaveLength(before.messages.length);
     expect(state.messages.some((m) => m.switched)).toBe(false);
     const failed = log(completed(160_000, 400), requested, { type: "thread.harness_switch_failed", threadId: THREAD, error: "busy" });
     expect(failed.compactionError).toBeNull();
     expect(failed.running).toBe(false);
-  });
-
-  it("is the last turn's prompt plus what the model wrote back", () => {
-    expect(log(completed(12_000, 400)).contextTokens).toBe(12_400);
-  });
-
-  it("does not add the cache figures to the prompt they are part of", () => {
-    // `inputTokens` is `prompt_tokens`, which already includes the cached
-    // prefix -- adding the cache numbers would count most of the
-    // conversation twice and show a window that fills at double speed.
-    const cached = log({
-      type: "agent.turn_completed",
-      threadId: THREAD,
-      turnId: TURN,
-      stopReason: "stop",
-      usage: {
-        inputTokens: 12_000,
-        outputTokens: 400,
-        cacheReadInputTokens: 11_000,
-        cacheCreationInputTokens: 500,
-      },
-      costUsd: 0,
-    });
-
-    expect(cached.contextTokens).toBe(12_400);
-  });
-
-  it("follows the newest turn, because the conversation only grows", () => {
-    const state = log(
-      completed(4_000, 200, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-      completed(9_000, 300, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-    );
-    expect(state.contextTokens).toBe(9_300);
   });
 });
 

@@ -10,6 +10,12 @@ export interface BridgeTool<Shape extends z.ZodRawShape = z.ZodRawShape> {
   description: string;
   inputSchema: Shape;
   annotations: ToolAnnotations;
+  /**
+   * Listed in the prompt from the first call (`_meta["anthropic/alwaysLoad"]`)
+   * rather than deferred behind Claude Code's ToolSearch (plan2 §2.4, after
+   * t3code). Only the essentials: every one is paid for on every call.
+   */
+  alwaysLoad?: boolean;
   run(input: z.objectOutputType<Shape, z.ZodTypeAny>, ctx: CallContext): Promise<CallToolResult>;
 }
 

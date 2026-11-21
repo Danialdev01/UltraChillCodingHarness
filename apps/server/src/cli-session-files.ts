@@ -141,16 +141,37 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
+ * The folder under `projects/` where Claude Code keeps a session started in
+ * `cwd`: the path with every character but a letter or digit turned into
+ * `-` (2.1.330: `/srv/http/app` is `-srv-http-app`). Null for a path so long
+ * the CLI shortens it with a hash of its own, which this does not
+ * reproduce.
+ */
+export function claudeProjectFolder(cwd: string): string | null {
+  const folder = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+  return folder.length <= CLAUDE_PROJECT_FOLDER_MAX ? folder : null;
+}
+
+/** Longer than this, Claude Code cuts the folder name and adds a hash. */
+const CLAUDE_PROJECT_FOLDER_MAX = 200;
+
+/**
  * Whether a CLI can still resume `sessionId` from its folder `home`: Claude
  * Code's `projects/<cwd>/<id>.jsonl`, Codex's `sessions/…/rollout-…-<id>.jsonl`.
  * Each CLI deletes old transcripts itself (Claude Code after 30 days by
  * default), and `--resume` of one that is gone fails the turn outright.
  * True for any other CLI, or a folder with no transcripts at all, which this cannot judge.
+ *
+ * With `cwd`, Claude Code's is looked for only where `claude --resume` run
+ * there looks (plan2 §3.6): a transcript under another project's folder is
+ * one the CLI would not find, and resuming it fails the turn.
  */
-export async function cliTranscriptExists(home: string, cli: string, sessionId: string): Promise<boolean> {
+export async function cliTranscriptExists(home: string, cli: string, sessionId: string, cwd?: string): Promise<boolean> {
   // No transcript folder at all is a CLI that keeps them elsewhere: nothing to judge by.
   if (cli === "claude") {
     if (!(await exists(join(home, "projects")))) return true;
+    const folder = cwd ? claudeProjectFolder(cwd) : null;
+    if (folder) return exists(join(home, "projects", folder, `${sessionId}.jsonl`));
     for (const project of await dirs(join(home, "projects"))) {
       if (await exists(join(home, "projects", project, `${sessionId}.jsonl`))) return true;
     }

@@ -185,6 +185,8 @@ describe("a two-iteration tool conversation", () => {
       "agent.text_delta",
       "agent.text_delta",
       "agent.thinking_delta",
+      // The call's context reading (plan2 §1.2), published, never stored.
+      "context.usage",
     ]);
     expect(types(appended)).not.toContain("agent.text_delta");
   });
@@ -1001,5 +1003,26 @@ describe("pictures for a model that cannot see", () => {
     const user = String(script.requests[0]!.messages.find((m) => m.role === "user")!.content);
     expect(user).toContain("this model cannot see images");
     expect(user).not.toContain("no longer available");
+  });
+});
+
+describe("the context reading (plan2 §1.2)", () => {
+  it("publishes each call's own occupancy, never the turn's sum, with the first call's hit ratio", async () => {
+    const first = reply({
+      text: "",
+      toolCalls: [call("c1", "current_time", "{}")],
+      finishReason: "tool_calls",
+      usage: { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 900, cacheCreationInputTokens: 0 },
+    });
+    const second = reply({ usage: { inputTokens: 50, outputTokens: 20, cacheReadInputTokens: 1_000, cacheCreationInputTokens: 10 } });
+    const { complete } = scripted(first, second);
+    const { input, published, appended } = harness({ complete, contextLength: 200_000 });
+    await runTurn(input);
+    const readings = published.filter((event): event is Extract<DomainEvent, { type: "context.usage" }> => event.type === "context.usage");
+    expect(readings.map((event) => event.usedTokens)).toEqual([1_010, 1_080]);
+    expect(readings[0]).toMatchObject({ windowTokens: 200_000, status: "complete", harness: "native", model: "test/model", cachedTokens: 900, cacheHitRatio: 0.9 });
+    expect(readings[1]!.cacheHitRatio).toBeUndefined();
+    // Never stored: the server keeps the last one with the thread.
+    expect(appended.some((event) => event.type === "context.usage")).toBe(false);
   });
 });

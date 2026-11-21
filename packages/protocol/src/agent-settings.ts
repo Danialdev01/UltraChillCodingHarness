@@ -72,6 +72,14 @@ export const WorkspaceAgentSettings = z.object({
    * a thread show as code.
    */
   widgets: z.object({ enabled: z.boolean().default(true) }).default({}),
+  /**
+   * Compact idle sessions while the prompt cache is warm (plan2 §3.3): a
+   * Claude Code session that ended a turn holding 200k tokens or more is
+   * sent `/compact` two minutes before its cache runs out, so the summary is
+   * written from cached history rather than paid for again on the next
+   * message. On by default. Off: sessions wait as they are.
+   */
+  idleCompaction: z.object({ enabled: z.boolean().default(true) }).default({}),
 });
 export type WorkspaceAgentSettings = z.infer<typeof WorkspaceAgentSettings>;
 

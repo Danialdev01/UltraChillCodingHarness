@@ -310,6 +310,14 @@ const ThreadCompactionRequested = z.object({
   threadId: z.string().uuid(),
   method: z.enum(["compact", "handoff"]),
   focus: z.string().max(2_000).optional(),
+  /**
+   * The server asked for it: the session ended a turn past the line
+   * (`CONTEXT_FORCE_RATIO`). Should the compaction fail, the session is
+   * handed over instead.
+   */
+  auto: z.boolean().optional(),
+  /** The server asked for it while the session sat idle with its cache still warm. */
+  idle: z.boolean().optional(),
 });
 
 /** The compaction is over; `error` says why it made nothing, when it did not. */
@@ -445,6 +453,12 @@ const ThreadHandedOff = z.object({
   targetProvider: ProviderId,
   brief: z.string(),
   reason: z.literal("limit").optional(),
+  /**
+   * Who wrote the brief when OMP could not: the thread's own harness in
+   * one-shot mode, or the server's recap of the conversation -- and why.
+   * Shown with the switch, so a fallback is never silent.
+   */
+  briefNote: z.string().max(2_000).optional(),
 });
 
 /** No new thread was started: why, for the thread that asked. */
@@ -494,6 +508,12 @@ const ThreadHarnessSwitched = z.object({
   checkpointSha: z.string().optional(),
   /** The server's own (an automatic switch, or a quiet context handover): not a row in the chat when `reason` is `context`. */
   auto: z.boolean().optional(),
+  /**
+   * Who wrote the brief when OMP could not: the thread's own harness in
+   * one-shot mode, or the server's recap of the conversation -- and why.
+   * Shown with the switch, so a fallback is never silent.
+   */
+  briefNote: z.string().max(2_000).optional(),
 });
 
 const ThreadHarnessSwitchFailed = z.object({
@@ -592,21 +612,41 @@ const AgentRateLimit = z.object({
 });
 
 /**
- * How full the session's context is, as the provider measured it (OMP's
- * `get_session_stats`, solution §5.2), after each model call of a turn.
- * Transient: the meter's live reading, superseded by the next one; a thread
- * whose provider sends none keeps the estimate from its turns' usage.
+ * How full the session's context is, as the provider measured it, after
+ * each model call of a turn: OMP's `get_session_stats` (solution §5.2),
+ * Claude Code's per-call usage, Codex's rollout `token_count`, the native
+ * loop's last completion. Transient on the wire; the server keeps a turn's
+ * last one (`threads.context_reading`) and sends it again to a client that
+ * opens the thread, so the meter is the same after a reload.
+ *
+ * `usedTokens` is null when the provider measured nothing (`status:
+ * "unavailable"`): shown as unknown, never as 0, and it triggers nothing.
  * `windowTokens` is null when the provider does not know the model's
- * window, `thresholdTokens` when nothing set where compaction starts.
+ * window, `thresholdTokens` when nothing compacts or nothing said where.
  */
 const ContextUsage = z.object({
   type: z.literal("context.usage"),
   threadId: z.string().uuid(),
   /** Absent for a reading taken outside a turn, after `thread.compact`. */
   turnId: z.string().uuid().optional(),
-  usedTokens: z.number().int().nonnegative(),
+  usedTokens: z.number().int().nonnegative().nullable(),
   windowTokens: z.number().int().positive().nullable(),
   thresholdTokens: z.number().int().positive().nullable(),
+  /** Absent: `complete`, as every reading was before the field. */
+  status: z.enum(["complete", "partial", "unavailable"]).optional(),
+  /** When the prompt cache the last call wrote or read runs out, ISO; null when unknown. */
+  cacheExpiresAt: z.string().datetime().nullable().optional(),
+  /** That cache's lifetime, ms. */
+  cacheTtlMs: z.number().int().positive().nullable().optional(),
+  /** Of `usedTokens`, what the last call read from the cache. */
+  cachedTokens: z.number().int().nonnegative().nullable().optional(),
+  /** The turn's first call: the share of its input read from the cache, 0-1. */
+  cacheHitRatio: z.number().min(0).max(1).nullable().optional(),
+  /** The harness and model that took it: a reading belongs to them. */
+  harness: z.enum(["native", "claude", "codex", "omp"]).optional(),
+  model: z.string().max(200).nullable().optional(),
+  /** When it was taken, ISO. */
+  at: z.string().datetime().optional(),
 });
 
 const AgentThinkingDelta = z.object({
@@ -685,7 +725,8 @@ const AgentChoiceRequested = z.object({
   type: z.literal("agent.choice_requested"),
   threadId: z.string().uuid(),
   requestId: z.string().min(1).max(100),
-  kind: z.enum(["harness_limit", "subagent_limit"]),
+  /** `resume_compact`: a big session idle past its cache's life is offered a compaction before it resumes. */
+  kind: z.enum(["harness_limit", "subagent_limit", "resume_compact"]),
   title: z.string(),
   detail: z.string().optional(),
   options: z.array(ChoiceOption).max(12),
@@ -724,6 +765,15 @@ const AgentToolResult = z.object({
   durationMs: z.number().int().nonnegative(),
 });
 
+/**
+ * What a call or a turn used, the same way for every provider:
+ * `inputTokens` is the **uncached** input only, and the cache's reads and
+ * writes are counted apart in `cacheReadInputTokens` and
+ * `cacheCreationInputTokens` -- Anthropic's own split. Providers that report
+ * input including the cache (Codex, OpenRouter) have the cached part taken
+ * out when they are mapped, so the four parts never overlap and their sum is
+ * everything the provider processed (`project_stats.tokens`).
+ */
 export const TokenUsage = z.object({
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),

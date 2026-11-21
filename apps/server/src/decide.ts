@@ -77,6 +77,8 @@ export interface ThreadSnapshot {
   /** The subscription account it is bound to; null: the default. */
   profileId?: string | null;
   createdByUserId?: string | null;
+  /** The CLI session its next turn resumes; null when it has none (yet, or since a clear). */
+  providerSessionId?: string | null;
   hasActiveChildren?: boolean;
 }
 
@@ -501,15 +503,27 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
     case "thread.handoff": {
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
-      const method = command.type === "thread.compact" ? "compact" : "handoff";
+      if (command.type === "thread.compact" && command.idle && !ctx.internal) {
+        return fail("forbidden", "only the server compacts an idle session");
+      }
+      if (command.type === "thread.handoff" && command.fallback && !ctx.internal) {
+        return fail("forbidden", "only the server falls back to a handover");
+      }
+      const provider = thread.value.provider;
+      const cli = provider === "claude" || provider === "codex";
+      // The server's own handover past the line is a compaction in the same
+      // session on every CLI (plan2 §3.2): the provider's session stays the
+      // source of truth, and a new session is the fallback only.
+      const auto = command.type === "thread.handoff" && command.auto === true;
+      const method = command.type === "thread.compact" || (auto && !command.fallback && (cli || provider === "omp")) ? "compact" : "handoff";
       // The session is the running turn's while it runs: a second process
       // on it would write the same session file.
       const busy = thread.value.status !== "idle" && thread.value.status !== "error";
-      // A handover on any other harness: the server writes the brief from
+      // A handover on any harness but OMP: the server writes the brief from
       // the log and the thread's next turn opens a fresh session with it,
       // as a harness switch does -- only to the harness it is already on.
       // It sends nothing itself: the person's next message is that turn.
-      if (method === "handoff" && thread.value.provider && thread.value.provider !== "omp") {
+      if (method === "handoff" && provider && provider !== "omp") {
         if (busy) return fail("conflict", "this thread is busy; wait for the agent to finish, or stop it, first");
         const unready = worktreeRefusal(thread.value);
         if (unready) return unready;
@@ -517,22 +531,23 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           {
             type: "thread.harness_switch_requested",
             threadId: thread.value.id,
-            fromProvider: thread.value.provider,
-            targetProvider: thread.value.provider,
+            fromProvider: provider,
+            targetProvider: provider,
             ...(command.focus ? { focus: command.focus } : {}),
             reason: "context",
-            ...(command.type === "thread.handoff" && command.auto ? { auto: true } : {}),
+            ...(auto ? { auto: true } : {}),
           },
         ]);
       }
-      // Compacting is OMP's own command on OMP's own session: no other
-      // runtime keeps a session UCCH can fold, and a thread that has never
-      // run has nothing to fold yet (solution §5.3).
-      if (thread.value.provider !== "omp") {
+      // Compacting is the session's own: OMP's command, Claude Code's
+      // `/compact`, Codex's `thread/compact/start`. The native loop folds its
+      // own context mid-turn, and a thread that has never run has nothing to
+      // fold yet (solution §5.3).
+      if (provider !== "omp" && !(cli && thread.value.providerSessionId)) {
         return fail(
           "conflict",
-          thread.value.provider
-            ? `this thread runs on ${thread.value.provider}, which manages its own context`
+          provider === "native"
+            ? "this thread runs on the built-in agent, which manages its own context"
             : "this thread has no conversation to compact yet",
         );
       }
@@ -543,6 +558,8 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           threadId: thread.value.id,
           method,
           ...(command.focus ? { focus: command.focus } : {}),
+          ...(auto ? { auto: true } : {}),
+          ...(command.type === "thread.compact" && command.idle ? { idle: true } : {}),
         },
       ]);
     }

@@ -210,6 +210,8 @@ export interface HarnessSwitch {
   toProfileId?: string | null;
   /** The commit the work so far was saved in before the switch. */
   checkpointSha?: string;
+  /** Why the brief is not OMP's (plan2 §3.5): another writer, or the conversation as it was said. */
+  briefNote?: string;
 }
 
 /** The other end of a handoff: the thread, and its address. */
@@ -220,6 +222,8 @@ export interface HandoffLink {
   provider?: ProviderId;
   /** The server handed off on its own: the provider hit its usage limit. */
   limit?: true;
+  /** Why the brief is not OMP's (plan2 §3.5). */
+  briefNote?: string;
 }
 
 /** The new thread's first message as the server writes it (`handoffMessage`). */
@@ -336,21 +340,6 @@ export interface ChatState {
    */
   prompts: PermissionPrompt[];
   /**
-   * Roughly what the next request's prompt will weigh, or null before any
-   * turn has finished.
-   *
-   * Measured, not estimated: the last completed turn's `prompt_tokens` plus
-   * what the model wrote back. The prompt figure already covers the whole
-   * conversation to that point -- including the cached prefix, which is why
-   * the cache numbers are not added to it -- so this is that conversation
-   * plus the reply that has since joined it.
-   *
-   * Tool results the turn produced are not counted here; they land in the
-   * next turn's own prompt, so the number corrects itself one turn later
-   * rather than drifting.
-   */
-  contextTokens: number | null;
-  /**
    * A Compact or Hand off still running on the thread (`thread.compact`,
    * `thread.handoff`), or null. While it runs the thread is busy, as during
    * a turn, so `running` is true too.
@@ -397,7 +386,6 @@ export function toMessages(
   const activity = new Map<string, TurnActivity>();
   let running = false;
   let activeTurn: string | null = null;
-  let contextTokens: number | null = null;
   let compacting: "compact" | "handoff" | null = null;
   let compactionError: string | null = null;
   /** The open switch is a quiet handover (the server's own, past the fallback line). */
@@ -778,7 +766,6 @@ export function toMessages(
         message.stopReason = event.stopReason;
         running = false;
         prompts.clear();
-        contextTokens = event.usage.inputTokens + event.usage.outputTokens;
         break;
       }
 
@@ -865,6 +852,7 @@ export function toMessages(
             hash: event.toHash,
             provider: event.targetProvider,
             ...(event.reason === "limit" ? { limit: true as const } : {}),
+            ...(event.briefNote ? { briefNote: event.briefNote } : {}),
           };
         } else {
           continuedFrom = { threadId: event.fromThreadId, hash: event.fromHash, ...(event.reason === "limit" ? { limit: true as const } : {}) };
@@ -891,14 +879,12 @@ export function toMessages(
       case "thread.harness_switched":
         switching = null;
         running = false;
-        // The old session is gone with its context: the next session starts
-        // from the brief, and the meter from its first reading.
-        contextTokens = null;
         // A quiet handover (the server's own, past the fallback line) leaves
         // no row: the conversation simply goes on, as the CLI's own
         // compaction does.
         quietSwitch = false;
-        if (event.auto && event.reason === "context") break;
+        // One whose brief could not be written as usual still says so.
+        if (event.auto && event.reason === "context" && !event.briefNote) break;
         messages.push({
           role: "assistant",
           text: "",
@@ -917,13 +903,12 @@ export function toMessages(
             ...(event.fromProfileId !== undefined ? { fromProfileId: event.fromProfileId } : {}),
             ...(event.toProfileId !== undefined ? { toProfileId: event.toProfileId } : {}),
             ...(event.checkpointSha ? { checkpointSha: event.checkpointSha } : {}),
+            ...(event.briefNote ? { briefNote: event.briefNote } : {}),
           },
         });
         break;
 
       case "thread.context_cleared":
-        // The meter measured the context that is now gone.
-        contextTokens = null;
         messages.push({
           role: "assistant",
           text: "",
@@ -979,7 +964,6 @@ export function toMessages(
     running,
     active: running && activeTurn ? (activity.get(activeTurn) ?? null) : null,
     prompts: running ? [...prompts.values()] : [],
-    contextTokens,
     compacting,
     compactionError,
     handingOff,

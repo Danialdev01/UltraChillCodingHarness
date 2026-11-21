@@ -11,6 +11,8 @@ import { tool } from "./tool.js";
  */
 export const showWidget = tool({
   name: SHOW_WIDGET_TOOL,
+  // The instructions name it as the way to do this: found by its name, never searched for.
+  alwaysLoad: true,
   description:
     "Render an interactive visual inline in the UCCH chat: a calculator, a chart of numbers, a process or architecture diagram, a comparison. " +
     "widget_code is an HTML fragment (no <html>, <head> or <body>) with inline <style> and <script>, or a raw <svg>. " +

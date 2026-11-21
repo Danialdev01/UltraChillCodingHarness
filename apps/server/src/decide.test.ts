@@ -67,9 +67,9 @@ const turn = (over: Partial<TurnSnapshot> = {}): TurnSnapshot => ({
 });
 
 /** A state naming a project comes with the caller's owner membership unless it says otherwise. */
-function run(state: DecisionState, command: Command) {
+function run(state: DecisionState, command: Command, over: Partial<typeof ctx> = {}) {
   const withWorkspace = state.project && !("workspace" in state) ? { ...state, workspace: workspace() } : state;
-  return decide(withWorkspace, command, ctx);
+  return decide(withWorkspace, command, { ...ctx, ...over });
 }
 
 describe("project.create", () => {
@@ -426,9 +426,23 @@ describe("thread.compact and thread.handoff", () => {
     });
   });
 
-  it.each(["claude", "codex", "native", null] as const)("refuses a thread on %s", (provider) => {
+  it.each(["native", null] as const)("refuses to compact a thread on %s", (provider) => {
     const d = run({ project: project(), thread: thread({ provider }) }, { type: "thread.compact", threadId: THREAD });
     expect(d).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+
+  it.each(["claude", "codex"] as const)("compacts a %s session in place, once it has one", (provider) => {
+    expect(run({ project: project(), thread: thread({ provider }) }, { type: "thread.compact", threadId: THREAD })).toMatchObject({
+      ok: false,
+      error: { code: "conflict" },
+    });
+    const d = run({ project: project(), thread: thread({ provider, providerSessionId: "s-1" }) }, { type: "thread.compact", threadId: THREAD });
+    expect(d).toEqual({ ok: true, events: [{ type: "thread.compaction_requested", threadId: THREAD, method: "compact" }] });
+  });
+
+  it("leaves an idle compaction to the server", () => {
+    const d = run({ project: project(), thread: thread({ provider: "claude", providerSessionId: "s-1" }) }, { type: "thread.compact", threadId: THREAD, idle: true });
+    expect(d).toMatchObject({ ok: false, error: { code: "forbidden" } });
   });
 
   it.each(["queued", "running", "cancelling"] as const)("refuses while the thread is %s", (status) => {
@@ -453,8 +467,21 @@ describe("thread.compact and thread.handoff", () => {
     });
   });
 
-  it("marks the server's own handover as quiet, and sends nothing after it", () => {
-    const d = run({ project: project(), thread: thread({ provider: "claude" }) }, { type: "thread.handoff", threadId: THREAD, auto: true });
+  it.each(["claude", "codex", "omp"] as const)("turns the server's own handover on %s into a compaction in the same session", (provider) => {
+    const d = run({ project: project(), thread: thread({ provider, providerSessionId: "s-1" }) }, { type: "thread.handoff", threadId: THREAD, auto: true });
+    expect(d).toEqual({
+      ok: true,
+      events: [{ type: "thread.compaction_requested", threadId: THREAD, method: "compact", auto: true }],
+    });
+  });
+
+  it("hands over quietly only when the server falls back from a failed compaction", () => {
+    const command = { type: "thread.handoff", threadId: THREAD, auto: true, fallback: true } as const;
+    expect(run({ project: project(), thread: thread({ provider: "claude", providerSessionId: "s-1" }) }, command)).toMatchObject({
+      ok: false,
+      error: { code: "forbidden" },
+    });
+    const d = run({ project: project(), thread: thread({ provider: "claude", providerSessionId: "s-1" }) }, command, { internal: true });
     expect(d).toEqual({
       ok: true,
       events: [
