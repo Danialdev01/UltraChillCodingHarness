@@ -22,10 +22,12 @@ import {
 } from "lucide-react"
 import type { GitStatus } from "@ucch/protocol"
 
+import { ContextMeter } from "@/components/context-meter"
 import { useFilesPanel } from "@/components/files-panel"
 import { TasksSheet } from "@/components/on-demand"
 import { HarnessIcon } from "@/components/harness-icon"
 import { formatDuration } from "@/lib/chat-messages"
+import { requestHandover, useContextReading } from "@/lib/context-meter-store"
 import { fetchGitStatus } from "@/lib/git-api"
 import { formatUsd } from "@/lib/stats-format"
 import {
@@ -142,6 +144,7 @@ function CardBody({
   const status = read === "none" ? null : read
   const lineage = useLineage()
   const shells = useShellCalls()
+  const context = useContextReading()
   const branch = status?.branch ?? session?.branch ?? project.defaultBranch ?? null
   const manageable = project.workspaceKind !== "session"
   const running = lineage.filter((entry) => entry.run.status === "running").length
@@ -268,6 +271,23 @@ function CardBody({
           </Row>
           <GitOwnership project={project} session={session} />
 
+        </div>
+      )}
+
+      {/* Context: how full the window is, the composer's ring as a bar. */}
+      {context && (
+        <div className="flex flex-col border-t px-1.5 py-1.5">
+          <ContextMeter
+            variant="bar"
+            tokens={context.tokens}
+            limit={context.limit}
+            threshold={context.threshold}
+            live={context.live}
+            onHandover={requestHandover}
+            handingOver={context.handingOver}
+            disabled={context.disabled}
+            disabledReason={context.disabledReason}
+          />
         </div>
       )}
 

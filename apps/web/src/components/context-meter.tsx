@@ -36,6 +36,8 @@ export function ContextMeter({
   handingOver,
   disabled,
   disabledReason,
+  variant = "ring",
+  className,
 }: {
   tokens: number | null
   limit: number | null
@@ -50,6 +52,12 @@ export function ContextMeter({
   disabled: boolean
   /** Why, for the popover. */
   disabledReason?: string | null
+  /**
+   * A ring for the composer, or a labelled bar with "used / max" for the
+   * session card beside the chat. Both open the same popover.
+   */
+  variant?: "ring" | "bar"
+  className?: string
 }) {
   const handoverAt = threshold ?? (limit ? Math.floor(limit * HANDOVER_RATIO) : null)
   const usage = contextUsage(tokens, limit, handoverAt)
@@ -65,53 +73,95 @@ export function ContextMeter({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={
-          <button
-            type="button"
-            title={
-              usage.ratio === null
-                ? `Context: ${usage.label}`
-                : `Context ${percent}% full (${usage.label} tokens)`
-            }
-            className="hover:bg-muted relative flex size-7 shrink-0 items-center justify-center rounded-full"
-          />
-        }
-      >
-        {handingOver ? (
-          <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
-        ) : (
-          <>
-            <svg viewBox="0 0 24 24" className="size-6 -rotate-90" aria-hidden>
-              <circle cx="12" cy="12" r="10" fill="none" strokeWidth="2.5" className="stroke-muted" />
-              {/* Nothing drawn at zero: a round cap on an empty arc is a stray dot. */}
-              {(percent ?? 0) > 0 && (
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  fill="none"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  pathLength={100}
-                  strokeDasharray={`${percent ?? 0} 100`}
-                  className={`stroke-current transition-[stroke-dasharray] duration-500 ${stroke}`}
-                />
-              )}
-            </svg>
+      {variant === "bar" ? (
+        <PopoverTrigger
+          render={
+            <button
+              type="button"
+              title={
+                usage.ratio === null
+                  ? `Context: ${usage.label}`
+                  : `Context ${percent}% full (${usage.label} tokens)`
+              }
+              className={`hover:bg-muted focus-visible:ring-ring flex w-full min-w-0 flex-col gap-1.5 rounded-md px-1.5 py-1.5 text-left outline-none focus-visible:ring-2 ${className ?? ""}`}
+            />
+          }
+        >
+          <span className="flex w-full items-center gap-2">
+            <span className="text-muted-foreground text-2xs">Context window</span>
+            {handingOver && <Loader2Icon className="text-muted-foreground size-3 animate-spin" />}
             <span
-              className={`absolute font-mono text-[8px] leading-none tabular-nums ${
+              className={`ml-auto font-mono text-2xs tabular-nums ${
                 usage.tone === "full" ? "text-destructive" : "text-muted-foreground"
               }`}
             >
-              {percent ?? "–"}
+              {usage.tokens === null ? "0" : formatContextTokens(usage.tokens)}/
+              {usage.limit === null ? "?" : formatContextTokens(usage.limit)}
             </span>
-          </>
-        )}
-        <span className="sr-only">Context window</span>
-      </PopoverTrigger>
+          </span>
+          <span className="bg-muted relative block h-1.5 w-full overflow-hidden rounded-full">
+            <span
+              className={`absolute inset-y-0 left-0 rounded-full bg-current transition-[width] duration-500 ${stroke}`}
+              style={{ width: `${Math.min(100, percent ?? 0)}%` }}
+            />
+            {usage.thresholdRatio !== null && (
+              <span
+                aria-hidden
+                className="bg-foreground/40 absolute inset-y-0 w-px"
+                style={{ left: `${usage.thresholdRatio * 100}%` }}
+              />
+            )}
+          </span>
+        </PopoverTrigger>
+      ) : (
+        <PopoverTrigger
+          render={
+            <button
+              type="button"
+              title={
+                usage.ratio === null
+                  ? `Context: ${usage.label}`
+                  : `Context ${percent}% full (${usage.label} tokens)`
+              }
+              className={`hover:bg-muted relative flex size-7 shrink-0 items-center justify-center rounded-full ${className ?? ""}`}
+            />
+          }
+        >
+          {handingOver ? (
+            <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
+          ) : (
+            <>
+              <svg viewBox="0 0 24 24" className="size-6 -rotate-90" aria-hidden>
+                <circle cx="12" cy="12" r="10" fill="none" strokeWidth="2.5" className="stroke-muted" />
+                {/* Nothing drawn at zero: a round cap on an empty arc is a stray dot. */}
+                {(percent ?? 0) > 0 && (
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    fill="none"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    pathLength={100}
+                    strokeDasharray={`${percent ?? 0} 100`}
+                    className={`stroke-current transition-[stroke-dasharray] duration-500 ${stroke}`}
+                  />
+                )}
+              </svg>
+              <span
+                className={`absolute font-mono text-[8px] leading-none tabular-nums ${
+                  usage.tone === "full" ? "text-destructive" : "text-muted-foreground"
+                }`}
+              >
+                {percent ?? "–"}
+              </span>
+            </>
+          )}
+          <span className="sr-only">Context window</span>
+        </PopoverTrigger>
+      )}
 
-      <PopoverContent align="end" side="top" className="w-72 p-3">
+      <PopoverContent align="end" side={variant === "bar" ? "left" : "top"} className="w-72 p-3">
         <p className="text-sm font-medium">Context window</p>
         <p className="text-muted-foreground mt-1 text-xs">
           {usage.tokens === null

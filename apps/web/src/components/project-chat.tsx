@@ -92,6 +92,7 @@ import { discardUpload, stageLink, stageUpload, uploadContentUrl } from "@/lib/u
 import { carriesResource, readResourceDrag, resourceAsFile, type ResourceDragPayload } from "@/lib/resources-api";
 import { AccessSelect } from "@/components/access-select";
 import { ContextMeter } from "@/components/context-meter";
+import { publishContextReading, type ContextReading } from "@/lib/context-meter-store";
 import { HarnessIcon } from "@/components/harness-icon";
 import { InlineError } from "@/components/layout/inline-error";
 import { Markdown, StreamingMarkdown } from "@/components/markdown";
@@ -1628,6 +1629,32 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
    * work so far. A request, as a handoff is: the transcript shows the switch
    * when `thread.harness_switched` lands.
    */
+  // The reading the composer's ring shows, shared with the session card,
+  // which draws it as a bar beside the chat on wide screens.
+  const contextReading = useMemo<ContextReading>(
+    () => ({
+      tokens: measuredContext?.usedTokens ?? contextTokens,
+      limit: windowTokens,
+      threshold: measuredContext?.thresholdTokens ?? null,
+      live: measuredContext !== null,
+      handingOver: compacting !== null || switching !== null,
+      disabledReason: !hasRun
+        ? "Nothing to hand over until the agent has replied."
+        : running || sending
+          ? "Wait for the agent to finish."
+          : null,
+      // Mid-turn the history is still being written: the brief would leave
+      // out what the running turn adds.
+      disabled: running || sending || !threadId || !hasRun,
+    }),
+    [measuredContext, contextTokens, windowTokens, compacting, switching, hasRun, running, sending, threadId],
+  );
+  const handover = useCallback(() => void compactThread("handoff", ""), [compactThread]);
+  useEffect(() => {
+    publishContextReading(contextReading, handover);
+  }, [contextReading, handover]);
+  useEffect(() => () => publishContextReading(null), []);
+
   const switchHarness = useCallback(
     async (target: ProviderId) => {
       const client = clientRef.current;
@@ -2554,26 +2581,22 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                   disabled={sending}
                 />
               )}
-              {/* How full the context window is, and the handover when it nears the limit. */}
-              <ComposerDivider />
-              <ContextMeter
-                tokens={measuredContext?.usedTokens ?? contextTokens}
-                limit={windowTokens}
-                threshold={measuredContext?.thresholdTokens ?? null}
-                live={measuredContext !== null}
-                onHandover={() => void compactThread("handoff", "")}
-                handingOver={compacting !== null || switching !== null}
-                disabledReason={
-                  !hasRun
-                    ? "Nothing to hand over until the agent has replied."
-                    : running || sending
-                      ? "Wait for the agent to finish."
-                      : null
-                }
-                // Mid-turn the history is still being written: the brief
-                // would leave out what the running turn adds.
-                disabled={running || sending || !threadId || !hasRun}
-              />
+              {/* How full the context window is, and the handover when it nears the limit.
+                  Only where the session card is not beside the chat: there
+                  it reads out as a bar under the git rows instead. */}
+              <span className="contents @[84rem]/session:hidden">
+                <ComposerDivider />
+                <ContextMeter
+                  tokens={contextReading.tokens}
+                  limit={contextReading.limit}
+                  threshold={contextReading.threshold}
+                  live={contextReading.live}
+                  onHandover={handover}
+                  handingOver={contextReading.handingOver}
+                  disabledReason={contextReading.disabledReason}
+                  disabled={contextReading.disabled}
+                />
+              </span>
               <div className="ml-auto flex shrink-0 items-center gap-0.5 @lg:min-w-0 @lg:shrink">
                 <ProviderSelect
                   providers={providers}
