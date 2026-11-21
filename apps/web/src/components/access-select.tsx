@@ -92,7 +92,7 @@ export function AccessSelect({ disabled }: { disabled?: boolean }) {
           {current ? `Access: ${current.label}. ` : ""}Change what the agent may do without asking
         </span>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" side="top" className="w-72">
+      <DropdownMenuContent align="start" side="top" className="w-72">
         <DropdownMenuGroup>
           <DropdownMenuLabel>Access</DropdownMenuLabel>
           {PERMISSION_CHOICES.map((choice) => {

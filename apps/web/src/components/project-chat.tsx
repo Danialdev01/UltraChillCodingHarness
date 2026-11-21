@@ -2596,6 +2596,9 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                   disabled={sending}
                 />
               )}
+              {/* What the agent may do before it asks: the account's setting,
+                  changeable here where it matters, beside the model's effort. */}
+              <AccessSelect disabled={sending} />
               {/* How full the context window is, and the handover when it nears the limit.
                   Only where the session card is not beside the chat: there
                   it reads out as a bar under the git rows instead. */}
@@ -2628,9 +2631,6 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                   look="inline"
                   disabled={sending || running}
                 />
-                {/* What the agent may do before it asks: the account's setting,
-                    changeable here where it matters. */}
-                <AccessSelect disabled={sending} />
                 {running ? (
                   // The same button position, so the reader does not have to
                   // look for it: while a turn runs, Send is Stop. The server
