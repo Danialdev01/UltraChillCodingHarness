@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { count, desc, eq } from "drizzle-orm";
 import { projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
 import {
-  DOCUMENTATION_RULES,
   HostExecutor,
   hostToolSchemas,
   invalidateTree,
@@ -39,10 +38,9 @@ import {
   UCCH_AGENT_ARGS,
   UCCH_AGENT_DESCRIPTION,
   UCCH_AGENT_GUIDE,
-  UCCH_AGENT_UNAVAILABLE_NOTE,
+  UCCH_SUBAGENT_RULES,
   UCCH_AGENT_TOOL,
   SHOW_WIDGET_TOOL,
-  WIDGET_PROMPT,
   WIDGET_TURN_NUDGE,
   asksForWidget,
   needsApproval,
@@ -63,7 +61,6 @@ import {
 } from "@ucch/protocol";
 import {
   OMP_BRIDGE_READ_TOOLS,
-  ompBridgeGuide,
   ompBridgeToolName,
   type AgentRun,
   type HostToolCall,
@@ -107,6 +104,8 @@ import { accountOpenRouterKey, anonCatalogue, baseUrlFor, parseKeyedModel, type 
 import type { Complete } from "@ucch/agent";
 import { ChoiceWaiters, accountBlocker, harnessAvailability, harnessLabel, limitOptions, type LimitAccount } from "./choices.js";
 import { AgentMessaging, COLLABORATION_GUIDE } from "./agent-messaging.js";
+import { assembleCliInstructions } from "./cli-instructions.js";
+export { ompInstructions } from "./cli-instructions.js";
 import { SubagentRunner, type SubagentCall, type SubagentRequest } from "./subagents.js";
 import type { OpenedMemory, SessionMemory } from "./session-memory.js";
 
@@ -1341,6 +1340,8 @@ export class AgentTurnReactor {
         history: history.map((row) => row.event),
         instructions: [
           ...(this.messaging ? [COLLABORATION_GUIDE, !thread.parentThreadId ? UCCH_AGENT_GUIDE : ""] : []),
+          // A subagent's own session reports to its parent (plan1 §2.2).
+          ...(thread.parentThreadId ? [UCCH_SUBAGENT_RULES] : []),
           // Plan mode rides in the system prompt here: the history is the log.
           ...(plan ? [(await this.#planPrompt(threadId, plan, "")).trim()] : []),
           ...(turnKnowledge ? [turnKnowledge.prompt] : []),
@@ -2085,60 +2086,30 @@ export class AgentTurnReactor {
       if (provider !== "omp" && (ompTools || offersSubagents || widgets || this.messaging)) {
         bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets, messaging: Boolean(this.messaging) });
       }
-      // When to reach for the bridge's tools (solution §10.4). Codex reads
-      // instructions only at the start of a session (`codexPrompt`), so a
-      // resumed Codex turn is not handed it, and the log does not say so.
+      // Codex reads instructions only at the start of a session
+      // (`codexPrompt`); Claude Code and OMP are handed them every turn.
       const fresh = !(provider === "codex" && input.resumeToken);
-      // No bridge (its bundle is missing): no `ucch_agent` either. Said in
-      // the instructions, so a named model is reported rather than swapped
-      // for one the CLI's own subagents can run.
-      const unavailable = provider !== "omp" && offersSubagents && !bridge && fresh ? UCCH_AGENT_UNAVAILABLE_NOTE : null;
-      const guide =
-        bridge && fresh
-          ? [bridge.omp ? ompBridgeGuide() : null, offersSubagents ? UCCH_AGENT_GUIDE : null, this.messaging ? COLLABORATION_GUIDE : null]
-              .filter((part): part is string => Boolean(part))
-              .join("\n\n") || null
-          : unavailable;
-      // OMP is handed the knowledge inside its own section of the system
-      // prompt (solution §3.8). It reads the worktree's AGENTS.md itself, so
-      // that is never added here.
-      // Codex is handed instructions only on a fresh session; Claude Code
-      // and OMP every turn.
-      const widgetRules = widgets && fresh ? WIDGET_PROMPT : null;
-      const instructions =
-        provider === "omp"
-          ? [
-              ompInstructions(input.workspace, knowledge, input.mode),
-              offersSubagents ? UCCH_AGENT_GUIDE : null,
-              this.messaging ? COLLABORATION_GUIDE : null,
-              widgetRules,
-            ]
-              .filter((part): part is string => Boolean(part))
-              .join("\n\n")
-          : guide || widgetRules
-            ? [knowledge?.trimEnd(), guide, widgetRules].filter((part): part is string => Boolean(part)).join("\n\n")
-            : knowledge;
-      // Logged as the native loop logs its prompt parts, so the thread says
-      // exactly what the CLI was handed on top of the message: for OMP the
-      // whole appended prompt, byte for byte.
-      if (provider === "omp") {
-        await input.append([
-          { type: "context.injected", threadId: input.threadId, source: "system_prompt", content: instructions! },
-        ]);
-      } else {
-        if (knowledge) {
-          await input.append([
-            { type: "context.injected", threadId: input.threadId, source: "project_context", content: knowledge },
-          ]);
-        }
-        if (guide) {
-          await input.append([{ type: "context.injected", threadId: input.threadId, source: "omp_bridge", content: guide }]);
-        }
-        if (widgetRules) {
-          await input.append([
-            { type: "context.injected", threadId: input.threadId, source: "system_prompt", content: widgetRules },
-          ]);
-        }
+      // UCCH's rules, the guides for the tools this turn really has, and the
+      // runtime info (`cli-instructions.ts`). Logged part by part, as the
+      // native loop logs its prompt, so the thread says exactly what the
+      // CLI was handed on top of the message.
+      const { instructions, injected } = assembleCliInstructions({
+        provider,
+        workspace: input.workspace,
+        model: input.model,
+        effort: input.effort,
+        knowledge,
+        mode: input.mode,
+        planDraft: input.readOnly === true,
+        subagent: input.subagent === true,
+        fresh,
+        bridge: bridge ? { omp: bridge.omp } : null,
+        offersSubagents,
+        messaging: Boolean(this.messaging),
+        widgets,
+      });
+      if (injected.length > 0) {
+        await input.append(injected.map((part) => ({ type: "context.injected" as const, threadId: input.threadId, ...part })));
       }
       // The mode's tools and rules (solution §3.7); the guard hook reads it
       // too, to keep a documentation turn's writes under docs/.
@@ -2204,7 +2175,7 @@ export class AgentTurnReactor {
         ctx: resolved.ctx(input.workspace),
         ...(input.subagentId ? { subagentId: input.subagentId } : {}),
         ...(input.subagentHandle ? { subagentHandle: input.subagentHandle } : {}),
-        prompt: !fresh && this.messaging ? `${input.text}\n\n${COLLABORATION_GUIDE}\n\n${offersSubagents ? (bridge ? UCCH_AGENT_GUIDE : UCCH_AGENT_UNAVAILABLE_NOTE) : ""}` : input.text,
+        prompt: input.text,
         ...(input.images?.length ? { images: input.images } : {}),
         projectId: input.projectId,
         threadId: input.threadId,
@@ -3112,56 +3083,6 @@ function ompPromptNeedsPerson(mode: AgentPermissionMode, toolName: string, input
     return command === null || isRiskyCommand(command);
   }
   return true;
-}
-
-/** How an OMP turn reaches UCCH's own tools: they are host tools, mounted as devices. */
-const OMP_HOST_TOOLS_NOTE =
-  "UCCH's own tools named below are xd:// devices: call one by writing its JSON arguments to xd://<name> " +
-  "with your write tool, e.g. xd://current_time.";
-
-/**
- * A research turn on OMP (solution §3.7): the native loop's pipeline, in
- * the same order and for the same reasons (`RESEARCH_RULES` in
- * `@ucch/agent`), with the two differences OMP makes -- the tools are
- * devices, and the preset's overlay denies every file change.
- */
-const OMP_RESEARCH_RULES = `## Research turn
-
-This is a research turn. The developer wants live, sourced information, not code changes, and this turn cannot change any file. ${OMP_HOST_TOOLS_NOTE} The pipeline's order is deliberate:
-
-1. research_search first: a live web search that returns an answer, the URLs it drew on, and a line on each. Run several focused queries rather than one broad one -- one per sub-question, one per claim you need to check.
-2. research_read next, on the URLs that matter: a fast crawler, fine to call on several URLs in parallel. Read the page before you state anything from it as fact; a search summary is a lead, not a source. A gated page is escalated to the browser agent on its own.
-3. research_browse only for a page that needs interaction -- something to click, a search form, pagination. It drives a real browser and takes minutes; say precisely what to do and what to bring back.
-
-Then write the answer. Cite the URL beside every claim it supports. Keep what the sources confirm separate from what you inferred, and say what you could not find rather than filling it in. Give dates as the sources give them, and call current_time before saying how recent anything is. The answer is the deliverable: if asked to save the findings, say that this turn cannot write files.`;
-
-/**
- * A documentation turn on OMP: the native loop's rules, whose tools OMP is
- * given as host tools, and what is different here.
- */
-const OMP_DOCUMENTATION_RULES = `## Documentation turn
-
-${OMP_HOST_TOOLS_NOTE} The rules below were written for a harness with no shell: you have one, but use the document tools for anything a document needs. Where they say write_file, use your own write tool. Every file you write or edit must be under docs/: anything else is refused.
-
-${DOCUMENTATION_RULES}`;
-
-/**
- * What an OMP turn adds to OMP's system prompt (solution §3.8): the
- * project's `.agent/` knowledge, then the few rules that are UCCH's rather
- * than the project's, then the composer mode's. OMP reads the worktree's
- * AGENTS.md itself.
- */
-export function ompInstructions(workspace: string, knowledge: string | null, mode?: MessageMode): string {
-  const rules = [
-    "## Working in UCCH",
-    "",
-    `You are working in ${workspace}, a checkout UCCH manages. Keep your changes inside it.`,
-    "- Ask any question in your reply: the chat is where the person reads and answers it.",
-    "- Never commit or push. The person reviews and commits your changes from UCCH's Git view.",
-  ].join("\n");
-  const modeRules = mode === "research" ? OMP_RESEARCH_RULES : mode === "documentation" ? OMP_DOCUMENTATION_RULES : null;
-  const parts = [knowledge?.trimEnd(), rules, modeRules].filter((part): part is string => Boolean(part));
-  return `${parts.join("\n\n")}\n`;
 }
 
 /** The shell line a call runs, when it is one: `bash`'s and `Bash`'s `command`. */

@@ -1,0 +1,17 @@
+{
+  "claude.default": 1218,
+  "claude.plan_draft": 1022,
+  "claude.subagent": 1506,
+  "claude.every_tool": 7699,
+  "codex.default": 1202,
+  "codex.every_tool": 7683,
+  "codex.resumed_coordinated": 2479,
+  "omp.default": 1208,
+  "omp.plan_draft": 1012,
+  "omp.subagent": 1496,
+  "omp.every_tool": 5777,
+  "native.default": 4352,
+  "native.every_tool": 6831,
+  "native.subagent": 3715,
+  "native.plan_draft": 5519
+}

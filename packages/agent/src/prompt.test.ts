@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HostExecutor } from "./executors/host.js";
 import { DOCUMENTATION_RULES } from "./documents.js";
-import { buildPrompt, renderKnowledge } from "./prompt.js";
+import { buildPrompt, HARNESS_RULES, renderKnowledge } from "./prompt.js";
 
 let root: string;
 beforeEach(async () => {
@@ -86,5 +86,18 @@ describe("a documentation turn's prompt", () => {
   it("leaves an ordinary turn's prompt as it was", async () => {
     const { parts } = await build();
     expect(parts.some((part) => part.content === DOCUMENTATION_RULES)).toBe(false);
+  });
+});
+
+describe("the harness rules", () => {
+  it("come first, and teach UCCH's citation format and honest failure reports", async () => {
+    const { parts } = await buildPrompt({ executor: new HostExecutor(root), stack: null, signal: new AbortController().signal });
+    expect(parts[0]).toEqual({ source: "system_prompt", content: HARNESS_RULES });
+    expect(HARNESS_RULES).toContain("[agent.ts:42](apps/server/src/agent.ts:42)");
+    expect(HARNESS_RULES).toContain("never report a success you have not seen");
+  });
+
+  it("interpolate nothing, so their bytes are the same on every turn", () => {
+    expect(HARNESS_RULES).not.toMatch(/\$\{|\d{4}-\d{2}-\d{2}/);
   });
 });

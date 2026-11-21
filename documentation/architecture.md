@@ -268,6 +268,33 @@ flowchart LR
 - **OMP** is pinned (18.14.1, `/opt/omp`, SHA-256 checked at build) with its ~120 MB of native modules unpacked once at build time into `PI_NATIVES_DIR`. New "Custom" threads use it only with `OMP_ENABLED=true`. `NATIVE_LOOP_FALLBACK` keeps threads already on the native loop running there.
 - **omp-bridge** (`packages/omp-bridge`): an MCP stdio server that gives Claude Code and Codex the tools `omp_task`, `omp_review`, `omp_symbols`, `omp_rename`, `omp_codemod`, `omp_debug`, `omp_recall`, `omp_retain` and `omp_handoff_brief`. Each call is one `omp` process billed to OpenRouter. It takes a slot from the server's scheduler over `UCCH_SCHEDULER_SOCK`, and the call's own guard overlay denies subagents every tool the call didn't ask for.
 
+### Agent instructions
+
+Every harness keeps its own system prompt. UCCH only appends to it: one shared rule set in `packages/protocol/src/harness-instructions.ts` (`UCCH_WORKING_RULES`, `DEFAULT_MODE_RULES`, `buildRuntimeInfo`) and the guides in `model-routing.ts` (`UCCH_AGENT_GUIDE`, `UCCH_SUBAGENT_RULES`). `apps/server/src/cli-instructions.ts` (`assembleCliInstructions`) assembles what a CLI turn gets. The thread's log records each part as a `context.injected` row.
+
+| Harness | Channel | What it gets, in order |
+|---|---|---|
+| native | the loop's system prompt (`packages/agent/src/prompt.ts`) | `HARNESS_RULES` (which covers the same ground in the native loop's own words: citations, honest failures), mode rules, `WIDGET_PROMPT`, stack, `.agent/` knowledge, AGENTS.md, file tree; then the server's extras: collaboration and `ucch_agent` guides, `UCCH_SUBAGENT_RULES` for a child session, plan-mode rules, knowledge-base passages |
+| Claude Code | `--append-system-prompt`, every turn | `<project-knowledge>` (capped at 24 KB), `UCCH_WORKING_RULES`, `DEFAULT_MODE_RULES` (not on a plan draft), `UCCH_SUBAGENT_RULES` (child session), the guides for the tools the turn really has, `WIDGET_PROMPT`, `<runtime_info>` |
+| Codex | in the message (`codexPrompt`): `<ucch_instructions>…</ucch_instructions>` then `<user_request>…</user_request>`; a `/command` is sent unchanged | a new session: the image rules, then the same list as Claude Code. A resumed session: the image rules, plus the collaboration and `ucch_agent` guides when messaging is on, because its history holds the rest |
+| OMP | `--append-system-prompt`, every turn | knowledge, `UCCH_WORKING_RULES`, `DEFAULT_MODE_RULES` (not on a draft), the research or documentation rules, `UCCH_SUBAGENT_RULES`, guides, `WIDGET_PROMPT`, `<runtime_info>` |
+
+The rules behind it, taken from t3code:
+
+1. **Append, never replace.** The CLI's own prompt stays.
+2. **Fixed text first, interpolation last.** The shared blocks contain no values, so the cached prefix holds. The harness, model, effort and working directory go in `<runtime_info>` at the end, sanitised so they can't close the block.
+3. **Only describe tools that exist on this turn.** A guide for a missing tool steers the model wrong. `cli-instructions.test.ts` checks every provider × tool combination.
+4. **Short, imperative, specific.**
+5. **Fence untrusted or contextual text.** That covers `<user_request>`, `<project-knowledge>`, `<document>` in the graph call, knowledge-base passages labelled reference data, and the handover transcript labelled historical data.
+6. **Budget every block.** `agent-context-budget.test.ts` fails when a fixture turn grows more than 5% past `agent-context-budget.json`. The snapshots in `__snapshots__/cli-instructions.test.ts.snap` show every wording change in review.
+
+Three things were left out on purpose:
+- No "put it all in your final reply" note for Claude Code. UCCH streams the text Claude writes before a tool call in full (`--include-partial-messages`).
+- No re-send of the rules to a resumed Codex session. `codex exec --json` reports no auto-compaction, and the ways UCCH empties a session itself (clear, handover) start a new one, which gets everything.
+- No model evals yet (plan1 §5.3, "optional, later").
+
+The chat opens a `[name:line](relative/path:line)` citation in the file viewer at that line (`apps/web/src/lib/file-href.ts`, `markdown.tsx`).
+
 ### Native Codex sub-agent visibility
 
 Codex workers normalize into the same `agent.subagent_started`, progress,

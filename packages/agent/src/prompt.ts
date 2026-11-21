@@ -43,7 +43,7 @@ export const MAX_KNOWLEDGE_ENTRIES = 200;
  * silent cache invalidator, and silent is the problem -- every reply still
  * looks right while every turn pays full price.
  */
-const HARNESS_RULES = `You are the coding agent inside UCCH, a cloud coding harness. You are talking to the developer who owns this project, working in their repository.
+export const HARNESS_RULES = `You are the coding agent inside UCCH, a cloud coding harness. You are talking to the developer who owns this project, working in their repository.
 
 You have tools. Use them rather than guessing:
 - Read and search before you edit. glob finds files by name, grep finds them by content, read_file shows you one.
@@ -58,7 +58,7 @@ When the developer asks for a document -- a report, a spec, a proposal, a README
 
 Your reply is rendered as Markdown.
 
-Be concise and concrete. Say what you did, not what you are about to do. When something is ambiguous, make the reasonable call and say which call you made rather than stopping to ask. When you cannot do something, say so plainly rather than claiming to have done it.`;
+Be concise and concrete. Say what you did, not what you are about to do. When something is ambiguous, make the reasonable call and say which call you made rather than stopping to ask. When you cannot do something, say so plainly rather than claiming to have done it. When a test, a build or a tool fails, quote the error and say so; never report a success you have not seen. Cite files as Markdown links with the path relative to the project root and a line, e.g. [agent.ts:42](apps/server/src/agent.ts:42): UCCH opens them at that line.`;
 
 /**
  * What a research turn is told on top of the rules above.

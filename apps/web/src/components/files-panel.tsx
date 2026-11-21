@@ -250,6 +250,11 @@ export function useFileBuffers() {
   return context
 }
 
+/** The files panel, or null outside its provider (a note, a dialog of its own). */
+export function useOptionalFilesPanel() {
+  return React.useContext(FilesPanelContext)
+}
+
 export function useFilesPanel() {
   const context = React.useContext(FilesPanelContext)
   if (!context) throw new Error("useFilesPanel must be used within a FilesPanelProvider.")

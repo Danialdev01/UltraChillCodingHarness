@@ -190,4 +190,5 @@ export function normalizeResourceKey(key: string): string | null {
 /** The drag data type a resource row sets; the chat and the file tree accept it. */
 export const RESOURCE_DRAG_TYPE = "application/x-ucch-resource";
 export * from "./plan-mode.js";
+export * from "./harness-instructions.js";
 export * from "./ssh-paths.js";

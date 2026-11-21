@@ -16,6 +16,10 @@ describe("plan mode", () => {
 
   it("tells a draft to plan and ask, and a run to carry the plan out", () => {
     expect(planDraftPrompt("add dark mode")).toMatch(/plan mode[\s\S]*add dark mode$/);
+    const draft = planDraftPrompt("add dark mode");
+    expect(draft).toContain("before asking anything");
+    expect(draft).toContain("decision-complete");
+    expect(draft).toContain("without starting on it");
     const run = planRunPrompt("1. Do A", "Run the plan.");
     expect(run).toContain("<approved-plan>\n1. Do A\n</approved-plan>");
     expect(run).toMatch(/every step/);

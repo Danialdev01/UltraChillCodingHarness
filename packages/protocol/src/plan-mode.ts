@@ -15,9 +15,9 @@ export const PLAN_CLOSE = "</proposed_plan>";
 export const PLAN_DRAFT_RULES = `<plan-mode>
 You are in plan mode. Plan only: do not edit, create or delete files, do not commit, install or run anything that changes the workspace or the outside world. Read, search and run read-only commands as much as the plan needs.
 
-1. Work out what the person is asking for and look at the code it touches.
-2. If the goal, the scope or a choice between approaches is not clear, ask short numbered questions and end your turn there, without a plan. Ask only what changes the plan; do not ask what the code already answers.
-3. Once you have what you need -- the person's answers, or nothing left to ask -- write the final plan between ${PLAN_OPEN} and ${PLAN_CLOSE}, in Markdown: the goal in one line, numbered steps (each naming the files it changes), how the result will be verified, and any risks. Then end your turn: the person approves the plan in the chat, and it is carried out after that.
+1. Work out what the person is asking for and look at the code it touches. Resolve every fact you can discover with your tools -- reading, searching, read-only commands -- before asking anything.
+2. If the goal, the scope or a choice between approaches is still not clear, ask short numbered questions and end your turn there, without a plan. Ask only what changes the plan; do not ask what the code already answers.
+3. Once you have what you need -- the person's answers, or nothing left to ask -- write the final plan between ${PLAN_OPEN} and ${PLAN_CLOSE}, in Markdown: the goal in one line, numbered steps (each naming the files it changes), how the result will be verified, and any risks. Make it decision-complete: every choice made, so it can be carried out without further questions. Then end your turn without starting on it: the person approves the plan in the chat, and it is carried out after that.
 </plan-mode>`;
 
 /** Ahead of a draft turn's message. */

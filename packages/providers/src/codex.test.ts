@@ -4,6 +4,7 @@ import type { DomainEvent } from "@ucch/protocol";
 import { describe, expect, it } from "vitest";
 import { CodexNormaliser, CodexProvider, codexArgv, codexMcpArgs, codexPrompt, codexSandboxMode, isCodexLimit, listCodexModels, probeCodex, probeCodexSandbox } from "./codex.js";
 import { FakeProcessHost, stderr, stdout } from "./testing.js";
+import { CODEX_IMAGE_INSTRUCTIONS } from "./codex-images.js";
 
 const WORKSPACE = "/srv/ucch/workspaces/11111111-1111-4111-8111-111111111111";
 const ids = {
@@ -198,10 +199,21 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
 });
 
 describe("codexPrompt", () => {
-  it("puts the project's knowledge ahead of a new session's message only", () => {
-    expect(codexPrompt("fix it", "INFO")).toBe("<project-knowledge>\nINFO\n</project-knowledge>\n\nfix it");
-    expect(codexPrompt("fix it", "INFO", "th-1")).toBe("fix it");
-    expect(codexPrompt("fix it")).toBe("fix it");
+  it("fences UCCH's instructions apart from the person's request", () => {
+    expect(codexPrompt("fix it", "INFO")).toBe(
+      `<ucch_instructions>\n${CODEX_IMAGE_INSTRUCTIONS}\n\nINFO\n</ucch_instructions>\n\n<user_request>\nfix it\n</user_request>`,
+    );
+  });
+
+  it("still fences the request, with the image rules alone, when a turn is handed nothing else", () => {
+    expect(codexPrompt("fix it")).toBe(
+      `<ucch_instructions>\n${CODEX_IMAGE_INSTRUCTIONS}\n</ucch_instructions>\n\n<user_request>\nfix it\n</user_request>`,
+    );
+  });
+
+  it("sends a slash command exactly as written", () => {
+    expect(codexPrompt("/review src", "INFO")).toBe("/review src");
+    expect(codexPrompt("  /status")).toBe("  /status");
   });
 });
 
@@ -400,7 +412,7 @@ describe("CodexProvider.run", () => {
     const events: DomainEvent[] = [];
     for await (const event of run.events) events.push(event);
     expect(host.spawned[0]?.stdin).toContain("<image-output>");
-    expect(host.spawned[0]?.stdin).toMatch(/fix it$/);
+    expect(host.spawned[0]?.stdin).toMatch(/<user_request>\nfix it\n<\/user_request>$/);
     expect(host.spawned[0]?.argv).toContain("--skip-git-repo-check");
     expect(host.spawned[0]?.argv).toContain('model_reasoning_effort="high"');
     expect(events.at(-1)?.type).toBe("agent.turn_completed");

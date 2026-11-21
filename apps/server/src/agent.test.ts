@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "@ucch/db";
-import { DomainEvent, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
+import { DEFAULT_MODE_RULES, DomainEvent, UCCH_SUBAGENT_RULES, UCCH_WORKING_RULES, WIDGET_PROMPT, WIDGET_TURN_NUDGE, UCCH_AGENT_GUIDE, UCCH_AGENT_UNAVAILABLE_NOTE, type Command } from "@ucch/protocol";
 import {
   ClaudeNormaliser,
   createProviders,
@@ -130,15 +130,20 @@ describe("turnKindOf", () => {
 
 describe("ompInstructions", () => {
   it("puts the project's knowledge first, then UCCH's rules", () => {
-    const text = ompInstructions("/work/p", "# Project\nUses pnpm.\n");
-    expect(text.startsWith("# Project\nUses pnpm.\n\n## Working in UCCH\n")).toBe(true);
-    expect(text).toContain("You are working in /work/p");
+    const text = ompInstructions("# Project\nUses pnpm.\n");
+    expect(text.startsWith(`# Project\nUses pnpm.\n\n${UCCH_WORKING_RULES}\n\n${DEFAULT_MODE_RULES}`)).toBe(true);
     expect(text).toContain("Never commit or push");
     expect(text.endsWith("\n")).toBe(true);
   });
 
   it("is UCCH's rules alone when the project has no knowledge", () => {
-    expect(ompInstructions("/work/p", null).startsWith("## Working in UCCH\n")).toBe(true);
+    expect(ompInstructions(null).startsWith("## Working in UCCH\n")).toBe(true);
+  });
+
+  it("leaves the default-mode rules off a plan draft, and adds the subagent's rules to a subagent", () => {
+    expect(ompInstructions(null, undefined, { planDraft: true })).not.toContain(DEFAULT_MODE_RULES);
+    expect(ompInstructions(null, undefined, { subagent: true })).toContain(UCCH_SUBAGENT_RULES);
+    expect(ompInstructions(null)).not.toContain(UCCH_SUBAGENT_RULES);
   });
 });
 
@@ -292,7 +297,15 @@ describe("a turn over the server's limits", () => {
       while (!appended.flat().some((event) => event.type === "agent.turn_completed") && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
-      expect(appended.flat().map((event) => event.type)).toEqual(["agent.queued", "turn.started", "context.injected", "agent.turn_completed"]);
+      expect(appended.flat().map((event) => event.type)).toEqual([
+        "agent.queued",
+        "turn.started",
+        // UCCH's rules, the widget rules and the runtime info (`cli-instructions.ts`).
+        "context.injected",
+        "context.injected",
+        "context.injected",
+        "agent.turn_completed",
+      ]);
       expect(scheduler.stats().running.cli).toBe(0);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -650,7 +663,9 @@ describe("an OMP turn", () => {
     expect(injected).toHaveLength(1);
     const [prompt] = injected as Extract<DomainEvent, { type: "context.injected" }>[];
     expect(prompt!.source).toBe("system_prompt");
-    expect(prompt!.content).toBe(`${ompInstructions(workspace, await readProjectKnowledge(workspace))}\n\n${WIDGET_PROMPT}`);
+    expect(prompt!.content.startsWith(`${ompInstructions(await readProjectKnowledge(workspace)).trimEnd()}\n\n${WIDGET_PROMPT}\n\n<runtime_info>\n`)).toBe(true);
+    expect(prompt!.content).toContain(`Working directory: ${workspace}\n`);
+    expect(prompt!.content.endsWith("</runtime_info>\n")).toBe(true);
     expect(prompt!.content).toContain("Uses pnpm.");
     expect(prompt!.content).toContain("## Working in UCCH");
     expect(prompt!.content).not.toContain("Agents file.");
@@ -1897,7 +1912,7 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
     for (const id of ["claude", "codex"] as const) {
       const on = bridgeReactor(keyed, { ompBridge: { enabled: true } }, true, id);
       await turn(on, { ...ask, provider: id });
-      expect(on.seen[0]!.input.instructions).toBe(`${guide}\n\n${WIDGET_PROMPT}`);
+      expect(on.seen[0]!.input.instructions).toContain(`${guide}\n\n${WIDGET_PROMPT}\n\n<runtime_info>`);
       expect(guides(on)).toEqual([{ type: "context.injected", threadId: THREAD, source: "omp_bridge", content: guide }]);
     }
     const noWidgets = { enabled: false };
@@ -1906,7 +1921,9 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
       bridgeReactor(person, { ompBridge: { enabled: true }, widgets: noWidgets }),
     ]) {
       await turn(off);
-      expect(off.seen[0]!.input.instructions).toBeUndefined();
+      // UCCH's rules and the runtime info alone: no guide for a tool the turn lacks.
+      expect(off.seen[0]!.input.instructions).toMatch(/^## Working in UCCH\n[\s\S]*<\/runtime_info>$/);
+      expect(off.seen[0]!.input.instructions).not.toContain("## OMP tools");
       expect(guides(off)).toEqual([]);
     }
   });
@@ -1936,7 +1953,8 @@ describe("the OMP bridge on a Claude Code turn (OM6.4)", () => {
       await turn(run, { ...ask, provider: id });
       expect(run.seen[0]!.input.mcpConfigPath).toBeUndefined();
       expect(run.seen[0]!.input.codexMcp).toBeUndefined();
-      expect(run.seen[0]!.input.instructions).toBe(UCCH_AGENT_UNAVAILABLE_NOTE);
+      expect(run.seen[0]!.input.instructions).toContain(`\n\n${UCCH_AGENT_UNAVAILABLE_NOTE}\n\n<runtime_info>`);
+      expect(run.seen[0]!.input.instructions).not.toContain(UCCH_AGENT_GUIDE);
       expect(guides(run)).toEqual([{ type: "context.injected", threadId: THREAD, source: "omp_bridge", content: UCCH_AGENT_UNAVAILABLE_NOTE }]);
     }
   });

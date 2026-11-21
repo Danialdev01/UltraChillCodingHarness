@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { CheckIcon, CopyIcon } from "lucide-react"
-import ReactMarkdown, { type Components } from "react-markdown"
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 
@@ -10,6 +10,8 @@ import { ChatImage } from "@/components/chat-image"
 import { FileTypeIcon } from "@/components/file-type-icon"
 import { WidgetFrame, WidgetPlaceholder } from "@/components/widget-frame"
 import { copyText } from "@/lib/clipboard"
+import { looksLikeFilePath, parseFileHref } from "@/lib/file-href"
+import { useOptionalFilesPanel } from "@/components/files-panel"
 import { nodeLanguage, nodeText, type SyntaxNode } from "@/lib/code-text"
 import { isFenceClosed } from "@/lib/widget-frame"
 import { useWidgetHost } from "@/lib/widget-host"
@@ -64,19 +66,30 @@ const COMPONENTS: Components = {
   ),
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
 
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      // A link in model output points somewhere else by definition, and
-      // `noreferrer` keeps this app's URL -- which names the project -- out
-      // of the other site's logs.
-      target="_blank"
-      rel="noreferrer noopener"
-      className="text-ucch-active underline underline-offset-2"
-    >
-      {children}
-    </a>
-  ),
+  a: ({ href, children }) => {
+    // A citation of a project file opens it here; it is not a URL.
+    const file = parseFileHref(href)
+    if (file) {
+      return (
+        <FileLink path={file.path} line={file.line}>
+          {children}
+        </FileLink>
+      )
+    }
+    return (
+      <a
+        href={href}
+        // Any other link in model output points somewhere else by
+        // definition, and `noreferrer` keeps this app's URL -- which names
+        // the project -- out of the other site's logs.
+        target="_blank"
+        rel="noreferrer noopener"
+        className="text-ucch-active underline underline-offset-2"
+      >
+        {children}
+      </a>
+    )
+  },
 
   strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
@@ -150,6 +163,44 @@ const COMPONENTS: Components = {
     ) : null,
 
   img: ({ src, alt }) => <ChatImage src={typeof src === "string" ? src : ""} alt={alt ?? ""} />,
+}
+
+/**
+ * A citation of a project file (`[agent.ts:42](apps/server/src/agent.ts:42)`,
+ * the form every harness is taught): opens UCCH's file viewer at that line.
+ * Outside a project view there is no viewer to open, so it is plain text.
+ */
+function FileLink({
+  path,
+  line,
+  children,
+}: {
+  path: string
+  line: number | null
+  children: React.ReactNode
+}) {
+  const panel = useOptionalFilesPanel()
+  const label = line ? `${path}:${line}` : path
+  if (!panel?.project) return <span title={label}>{children}</span>
+  return (
+    <button
+      type="button"
+      title={`Open ${label}`}
+      onClick={() => panel.revealInFile(path, line ?? 1)}
+      className="text-ucch-active cursor-pointer text-left underline underline-offset-2"
+    >
+      {children}
+    </button>
+  )
+}
+
+/**
+ * A link's target as the page may use it: a project file citation as
+ * written (react-markdown's default would read `README.md:3` as a URL
+ * scheme and drop it), anything else through the default filter.
+ */
+function urlTransform(url: string): string {
+  return parseFileHref(url) ? url : defaultUrlTransform(url)
 }
 
 /**
@@ -259,7 +310,11 @@ export const Markdown = React.memo(function Markdown({
           single newline into a space, and a model laying out an address or a
           short list without blank lines between the items means those lines
           to stay where it put them. */}
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={COMPONENTS}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={COMPONENTS}
+        urlTransform={urlTransform}
+      >
         {children}
       </ReactMarkdown>
     </div>
@@ -288,24 +343,4 @@ export function StreamingMarkdown({ children, className }: { children: string; c
       </StreamingTail.Provider>
     </div>
   )
-}
-
-/** Extensions that name a file rather than a property: `console.log` is code. */
-const FILE_EXTENSIONS = new Set(
-  (
-    "ts tsx js jsx mjs cjs json jsonc md mdx css scss sass less html htm vue svelte astro py rb go rs java kt " +
-    "swift c h cpp hpp cc cs php sh bash zsh fish sql prisma graphql gql yml yaml toml ini env lock txt " +
-    "xml svg png jpg jpeg gif webp ico pdf csv dockerfile conf cfg example local sample"
-  ).split(" "),
-)
-
-/**
- * `src/brand.ts`, `index.css`, `.env.example`: one token with no spaces, a
- * name with a letter in it, and an extension files actually have -- so
- * `1.5`, `e.g.`, `a.b()` and `console.log` stay plain code.
- */
-export function looksLikeFilePath(text: string): boolean {
-  if (text.length > 120 || /\s|:\/\//.test(text)) return false
-  if (!/^(?:[\w@.-]+\/)*[\w@.-]*[A-Za-z][\w@-]*\.[A-Za-z][A-Za-z0-9]{0,9}$/.test(text)) return false
-  return FILE_EXTENSIONS.has(text.slice(text.lastIndexOf(".") + 1).toLowerCase())
 }

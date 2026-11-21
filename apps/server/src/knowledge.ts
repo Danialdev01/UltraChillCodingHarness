@@ -16,6 +16,7 @@ import type { Complete } from "@ucch/agent";
 import { extractDocument, looksLikeText } from "./extract.js";
 import {
   GRAPH_PROMPT,
+  graphUserMessage,
   GRAPH_SAMPLE_CHARS,
   chunkText,
   cleanGraph,
@@ -476,7 +477,7 @@ export class KnowledgeService {
             effort: "off",
             messages: [
               { role: "system", content: GRAPH_PROMPT },
-              { role: "user", content: text.slice(0, GRAPH_SAMPLE_CHARS) },
+              { role: "user", content: graphUserMessage(text.slice(0, GRAPH_SAMPLE_CHARS)) },
             ],
           },
           () => {},

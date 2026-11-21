@@ -303,12 +303,20 @@ export function codexMcpArgs(name: string, server: CodexMcpServer): string[] {
  * The message a Codex run is given.
  *
  * `codex exec` has no flag for adding to its instructions that every version
- * has, so the project's knowledge goes ahead of a new session's first
- * message. A resumed session already has it in its history.
+ * has, so UCCH's instructions ride in the message: fenced, with the
+ * person's request fenced apart from them (t3code's `t3OrchestrationPrompt`),
+ * so neither can be read as part of the other. The server decides what a
+ * turn is handed (`apps/server/src/cli-instructions.ts`): everything on a new
+ * session, only what changes per turn on a resumed one, whose history holds
+ * the rest. The image rules go every turn, as they always have.
+ *
+ * A slash command is sent exactly as written: text in front of it would
+ * turn it into prose.
  */
-export function codexPrompt(prompt: string, instructions?: string, resumeToken?: string): string {
-  if (!instructions || resumeToken) return prompt;
-  return `<project-knowledge>\n${instructions}\n</project-knowledge>\n\n${prompt}`;
+export function codexPrompt(prompt: string, instructions?: string): string {
+  if (prompt.trimStart().startsWith("/")) return prompt;
+  const fenced = [CODEX_IMAGE_INSTRUCTIONS, instructions?.trim()].filter(Boolean).join("\n\n");
+  return `<ucch_instructions>\n${fenced}\n</ucch_instructions>\n\n<user_request>\n${prompt}\n</user_request>`;
 }
 
 export async function probeCodex(
@@ -742,7 +750,7 @@ export class CodexProvider implements AgentProvider {
           ...(input.codexMcp ? { mcp: input.codexMcp } : {}),
           ...(input.images?.length ? { images: input.images.map((image) => image.path) } : {}),
         }),
-        stdin: `${CODEX_IMAGE_INSTRUCTIONS}\n\n${codexPrompt(input.subagentId ? codexSubagentPrompt(input.prompt, input.subagentId, input.resumeToken) : input.prompt, input.instructions, input.resumeToken)}`,
+        stdin: codexPrompt(input.subagentId ? codexSubagentPrompt(input.prompt, input.subagentId, input.resumeToken) : input.prompt, input.instructions),
       },
       normaliser,
     }), normaliser.subagents, () => normaliser.sessionId), () => normaliser.sessionId, () => [...normaliser.imagePaths]);

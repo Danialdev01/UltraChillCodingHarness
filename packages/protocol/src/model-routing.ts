@@ -283,6 +283,18 @@ export const UCCH_AGENT_UNAVAILABLE_NOTE = [
 ].join("\n");
 
 /**
+ * Added to a subagent's own session (a child thread, on any harness): it
+ * reports to its parent, not to a person, and does the work itself.
+ */
+export const UCCH_SUBAGENT_RULES = [
+  "## You are a subagent",
+  "",
+  "- Do the work yourself. Start no subagents unless your task says to.",
+  "- Your final message goes to your parent agent, not a person. End with what you changed (files), what you verified, and anything left open.",
+  "- Ask nothing. Make the reasonable call and report it.",
+].join("\n");
+
+/**
  * Whether an OpenRouter failure is the key's limit rather than the
  * request's fault: out of credits (402), or over the key's own spending
  * limit. Like a CLI plan's usage limit it will not pass on a retry, and
