@@ -902,3 +902,48 @@ describe("claudeRateLimit", () => {
     expect(claudeRateLimit({ status: "allowed" })).toEqual({ status: "allowed", resetsAt: null, windows: [] });
   });
 });
+
+describe("context window", () => {
+  const assistant = (usage: Record<string, number>) =>
+    JSON.stringify({
+      type: "assistant",
+      message: { id: "msg_1", role: "assistant", content: [{ type: "text", text: "ok" }], usage },
+    });
+  const readings = (events: DomainEvent[]) =>
+    events.flatMap((e) => (e.type === "context.usage" ? [{ used: e.usedTokens, window: e.windowTokens }] : []));
+
+  it("guesses 1M for a current model, then takes the window the CLI reports", () => {
+    const n = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const events = [
+      ...n.push(JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-5", session_id: "s1" })),
+      ...n.push(assistant({ input_tokens: 10, cache_read_input_tokens: 990, output_tokens: 0 })),
+      ...n.push(
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage: {},
+          modelUsage: {
+            "claude-haiku-4-5": { contextWindow: 200_000 },
+            "claude-opus-5-5": { contextWindow: 800_000 },
+          },
+        }),
+      ),
+    ];
+    expect(readings(events)).toEqual([
+      { used: 1000, window: 1_000_000 },
+      // The session's own model, not the subagent's smaller one.
+      { used: 1000, window: 800_000 },
+    ]);
+  });
+
+  it("sends no second reading when the guess was right", () => {
+    const n = new ClaudeNormaliser({ ...ids, workspace: WORKSPACE });
+    const events = [
+      ...n.push(JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-5", session_id: "s1" })),
+      ...n.push(assistant({ input_tokens: 10, cache_read_input_tokens: 990, output_tokens: 0 })),
+      ...n.push(JSON.stringify({ type: "result", subtype: "success", is_error: false, usage: {}, modelUsage: { "claude-opus-5-5": { contextWindow: 1_000_000 } } })),
+    ];
+    expect(readings(events)).toEqual([{ used: 1000, window: 1_000_000 }]);
+  });
+});

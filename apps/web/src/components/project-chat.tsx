@@ -611,8 +611,19 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
    * reading, the CLI's known window, or the catalogue's. Null when nothing
    * says, which the attachment budget treats as a modest model.
    */
+  // A reading belongs to the harness and model that took it. After a
+  // switch its token count still stands -- the conversation is the same --
+  // but its window and handover line are the old model's, so until the new
+  // one reports, they come from the chosen model.
+  const harnessKey = `${provider}:${activeModel ?? ""}`;
+  const [measuredFor, setMeasuredFor] = useState<{ reading: typeof measuredContext; key: string }>({
+    reading: measuredContext,
+    key: harnessKey,
+  });
+  if (measuredFor.reading !== measuredContext) setMeasuredFor({ reading: measuredContext, key: harnessKey });
+  const measuredWindow = measuredContext && measuredFor.key === harnessKey ? measuredContext : null;
   const windowTokens =
-    measuredContext?.windowTokens ??
+    measuredWindow?.windowTokens ??
     (cli ? cliContextWindow(provider, activeModel) : null) ??
     models.find((m) => m.id === model)?.contextLength ??
     null;
@@ -1635,7 +1646,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     () => ({
       tokens: measuredContext?.usedTokens ?? contextTokens,
       limit: windowTokens,
-      threshold: measuredContext?.thresholdTokens ?? null,
+      threshold: measuredWindow?.thresholdTokens ?? null,
       live: measuredContext !== null,
       handingOver: compacting !== null || switching !== null,
       disabledReason: !hasRun
@@ -1647,7 +1658,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
       // out what the running turn adds.
       disabled: running || sending || !threadId || !hasRun,
     }),
-    [measuredContext, contextTokens, windowTokens, compacting, switching, hasRun, running, sending, threadId],
+    [measuredContext, measuredWindow, contextTokens, windowTokens, compacting, switching, hasRun, running, sending, threadId],
   );
   const handover = useCallback(() => void compactThread("handoff", ""), [compactThread]);
   useEffect(() => {

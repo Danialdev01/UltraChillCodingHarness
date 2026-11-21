@@ -389,6 +389,8 @@ interface Line {
   terminal_reason?: string;
   total_cost_usd?: number;
   usage?: Record<string, unknown>;
+  /** `result`: per model the turn ran, what it cost and the window it has. */
+  modelUsage?: Record<string, { contextWindow?: number; canonicalModel?: string }>;
   /** `system` `background_tasks_changed`: every background task still running. */
   tasks?: { task_id?: string }[];
 }
@@ -439,6 +441,13 @@ export class ClaudeNormaliser implements Normaliser {
   #model: string | null = null;
   /** The last context reading sent, so a response's every block does not repeat it. */
   #contextKey: string | null = null;
+  /**
+   * The window the CLI itself reported for the model (`result`
+   * `modelUsage[].contextWindow`), which beats the guess by name.
+   */
+  #window: number | null = null;
+  /** The last reading's token count, to send again when the window is learned. */
+  #usedTokens: number | null = null;
   #usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -515,7 +524,12 @@ export class ClaudeNormaliser implements Normaliser {
     const u = mapUsage(usage);
     const usedTokens = u.inputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens + u.outputTokens;
     if (usedTokens <= 0) return [];
-    const windowTokens = cliContextWindow("claude", this.#model ?? this.ctx.model ?? null);
+    this.#usedTokens = usedTokens;
+    return this.#contextEvent(usedTokens);
+  }
+
+  #contextEvent(usedTokens: number): DomainEvent[] {
+    const windowTokens = this.#window ?? cliContextWindow("claude", this.#model ?? this.ctx.model ?? null);
     const key = `${usedTokens}/${windowTokens}`;
     if (key === this.#contextKey) return [];
     this.#contextKey = key;
@@ -529,6 +543,26 @@ export class ClaudeNormaliser implements Normaliser {
         thresholdTokens: windowTokens ? Math.floor(windowTokens * CONTEXT_HANDOVER_RATIO) : null,
       },
     ];
+  }
+
+  /**
+   * The main model's window from a `result`'s `modelUsage`: the entry for
+   * the model `init` named, else the largest (subagents may run a smaller
+   * model with a smaller window; the session's own is the one that counts).
+   */
+  #learnWindow(modelUsage: Line["modelUsage"]) {
+    if (!modelUsage || typeof modelUsage !== "object") return;
+    const entries = Object.entries(modelUsage).filter(
+      ([, usage]) => typeof usage?.contextWindow === "number" && usage.contextWindow > 0,
+    );
+    if (entries.length === 0) return;
+    const own = this.#model
+      ? entries.find(([id, usage]) => id === this.#model || usage.canonicalModel === this.#model)
+      : undefined;
+    const window = own
+      ? own[1].contextWindow!
+      : Math.max(...entries.map(([, usage]) => usage.contextWindow!));
+    this.#window = window;
   }
 
   push(raw: string): DomainEvent[] {
@@ -719,8 +753,10 @@ export class ClaudeNormaliser implements Normaliser {
         // turn. Holding stdin open keeps their permission prompts answerable
         // (closed, every one fails with "Stream closed"), and the turn ends
         // on the `result` that follows them.
+        this.#learnWindow(line.modelUsage);
         if (!line.is_error && !this.#interrupted && this.#backgroundTasks.size > 0) {
           const events = this.#flushMessage();
+          if (this.#usedTokens !== null) events.push(...this.#contextEvent(this.#usedTokens));
           this.#usage = addUsage(this.#usage, mapUsage(line.usage));
           this.#heldResult = { costUsd: Math.max(0, line.total_cost_usd ?? 0) };
           if (line.session_id) this.#sessionId = line.session_id;
@@ -728,6 +764,9 @@ export class ClaudeNormaliser implements Normaliser {
         }
         this.#closed = true;
         const events = this.#flushMessage();
+        // Read again with the window the CLI reported, if it differs from
+        // the guess: the server's handover check reads the turn's last one.
+        if (this.#usedTokens !== null) events.push(...this.#contextEvent(this.#usedTokens));
         events.push(...this.#closePrompts());
         events.push(...this.#closeSubagents());
         // With stdin held for prompts the CLI waits for the next message
