@@ -318,6 +318,8 @@ Run [Crawl4AI](https://github.com/unclecode/crawl4ai) as its own Dokploy service
 
 A project's running dev server is shown at `https://p{port}-{hash}.<ROOT_DOMAIN>`, served by the same container. That needs the `*.<ROOT_DOMAIN>` DNS record and a **wildcard certificate**, which Let's Encrypt only issues through a DNS challenge. Everything else works without this step.
 
+On Cloudflare, the `*.<ROOT_DOMAIN>` record **must be DNS only (grey cloud)**. Cloudflare's free Universal SSL certificate covers `*.<zone>`, one level deep, so a proxied `p8000-{hash}.ucch.<zone>` has no certificate at the edge. The browser then fails with `SSL_ERROR_NO_CYPHER_OVERLAP` before the request reaches UCCH.
+
 With Cloudflare:
 
 1. Cloudflare → **My Profile → API Tokens → Create Token → Edit zone DNS**, limited to your zone.

@@ -117,6 +117,7 @@ It saves to `/data/backups/`. Restore with `ucch-restore /data/backups/<timestam
 | New version doesn't show after deploy | `build` in `/health` didn't change. Set stop-first (step 6) and deploy again. |
 | `502 Bad Gateway` | Wait 2 minutes after deploy. Check the domain's port is `3000`. |
 | Certificate doesn't issue | DNS isn't pointing at the VPS yet, or Cloudflare's proxy (orange cloud) is on. |
+| Preview URL fails with `SSL_ERROR_NO_CYPHER_OVERLAP` or a TLS handshake failure | The `*.ROOT_DOMAIN` record is proxied by Cloudflare (orange cloud). Its free certificate covers only one level (`*.example.com`), not `p8000-….ucch.example.com`. Set the record to **DNS only** and set up the wildcard certificate ([README → Live previews](README.md#live-previews-optional-one-time)). |
 | Build runs out of memory | Use a VPS with 4 GB+ RAM, or add swap. |
 | `NEXT_PUBLIC_*` change has no effect | Put it under **Environment → Build-time Arguments** and redeploy. |
 
