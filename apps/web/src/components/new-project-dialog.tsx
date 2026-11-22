@@ -123,9 +123,9 @@ const repoKey = (repo: GitRepo) => `${repo.provider}:${repo.fullName}`;
 /**
  * Starting a project, from one of three places.
  *
- * What the project is comes first -- its name, its mode and, for a development
- * project, the database it gets on the shared dev server -- and where its code
- * comes from below that.
+ * Where its code comes from comes first, then what the project is -- its name,
+ * its mode and, for a development project, the database it gets on the shared
+ * dev server.
  *
  * - **Git** imports an existing repository: chosen from every connected
  *   account's repositories in one list, or pasted as a URL from anywhere.
@@ -563,166 +563,6 @@ export function NewProjectDialog({
         </FormDialogFooter>
       }
     >
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="new-project-name" className={LABEL}>
-                Project name
-              </label>
-              <div className="flex h-[34px] overflow-hidden rounded-[8px] border border-(--fd-border-field) bg-(--fd-field) transition-[border-color,box-shadow] focus-within:border-(--fd-accent) focus-within:ring-[3px] focus-within:ring-(--fd-ring)">
-                {source === "create" && owner && (
-                  <span className="fd-mono flex shrink-0 items-center border-r border-(--fd-prefix-border) bg-(--fd-prefix) px-2.5 text-[11.5px] text-(--fd-icon-dim) select-none">
-                    {owner} /
-                  </span>
-                )}
-                <input
-                  id="new-project-name"
-                  value={name}
-                  onChange={(e) => {
-                    setNameTouched(true);
-                    // A new repository's name is its directory's name, so it is
-                    // corrected as it is typed, as GitHub does.
-                    setName(nameIsRepoName ? suggestRepoName(e.target.value) : e.target.value);
-                  }}
-                  placeholder="my-project"
-                  spellCheck={false}
-                  autoComplete="off"
-                  maxLength={100}
-                  disabled={busy}
-                  className="fd-mono min-w-0 grow bg-transparent px-2.5 text-[12.5px] text-(--fd-text) outline-none placeholder:text-(--fd-text-disabled) focus-visible:outline-none"
-                />
-              </div>
-              {source !== "git" && (
-                <p className={HELPER}>
-                  {source === "create"
-                    ? "Letters, numbers, dots, dashes and underscores. It also names the repository created for it."
-                    : "Letters, numbers, dots, dashes and underscores. It also names the local repository."}
-                </p>
-              )}
-            </div>
-
-            {/* Mode is the wider column: it has three options to the database's one trigger. */}
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-              <div className="flex flex-col gap-1.5">
-                <span id="new-project-mode-label" className={LABEL}>
-                  Mode
-                </span>
-                <Segmented
-                  options={PROJECT_MODES.map((value) => ({
-                    value,
-                    label: MODE_SHORT_LABELS[value],
-                    ariaLabel: PROJECT_MODE_LABELS[value],
-                  }))}
-                  value={mode}
-                  onChange={setMode}
-                  disabled={busy}
-                  labelledBy="new-project-mode-label"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <span id="new-project-db-engine-label" className={LABEL}>
-                  Database
-                </span>
-                <PopoverSelect
-                  value={mode === "development" ? engine : ""}
-                  options={DATABASE_OPTIONS}
-                  onChange={setEngine}
-                  heading="Development database"
-                  icon={DatabaseIcon}
-                  disabled={busy || mode !== "development"}
-                  labelledBy="new-project-db-engine-label"
-                />
-              </div>
-            </div>
-
-            <Callout className="-mt-2">
-              {mode === "development" ? (
-                <>
-                  Created on the shared development server and written to the project&apos;s{" "}
-                  <Code>.env</Code> as <Code>DATABASE_URL</Code>.
-                </>
-              ) : (
-                <>
-                  A database on the shared server comes with development projects only; this
-                  project starts without <Code>DATABASE_URL</Code>.
-                </>
-              )}
-            </Callout>
-
-            {database && (
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="new-project-db-name" className={LABEL}>
-                  Database name
-                </label>
-                <input
-                  id="new-project-db-name"
-                  value={dbName}
-                  onChange={(e) => {
-                    setDbNameTouched(true);
-                    setDbName(
-                      e.target.value
-                        .toLowerCase()
-                        .replace(/[\s-]+/g, "_")
-                        .replace(/[^a-z0-9_]/g, "")
-                        .slice(0, 63),
-                    );
-                  }}
-                  placeholder="my_project"
-                  spellCheck={false}
-                  autoComplete="off"
-                  maxLength={63}
-                  disabled={busy}
-                  aria-invalid={!dbNameValid}
-                  className={cn(FIELD, "fd-mono placeholder:text-(--fd-text-disabled)")}
-                />
-                <p className={cn(HELPER, !dbNameValid && dbName && "text-destructive")}>
-                  Lower-case letters, digits and underscores, starting with a letter.
-                </p>
-              </div>
-            )}
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="new-project-key" className={LABEL}>
-                  Project key <span className="text-(--fd-text-disabled)">· optional, recommended</span>
-                </label>
-                <input
-                  id="new-project-key"
-                  type="password"
-                  value={projectKey}
-                  onChange={(e) => setProjectKey(e.target.value)}
-                  autoComplete="new-password"
-                  data-1p-ignore
-                  data-lpignore="true"
-                  maxLength={PROJECT_KEY_MAX}
-                  disabled={busy}
-                  aria-invalid={Boolean(projectKeyError && projectKey.length < PROJECT_KEY_MIN && projectKey)}
-                  className={FIELD}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="new-project-key-confirm" className={LABEL}>
-                  Confirm the key
-                </label>
-                <input
-                  id="new-project-key-confirm"
-                  type="password"
-                  value={projectKeyConfirm}
-                  onChange={(e) => setProjectKeyConfirm(e.target.value)}
-                  autoComplete="new-password"
-                  data-1p-ignore
-                  data-lpignore="true"
-                  maxLength={PROJECT_KEY_MAX}
-                  disabled={busy || !projectKey}
-                  className={FIELD}
-                />
-              </div>
-              {projectKeyError && projectKeyConfirm && (
-                <p className={cn(HELPER, "sm:col-span-2 text-destructive")}>{projectKeyError}</p>
-              )}
-            </div>
-
-            <div role="separator" className="h-px bg-(--fd-border-subtle)" />
-
             <OptionTabs
               value={source}
               onChange={(value) => {
@@ -994,6 +834,159 @@ export function NewProjectDialog({
                 </Callout>
               </OptionPanel>
             </OptionTabs>
+
+            <div role="separator" className="h-px bg-(--fd-border-subtle)" />
+
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="new-project-name" className={LABEL}>
+                Project name
+              </label>
+              <div className="flex h-[34px] overflow-hidden rounded-[8px] border border-(--fd-border-field) bg-(--fd-field) transition-[border-color,box-shadow] focus-within:border-(--fd-accent) focus-within:ring-[3px] focus-within:ring-(--fd-ring)">
+                {source === "create" && owner && (
+                  <span className="fd-mono flex shrink-0 items-center border-r border-(--fd-prefix-border) bg-(--fd-prefix) px-2.5 text-[11.5px] text-(--fd-icon-dim) select-none">
+                    {owner} /
+                  </span>
+                )}
+                <input
+                  id="new-project-name"
+                  value={name}
+                  onChange={(e) => {
+                    setNameTouched(true);
+                    // A new repository's name is its directory's name, so it is
+                    // corrected as it is typed, as GitHub does.
+                    setName(nameIsRepoName ? suggestRepoName(e.target.value) : e.target.value);
+                  }}
+                  placeholder="my-project"
+                  spellCheck={false}
+                  autoComplete="off"
+                  maxLength={100}
+                  disabled={busy}
+                  className="fd-mono min-w-0 grow bg-transparent px-2.5 text-[12.5px] text-(--fd-text) outline-none placeholder:text-(--fd-text-disabled) focus-visible:outline-none"
+                />
+              </div>
+              {source !== "git" && (
+                <p className={HELPER}>
+                  {source === "create"
+                    ? "Letters, numbers, dots, dashes and underscores. It also names the repository created for it."
+                    : "Letters, numbers, dots, dashes and underscores. It also names the local repository."}
+                </p>
+              )}
+            </div>
+
+            {/* Mode is the wider column: it has three options to the database's one trigger. */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+              <div className="flex flex-col gap-1.5">
+                <span id="new-project-mode-label" className={LABEL}>
+                  Mode
+                </span>
+                <Segmented
+                  options={PROJECT_MODES.map((value) => ({
+                    value,
+                    label: MODE_SHORT_LABELS[value],
+                    ariaLabel: PROJECT_MODE_LABELS[value],
+                  }))}
+                  value={mode}
+                  onChange={setMode}
+                  disabled={busy}
+                  labelledBy="new-project-mode-label"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <span id="new-project-db-engine-label" className={LABEL}>
+                  Database
+                </span>
+                <PopoverSelect
+                  value={mode === "development" ? engine : ""}
+                  options={DATABASE_OPTIONS}
+                  onChange={setEngine}
+                  heading="Development database"
+                  icon={DatabaseIcon}
+                  disabled={busy || mode !== "development"}
+                  labelledBy="new-project-db-engine-label"
+                />
+              </div>
+            </div>
+
+            {mode !== "development" && (
+              <Callout className="-mt-2">
+                A database on the shared server comes with development projects only; this
+                project starts without <Code>DATABASE_URL</Code>.
+              </Callout>
+            )}
+
+            {database && (
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="new-project-db-name" className={LABEL}>
+                  Database name
+                </label>
+                <input
+                  id="new-project-db-name"
+                  value={dbName}
+                  onChange={(e) => {
+                    setDbNameTouched(true);
+                    setDbName(
+                      e.target.value
+                        .toLowerCase()
+                        .replace(/[\s-]+/g, "_")
+                        .replace(/[^a-z0-9_]/g, "")
+                        .slice(0, 63),
+                    );
+                  }}
+                  placeholder="my_project"
+                  spellCheck={false}
+                  autoComplete="off"
+                  maxLength={63}
+                  disabled={busy}
+                  aria-invalid={!dbNameValid}
+                  className={cn(FIELD, "fd-mono placeholder:text-(--fd-text-disabled)")}
+                />
+                <p className={cn(HELPER, !dbNameValid && dbName && "text-destructive")}>
+                  Lower-case letters, digits and underscores, starting with a letter.
+                </p>
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="new-project-key" className={LABEL}>
+                  Project key <span className="text-(--fd-text-disabled)">· optional, recommended</span>
+                </label>
+                <input
+                  id="new-project-key"
+                  type="password"
+                  value={projectKey}
+                  onChange={(e) => setProjectKey(e.target.value)}
+                  autoComplete="new-password"
+                  data-1p-ignore
+                  data-lpignore="true"
+                  maxLength={PROJECT_KEY_MAX}
+                  disabled={busy}
+                  aria-invalid={Boolean(projectKeyError && projectKey.length < PROJECT_KEY_MIN && projectKey)}
+                  className={FIELD}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="new-project-key-confirm" className={LABEL}>
+                  Confirm the key
+                </label>
+                <input
+                  id="new-project-key-confirm"
+                  type="password"
+                  value={projectKeyConfirm}
+                  onChange={(e) => setProjectKeyConfirm(e.target.value)}
+                  autoComplete="new-password"
+                  data-1p-ignore
+                  data-lpignore="true"
+                  maxLength={PROJECT_KEY_MAX}
+                  disabled={busy || !projectKey}
+                  className={FIELD}
+                />
+              </div>
+              {projectKeyError && projectKeyConfirm && (
+                <p className={cn(HELPER, "sm:col-span-2 text-destructive")}>{projectKeyError}</p>
+              )}
+            </div>
 
             <div className="flex items-center justify-between gap-4 rounded-[8px] border border-(--fd-border-subtle) bg-(--fd-field-muted) px-3 py-2.5">
               <div className="flex min-w-0 flex-col gap-1">
