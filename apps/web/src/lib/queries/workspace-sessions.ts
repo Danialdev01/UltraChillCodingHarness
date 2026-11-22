@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query"
 
 import { qk } from "../query-keys"
 import { useRealtime } from "../realtime"
-import type { LiveTurnState, SidebarMode, WorkspaceSessions } from "../session-sidebar"
+import { statusOf, type LiveTurnState, type SidebarMode, type WorkspaceSessions } from "../session-sidebar"
 
 /** Every session in a workspace, with its projects, as the sidebar lists them. */
 export async function fetchWorkspaceSessions(workspaceId: string, archived = false): Promise<WorkspaceSessions> {
@@ -60,6 +60,29 @@ export function useLiveTurns(): ReadonlyMap<string, { state: LiveTurnState; at: 
     })
   }, [client])
   return states
+}
+
+/**
+ * Counts for the sidebar's header and rail: how many sessions are running
+ * right now, and how many are listed. Reads the same query as the session
+ * list (`useWorkspaceSessions(id, true)`), so it costs no extra request.
+ * A live turn heard on the socket wins over the row, as it does on the cards.
+ */
+export function useWorkspaceSessionStats(workspaceId: string): { running: number; sessions: number } {
+  const { data, dataUpdatedAt } = useWorkspaceSessions(workspaceId, true)
+  const live = useLiveTurns()
+  return React.useMemo(() => {
+    let running = 0
+    let sessions = 0
+    for (const session of data?.sessions ?? []) {
+      if (session.archivedAt || session.settleState === "settled") continue
+      sessions++
+      const heard = live.get(session.id)
+      const fresh = heard && heard.at > dataUpdatedAt - 1_000 ? heard.state : undefined
+      if (statusOf(session, fresh) === "running") running++
+    }
+    return { running, sessions }
+  }, [data, dataUpdatedAt, live])
 }
 
 // -- Preferences --------------------------------------------------------------

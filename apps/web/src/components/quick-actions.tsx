@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { usePathname } from "next/navigation";
 import {
-  DatabaseIcon,
-  FolderGitIcon,
-  ListTodoIcon,
+  DatabaseZapIcon,
+  FolderPlusIcon,
+  ListChecksIcon,
   MessageSquarePlusIcon,
   SquarePenIcon,
 } from "lucide-react";
@@ -70,9 +70,14 @@ export function QuickActions({
 
   return (
     <>
-      <div className={cn("grid gap-1", sessionWorkspace ? "grid-cols-3" : "grid-cols-4")}>
+      <div
+        className={cn(
+          "border-sidebar-border divide-sidebar-border grid divide-x border-t",
+          sessionWorkspace ? "grid-cols-3" : "grid-cols-4",
+        )}
+      >
         <Action
-          icon={ListTodoIcon}
+          icon={ListChecksIcon}
           label="New task"
           onClick={() => setTaskDialog({ mode: "create" })}
           unavailable={
@@ -94,14 +99,14 @@ export function QuickActions({
           />
         ) : (
           <Action
-            icon={FolderGitIcon}
+            icon={FolderPlusIcon}
             label="New project"
             onClick={() => setCreating(true)}
             unavailable={canCreateProject ? undefined : "Your role cannot create projects here"}
           />
         )}
         <Action
-          icon={DatabaseIcon}
+          icon={DatabaseZapIcon}
           label="New database connection"
           onClick={() => setConnecting(true)}
           unavailable={permissions.includes("workspace.manage") ? undefined : "Only an admin can add connections"}
@@ -170,10 +175,10 @@ function Action({
             disabled={disabled}
             aria-label={label}
             className={cn(
-              "text-muted-foreground focus-visible:ring-ring flex h-8 items-center justify-center rounded-lg border transition-colors focus-visible:ring-2 focus-visible:outline-none",
+              "text-muted-foreground focus-visible:ring-focus-ring flex items-center justify-center py-1.5 transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-inset",
               disabled
                 ? "cursor-not-allowed opacity-40"
-                : "hover:bg-accent hover:text-accent-foreground",
+                : "hover:bg-sidebar-accent hover:text-sidebar-foreground",
             )}
           />
         }

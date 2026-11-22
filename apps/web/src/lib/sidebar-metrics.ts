@@ -2,10 +2,10 @@
  * Distance from the sidebar's left edge to a control inside the second
  * column, in pixels.
  *
- * The parts: the rail (`--sidebar-width-icon`, 3rem), its 1px right border,
- * and the `p-2` on SidebarHeader / SidebarFooter.
+ * The parts: the rail (`--sidebar-width-icon`, 3.375rem = 54px), its 1px
+ * right border, and the 12px horizontal padding of the panel's header.
  */
-export const RAIL_OFFSET_PX = 48 + 1 + 8;
+export const RAIL_OFFSET_PX = 54 + 1 + 12;
 
 /**
  * How far left to pull a sidebar dropdown so it covers the icon rail.

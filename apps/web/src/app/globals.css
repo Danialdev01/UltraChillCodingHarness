@@ -36,6 +36,8 @@
 }
 
 @theme inline {
+    /* The sidebar's faint hover wash: its own ink at 4%, so it follows the theme. */
+    --color-sidebar-hover: color-mix(in oklab, var(--sidebar-foreground) 4%, transparent);
     --color-accent-strong: var(--accent-strong);
     --color-sunken: var(--sunken);
     --color-bubble-user: var(--bubble-user);
@@ -397,7 +399,7 @@
    * A custom property set inside the provider would not inherit across that
    * portal boundary.
    */
-  --ucch-sidebar-width: 19.8rem;
+  --ucch-sidebar-width: 20.25rem;
 
   /*
    * The second column's width: the sidebar less the icon rail.
@@ -408,7 +410,7 @@
    * `--sidebar-width-icon` there resolves against nothing, which invalidates
    * the whole declaration and leaves the flyout sized to its own text.
    */
-  --ucch-sidebar-panel-width: 16.8rem;
+  --ucch-sidebar-panel-width: 16.875rem;
 
   /*
    * The application typefaces.
@@ -1031,137 +1033,83 @@
     font-family: var(--app-font-mono);
 }
 
-/* The night sky behind the workspace switcher: two tiled star layers drifting
-   at different speeds, and a few sparkles that flare in turn. Paint only --
-   it sits under the switcher and takes no pointer events. Only transform and
-   opacity animate, so it stays on the compositor. In light mode it is a pale
-   dawn with dim stars, so the switcher's text keeps its contrast either way. */
-.ucch-sky {
-    /* Mixed from the theme's tokens rather than fixed colours, so a palette
-       chosen in Settings -> Theme recolours the sky with everything else:
-       the glow is the primary, the stars are the sidebar's own text colour,
-       and the foot fades into the sidebar so the header has no seam. */
-    --sky-top: color-mix(in oklab, var(--primary) 22%, var(--sidebar));
-    --sky-mid: color-mix(in oklab, var(--primary) 8%, var(--sidebar));
-    --sky-foot: var(--sidebar);
-    --sky-glow-a: color-mix(in oklab, var(--chart-3) 5%, transparent);
-    --sky-glow-b: color-mix(in oklab, var(--primary) 28%, transparent);
-    --star: color-mix(in oklab, var(--sidebar-foreground) 50%, transparent);
-    --star-cool: color-mix(in oklab, var(--primary) 30%, color-mix(in oklab, var(--sidebar-foreground) 45%, transparent));
-    --star-bright: color-mix(in oklab, var(--sidebar-foreground) 90%, transparent);
-    --sparkle-core: var(--sidebar-foreground);
-    --sparkle-halo: color-mix(in oklab, var(--primary) 70%, transparent);
-    --sparkle-ray: color-mix(in oklab, var(--sidebar-foreground) 85%, transparent);
+/* The sidebar header's backdrop (components/sidebar/sky-backdrop.tsx).
 
+   Dark mode draws a starfield on a canvas; light mode an SVG sun peeking in
+   from the top-right corner. Both are decorative layers over the flat
+   --sidebar surface, not a fill of it: the header itself has no gradient
+   (light guideline §2.1), and every colour is read from the theme's tokens,
+   so a palette chosen in Settings -> Theme recolours them. Paint only --
+   neither takes pointer events. */
+.ucch-sky-canvas {
     position: absolute;
     inset: 0;
-    overflow: hidden;
-    isolation: isolate;
+    width: 100%;
+    height: 100%;
     pointer-events: none;
-    background:
-        radial-gradient(90% 160% at 95% 0%, var(--sky-glow-a), transparent 60%),
-        radial-gradient(80% 140% at 35% -20%, var(--sky-glow-b), transparent 65%),
-        linear-gradient(180deg, var(--sky-top) 0%, var(--sky-mid) 55%, var(--sky-foot) 100%);
+    mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
 }
-.ucch-sky::before,
-.ucch-sky::after {
-    content: "";
+.ucch-sky-hairline {
     position: absolute;
-    inset: 0 auto 0 0;
-    z-index: -1;
-    will-change: transform;
+    inset: 0 0 auto 0;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--sidebar-primary) 60%, transparent), transparent);
 }
-.ucch-sky::before {
-    width: calc(100% + 160px);
-    background-image:
-        radial-gradient(1px 1px at 12px 10px, var(--star), transparent 50%),
-        radial-gradient(1px 1px at 48px 38px, var(--star-cool), transparent 50%),
-        radial-gradient(1px 1px at 86px 14px, var(--star), transparent 50%),
-        radial-gradient(1px 1px at 118px 50px, var(--star), transparent 50%),
-        radial-gradient(1px 1px at 140px 24px, var(--star-cool), transparent 50%),
-        radial-gradient(1px 1px at 30px 56px, var(--star), transparent 50%),
-        radial-gradient(1px 1px at 70px 60px, var(--star), transparent 50%),
-        radial-gradient(1px 1px at 104px 4px, var(--star), transparent 50%);
-    background-size: 160px 64px;
-    animation: ucch-sky-drift-a 90s linear infinite;
-}
-.ucch-sky::after {
-    width: calc(100% + 240px);
-    background-image:
-        radial-gradient(1.5px 1.5px at 40px 18px, var(--star-bright), transparent 60%),
-        radial-gradient(1.5px 1.5px at 130px 44px, var(--star-cool), transparent 60%),
-        radial-gradient(2px 2px at 200px 12px, var(--star-bright), transparent 60%),
-        radial-gradient(1.5px 1.5px at 225px 52px, var(--star-cool), transparent 60%);
-    background-size: 240px 64px;
-    animation:
-        ucch-sky-drift-b 55s linear infinite,
-        ucch-sky-twinkle 4s ease-in-out infinite alternate;
-}
-.ucch-sky-sparkle {
+.ucch-sun {
     position: absolute;
-    left: var(--x);
-    top: var(--y);
-    width: var(--s);
-    height: var(--s);
-    opacity: 0;
-    background:
-        radial-gradient(circle, var(--sparkle-core) 0 1px, var(--sparkle-halo) 2px, transparent 4px),
-        linear-gradient(90deg, transparent, var(--sparkle-ray), transparent) center / 100% 1px no-repeat,
-        linear-gradient(0deg, transparent, var(--sparkle-ray), transparent) center / 1px 100% no-repeat;
-    will-change: transform, opacity;
-    animation: ucch-sky-sparkle var(--dur) ease-in-out var(--d) infinite;
+    top: 0;
+    right: 0;
+    width: 180px;
+    height: 180px;
+    pointer-events: none;
+    transform: translate3d(var(--sun-x, 0px), var(--sun-y, 0px), 0);
+    transition: transform 600ms cubic-bezier(.2, .7, .2, 1);
+    /* The sun's own palette, from the status and chart tokens. */
+    --sun-core: color-mix(in oklab, var(--warning-soft) 70%, var(--background));
+    --sun-mid: color-mix(in oklab, var(--chart-5) 30%, var(--warning-soft));
+    --sun-body: color-mix(in oklab, var(--chart-5) 55%, var(--warning-soft));
+    --sun-edge: color-mix(in oklab, var(--chart-5) 80%, var(--warning));
+    --sun-ray: color-mix(in oklab, var(--chart-5) 65%, var(--warning-soft));
+    --sun-glow: var(--warning-soft);
 }
-@keyframes ucch-sky-drift-a {
-    to { transform: translate3d(-160px, 0, 0); }
+.ucch-sun-pivot {
+    transform-box: view-box;
+    transform-origin: 168px 12px;
 }
-@keyframes ucch-sky-drift-b {
-    to { transform: translate3d(-240px, 0, 0); }
+.ucch-sun-glow { animation: ucch-sun-breathe 7s ease-in-out infinite; }
+.ucch-sun-halo { animation: ucch-sun-spin 140s linear infinite reverse; }
+.ucch-sun-rays { animation: ucch-sun-spin 90s linear infinite; }
+.ucch-sun-sparkle {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: ucch-sun-twinkle 3.6s ease-in-out var(--d, 0s) infinite;
 }
-@keyframes ucch-sky-twinkle {
-    from { opacity: 0.45; }
-    to { opacity: 1; }
+@keyframes ucch-sun-spin { to { transform: rotate(360deg); } }
+@keyframes ucch-sun-breathe {
+    0%, 100% { opacity: 0.8; transform: scale(0.97); }
+    50% { opacity: 1; transform: scale(1.03); }
 }
-@keyframes ucch-sky-sparkle {
-    0%, 60%, 100% { opacity: 0; transform: scale(0.2) rotate(0); }
-    75% { opacity: 1; transform: scale(1) rotate(45deg); }
-    90% { opacity: 0; transform: scale(0.4) rotate(90deg); }
+@keyframes ucch-sun-twinkle {
+    0%, 100% { opacity: 0; transform: scale(0.4); }
+    50% { opacity: 1; transform: scale(1); }
 }
 @media (prefers-reduced-motion: reduce) {
-    .ucch-sky::before,
-    .ucch-sky::after {
-        animation: none;
-    }
-    .ucch-sky-sparkle {
-        display: none;
-    }
+    .ucch-sun { transition: none; transform: none; }
+    .ucch-sun-glow,
+    .ucch-sun-halo,
+    .ucch-sun-rays { animation: none; }
+    .ucch-sun-sparkle { animation: none; opacity: 0.7; }
 }
 
 /* ---------------------------------------------------------------------------
    The light theme guideline's structural rules, light mode only.
 
    Colour comes from the tokens; what is here is what a token cannot say:
-   no gradient on the sidebar header, raised menus with a strong edge, bold
-   selected rows, secondary-coloured icons at rest. Only colour, border,
-   shadow and weight -- never size -- so a component's own layout stands.
+   raised menus with a strong edge, bold selected rows, secondary-coloured
+   icons at rest. Only colour, border, shadow and weight -- never size -- so
+   a component's own layout stands.
    --------------------------------------------------------------------------- */
-/* §2.1: no gradients on structural surfaces. */
-.ucch-sky {
-    @variant light {
-        background: none;
-    }
-}
-:root[data-theme-mode="light"] .ucch-sky::before,
-:root[data-theme-mode="light"] .ucch-sky::after,
-:root[data-theme-mode="light"] .ucch-sky-sparkle {
-    display: none;
-}
-@media (prefers-color-scheme: light) {
-    :root[data-theme-mode="system"] .ucch-sky::before,
-    :root[data-theme-mode="system"] .ucch-sky::after,
-    :root[data-theme-mode="system"] .ucch-sky-sparkle {
-        display: none;
-    }
-}
 /* §4: menus, popovers and floating panels are raised. */
 [data-slot="dropdown-menu-content"],
 [data-slot="dropdown-menu-sub-content"],

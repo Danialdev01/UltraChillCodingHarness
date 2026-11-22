@@ -112,3 +112,17 @@ export function sessionModelLabel(
   if (named) return harness.id === "ucch" ? `Default · ${named}` : named
   return harness.modelLabel(model)
 }
+
+/** The two letters a session card shows beside the harness's mark: CC, CX, UC. */
+export function harnessTag(provider: string | null | undefined): string {
+  switch (harnessIdOf(provider)) {
+    case "claude":
+      return "CC"
+    case "codex":
+      return "CX"
+    case "ucch":
+      return "UC"
+    default:
+      return ""
+  }
+}

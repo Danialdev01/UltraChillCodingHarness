@@ -4,21 +4,19 @@ import * as React from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { usePathname } from "next/navigation"
 
-import { AppLogo } from "@/components/app-logo"
 import { NavUser } from "@/components/nav-user"
-import { RailItem } from "@/components/rail-flyout"
+import { RAIL_BUTTON, RailIndicator, RailItem } from "@/components/rail-flyout"
 import { QuickActions } from "@/components/quick-actions"
 import { QuickMenu } from "@/components/quick-menu"
 import { QuotaRail } from "@/components/quota-rail"
 import { SectionPanel } from "@/components/section-panel"
+import { SkyBackdrop } from "@/components/sidebar/sky-backdrop"
+import { WorkspaceHeader } from "@/components/sidebar/workspace-header"
+import { WorkspaceLogo } from "@/components/sidebar/workspace-logo"
 import { WorkspaceSwitcher, type Workspace } from "@/components/workspace-switcher"
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -29,14 +27,15 @@ import type { Project } from "@/lib/session"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { useTransitionRouter } from "@/lib/view-transitions"
 import { useMe, useShellLists } from "@/lib/queries/bootstrap"
+import { useWorkspaceSessionStats } from "@/lib/queries/workspace-sessions"
 import { useResourcesPanel } from "@/lib/resources-panel"
 import { ResourcesPanel } from "@/components/resources/resources-panel"
 import { FolderIcon } from "lucide-react"
 
 /**
- * Two columns: a fixed icon rail topped by the app logo, and a panel
- * whose contents follow the icon you are on, with the workspace switcher
- * above it. The profile spans both columns across the bottom.
+ * Two columns: a fixed icon rail topped by the workspace's own logo, with
+ * the account at its foot, and a panel whose contents follow the icon you
+ * are on, under the workspace header and the command bar.
  *
  * The inner Sidebars are pinned so they never collapse; only the outer one
  * does, clipping the panel away and leaving the rail.
@@ -76,8 +75,7 @@ export function AppSidebar({
     ? { name: me.name ?? me.login ?? "User", email: me.email ?? "", avatar: me.avatarUrl ?? undefined }
     : user
   const queryClient = useQueryClient()
-  const { setOpen, setOpenMobile, state } = useSidebar()
-  const collapsed = state === "collapsed"
+  const { setOpen, setOpenMobile } = useSidebar()
   const pathname = usePathname()
   const active = sectionForPath(pathname)
   const activeProjectHash = projectHashFromPath(pathname) ?? undefined
@@ -86,6 +84,9 @@ export function AppSidebar({
   // Resources replaces the panel, not the page: while it is open the rail
   // lights its folder rather than the URL's section.
   const resources = useResourcesPanel()
+  const stats = useWorkspaceSessionStats(activeWorkspaceId)
+  // Held here so the rail's logo and the header's name open the same list.
+  const [switcherOpen, setSwitcherOpen] = React.useState(false)
 
   // A project opened straight after creating it can arrive before the list
   // knows it. Asking again once, per project, is what puts its row (and a
@@ -126,46 +127,49 @@ export function AppSidebar({
       {/* min-h-0 so the panel's own scroll container bounds itself against
           this row rather than growing the sidebar past the viewport. */}
       <div className="flex min-h-0 flex-1 flex-row">
-        {/* Column 1: the icon rail, from the top edge down to the footer. A shade off the
-            panel's background, mixed from the theme's own tokens so a palette
-            chosen in Settings -> Theme still recolours it. */}
-        {/* The fallback is for the phone drawer: it is portalled out of the
-            provider that defines --sidebar-width-icon, and an unresolved var
-            would drop the width and stretch the rail to fit its labels. */}
+        {/* Column 1: the icon rail. The workspace at the top, the sections,
+            then the usage gauge, settings and the account pinned to the
+            foot. Only the sections scroll, so on a short window the foot
+            stays on screen. */}
+        {/* The width fallback is for the phone drawer: it is portalled out of
+            the provider that defines --sidebar-width-icon, and an unresolved
+            var would drop the width and stretch the rail to fit its labels. */}
         <Sidebar
           collapsible="none"
-          className="w-[calc(var(--sidebar-width-icon,3rem)+1px)]! border-r bg-[color-mix(in_oklab,var(--sidebar)_94%,var(--sidebar-foreground))]"
+          className="border-sidebar-border w-[calc(var(--sidebar-width-icon,3.375rem)+1px)]! items-center border-r py-3"
         >
-          {/* The same h-16 + border-b as the workspace header beside it, so
-              the two bottom borders meet as one rule across the top. */}
-          <SidebarHeader className="h-16 shrink-0 justify-center border-b p-0 px-2">
-            <AppLogo />
-          </SidebarHeader>
-          <SidebarContent>
-            <SidebarGroup>
-              <SidebarGroupContent className="px-0">
-                <SidebarMenu>
-                  {SECTIONS.map(railItem)}
-                  <ResourcesRailItem
-                    active={resources.open}
-                    onToggle={() => {
-                      resources.toggle()
-                      setOpen(true)
-                    }}
-                  />
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-          </SidebarContent>
-          {/* Outside the scrolling SidebarContent so they stay at the foot of
-              the rail rather than below the last section: the quota meters,
-              then Settings, which is where the accounts they measure live. */}
-          <QuotaRail />
-          <SidebarGroup>
-            <SidebarGroupContent className="px-0">
-              <SidebarMenu>{railItem(WORKSPACE_SETTINGS)}</SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
+          <WorkspaceLogo
+            name={activeWorkspace?.name ?? "Workspace"}
+            logo={activeWorkspace?.logo ?? null}
+            running={stats.running}
+            onClick={() => {
+              // Collapsed, the name it opens under is clipped away: open the
+              // panel first, and the list follows it out.
+              setOpen(true)
+              setSwitcherOpen(true)
+            }}
+          />
+          <span className="bg-border mb-1.5 h-px w-5 shrink-0" aria-hidden />
+          <nav
+            aria-label="Sections"
+            className="min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto [scrollbar-width:none]"
+          >
+            <SidebarMenu className="gap-1.5">
+              {SECTIONS.map(railItem)}
+              <ResourcesRailItem
+                active={resources.open}
+                onToggle={() => {
+                  resources.toggle()
+                  setOpen(true)
+                }}
+              />
+            </SidebarMenu>
+          </nav>
+          <div className="flex w-full shrink-0 flex-col items-center gap-1.5 pt-1.5">
+            <QuotaRail />
+            <SidebarMenu>{railItem(WORKSPACE_SETTINGS)}</SidebarMenu>
+            <NavUser user={shownUser} />
+          </div>
         </Sidebar>
 
         {/* Column 2: whatever the selected section shows. `min-w-0` because
@@ -183,55 +187,59 @@ export function AppSidebar({
             if ((event.target as Element).closest("a[href]")) setOpenMobile(false)
           }}
         >
-          {/* h-16 + border-b mirrors the page header in app-shell.tsx, so the
-              bottom borders meet as a single unbroken rule across the top.
-              Vertical padding here would push the switcher below that line. */}
-          <SidebarHeader className="relative h-16 shrink-0 justify-center border-b p-0 px-2">
-            <NightSky />
-            {/* Positioned so it paints above the sky, which is. */}
-            <div className="relative">
-              <WorkspaceSwitcher workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} />
+          {/* The workspace header and the command bar, over the sky. */}
+          <div className="relative shrink-0 overflow-hidden">
+            <SkyBackdrop />
+            <div className="relative px-3 pt-3.5 pb-3">
+              <WorkspaceHeader
+                switcher={
+                  <WorkspaceSwitcher
+                    workspaces={workspaces}
+                    activeWorkspaceId={activeWorkspaceId}
+                    open={switcherOpen}
+                    onOpenChange={setSwitcherOpen}
+                  />
+                }
+                running={stats.running}
+                projectCount={projects.length}
+                sessionCount={stats.sessions}
+                sessionWorkspace={sessionWorkspace}
+              />
+              {/* Search and the quick actions, as one shape. Frosted, so the
+                  stars or the sun behind it do not fight the text. */}
+              <div className="border-border focus-within:border-border-strong bg-sidebar/70 mt-3 overflow-hidden rounded-xl border backdrop-blur-[4px] transition-colors duration-150">
+                <QuickMenu
+                  projects={projects}
+                  workspaces={workspaces}
+                  activeWorkspaceId={activeWorkspaceId}
+                />
+                <QuickActions
+                  workspaceId={activeWorkspaceId}
+                  projects={projects}
+                  sessionWorkspace={sessionWorkspace}
+                  permissions={activeWorkspace?.permissions ?? []}
+                />
+              </div>
             </div>
-          </SidebarHeader>
-
-          <div className="flex flex-col gap-2 border-b p-2">
-            <QuickMenu
-              projects={projects}
-              workspaces={workspaces}
-              activeWorkspaceId={activeWorkspaceId}
-            />
-            <QuickActions
-              workspaceId={activeWorkspaceId}
-              projects={projects}
-              sessionWorkspace={sessionWorkspace}
-              permissions={activeWorkspace?.permissions ?? []}
-            />
           </div>
 
           <SidebarContent>
             {resources.open && activeWorkspaceId ? (
               <ResourcesPanel workspaceId={activeWorkspaceId} permissions={activeWorkspace?.permissions ?? []} />
             ) : (
-            <SectionPanel
-              section={active}
-              projects={projects}
-              connections={connections}
-              workspaces={workspaces}
-              workspaceId={activeWorkspaceId}
-              sessionWorkspace={sessionWorkspace}
-              activeProjectHash={activeProjectHash}
-            />
+              <SectionPanel
+                section={active}
+                projects={projects}
+                connections={connections}
+                workspaces={workspaces}
+                workspaceId={activeWorkspaceId}
+                sessionWorkspace={sessionWorkspace}
+                activeProjectHash={activeProjectHash}
+              />
             )}
           </SidebarContent>
         </Sidebar>
       </div>
-
-      {/* Spans both columns, so the rail stops above it. One footer in both
-          states: a second copy inside the collapsed-away column would stay
-          focusable and be read out, duplicating this one. */}
-      <SidebarFooter className={collapsed ? "items-center border-t p-1.5" : "border-t"}>
-        <NavUser user={shownUser} compact={collapsed} />
-      </SidebarFooter>
     </Sidebar>
   )
 }
@@ -243,45 +251,19 @@ export function AppSidebar({
  */
 function ResourcesRailItem({ active, onToggle }: { active: boolean; onToggle: () => void }) {
   return (
-    <SidebarMenuItem className="py-[5px]">
+    <SidebarMenuItem className="flex justify-center">
+      {active && <RailIndicator />}
       <SidebarMenuButton
         isActive={active}
         aria-pressed={active}
+        aria-label="Files"
         onClick={onToggle}
-        className="px-2"
-        tooltip={{ children: "Resources", hidden: false }}
+        className={RAIL_BUTTON}
+        tooltip={{ children: "Files", hidden: false, side: "right" }}
       >
         <FolderIcon />
-        <span>Resources</span>
+        <span className="sr-only">Files</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
-  )
-}
-
-/**
- * A few sparkles at fixed spots, each flaring on its own beat. Fixed rather
- * than random so the server and client render the same markup.
- */
-const SPARKLES = [
-  { x: "22%", y: "18%", s: "10px", dur: "4.4s", d: "0s" },
-  { x: "58%", y: "58%", s: "8px", dur: "5.2s", d: "1.6s" },
-  { x: "78%", y: "14%", s: "11px", dur: "4.8s", d: "2.8s" },
-  { x: "94%", y: "62%", s: "8px", dur: "5.6s", d: "0.9s" },
-]
-
-/** The drifting stars behind the workspace switcher; styled in globals.css. */
-function NightSky() {
-  return (
-    <div className="ucch-sky" aria-hidden>
-      {SPARKLES.map((p) => (
-        <span
-          key={`${p.x}-${p.y}`}
-          className="ucch-sky-sparkle"
-          style={
-            { "--x": p.x, "--y": p.y, "--s": p.s, "--dur": p.dur, "--d": p.d } as React.CSSProperties
-          }
-        />
-      ))}
-    </div>
   )
 }

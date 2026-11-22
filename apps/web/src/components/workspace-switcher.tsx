@@ -20,14 +20,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
 import type { Workspace } from "@/lib/session";
 import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics";
 import { useToast } from "@/lib/realtime";
 import { useTransitionRouter } from "@/lib/view-transitions";
 import { qk } from "@/lib/query-keys";
 import { useInvalidate } from "@/lib/use-invalidate";
-import { countLabel, deleteWorkspace, updateWorkspace } from "@/lib/workspace-api";
+import { deleteWorkspace, updateWorkspace } from "@/lib/workspace-api";
 
 export type { Workspace };
 
@@ -46,14 +45,21 @@ export type { Workspace };
 export function WorkspaceSwitcher({
   workspaces,
   activeWorkspaceId,
+  open,
+  onOpenChange: setOpen,
 }: {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  /**
+   * Held by the sidebar, so the workspace logo at the top of the rail can
+   * open this same list -- anchored here, under the name.
+   */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const transitionRouter = useTransitionRouter();
   const invalidate = useInvalidate();
   const toast = useToast();
-  const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   /** The workspace whose Manage dialog is open. */
@@ -172,32 +178,32 @@ export function WorkspaceSwitcher({
 
   return (
     <>
-      <SidebarMenu>
-        <SidebarMenuItem>
-          <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger
-              render={
-                <SidebarMenuButton
-                  size="lg"
-                  role="combobox"
-                  aria-expanded={open}
-                  aria-label="Workspace"
-                  // See-through rather than the menu's solid hover, so the sky
-                  // behind it stays visible: a thin tint and a hairline edge,
-                  // held while the list is open. Base UI marks an open
-                  // trigger with aria-expanded, not data-open.
-                  className="hover:bg-sidebar/45 hover:text-sidebar-foreground hover:shadow-[inset_0_0_0_1px_var(--border-strong)] active:bg-sidebar/45 active:text-sidebar-foreground aria-expanded:bg-sidebar/45 aria-expanded:text-sidebar-foreground aria-expanded:shadow-[inset_0_0_0_1px_var(--border-strong)]"
-                />
-              }
-            >
-              <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">{active?.name ?? "No workspace"}</span>
-                <span className="truncate text-xs">
-                  {active ? countLabel(active) : "Create one to start"}
-                </span>
-              </div>
-              <ChevronsUpDownIcon className="ml-auto" />
-            </PopoverTrigger>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger
+          render={
+            // See-through rather than a solid hover, so the sky behind it
+            // stays visible: the chevron brightens, the name stays put.
+            <button
+              type="button"
+              role="combobox"
+              aria-expanded={open}
+              aria-label={`Workspace: ${active?.name ?? "none"}. Switch workspace`}
+              className="group/ws focus-visible:ring-focus-ring -mx-1 flex min-w-0 flex-col items-start rounded-md px-1 text-left transition-colors duration-150 outline-none focus-visible:ring-2"
+            />
+          }
+        >
+          {/* The only uppercase text in the sidebar. */}
+          <span className="text-text-subtle text-[10.5px] leading-4 tracking-[0.08em] uppercase">Workspace</span>
+          <span className="flex min-w-0 max-w-full items-center gap-1.5">
+            <span className="text-sidebar-foreground truncate text-[15px] leading-5 font-semibold">
+              {active?.name ?? "No workspace"}
+            </span>
+            <ChevronsUpDownIcon
+              aria-hidden
+              className="text-text-subtle group-hover/ws:text-sidebar-foreground group-aria-expanded/ws:text-sidebar-foreground size-3.5 shrink-0 transition-colors duration-150"
+            />
+          </span>
+        </PopoverTrigger>
 
             {/* Overshot left so it clamps flush to the sidebar's edge rather
                 than sitting inset by the header's padding, and widened to the
@@ -216,7 +222,7 @@ export function WorkspaceSwitcher({
               collisionAvoidance={{ align: "shift" }}
               collisionPadding={0}
               sideOffset={4}
-              className="w-(--ucch-sidebar-width) min-w-56 p-0"
+              className="w-(--ucch-sidebar-width) max-w-[100vw] min-w-56 p-0"
             >
               <WorkspaceList
                 live={live}
@@ -235,9 +241,7 @@ export function WorkspaceSwitcher({
                 rowMenu={rowMenu}
               />
             </PopoverContent>
-          </Popover>
-        </SidebarMenuItem>
-      </SidebarMenu>
+      </Popover>
 
       <NewWorkspaceDialog open={creating} onOpenChange={setCreating} onCreated={select} />
 

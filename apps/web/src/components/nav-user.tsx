@@ -15,23 +15,24 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import {
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  useSidebar,
-} from "@/components/ui/sidebar"
-import { ChevronsUpDownIcon, DownloadIcon, LogOutIcon, UserRoundCogIcon } from "lucide-react"
+import { useSidebar } from "@/components/ui/sidebar"
+import { DownloadIcon, LogOutIcon, UserRoundCogIcon } from "lucide-react"
 
 import { canInstall, clearPageCache, promptInstall, subscribeInstall } from "@/lib/pwa"
 import { clearUserCache } from "@/lib/query-client"
 import { SETTINGS } from "@/lib/sections"
-import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics"
 import { TransitionLink } from "@/lib/view-transitions"
 
+/**
+ * The account, as an avatar at the foot of the icon rail. It opens the
+ * account menu: settings, installing the app, logging out.
+ *
+ * In the rail rather than a full-width footer, so the panel keeps that
+ * height for its list, and the account stays on screen when the panel is
+ * collapsed away.
+ */
 export function NavUser({
   user,
-  compact = false,
 }: {
   user: {
     name: string
@@ -39,17 +40,12 @@ export function NavUser({
     /** Absent when no picture is set; the initials stand in for it. */
     avatar?: string
   }
-  /**
-   * Renders the avatar alone, for the icon rail where nothing else fits.
-   * An explicit prop rather than descendant selectors that hide the text --
-   * hidden-but-present markup still gets read out by screen readers.
-   */
-  compact?: boolean
 }) {
   const { isMobile } = useSidebar()
   // Offered only while the browser says the app can be installed: never in
   // an installed window, and not in browsers without the prompt at all.
   const installable = useSyncExternalStore(subscribeInstall, canInstall, () => false)
+  const label = user.email ? `${user.name} · ${user.email}` : user.name
 
   async function onLogout() {
     // The session cookie is HttpOnly, so it can only be cleared by the server.
@@ -60,52 +56,25 @@ export function NavUser({
     window.location.replace("/login")
   }
   return (
-    <SidebarMenu>
-      <SidebarMenuItem>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <SidebarMenuButton
-                size={compact ? "default" : "lg"}
-                aria-label={compact ? user.name : undefined}
-                className={
-                  compact
-                    ? "aria-expanded:bg-muted size-8 justify-center p-0"
-                    : "aria-expanded:bg-muted"
-                }
-              />
-            }
-          >
-            <Avatar className={compact ? "size-7" : undefined}>
-              <AvatarImage src={user.avatar} alt={user.name} />
-              <AvatarFallback>{initials(user.name)}</AvatarFallback>
-            </Avatar>
-            {!compact && (
-              <>
-                <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">{user.name}</span>
-                  <span className="truncate text-xs">{user.email}</span>
-                </div>
-                <ChevronsUpDownIcon className="ml-auto size-4" />
-              </>
-            )}
-          </DropdownMenuTrigger>
-          {/* Expanded, the menu is overshot left so it clamps flush to the
-              sidebar's edge and widened to match it -- the same treatment as
-              the workspace switcher at the other end. Collapsed, the sidebar
-              is only as wide as the rail, so it opens to the side instead. */}
-          <DropdownMenuContent
-            className={
-              compact
-                ? "min-w-56 rounded-lg"
-                : "w-(--ucch-sidebar-width) min-w-56 rounded-lg"
-            }
-            side={isMobile ? "bottom" : compact ? "right" : "top"}
-            align={compact ? "end" : "start"}
-            alignOffset={compact ? 0 : -RAIL_OVERLAP_PX}
-            collisionPadding={0}
-            sideOffset={4}
-          >
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={`Account: ${label}`}
+        title={label}
+        className="focus-visible:ring-focus-ring mt-0.5 grid size-[30px] shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2"
+      >
+        <Avatar className="ring-border hover:ring-border-strong size-[30px] ring-1 transition-shadow duration-150 after:hidden">
+          <AvatarImage src={user.avatar} alt="" />
+          <AvatarFallback className="bg-accent-soft text-accent-strong text-[11px] font-semibold">
+            {initials(user.name)}
+          </AvatarFallback>
+        </Avatar>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        className="min-w-56 rounded-lg"
+        side={isMobile ? "top" : "right"}
+        align="end"
+        sideOffset={8}
+      >
             <DropdownMenuGroup>
               <DropdownMenuLabel className="p-0 font-normal">
                 <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
@@ -142,9 +111,7 @@ export function NavUser({
               Log out
             </DropdownMenuItem>
           </DropdownMenuContent>
-        </DropdownMenu>
-      </SidebarMenuItem>
-    </SidebarMenu>
+    </DropdownMenu>
   )
 }
 

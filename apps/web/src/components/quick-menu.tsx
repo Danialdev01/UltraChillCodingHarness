@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { SearchIcon } from "lucide-react";
 
 import { NewDatabaseDialog, NewProjectDialog, NewWorkspaceDialog, QuickMenuPalette } from "@/components/on-demand";
@@ -31,6 +31,7 @@ export function QuickMenu({
   activeWorkspaceId: string;
 }) {
   const router = useTransitionRouter();
+  const mac = useSyncExternalStore(noSubscribe, isMac, () => true);
   const [open, setOpen] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -90,15 +91,18 @@ export function QuickMenu({
 
   return (
     <>
+      {/* The top half of the sidebar's command bar: the frame around it and
+          the action strip below are the sidebar's (app-sidebar.tsx). */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="border-input bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring flex h-8 w-full items-center gap-2 rounded-lg border px-2.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none dark:bg-input/30"
+        aria-keyshortcuts={mac ? "Meta+K" : "Control+K"}
+        className="text-text-subtle hover:text-muted-foreground focus-visible:ring-focus-ring flex w-full items-center gap-2 px-2.5 py-2 text-left text-[13px] transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-inset"
       >
-        <SearchIcon className="size-4 shrink-0" />
-        <span className="flex-1 text-left">Search…</span>
-        <kbd className="bg-muted text-muted-foreground pointer-events-none hidden rounded border px-1.5 font-mono text-2xs sm:inline-block">
-          ⌘K
+        <SearchIcon className="size-4 shrink-0" aria-hidden />
+        <span className="min-w-0 flex-1 truncate">Search or run a command</span>
+        <kbd className="text-text-subtle border-border pointer-events-none shrink-0 rounded-[4px] border px-1.5 font-mono text-[10.5px] leading-4">
+          {mac ? "⌘K" : "Ctrl K"}
         </kbd>
       </button>
 
@@ -137,4 +141,11 @@ export function QuickMenu({
       />
     </>
   );
+}
+
+const noSubscribe = () => () => {};
+
+/** Whether to show ⌘ rather than Ctrl. The server renders ⌘, and the client corrects it. */
+function isMac(): boolean {
+  return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 }

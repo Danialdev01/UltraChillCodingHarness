@@ -12,6 +12,25 @@ import { TransitionLink } from "@/lib/view-transitions"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 
 /**
+ * A rail button: 36px square, 9px corners, an 18px icon. Its own size in
+ * both states (the menu button shrinks to 32px once collapsed otherwise),
+ * and secondary-coloured at rest. Lit, it takes the menu button's selected
+ * tint and accent text (light guideline §5.2).
+ */
+export const RAIL_BUTTON =
+  "size-9! justify-center rounded-[9px] p-0! group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:p-0! text-muted-foreground hover:text-sidebar-foreground transition-colors duration-150 focus-visible:ring-focus-ring [&_svg]:size-[18px]"
+
+/** The lit rail item's bar, against the rail's left edge. */
+export function RailIndicator() {
+  return (
+    <span
+      className="bg-sidebar-primary pointer-events-none absolute top-1/2 left-0 h-4 w-[3px] -translate-y-1/2 rounded-r-full"
+      aria-hidden
+    />
+  )
+}
+
+/**
  * A rail icon, and what it opens when the sidebar is collapsed.
  *
  * Collapsed, the rail is six anonymous glyphs and everything the panel used
@@ -53,29 +72,33 @@ export function RailItem({
     <SidebarMenuButton
       isActive={isActive}
       onClick={onOpenSidebar}
-      className="px-2"
+      aria-label={section.title}
+      aria-current={isActive ? "page" : undefined}
+      className={RAIL_BUTTON}
       render={<TransitionLink href={sectionEntry(section, ws)} />}
       // The rail is icon-width whether or not the sidebar is expanded, so the
       // label is never beside the icon and the tooltip always earns its place
       // -- `hidden: false` overrides the button's own collapsed-only rule.
       // The exception is when the flyout is in play: it names the section in
       // its own header, and a tooltip would be a second label fighting it.
-      {...(collapsed && !isMobile ? {} : { tooltip: { children: section.title, hidden: false } })}
+      {...(collapsed && !isMobile ? {} : { tooltip: { children: section.title, hidden: false, side: "right" as const } })}
     />
   )
 
-  // The padding is on the item rather than the button: the button's height is
-  // pinned by its variants (h-8, and size-8! once collapsed), so padding
-  // there would eat into the icon's hit area instead of spacing the rail out.
+  // The item spans the rail, so the lit bar can sit against its left edge;
+  // the button is centred in it.
   const item = (children: React.ReactNode) => (
-    <SidebarMenuItem className="py-[5px]">{children}</SidebarMenuItem>
+    <SidebarMenuItem className="flex justify-center">
+      {isActive && <RailIndicator />}
+      {children}
+    </SidebarMenuItem>
   )
 
   // On a phone the sidebar is a sheet, not a rail: there is nothing collapsed
   // to expand, and a hover card has no hover to open it.
   if (!collapsed || isMobile) {
     return item(
-      React.cloneElement(button, {}, <section.icon />, <span>{section.title}</span>),
+      React.cloneElement(button, {}, <section.icon />, <span className="sr-only">{section.title}</span>),
     )
   }
 
@@ -86,7 +109,7 @@ export function RailItem({
           pointer needs time to cross the gap to it without it vanishing. */}
       <PreviewCard.Trigger delay={120} closeDelay={200} render={button}>
         <section.icon />
-        <span>{section.title}</span>
+        <span className="sr-only">{section.title}</span>
       </PreviewCard.Trigger>
 
       <PreviewCard.Portal>

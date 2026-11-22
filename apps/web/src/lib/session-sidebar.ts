@@ -128,6 +128,29 @@ export function dateBucket(session: SidebarSession, now: Date): DateBucket {
   return "Older"
 }
 
+/**
+ * The day heading a session is listed under in the Sessions tab: "Today",
+ * "Yesterday", a weekday for the rest of the past week, then "12 Nov" (with
+ * the year once it is not this one). Pinned sessions keep a group of their
+ * own at the top. By calendar day in local time, not 24-hour spans.
+ */
+export function dayGroupLabel(session: SidebarSession, now: Date): string {
+  if (session.pinned) return "Pinned"
+  const at = new Date(time(session.lastActivityAt))
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const day = new Date(at.getFullYear(), at.getMonth(), at.getDate())
+  // Rounded, so a daylight-saving day of 23 or 25 hours still counts as one.
+  const days = Math.round((today.getTime() - day.getTime()) / 86_400_000)
+  if (days <= 0) return "Today"
+  if (days === 1) return "Yesterday"
+  if (days < 7) return at.toLocaleDateString("en-GB", { weekday: "long" })
+  return at.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    ...(at.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  })
+}
+
 export interface ProjectGroup {
   project: SidebarProject
   sessions: SidebarSession[]
@@ -324,4 +347,22 @@ export function branchLine(session: SidebarSession): {
   }
   if (session.branch) return { text: target(session.branch), tone: "normal" }
   return { text: base ?? "", tone: "normal" }
+}
+
+/**
+ * The branch chip on a card, in parts: the branch the session works on and,
+ * for a worktree, the branch it settles into (`ucch/x → main`). Once settled
+ * it is one phrase, `merged into main @ abc1234`.
+ */
+export function branchChip(session: SidebarSession): {
+  branch: string
+  target: string | null
+  tone: "normal" | "merged" | "failed"
+} {
+  const base = session.settleBaseBranch ?? session.project.baseBranch ?? session.baseBranch ?? null
+  if (session.settleState === "settled") return { branch: branchLine(session).text, target: null, tone: "merged" }
+  const tone = session.settleState === "failed" ? "failed" : "normal"
+  const branch = session.branch ?? (tone === "failed" ? "?" : null)
+  if (!branch) return { branch: base ?? "", target: null, tone }
+  return { branch, target: base && base !== branch ? base : null, tone }
 }

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { CheckIcon, ListFilterIcon } from "lucide-react"
+import { CheckIcon, SlidersHorizontalIcon } from "lucide-react"
 
 import { HarnessIcon } from "@/components/harness-icon"
 import { ProjectStackIcon } from "@/components/project-stack-icon"
@@ -51,12 +51,13 @@ export function FilterPopover({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="relative"
+            className="text-muted-foreground hover:text-sidebar-foreground relative size-7 rounded-md"
             aria-label={active ? "Filter sessions (filters on)" : "Filter sessions"}
+            title="Filter sessions"
           />
         }
       >
-        <ListFilterIcon />
+        <SlidersHorizontalIcon />
         {active && <span className="bg-primary absolute top-1 right-1 size-1.5 rounded-full" aria-hidden />}
       </PopoverTrigger>
       <PopoverContent align="end" className="flex w-64 flex-col gap-3 p-3">

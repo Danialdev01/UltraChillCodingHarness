@@ -3,8 +3,8 @@
 import * as React from "react"
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 import {
+  ArrowRightIcon,
   CheckIcon,
-  ClockIcon,
   FolderIcon,
   GitBranchIcon,
   GitMergeIcon,
@@ -24,7 +24,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { branchLine, highlightRanges, type SessionStatus, type SidebarSession } from "@/lib/session-sidebar"
+import { harnessTag } from "@/lib/harnesses"
+import { branchChip, branchLine, highlightRanges, type SessionStatus, type SidebarSession } from "@/lib/session-sidebar"
 import { cn } from "@/lib/utils"
 import { TransitionLink } from "@/lib/view-transitions"
 
@@ -44,10 +45,9 @@ export const HOVER_DELAY_MS = 300
  *
  * Three lines: its project (left out inside a project's group, where it
  * would repeat the header) with the status at the right, the title as the
- * one bright line, then the branch and the harness's mark. At rest the
- * status column shows how long ago it last did anything; hovered, focused
- * or open it shows the status badge instead (the full card). A running
- * session's mark breathes in the compact card rather than adding a badge.
+ * one bright line, then the branch chip (`branch → target` for a worktree)
+ * and the harness's tag and mark. The open session's card is raised: a
+ * tint and an edge. The others only tint on hover.
  *
  * Its details -- project, where it runs, branch, model -- open beside it
  * after a short rest, or at once on keyboard focus (`role="tooltip"`). Its
@@ -88,10 +88,14 @@ export function SessionCard({
 }) {
   const tooltipId = React.useId()
   const [menuOpen, setMenuOpen] = React.useState(false)
-  const line = branchLine(session)
-  const branch = line.text
-  const BranchIcon = line.tone === "merged" ? GitMergeIcon : line.tone === "failed" ? TriangleAlertIcon : GitBranchIcon
+  const branch = branchLine(session).text
+  const chip = branchChip(session)
+  const BranchIcon = chip.tone === "merged" ? GitMergeIcon : chip.tone === "failed" ? TriangleAlertIcon : GitBranchIcon
   const running = status === "running"
+  const tag = harnessTag(session.provider)
+  // The ⋯ button takes the status's corner on hover; a touch screen, which
+  // has no hover, keeps room for it instead.
+  const hasActions = actions.length > 0
 
   return (
     <ContextMenu>
@@ -116,43 +120,69 @@ export function SessionCard({
               />
             }
             className={cn(
-              "focus-visible:ring-sidebar-ring flex min-w-0 flex-col gap-0.5 rounded-lg px-2.5 py-2 transition-colors outline-none focus-visible:ring-2",
+              "focus-visible:ring-focus-ring flex min-w-0 flex-col rounded-[10px] border px-2.5 py-2 text-left transition-colors duration-150 outline-none focus-visible:ring-2",
               isActive
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "hover:bg-sidebar-accent/60 text-sidebar-foreground",
+                ? "bg-sidebar-accent border-border text-sidebar-accent-foreground"
+                : "hover:bg-sidebar-hover text-sidebar-foreground border-transparent",
             )}
           >
             {!hideProject && (
-              <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 pr-6 text-2xs">
+              <span
+                className={cn(
+                  "text-muted-foreground flex min-w-0 items-center gap-1.5 text-2xs",
+                  hasActions && "[@media(hover:none)]:pr-6",
+                )}
+              >
                 <span className="grid size-3.5 shrink-0 place-items-center [&_svg]:size-3.5" aria-hidden>
                   <ProjectStackIcon stack={session.project.stack} />
                 </span>
                 <span className="min-w-0 flex-1 truncate">
                   <Highlighted text={session.project.name} query={query} />
                 </span>
-                <StatusColumn status={status} time={time} isActive={isActive} />
+                <StatusColumn status={status} time={time} hideOnHover={hasActions} />
               </span>
             )}
-            <span className={cn("flex min-w-0 items-center gap-1.5", hideProject && "pr-6")}>
+            <span
+              className={cn(
+                "mt-0.5 mb-1.5 flex min-w-0 items-center gap-1.5",
+                hideProject && hasActions && "[@media(hover:none)]:pr-6",
+              )}
+            >
               {session.pinned && <PinIcon className="text-muted-foreground size-3 shrink-0" aria-label="Pinned" />}
               <span className={cn("min-w-0 flex-1 truncate text-sm leading-snug", isActive ? "font-medium" : "font-normal")}>
                 <Highlighted text={session.title} query={query} />
               </span>
-              {hideProject && <StatusColumn status={status} time={time} isActive={isActive} />}
+              {hideProject && <StatusColumn status={status} time={time} hideOnHover={hasActions} />}
             </span>
-            <span className="text-muted-foreground flex min-w-0 items-center justify-between gap-2 text-2xs">
+            <span className="flex min-w-0 items-center gap-1.5">
               <span
                 className={cn(
-                  "flex min-w-0 items-center gap-1 font-mono",
-                  line.tone === "failed" && "text-destructive",
+                  "text-muted-foreground inline-flex min-w-0 items-center gap-1 rounded-[5px] border px-1.5 py-px font-mono text-2xs",
+                  isActive ? "bg-sidebar border-sidebar-border" : "bg-sidebar-hover border-transparent",
+                  chip.tone === "failed" && "text-destructive",
                 )}
+                title={chip.tone === "failed" ? `${branch}` : undefined}
               >
                 <BranchIcon className="size-3 shrink-0" aria-hidden />
-                <span className="truncate">
-                  <Highlighted text={branch} query={query} />
+                <span className="min-w-0 truncate">
+                  <Highlighted text={chip.branch} query={query} />
                 </span>
+                {chip.target && (
+                  <>
+                    <ArrowRightIcon className="text-text-subtle size-3 shrink-0" aria-label="into" />
+                    <span className="shrink-0">{chip.target}</span>
+                  </>
+                )}
               </span>
-              <HarnessIcon harness={session.provider} size={16} pulse={running} />
+              <span className="min-w-0 flex-1" />
+              {tag && (
+                <span className="text-text-subtle shrink-0 text-[10.5px] leading-none" aria-hidden>
+                  {tag}
+                </span>
+              )}
+              <span className="text-muted-foreground shrink-0">
+                <HarnessIcon harness={session.provider} size={14} pulse={running} />
+              </span>
             </span>
           </TooltipPrimitive.Trigger>
           <TooltipPrimitive.Portal>
@@ -172,9 +202,12 @@ export function SessionCard({
           <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
             <DropdownMenuTrigger
               className={cn(
-                "text-muted-foreground hover:text-foreground hover:bg-background/70 focus-visible:ring-sidebar-ring absolute top-1.5 right-1.5 grid size-6 place-items-center rounded-md transition-opacity outline-none focus-visible:ring-2",
-                // Always there on a touch screen, which has no hover to reveal it.
-                "pointer-fine:opacity-0 pointer-fine:group-hover/session:opacity-100 pointer-fine:focus-visible:opacity-100 aria-expanded:opacity-100",
+                "text-muted-foreground hover:text-foreground hover:bg-background/70 focus-visible:ring-focus-ring absolute top-1 right-1.5 grid size-6 place-items-center rounded-md transition-opacity outline-none focus-visible:ring-2",
+                // Revealed on hover where there is hover; always there where
+                // there is none (touch, and pointer-less devices), which is
+                // exactly when the status keeps room for it. Keyed to the same
+                // media query as that padding, so the two can never overlap.
+                "opacity-0 group-hover/session:opacity-100 [@media(hover:hover)]:group-focus-within/session:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100 [@media(hover:none)]:opacity-100",
               )}
               tabIndex={-1}
             >
@@ -215,36 +248,30 @@ function ActionItems({ actions }: { actions: readonly (SessionAction | "separato
 }
 
 /**
- * The card's right-hand status: its age at rest, its badge when hovered,
- * focused or open. A session that needs someone, or failed, keeps a dot
- * beside its age even at rest -- that is worth seeing without hovering.
+ * The card's right-hand status. A live state is spelled out (running,
+ * needs input, failed); a session at rest shows how long ago it last did
+ * anything, with a tick when its last turn finished. On hover the ⋯ button
+ * takes this corner, so the status steps aside rather than sitting under it.
  */
-function StatusColumn({ status, time, isActive }: { status: SessionStatus; time: string; isActive?: boolean }) {
-  const badge = status !== "idle" && status !== "archived"
+function StatusColumn({ status, time, hideOnHover }: { status: SessionStatus; time: string; hideOnHover: boolean }) {
+  const live = status === "running" || status === "waiting_input" || status === "error"
   return (
-    <span className="flex shrink-0 items-center gap-1.5 text-2xs tabular-nums">
-      <span
-        className={cn(
-          "text-muted-foreground flex items-center gap-1",
-          badge && "group-hover/session:hidden group-focus-within/session:hidden",
-          badge && isActive && "hidden",
-        )}
-      >
-        {(status === "waiting_input" || status === "error") && <StatusDot status={status} />}
-        {status === "archived" ? "Archived" : time}
-      </span>
-      {badge && (
-        <span
-          className={cn(
-            "hidden items-center gap-1 group-hover/session:flex group-focus-within/session:flex",
-            isActive && "flex",
-          )}
-        >
-          {status === "running" && <ClockIcon className="text-muted-foreground size-3" aria-hidden />}
-          <StatusBadge status={status} />
+    <span
+      className={cn(
+        "flex shrink-0 items-center gap-1 text-2xs tabular-nums",
+        hideOnHover &&
+          "group-hover/session:invisible [@media(hover:hover)]:group-focus-within/session:invisible [@media(hover:hover)]:group-has-[[aria-expanded=true]]/session:invisible",
+      )}
+    >
+      {live ? (
+        <StatusBadge status={status} />
+      ) : (
+        <span className="text-text-subtle flex items-center gap-1" aria-hidden={status === "settled" ? undefined : true}>
+          {status === "settled" && <CheckIcon className="text-success size-3" aria-label="Done" />}
+          {status === "archived" ? "Archived" : time}
         </span>
       )}
-      {badge && <span className="sr-only">{STATUS_TEXT[status]}</span>}
+      {live && <span className="sr-only">{STATUS_TEXT[status]}</span>}
     </span>
   )
 }
@@ -254,7 +281,7 @@ const STATUS_TEXT: Record<SessionStatus, string> = {
   running: "Running",
   waiting_input: "Needs input",
   settled: "Settled",
-  error: "Error",
+  error: "Failed",
   archived: "Archived",
 }
 
@@ -272,7 +299,7 @@ export function StatusBadge({ status }: { status: SessionStatus }) {
     <span
       className={cn(
         "flex items-center gap-1",
-        status === "running" && "text-info",
+        status === "running" && "text-success",
         status === "waiting_input" && "text-warning",
         status === "error" && "text-destructive",
       )}
@@ -289,9 +316,10 @@ function StatusDot({ status }: { status: SessionStatus }) {
     <span
       className={cn(
         "ucch-status-dot size-1.5!",
+        status === "running" && "bg-success motion-safe:animate-pulse",
         status === "waiting_input" && "bg-warning",
+        status === "error" && "bg-danger",
       )}
-      data-status={status === "running" ? "working" : status === "error" ? "error" : undefined}
       aria-hidden
     />
   )
