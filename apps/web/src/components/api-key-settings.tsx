@@ -43,6 +43,7 @@ import {
 } from "@/lib/api-keys"
 import { useToast } from "@/lib/realtime"
 import { cn } from "@/lib/utils"
+import { PasswordInput } from "@/components/ui/password-input"
 
 /** Everything that differs between one provider's card and another's. */
 interface Provider {
@@ -606,10 +607,12 @@ function KeyForm({
         {replacing ? `New ${provider.name} key` : `${provider.name} key`}
       </label>
       <div className="flex flex-wrap items-center gap-2">
-        <input
+        <PasswordInput
           ref={inputRef}
           id={id}
-          type="password"
+          bare
+          revealLabel="key"
+          wrapperClassName="flex-[1_1_18rem]"
           value={draft}
           onChange={(e) => {
             setDraft(e.target.value)
@@ -626,7 +629,7 @@ function KeyForm({
           aria-describedby={`${id}-help${error ? ` ${id}-error` : ""}`}
           disabled={busy || !encryptionAvailable}
           className={cn(
-            "bg-background placeholder:text-muted-foreground h-8 min-w-0 flex-[1_1_18rem] rounded-md border px-2.5 font-mono text-base outline-none md:text-sm",
+            "bg-background placeholder:text-muted-foreground h-8 w-full min-w-0 rounded-md border px-2.5 font-mono text-base outline-none md:text-sm",
             "focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-3 disabled:opacity-50",
             "aria-invalid:border-destructive",
           )}
@@ -801,10 +804,10 @@ function StepUpDialog({
             <label htmlFor="step-up-password" className="text-text-subtle text-xs font-medium">
               Password
             </label>
-            <input
+            <PasswordInput
               ref={inputRef}
               id="step-up-password"
-              type="password"
+              bare
               autoComplete="current-password"
               value={password}
               onChange={(e) => {

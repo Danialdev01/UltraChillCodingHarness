@@ -7,7 +7,7 @@ import type { CredentialPolicy, CredentialSource, ProviderId } from "@ucch/proto
 import { ProviderSettings } from "@/components/provider-settings"
 import { Outcome, useOutcome } from "@/components/settings-outcome"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { PasswordInput } from "@/components/ui/password-input"
 import { Switch } from "@/components/ui/switch"
 import { NativeSelect } from "@/components/ui/native-select"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -195,15 +195,16 @@ function OpenRouterSection({
             })
           }}
         >
-          <Input
-            type="password"
+          <PasswordInput
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder={configured ? "A key is stored; paste to replace" : "sk-or-…"}
             autoComplete="off"
             spellCheck={false}
             aria-label="Workspace OpenRouter key"
-            className="min-w-64 flex-1 font-mono text-sm"
+            revealLabel="key"
+            wrapperClassName="min-w-64 flex-1"
+            className="font-mono text-sm"
           />
           <Button type="submit" variant="outline" disabled={busy || !draft.trim()}>
             {busy && <Loader2Icon className="animate-spin" />}

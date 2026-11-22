@@ -7,7 +7,7 @@ import { PROJECT_KEY_MAX, PROJECT_KEY_MIN } from "@ucch/protocol/plain"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
+import { PasswordInput } from "@/components/ui/password-input"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   changeProjectKey,
@@ -23,15 +23,15 @@ import type { Project } from "@/lib/session"
 import { SettingsSection } from "@/components/layout/settings-section"
 
 /** A password field that password managers leave alone. */
-function KeyInput(props: React.ComponentProps<typeof Input>) {
+function KeyInput(props: React.ComponentProps<typeof PasswordInput>) {
   return (
-    <Input
-      type="password"
+    <PasswordInput
       maxLength={PROJECT_KEY_MAX}
       autoComplete="new-password"
       data-1p-ignore
       data-lpignore="true"
-      className="max-w-sm"
+      revealLabel="key"
+      wrapperClassName="max-w-sm"
       {...props}
     />
   )

@@ -24,6 +24,7 @@ import { useTransitionRouter } from "@/lib/view-transitions";
 import { qk } from "@/lib/query-keys";
 import { useInvalidate } from "@/lib/use-invalidate";
 import { useWorkspaceHash } from "@/lib/workspace-context";
+import { PasswordInput } from "@/components/ui/password-input";
 
 type Mode = "fields" | "url";
 
@@ -227,9 +228,9 @@ export function NewDatabaseDialog({
               />
             </FormField>
             <FormField label="Password" htmlFor="db-password">
-              <input
+              <PasswordInput
                 id="db-password"
-                type="password"
+                bare
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="off"
@@ -269,9 +270,10 @@ export function NewDatabaseDialog({
               )
             }
           >
-            <input
+            <PasswordInput
               id="db-url"
-              type="password"
+              bare
+              revealLabel="connection URL"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="mysql://user:password@host:3306/database"

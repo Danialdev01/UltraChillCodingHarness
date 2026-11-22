@@ -84,6 +84,7 @@ import { deriveProjectName, looksLikeRepoUrl } from "@/lib/repo-url";
 import { cn } from "@/lib/utils";
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions";
 import { useProjectHref } from "@/lib/workspace-context";
+import { PasswordInput } from "@/components/ui/password-input"
 
 /** Where the code for a new project comes from. */
 type Source = "git" | "create" | "empty";
@@ -952,9 +953,10 @@ export function NewProjectDialog({
                 <label htmlFor="new-project-key" className={LABEL}>
                   Project key <span className="text-(--fd-text-disabled)">· optional, recommended</span>
                 </label>
-                <input
+                <PasswordInput
                   id="new-project-key"
-                  type="password"
+                  bare
+                  revealLabel="key"
                   value={projectKey}
                   onChange={(e) => setProjectKey(e.target.value)}
                   autoComplete="new-password"
@@ -970,9 +972,10 @@ export function NewProjectDialog({
                 <label htmlFor="new-project-key-confirm" className={LABEL}>
                   Confirm the key
                 </label>
-                <input
+                <PasswordInput
                   id="new-project-key-confirm"
-                  type="password"
+                  bare
+                  revealLabel="key"
                   value={projectKeyConfirm}
                   onChange={(e) => setProjectKeyConfirm(e.target.value)}
                   autoComplete="new-password"

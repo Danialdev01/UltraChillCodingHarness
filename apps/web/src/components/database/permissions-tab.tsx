@@ -14,6 +14,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { PasswordInput } from "@/components/ui/password-input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { createUser, dropUser, fetchUsers, grantPrivileges, revokePrivileges } from "@/lib/database-api"
@@ -243,7 +244,7 @@ function CreateUserDialog({ open, onOpenChange, onCreated }: { open: boolean; on
             )}
             <Field>
               <FieldLabel htmlFor="user-password">Password</FieldLabel>
-              <Input id="user-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" disabled={pending} />
+              <PasswordInput id="user-password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" disabled={pending} />
             </Field>
             {error && (
               <p role="alert" className="text-destructive text-sm">

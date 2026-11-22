@@ -13,6 +13,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { PasswordInput } from "@/components/ui/password-input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -269,9 +270,8 @@ function EmailSection({ account, onSaved }: { account: Account; onSaved: () => v
         {account.hasPassword && (
           <div className="grid gap-1.5">
             <Label htmlFor="account-email-password">Current password</Label>
-            <Input
+            <PasswordInput
               id="account-email-password"
-              type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               autoComplete="current-password"
@@ -332,9 +332,8 @@ function PasswordSection({ account, onSaved }: { account: Account; onSaved: () =
         {account.hasPassword && (
           <div className="grid gap-1.5">
             <Label htmlFor="account-current-password">Current password</Label>
-            <Input
+            <PasswordInput
               id="account-current-password"
-              type="password"
               value={current}
               onChange={(event) => setCurrent(event.target.value)}
               autoComplete="current-password"
@@ -345,9 +344,8 @@ function PasswordSection({ account, onSaved }: { account: Account; onSaved: () =
 
         <div className="grid gap-1.5">
           <Label htmlFor="account-new-password">New password</Label>
-          <Input
+          <PasswordInput
             id="account-new-password"
-            type="password"
             value={next}
             onChange={(event) => setNext(event.target.value)}
             autoComplete="new-password"
@@ -362,9 +360,8 @@ function PasswordSection({ account, onSaved }: { account: Account; onSaved: () =
 
         <div className="grid gap-1.5">
           <Label htmlFor="account-confirm-password">Repeat new password</Label>
-          <Input
+          <PasswordInput
             id="account-confirm-password"
-            type="password"
             value={confirm}
             onChange={(event) => setConfirm(event.target.value)}
             autoComplete="new-password"

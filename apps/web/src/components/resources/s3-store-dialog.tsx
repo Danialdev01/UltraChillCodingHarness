@@ -7,6 +7,7 @@ import type { ResourceStoreSummary } from "@ucch/protocol"
 import { FIELD, FormDialog, FormDialogFooter, FormField, HELPER } from "@/components/form-dialog"
 import { Switch } from "@/components/ui/switch"
 import { createS3Store, updateS3Store } from "@/lib/resources-api"
+import { PasswordInput } from "@/components/ui/password-input"
 
 interface Draft {
   name: string
@@ -143,9 +144,10 @@ export function S3StoreDialog({
           <input id="s3-key" className={FIELD} autoComplete="off" {...text("accessKeyId")} />
         </FormField>
         <FormField label="Secret access key" htmlFor="s3-secret">
-          <input
+          <PasswordInput
             id="s3-secret"
-            type="password"
+            bare
+            revealLabel="secret key"
             className={FIELD}
             autoComplete="new-password"
             placeholder={editing ? "Unchanged" : ""}

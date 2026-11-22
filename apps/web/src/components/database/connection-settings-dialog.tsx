@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { PasswordInput } from "@/components/ui/password-input"
 import { updateConnection } from "@/lib/database-api"
 import { cn } from "@/lib/utils"
 import { qk } from "@/lib/query-keys"
@@ -160,9 +161,8 @@ export function ConnectionSettingsDialog({
               </Field>
               <Field>
                 <FieldLabel htmlFor="conn-password">Password</FieldLabel>
-                <Input
+                <PasswordInput
                   id="conn-password"
-                  type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Unchanged"

@@ -22,6 +22,7 @@ import {
   type ModelKeyMeta,
 } from "@/lib/model-keys"
 import { cn } from "@/lib/utils"
+import { PasswordInput } from "@/components/ui/password-input"
 
 const linkClass = "text-primary underline underline-offset-2 hover:no-underline"
 
@@ -237,8 +238,9 @@ function AddKeyForm({
       </div>
       <label className="flex flex-col gap-1.5">
         <span className="text-text-subtle text-xs font-medium">{meta.name} key</span>
-        <input
-          type="password"
+        <PasswordInput
+          bare
+          revealLabel="key"
           value={key}
           onChange={(e) => {
             setKey(e.target.value)
