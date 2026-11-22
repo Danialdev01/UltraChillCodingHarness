@@ -7,7 +7,7 @@ import { useTheme } from "@/components/theme-provider"
 /**
  * The animated backdrop behind the sidebar's workspace header and command bar.
  *
- * Dark mode is a starfield on one canvas: no DOM nodes per star, drifting,
+ * Dark mode is a moon and starfield on one canvas: no DOM nodes per star, drifting,
  * twinkling and parallaxing with the pointer, with a shooting star now and
  * then. Light mode is an SVG sun peeking in from the top-right corner.
  *
@@ -17,7 +17,7 @@ import { useTheme } from "@/components/theme-provider"
  * runs only while the canvas is shown, the tab is visible and the header is
  * on screen. Under reduced motion each scene is drawn once and stays still.
  *
- * Every colour comes from the theme's tokens, read off the page. The accent
+ * Star colours come from the theme's tokens, read off the page. The accent
  * is `--sidebar-primary`, so a palette chosen in Settings -> Theme recolours
  * the stars along with everything else.
  */
@@ -33,7 +33,6 @@ export function SkyBackdrop({
   shooting?: boolean
 }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null)
-  const sunRef = React.useRef<SVGSVGElement>(null)
   const theme = useTheme()
 
   React.useEffect(() => {
@@ -42,6 +41,7 @@ export function SkyBackdrop({
     const ctx = canvas?.getContext("2d")
     if (!canvas || !host || !ctx) return
 
+    const systemLight = window.matchMedia("(prefers-color-scheme: light)")
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)")
     let width = 0
     let height = 0
@@ -89,7 +89,7 @@ export function SkyBackdrop({
       nebula(c, -offset.x * 0.5, height - offset.y * 0.5, width * 0.45, accent, 0.07 * breath)
 
       for (const s of stars) {
-        s.x += 4 * s.z * speed * dt
+        s.x += 5 * s.z * speed * dt
         s.y -= 1.2 * s.z * speed * dt
         if (s.x > width) s.x -= width
         if (s.y < 0) s.y += height
@@ -100,7 +100,7 @@ export function SkyBackdrop({
         const [r, g, b] = s.tint ? accent : ink
         c.fillStyle = `rgb(${r} ${g} ${b} / ${alpha})`
         c.beginPath()
-        c.arc(x, y, s.r, 0, Math.PI * 2)
+        c.arc(x, y, s.r * (0.85 + 0.35 * wave), 0, Math.PI * 2)
         c.fill()
         // The nearest stars flare into a small cross at their brightest.
         if (s.z > 0.85 && wave > 0.92) {
@@ -134,6 +134,8 @@ export function SkyBackdrop({
           else drawShot(c, shot, ink, life)
         }
       }
+
+      drawMoon(c, width - 22 + 1.5 * Math.sin(t * 0.22), 18 + 2 * Math.sin(t * 0.32))
     }
 
     function loop(now: number) {
@@ -165,14 +167,10 @@ export function SkyBackdrop({
       const ny = ((event.clientY - rect.top) / rect.height) * 2 - 1
       target.x = nx * 8
       target.y = ny * 5
-      sunRef.current?.style.setProperty("--sun-x", `${(nx * 4).toFixed(1)}px`)
-      sunRef.current?.style.setProperty("--sun-y", `${(ny * 3).toFixed(1)}px`)
     }
     function onPointerLeave() {
       target.x = 0
       target.y = 0
-      sunRef.current?.style.removeProperty("--sun-x")
-      sunRef.current?.style.removeProperty("--sun-y")
     }
 
     readColours()
@@ -185,6 +183,7 @@ export function SkyBackdrop({
     })
     intersection.observe(host)
     document.addEventListener("visibilitychange", sync)
+    systemLight.addEventListener("change", sync)
     reduced.addEventListener("change", sync)
     host.addEventListener("pointermove", onPointerMove)
     host.addEventListener("pointerleave", onPointerLeave)
@@ -202,6 +201,7 @@ export function SkyBackdrop({
       resizeObserver.disconnect()
       intersection.disconnect()
       document.removeEventListener("visibilitychange", sync)
+      systemLight.removeEventListener("change", sync)
       reduced.removeEventListener("change", sync)
       host.removeEventListener("pointermove", onPointerMove)
       host.removeEventListener("pointerleave", onPointerLeave)
@@ -213,7 +213,7 @@ export function SkyBackdrop({
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
       <canvas ref={canvasRef} className="ucch-sky-canvas light:hidden" />
-      <CornerSun ref={sunRef} />
+      <CornerSun />
       <span className="ucch-sky-hairline" />
     </div>
   )
@@ -269,6 +269,38 @@ function nebula(c: CanvasRenderingContext2D, x: number, y: number, radius: numbe
   c.fillRect(x - radius, y - radius, radius * 2, radius * 2)
 }
 
+// Craters are placed on the illuminated side of the lunar disk.
+const LUNAR_CRATERS = [
+  [-9, -5, 2.8], [-5, -10, 1.3], [-13, 2, 1.4], [-8, 7, 2.2], [-2, 12, 1.5],
+] as const
+
+function drawMoon(c: CanvasRenderingContext2D, x: number, y: number) {
+  c.save()
+  c.translate(x, y)
+  nebula(c, 0, 0, 36, [172, 196, 238], 0.23)
+  const surface = c.createRadialGradient(-9, -7, 1, -3, -3, 22)
+  surface.addColorStop(0, "#f2f4e9")
+  surface.addColorStop(0.72, "#c6d2da")
+  surface.addColorStop(1, "#94a5be")
+  c.fillStyle = surface
+  c.beginPath()
+  c.arc(0, 0, 17, 0, Math.PI * 2)
+  c.fill()
+  c.clip()
+  for (const [cx, cy, radius] of LUNAR_CRATERS) {
+    c.beginPath()
+    c.ellipse(cx, cy, radius * 0.8, radius, -0.4, 0, Math.PI * 2)
+    c.fillStyle = "rgb(90 109 134 / 0.28)"
+    c.fill()
+  }
+  const shadow = c.createRadialGradient(11, -5, 15, 11, -5, 20)
+  shadow.addColorStop(0, "#354159")
+  shadow.addColorStop(1, "rgb(53 65 89 / 0)")
+  c.fillStyle = shadow
+  c.fillRect(-17, -17, 34, 34)
+  c.restore()
+}
+
 function drawShot(c: CanvasRenderingContext2D, shot: Shot, [r, g, b]: RGB, life: number) {
   const x = shot.x + shot.vx * shot.age
   const y = shot.y + shot.vy * shot.age
@@ -310,89 +342,46 @@ function resolveColour(from: Element, variable: string): RGB | null {
 
 // -- The light-mode sun --------------------------------------------------------
 
-const CX = 168
-const CY = 12
-
-/** One tapered ray along `angle` with a rounded tip, as a path. */
-function rayPath(angle: number, length: number, base: number): string {
-  const ux = Math.cos(angle)
-  const uy = Math.sin(angle)
-  const px = -uy
-  const py = ux
-  const at = (r: number, side: number) =>
-    `${(CX + ux * r + px * side).toFixed(2)} ${(CY + uy * r + py * side).toFixed(2)}`
-  const r0 = 44
-  const r1 = r0 + length
-  return `M${at(r0, base / 2)} L${at(r1 - 2, 0.9)} Q${at(r1 + 1.5, 0)} ${at(r1 - 2, -0.9)} L${at(r0, -base / 2)} Z`
-}
-
-/** A four-pointed star of curved diamond sides. */
-function sparklePath(x: number, y: number, s: number): string {
-  return `M${x} ${y - s} Q${x} ${y} ${x + s} ${y} Q${x} ${y} ${x} ${y + s} Q${x} ${y} ${x - s} ${y} Q${x} ${y} ${x} ${y - s} Z`
-}
-
-// Computed once, at module load, so the server and client render the same paths.
-const RAYS = Array.from({ length: 16 }, (_, i) => {
-  const long = i % 2 === 0
-  return { d: rayPath((i * 22.5 * Math.PI) / 180, long ? 26 : 15, long ? 8.4 : 6), long }
-})
-
-const SPARKLES = [
-  { d: sparklePath(104, 30, 4.5), delay: "0s" },
-  { d: sparklePath(128, 78, 3.2), delay: "1.1s" },
-  { d: sparklePath(84, 62, 2.6), delay: "2s" },
-  { d: sparklePath(146, 104, 3.6), delay: "0.6s" },
-]
-
-const stop = (offset: number, colour: string, opacity: number) => (
-  <stop offset={offset} style={{ stopColor: `var(${colour})`, stopOpacity: opacity }} />
-)
-
-function CornerSun({ ref }: { ref: React.Ref<SVGSVGElement> }) {
-  const id = React.useId().replace(/[^a-zA-Z0-9_-]/g, "")
+function CornerSun() {
+  const id = React.useId()
   return (
-    <svg ref={ref} className="ucch-sun hidden light:block" viewBox="0 0 180 180" aria-hidden focusable="false">
+    <svg className="ucch-sun hidden light:block" viewBox="0 0 180 180" aria-hidden focusable="false">
       <defs>
-        <radialGradient id={`${id}-glow`} gradientUnits="userSpaceOnUse" cx={CX} cy={CY} r={150}>
-          {stop(0, "--sun-glow", 0.75)}
-          {stop(0.3, "--sun-glow", 0.32)}
-          {stop(0.65, "--sun-core", 0.1)}
-          {stop(1, "--sun-core", 0)}
+        <radialGradient id={`${id}-corona`}>
+          <stop offset=".42" stopColor="#ffb34d" stopOpacity=".55" />
+          <stop offset=".53" stopColor="#ffc56c" stopOpacity=".22" />
+          <stop offset="1" stopColor="#ffda96" stopOpacity="0" />
         </radialGradient>
-        <radialGradient id={`${id}-ray`} gradientUnits="userSpaceOnUse" cx={CX} cy={CY} r={74}>
-          {stop(0.59, "--sun-ray", 0.95)}
-          {stop(1, "--sun-ray", 0.15)}
+        <radialGradient id={`${id}-limb`}>
+          <stop offset="0" stopColor="#fff2ab" stopOpacity=".55" />
+          <stop offset=".72" stopColor="#ffdd85" stopOpacity=".14" />
+          <stop offset=".95" stopColor="#df691c" stopOpacity=".34" />
+          <stop offset="1" stopColor="#ffe398" stopOpacity=".9" />
         </radialGradient>
-        <radialGradient id={`${id}-body`} gradientUnits="userSpaceOnUse" cx={CX} cy={CY} fx={CX - 14} fy={CY + 14} r={34}>
-          {stop(0, "--sun-core", 1)}
-          {stop(0.35, "--sun-mid", 1)}
-          {stop(0.8, "--sun-body", 1)}
-          {stop(1, "--sun-edge", 1)}
-        </radialGradient>
+        <filter id={`${id}-granules`} colorInterpolationFilters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency=".18 .24" numOctaves="3" seed="14" />
+          <feColorMatrix type="saturate" values="0" />
+          <feComponentTransfer>
+            <feFuncR type="table" tableValues=".63 .83 .99 1 1" />
+            <feFuncG type="table" tableValues=".22 .38 .63 .83 .95" />
+            <feFuncB type="table" tableValues=".05 .08 .18 .41 .70" />
+            <feFuncA type="linear" slope="0" intercept="1" />
+          </feComponentTransfer>
+          <feComposite in2="SourceGraphic" operator="in" />
+        </filter>
       </defs>
-
-      <circle className="ucch-sun-pivot ucch-sun-glow" cx={CX} cy={CY} r={150} fill={`url(#${id}-glow)`} />
-      <g className="ucch-sun-pivot ucch-sun-halo" fill="none" style={{ stroke: "var(--sun-edge)" }}>
-        <circle cx={CX} cy={CY} r={78} strokeOpacity={0.45} strokeWidth={1.6} strokeDasharray="0.1 7" strokeLinecap="round" />
-        <circle cx={CX} cy={CY} r={92} strokeOpacity={0.2} strokeWidth={1} strokeDasharray="10 14" />
-      </g>
-      <g className="ucch-sun-pivot ucch-sun-rays" fill={`url(#${id}-ray)`}>
-        {RAYS.map((ray, i) => (
-          <path key={i} d={ray.d} opacity={ray.long ? 1 : 0.7} />
-        ))}
-      </g>
-      <circle cx={CX} cy={CY} r={39} style={{ fill: "var(--sun-ray)" }} fillOpacity={0.35} />
-      <circle cx={CX} cy={CY} r={34} fill={`url(#${id}-body)`} />
-      <circle cx={CX} cy={CY} r={33.5} fill="none" style={{ stroke: "var(--sun-edge)" }} strokeOpacity={0.35} />
-      <g style={{ fill: "var(--sun-edge)" }}>
-        {SPARKLES.map((s) => (
-          <path
-            key={s.delay}
-            className="ucch-sun-sparkle"
-            d={s.d}
-            style={{ "--d": s.delay } as React.CSSProperties}
-          />
-        ))}
+      <g transform="translate(168 12)">
+        <circle r="96" fill={`url(#${id}-corona)`} />
+        <g className="ucch-sun-flare" fill="#f8ad52">
+          <path d="M-41 -4 C-47 1 -54 4 -51 11 C-49 17 -43 13 -38 22 L-36 18 C-41 10 -48 15 -49 9 C-51 5 -44 4 -40 1 Z" />
+          <path d="M-43 3 Q-56 11 -45 14 Q-53 10 -43 5 Z" />
+        </g>
+        <g className="ucch-sun-flare ucch-sun-flare-low" fill="#ffbf64">
+          <path d="M-24 32 C-25 44 -18 43 -17 51 C-13 44 -19 40 -11 37 L-13 35 C-21 39 -16 42 -18 45 Q-23 40 -21 34 Z" />
+          <path d="M1 39 Q8 47 14 39 Q18 33 23 34 Q17 32 12 39 Q8 44 5 38 Z" />
+        </g>
+        <circle className="ucch-sun-surface" r="42" fill="#ffc067" filter={`url(#${id}-granules)`} />
+        <circle r="42" fill={`url(#${id}-limb)`} />
       </g>
     </svg>
   )

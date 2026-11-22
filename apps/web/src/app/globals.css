@@ -1063,43 +1063,44 @@
     width: 180px;
     height: 180px;
     pointer-events: none;
-    transform: translate3d(var(--sun-x, 0px), var(--sun-y, 0px), 0);
-    transition: transform 600ms cubic-bezier(.2, .7, .2, 1);
-    /* The sun's own palette, from the status and chart tokens. */
-    --sun-core: color-mix(in oklab, var(--warning-soft) 70%, var(--background));
-    --sun-mid: color-mix(in oklab, var(--chart-5) 30%, var(--warning-soft));
-    --sun-body: color-mix(in oklab, var(--chart-5) 55%, var(--warning-soft));
-    --sun-edge: color-mix(in oklab, var(--chart-5) 80%, var(--warning));
-    --sun-ray: color-mix(in oklab, var(--chart-5) 65%, var(--warning-soft));
-    --sun-glow: var(--warning-soft);
 }
-.ucch-sun-pivot {
-    transform-box: view-box;
-    transform-origin: 168px 12px;
-}
-.ucch-sun-glow { animation: ucch-sun-breathe 7s ease-in-out infinite; }
-.ucch-sun-halo { animation: ucch-sun-spin 140s linear infinite reverse; }
-.ucch-sun-rays { animation: ucch-sun-spin 90s linear infinite; }
-.ucch-sun-sparkle {
+
+.ucch-sun-surface {
     transform-box: fill-box;
     transform-origin: center;
-    animation: ucch-sun-twinkle 3.6s ease-in-out var(--d, 0s) infinite;
+    animation: ucch-sun-turn 54s linear infinite;
 }
-@keyframes ucch-sun-spin { to { transform: rotate(360deg); } }
-@keyframes ucch-sun-breathe {
-    0%, 100% { opacity: 0.8; transform: scale(0.97); }
-    50% { opacity: 1; transform: scale(1.03); }
+
+.ucch-sun-flare {
+    transform-box: fill-box;
+    transform-origin: right center;
+    animation: ucch-sun-curl 4.6s ease-in-out -1.4s infinite alternate;
 }
-@keyframes ucch-sun-twinkle {
-    0%, 100% { opacity: 0; transform: scale(0.4); }
-    50% { opacity: 1; transform: scale(1); }
+
+.ucch-sun-flare-low {
+    transform-origin: center top;
+    animation: ucch-sun-lift 5.8s ease-in-out -4s infinite alternate;
 }
+
+@keyframes ucch-sun-turn {
+    to { transform: rotate(1turn); }
+}
+
+@keyframes ucch-sun-curl {
+    from { transform: scaleX(.82) skewY(8deg); }
+    55% { transform: scaleX(1.36) skewY(-9deg); }
+    to { transform: scaleX(1.12) skewY(-18deg); }
+}
+
+@keyframes ucch-sun-lift {
+    from { transform: skewX(-6deg) scaleY(.88); }
+    55% { transform: skewX(8deg) scaleY(1.35); }
+    to { transform: skewX(16deg) scaleY(1.16); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-    .ucch-sun { transition: none; transform: none; }
-    .ucch-sun-glow,
-    .ucch-sun-halo,
-    .ucch-sun-rays { animation: none; }
-    .ucch-sun-sparkle { animation: none; opacity: 0.7; }
+    .ucch-sun-surface,
+    .ucch-sun-flare { animation: none; }
 }
 
 /* ---------------------------------------------------------------------------
