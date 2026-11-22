@@ -92,11 +92,14 @@ export function ManageCommandsDialog({
   open,
   onOpenChange,
   commands,
+  adding = false,
 }: {
   project: Project
   open: boolean
   onOpenChange: (open: boolean) => void
   commands: ProjectCommand[]
+  /** Opened to add one: a blank row after the existing ones. */
+  adding?: boolean
 }) {
   const [rows, setRows] = React.useState<Row[]>([])
   const [pending, setPending] = React.useState(false)
@@ -107,7 +110,7 @@ export function ManageCommandsDialog({
   // Fresh from the file each time it opens, never a half-edit from last time.
   React.useEffect(() => {
     if (!open) return
-    setRows(commands.length > 0 ? commands.map(toRow) : [blank()])
+    setRows(commands.length > 0 ? [...commands.map(toRow), ...(adding ? [blank()] : [])] : [blank()])
     setError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- on opening only
   }, [open])

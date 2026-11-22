@@ -55,6 +55,8 @@ export function CommandsMenu({
   trigger,
   onSelect,
   decorate,
+  managing: managingProp,
+  onManagingChange,
 }: {
   project: Project
   open: boolean
@@ -65,10 +67,15 @@ export function CommandsMenu({
   onSelect?: (command: ProjectCommand) => void
   /** A command's live state, drawn in its row: its mark, colour and a word. */
   decorate?: (command: ProjectCommand) => { icon: React.ReactNode; tone: string | null; state: string | null } | null
+  /** Whether the editor is open, and whether to add a command or change them; held here when not given. */
+  managing?: "add" | "edit" | null
+  onManagingChange?: (managing: "add" | "edit" | null) => void
 }) {
   const { commands, error, run } = useProjectCommands(project)
   const pick = onSelect ?? run
-  const [managing, setManaging] = React.useState(false)
+  const [ownManaging, setOwnManaging] = React.useState<"add" | "edit" | null>(null)
+  const managing = managingProp !== undefined ? managingProp : ownManaging
+  const setManaging = onManagingChange ?? setOwnManaging
 
   return (
     <>
@@ -108,13 +115,19 @@ export function CommandsMenu({
             )}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => setManaging(true)}>
+          <DropdownMenuItem onClick={() => setManaging(commands.length === 0 ? "add" : "edit")}>
             {commands.length === 0 ? <PlusIcon /> : <Settings2Icon />}
             {commands.length === 0 ? "Add a command" : "Manage commands"}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <ManageCommandsDialog project={project} open={managing} onOpenChange={setManaging} commands={commands} />
+      <ManageCommandsDialog
+        project={project}
+        open={managing !== null}
+        onOpenChange={(open) => !open && setManaging(null)}
+        commands={commands}
+        adding={managing === "add"}
+      />
     </>
   )
 }

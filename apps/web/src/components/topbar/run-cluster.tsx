@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ChevronRightIcon, Loader2Icon, SquareIcon } from "lucide-react"
+import { ChevronRightIcon, Loader2Icon, PlusIcon, SquareIcon } from "lucide-react"
 import type { ProjectCommand } from "@ucch/protocol"
 
 import { CommandsMenu, useProjectCommands } from "@/components/commands/command-buttons"
@@ -223,13 +223,14 @@ function describe(run: CommandRun): string {
  * what its process is doing: starting, running (stop on hover), or failed.
  * The dev server leads, with its label and, once it answers, its port.
  * Segments the bar has no room for fold into the `›` picker, which lists
- * every command and is where they are added. With no commands, there is
- * nothing here at all; ⌘⇧P still opens the picker to add one.
+ * every command. The `+` segment adds one. With no commands, there is
+ * only a dashed `+ Command`; ⌘⇧P still opens the picker.
  */
 export function RunCluster({ project }: { project: Project }) {
   const mac = useIsMac()
   const { runs, loaded, toggle } = useCommandRuns(project)
   const [menuOpen, setMenuOpen] = React.useState(false)
+  const [managing, setManaging] = React.useState<"add" | "edit" | null>(null)
 
   // ⌘⇧P, anywhere: the picker, as an editor's command palette is.
   React.useEffect(() => {
@@ -251,6 +252,8 @@ export function RunCluster({ project }: { project: Project }) {
       open={menuOpen}
       onOpenChange={setMenuOpen}
       onSelect={toggle}
+      managing={managing}
+      onManagingChange={setManaging}
       decorate={(command) => {
         const run = runs.find((r) => r.command.id === command.id)
         if (!run) return null
@@ -282,9 +285,31 @@ export function RunCluster({ project }: { project: Project }) {
     />
   )
 
-  // Nothing until the list is read, and nothing when it is empty: no
-  // buttons for commands the project does not have.
-  if (empty) return loaded ? picker : null
+  const add = (
+    <Hint label="Add a command">
+      <button
+        type="button"
+        aria-label="Add a command"
+        onClick={() => setManaging("add")}
+        className={cn(SEGMENT, LOOK.stopped, empty && "gap-1 px-2.5")}
+      >
+        <PlusIcon className="size-3.5" />
+        {empty && <span className="hidden @xl:inline">Command</span>}
+      </button>
+    </Hint>
+  )
+
+  // Nothing until the list is read. With no commands, no buttons for
+  // commands the project does not have -- only the way to add one.
+  if (empty) {
+    if (!loaded) return null
+    return (
+      <div className="border-border light:border-border-strong flex h-8 shrink-0 items-stretch overflow-hidden rounded-[9px] border border-dashed">
+        {add}
+        {picker}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -295,6 +320,7 @@ export function RunCluster({ project }: { project: Project }) {
       {runs.slice(0, FITS.length).map((run, i) => (
         <Segment key={run.command.id} run={run} lead={i === 0} className={FITS[i]} onClick={() => toggle(run.command)} />
       ))}
+      {add}
       {picker}
     </div>
   )
