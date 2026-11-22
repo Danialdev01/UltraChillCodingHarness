@@ -97,7 +97,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
                 <AppHeader
                   projects={projects}
                   connections={connections}
-                  sessionWorkspace={active?.kind === "session"}
+                  workspace={active}
                 />
                 {/* The right-hand column -- the file tree or the search results -- is
                     a flex sibling of the page rather than an overlay, so opening it

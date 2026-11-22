@@ -49,6 +49,18 @@ __ucch_branch() {
 }
 PS1='\u@\h$(__ucch_where)$(__ucch_branch)> '
 
+# The end of every command, marked with its exit status in the standard
+# shell-integration sequence (OSC 133;D); see ucch.fish. Not before the first
+# prompt, when no command has run yet. The status is handed on, so a prompt
+# command of the user's own still sees it.
+__ucch_mark_done() {
+  local status=$?
+  [ -n "$__ucch_prompted" ] && printf '\033]133;D;%s\007' "$status"
+  __ucch_prompted=1
+  return "$status"
+}
+PROMPT_COMMAND="__ucch_mark_done${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+
 # `claude` and `codex` started here are told about the project's `.agent/`
 # knowledge, and given the OMP bridge when the workspace has it on; see
 # ucch.fish, ucch-knowledge.sh and terminal-bridge.ts.

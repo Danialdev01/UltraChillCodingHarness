@@ -637,6 +637,10 @@ const terminals = new TerminalReactor(
     // ceiling above; never idle-closed while a page shows it.
     projectLimit: (projectId) => terminalLimits.get(projectId),
     watched: (terminalId) => bus.watching({ name: "terminal", terminalId }),
+    // The owner's pages list their terminals (the header's run buttons): a
+    // nudge to their own topic, since nobody else's list moved.
+    changed: (userId, projectId) =>
+      bus.publishToUser(userId, { type: "resource.changed", projectId, resource: "terminals" }),
     wrapArgv: wrapTerminal,
     runtimePath: (cwd) => runtimes.pathFor(cwd),
     // `claude` and `codex` started by hand get the OMP bridge when the

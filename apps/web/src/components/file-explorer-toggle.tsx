@@ -1,196 +1,79 @@
 "use client"
 
 import * as React from "react"
-import {
-  FolderIcon,
-  FolderOpenIcon,
-  FolderTreeIcon,
-  PencilIcon,
-  SearchIcon,
-  SettingsIcon,
-  Trash2Icon,
-} from "lucide-react"
+import { FolderIcon, FolderOpenIcon, SearchIcon, SettingsIcon } from "lucide-react"
 
 import { useFilesPanel } from "@/components/files-panel"
-import { DeleteProjectDialog, RenameSessionDialog } from "@/components/on-demand"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+import { Hint, ICON_BUTTON, IconButton } from "@/components/topbar/primitives"
 import { projectPageHref } from "@/lib/sections"
 import type { Project } from "@/lib/session"
 import { cn } from "@/lib/utils"
-import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
-import { qk } from "@/lib/query-keys"
-import { useInvalidate } from "@/lib/use-invalidate"
+import { TransitionLink } from "@/lib/view-transitions"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 
 /**
- * The two sidebar buttons, at the right end of the view switcher.
+ * The utilities at the right end of the top bar: the file tree, the file
+ * search, and the project's settings.
  *
- * They are not part of the switcher and are deliberately not merged into it:
- * the switcher chooses which half of the project you are looking at, and these
- * say what is in the column beside it. Reading the files while the chat is open
- * is the common case -- asking about a file you can see -- and until these
- * existed the tree could only be reached from the project's menu in the sidebar,
- * three clicks away from the page it belongs to.
+ * The first two say what is in the column beside the page -- a state, not a
+ * destination -- so they light up while their column is open. Reading the
+ * files while the chat is open is the common case, asking about a file you
+ * can see, and both stay put in every view, the terminal included.
  *
- * Both stay put in every view, the terminal included: a shell with the tree
- * beside it is just a narrower shell, and having to leave the terminal before
- * you could look at a file was the wrong trade.
- *
- * A panel glyph rather than a folder tree for the first one: the switcher's own
- * Files tab is a folder tree, and two of those side by side read as one control
- * drawn twice. It points at where the column comes in from, and flips once the
- * tree is in it.
- *
- * Hidden on small screens along with the column they control, so neither is ever
- * a button that does nothing.
- *
- * In a session a settings menu follows them: the session's own actions, which
- * used to hide behind a 3-dot button on every card in the sidebar. In a
- * project a settings button follows them instead, to the project's Manage
- * page, which no longer has a row under the project in the sidebar.
+ * Hidden below `md` along with the column they control, so neither is ever
+ * a button that does nothing -- and on a bar too narrow for them, when the
+ * session's menu carries them instead.
  */
-export function SidebarToggles({ session = false }: { session?: boolean }) {
-  const { project, filesOpen, searchOpen, openFiles, closeFiles, openSearch, closeSearch } =
-    useFilesPanel()
-
+export function FilesButton() {
+  const { project, filesOpen, openFiles, closeFiles } = useFilesPanel()
   const TreeIcon = filesOpen ? FolderOpenIcon : FolderIcon
-
   return (
-    <>
-      {/* A rule rather than a gap: it is what says the buttons beside it are
-          states and not two more places to go. */}
-      <span aria-hidden className="bg-border mx-0.5 hidden h-4 w-px md:block" />
+    <IconButton
+      label={filesOpen ? "Hide files" : "Files"}
+      active={filesOpen}
+      aria-pressed={filesOpen}
+      disabled={!project}
+      onClick={() => (filesOpen ? closeFiles() : project && openFiles(project))}
+      className="hidden md:@3xl:inline-flex"
+    >
+      <TreeIcon />
+    </IconButton>
+  )
+}
 
-      <SidebarButton
-        label={filesOpen ? "Hide the file explorer" : "Show the file explorer"}
-        pressed={filesOpen}
-        disabled={!project}
-        onToggle={() => (filesOpen ? closeFiles() : project && openFiles(project))}
-        icon={TreeIcon}
-      />
-
-      <SidebarButton
-        label={searchOpen ? "Hide the file search" : "Search all files"}
-        pressed={searchOpen}
-        disabled={!project}
-        onToggle={() => (searchOpen ? closeSearch() : openSearch())}
-        icon={SearchIcon}
-      />
-
-      {session && project && <SessionSettingsMenu session={project} />}
-      {!session && project && <ProjectSettingsLink project={project} />}
-    </>
+/**
+ * Search across the project's files, in the same column. The workspace-wide
+ * palette (⌘K) is the sidebar's command bar, a hand's width to the left.
+ */
+export function SearchButton() {
+  const { project, searchOpen, openSearch, closeSearch } = useFilesPanel()
+  return (
+    <IconButton
+      label={searchOpen ? "Hide search" : "Search files"}
+      active={searchOpen}
+      aria-pressed={searchOpen}
+      disabled={!project}
+      onClick={() => (searchOpen ? closeSearch() : openSearch())}
+      className="hidden md:@3xl:inline-flex"
+    >
+      <SearchIcon />
+    </IconButton>
   )
 }
 
 /** The project's Manage page: what it has used, and where its repository lives. */
-function ProjectSettingsLink({ project }: { project: Project }) {
+export function ProjectSettingsButton({ project, className }: { project: Project; className?: string }) {
   const ws = useWorkspaceHash()
+  const label = `Settings for ${project.name}`
   return (
-    <TransitionLink
-      href={projectPageHref(ws, project.hash, "manage")}
-      title="Project settings"
-      className="text-muted-foreground hover:text-foreground hidden size-7 items-center justify-center rounded-md transition-colors md:flex"
-    >
-      <SettingsIcon className="size-3.5" />
-      <span className="sr-only">Settings for {project.name}</span>
-    </TransitionLink>
-  )
-}
-
-/** Rename, open the files of, or delete the session on screen. */
-function SessionSettingsMenu({ session }: { session: Project }) {
-  const { openFiles, closeFiles } = useFilesPanel()
-  const router = useTransitionRouter()
-  const invalidate = useInvalidate()
-  const refreshSession = () => invalidate(qk.bootstrap(), qk.sessions.list(session.hash), qk.project(session.hash))
-  const ws = useWorkspaceHash()
-  const [renaming, setRenaming] = React.useState(false)
-  const [deleting, setDeleting] = React.useState(false)
-
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          title="Session settings"
-          className="text-muted-foreground hover:text-foreground aria-expanded:bg-background aria-expanded:text-foreground aria-expanded:shadow-sm hidden size-7 items-center justify-center rounded-md transition-colors md:flex"
-        >
-          <SettingsIcon className="size-3.5" />
-          <span className="sr-only">Settings for {session.name}</span>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent className="w-44" align="end">
-          <DropdownMenuItem onClick={() => setRenaming(true)}>
-            <PencilIcon className="text-muted-foreground" />
-            <span>Rename</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => openFiles(session)}>
-            <FolderTreeIcon className="text-muted-foreground" />
-            <span>Open Files</span>
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem variant="destructive" onClick={() => setDeleting(true)}>
-            <Trash2Icon />
-            <span>Delete</span>
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <RenameSessionDialog
-        session={renaming ? session : null}
-        onOpenChange={setRenaming}
-        onRenamed={refreshSession}
-      />
-      <DeleteProjectDialog
-        project={deleting ? session : null}
-        open={deleting}
-        onOpenChange={setDeleting}
-        onDeleted={() => {
-          // The page on screen is the session that no longer exists.
-          closeFiles()
-          router.push(`/${ws}`)
-          refreshSession()
-        }}
-      />
-    </>
-  )
-}
-
-function SidebarButton({
-  label,
-  pressed,
-  disabled,
-  onToggle,
-  icon: Icon,
-}: {
-  label: string
-  pressed: boolean
-  disabled: boolean
-  onToggle: () => void
-  icon: typeof SearchIcon
-}) {
-  return (
-    <button
-      type="button"
-      // The state, not the action, so it is `aria-pressed` rather than a
-      // changed label: the icon stays put and lights up.
-      aria-pressed={pressed}
-      disabled={disabled}
-      title={label}
-      onClick={onToggle}
-      className={cn(
-        "hidden size-7 items-center justify-center rounded-md transition-colors md:flex",
-        "text-muted-foreground hover:text-foreground disabled:opacity-50",
-        "aria-pressed:bg-background aria-pressed:text-ucch-active aria-pressed:shadow-sm",
-      )}
-    >
-      <Icon className="size-3.5" />
-      <span className="sr-only">{label}</span>
-    </button>
+    <Hint label="Settings">
+      <TransitionLink
+        href={projectPageHref(ws, project.hash, "manage")}
+        aria-label={label}
+        className={cn(ICON_BUTTON, className)}
+      >
+        <SettingsIcon />
+      </TransitionLink>
+    </Hint>
   )
 }

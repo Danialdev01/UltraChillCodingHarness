@@ -53,6 +53,14 @@ function cd --description 'Change directory within the project'
     return 0
 end
 
+# The end of every command, marked with its exit status in the standard
+# shell-integration sequence (OSC 133;D). The terminal shows nothing for it;
+# the server reads the first one in a command button's tab as how the
+# button's command ended -- what the header's Dev and Build buttons show.
+function __ucch_mark_done --on-event fish_postexec
+    printf '\e]133;D;%s\a' $status
+end
+
 # fish's default prompt, with the path relative to the project and left out
 # entirely at its top: `danial@dbot (main)>`, `danial@dbot src (main)>`.
 function fish_prompt --description 'Write out the prompt'

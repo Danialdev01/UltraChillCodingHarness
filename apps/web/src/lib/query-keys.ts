@@ -79,6 +79,11 @@ export const qk = {
     all: ["commands"] as const,
     list: (projectHash: string) => ["commands", projectHash] as const,
   },
+  /** The caller's terminals in a project (`GET /api/projects/:id/terminals`). */
+  terminals: {
+    all: ["terminals"] as const,
+    list: (projectId: string) => ["terminals", projectId] as const,
+  },
   /** A project's runtime versions, from `.agent/runtimes.json` and the server's installs. */
   runtimes: {
     all: ["runtimes"] as const,

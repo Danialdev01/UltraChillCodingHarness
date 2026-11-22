@@ -55,6 +55,9 @@ const RESOURCES: Record<LiveResource, CacheEffect> = {
   sessions: { invalidate: [qk.sessions.all], deferred: [qk.bootstrap()] },
   commands: { invalidate: [qk.commands.all] },
   runtimes: { invalidate: [qk.runtimes.all] },
+  // A terminal opened or closed, or a command button's command ended: the
+  // header's Dev and Build buttons read the list again.
+  terminals: { invalidate: [qk.terminals.all] },
 }
 
 const NONE: CacheEffect = { invalidate: [] }

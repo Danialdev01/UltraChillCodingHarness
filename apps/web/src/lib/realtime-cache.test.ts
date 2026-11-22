@@ -32,6 +32,7 @@ describe("cacheEffect", () => {
     expect(cacheEffect(ev({ type: "file.changed", projectId: P })).invalidate).toEqual([["files"]])
     expect(cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "files" })).invalidate).toEqual([["files"]])
     expect(cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "git" })).invalidate).toEqual([["git"]])
+    expect(cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "terminals" })).invalidate).toEqual([["terminals"]])
     expect(cacheEffect(ev({ type: "git.committed", projectId: P })).invalidate).toEqual([["git"]])
     expect(cacheEffect(ev({ type: "git.pushed", projectId: P })).invalidate).toEqual([["git"]])
     expect(cacheEffect(ev({ type: "thread.created", projectId: P })).invalidate).toEqual([["sessions"]])

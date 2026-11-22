@@ -3,24 +3,24 @@
 import * as React from "react"
 import { Fragment, Suspense, useCallback, useEffect, useState } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
-import { GlobeIcon, SettingsIcon, XIcon } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
+import { ChevronDownIcon, GitBranchIcon, GlobeIcon, PanelLeftIcon, SettingsIcon, XIcon } from "lucide-react"
 
 import { ConnectionSettingsDialog, PreviewDialog } from "@/components/on-demand"
+import { FilesButton, ProjectSettingsButton, SearchButton } from "@/components/file-explorer-toggle"
 import { HarnessIcon } from "@/components/harness-icon"
 import { ProjectStackIcon } from "@/components/project-stack-icon"
+import { RunCluster } from "@/components/topbar/run-cluster"
+import { SessionMenu } from "@/components/topbar/session-menu"
+import { Divider, Hint, ICON_BUTTON, IconButton, shortcut, useIsMac } from "@/components/topbar/primitives"
 import { ViewModeToggle } from "@/components/view-mode-toggle"
-import { CommandButtons } from "@/components/commands/command-buttons"
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb"
-import { Button } from "@/components/ui/button"
-import { Separator } from "@/components/ui/separator"
-import { SidebarTrigger } from "@/components/ui/sidebar"
+import { useSidebar } from "@/components/ui/sidebar"
+import { fetchGitStatus } from "@/lib/git-api"
+import { targetOf } from "@/lib/project-target"
+import { useProjectSessions } from "@/lib/project-sessions"
+import { useShellLists } from "@/lib/queries/bootstrap"
+import { useWorkspaceSessions } from "@/lib/queries/workspace-sessions"
+import { qk } from "@/lib/query-keys"
 import {
   SETTINGS,
   WORKSPACE_SETTINGS,
@@ -29,6 +29,7 @@ import {
   databaseHref,
   databasePathFromPath,
   projectHashFromPath,
+  projectHref,
   projectPageById,
   projectPageFromPath,
   projectSessionHashFromPath,
@@ -38,15 +39,14 @@ import {
   workspaceSettingsPageById,
   workspaceSettingsPageFromPath,
 } from "@/lib/sections"
-import type { Project } from "@/lib/session"
+import type { Project, Workspace } from "@/lib/session"
+import type { SidebarSession } from "@/lib/session-sidebar"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { cn } from "@/lib/utils"
-import { useShellLists } from "@/lib/queries/bootstrap"
-import { useProjectSessions } from "@/lib/project-sessions"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
-import { useActiveWorkspace, useProjectHref, useWorkspaceHash } from "@/lib/workspace-context"
+import { useWorkspaceHash } from "@/lib/workspace-context"
 
-type Crumb = { label: string; href?: string; icon?: React.ReactNode }
+type Crumb = { label: string; href?: string }
 
 /** `/{ws}/code`: the dashboard's code view, which has no section of its own. */
 function isCodePath(pathname: string): boolean {
@@ -93,196 +93,368 @@ function CloseSettingsButton() {
     return () => window.removeEventListener("keydown", onKey)
   }, [close])
   return (
-    <Button variant="ghost" size="icon-sm" className="ml-auto" onClick={close} title="Close settings (Esc)">
+    <IconButton label="Close settings" keys="Esc" onClick={close}>
       <XIcon />
-      <span className="sr-only">Close settings</span>
-    </Button>
+    </IconButton>
   )
 }
 
 /**
- * The bar across the top of every page: the sidebar toggle, where you are,
- * and -- on a project -- the view switcher.
+ * The one bar across the top of every page, 48px tall.
+ *
+ * Left, where you are: on a project session, the project and its branch
+ * over the session's harness and title (which opens the session's menu).
+ * Centre, on a project: the view switcher. Right: the run cluster (Dev,
+ * Build and the commands picker, which used to be a second row under the
+ * bar), the web preview, and the files, search and settings utilities.
  *
  * Where you are is read off the URL rather than told by the page. The shell
- * is a layout now, rendered once and kept across navigations, so the page
+ * is a layout, rendered once and kept across navigations, so the page
  * inside it is not there to say what it is until its data has streamed in;
  * the URL is there from the first frame. A section's name comes from the
  * rail's own list, and a project's from the workspace's project list the
- * layout already holds -- so the crumb is right while the page is still a
- * skeleton, and never flips from one name to another once it lands. The
- * workspace is not a crumb: the switcher at the top of the sidebar already
- * names it, a hand's width to the left.
+ * layout already holds -- so the bar is right while the page is still a
+ * skeleton, and never flips from one name to another once it lands.
  */
 export function AppHeader({
   projects: serverProjects,
   connections: serverConnections,
-  sessionWorkspace = false,
+  workspace: serverWorkspace,
 }: {
   projects: readonly Project[]
   connections: readonly DatabaseConnectionSummary[]
-  /** The active workspace holds sessions, whose view has no Git tab. */
-  sessionWorkspace?: boolean
+  /** The open workspace, with the caller's permissions in it. */
+  workspace?: Workspace
 }) {
-  const active = useActiveWorkspace()
-  const { projects, connections } = useShellLists({
-    workspaces: active ? [active] : [],
-    activeWorkspaceId: active?.id ?? "",
+  const { workspaces, projects, connections } = useShellLists({
+    workspaces: serverWorkspace ? [serverWorkspace] : [],
+    activeWorkspaceId: serverWorkspace?.id ?? "",
     projects: serverProjects as Project[],
     connections: serverConnections as DatabaseConnectionSummary[],
   })
+  const workspace = workspaces.find((w) => w.id === serverWorkspace?.id) ?? serverWorkspace
+  const sessionWorkspace = workspace?.kind === "session"
   const pathname = usePathname()
   const projectHash = projectHashFromPath(pathname)
   const project = projectHash ? projects.find((p) => p.hash === projectHash) : undefined
   // Notes, Timeline, Keys: a page of the project rather than the project.
   const projectPage = projectPageFromPath(pathname)
-  // Account, Usage, Theme: a page of Settings rather than Settings.
-  const settingsPage = settingsPageFromPath(pathname)
-  const workspaceSettingsPage = workspaceSettingsPageFromPath(pathname)
-  // A connection, its database, and perhaps a table: the database pages.
-  const databasePath = databasePathFromPath(pathname)
-  // The connection itself: its page lists the databases on the server.
-  const connectionId = connectionIdFromPath(pathname)
-
-  // The connection any database page is on, for the settings button.
-  const currentConnection = connections.find((c) => c.id === (connectionId ?? databasePath?.connectionId))
-
-  const ws = useWorkspaceHash()
-  const hrefOf = useProjectHref()
   const sessionHash = projectSessionHashFromPath(pathname)
-  const { sessions } = useProjectSessions(sessionHash && project ? project : null)
-  const openSession = sessionHash ? sessions?.find((s) => s.hash === sessionHash) : undefined
-  const sessionTitle = openSession?.title
   const section = sectionForPath(pathname)
   const inSettings = section.id === SETTINGS.id || section.id === WORKSPACE_SETTINGS.id
   useRememberLeavingSettings(pathname, inSettings)
 
-  // Every crumb but the last is a link up a level; the last is where you are.
-  const crumbs: Crumb[] = projectHash
-    ? // A hash the list does not know is a project you have just created, or
-      // one that will 404 in a moment; either way there is nothing better to
-      // show than that it is a project.
-      [
-        {
-          label: project?.name ?? "Project",
-          href: hrefOf(projectHash),
-          icon: <ProjectStackIcon stack={project?.stack} />,
-        },
-        ...(projectPage ? [{ label: projectPageById(projectPage).title }] : []),
-        // The session, with the mark of the harness it runs on.
-        ...(sessionHash
-          ? [{ label: sessionTitle ?? "Session", icon: <HarnessIcon harness={openSession?.provider} size={14} /> }]
-          : []),
-      ]
-    : connectionId
-      ? [
-          { label: "Connections", href: `/${ws}/database` },
-          { label: connections.find((c) => c.id === connectionId)?.name ?? "Connection" },
-        ]
-      : databasePath
-        ? [
-            { label: "Connections", href: `/${ws}/database` },
-            {
-              label: connections.find((c) => c.id === databasePath.connectionId)?.name ?? "Connection",
-              href: connectionHref(ws, databasePath.connectionId),
-            },
-            {
-              label: databasePath.db,
-              href: databasePath.table ? databaseHref(ws, databasePath.connectionId, databasePath.db) : undefined,
-            },
-            ...(databasePath.table ? [{ label: databasePath.table }] : []),
-          ]
-        : inSettings
-          ? [
-              { label: "Settings" },
-              ...(settingsPage ? [{ label: settingsPageById(settingsPage).title }] : []),
-              ...(workspaceSettingsPage ? [{ label: workspaceSettingsPageById(workspaceSettingsPage).title }] : []),
-            ]
-          : isCodePath(pathname)
-            ? [{ label: section.title, href: `/${ws}` }, { label: "Code" }]
-            : [{ label: section.title }]
-  // The project crumb is only a link when there is somewhere above the page
-  // you are on to go back to.
-  const shown = crumbs.map((crumb, i) =>
-    i === crumbs.length - 1 ? { label: crumb.label, icon: crumb.icon } : crumb,
-  )
+  // The connection any database page is on, for the settings button.
+  const databasePath = databasePathFromPath(pathname)
+  const connectionId = connectionIdFromPath(pathname)
+  const currentConnection = connections.find((c) => c.id === (connectionId ?? databasePath?.connectionId))
+
+  // The project's views: on the project itself, not its notes or keys.
+  const projectView = Boolean(projectHash) && !projectPage
 
   return (
-    <header className="bg-background flex min-h-16 shrink-0 flex-wrap items-center gap-x-2 gap-y-0 border-b px-3 sm:px-4">
-      <SidebarTrigger className="-ml-1" />
-      <Separator orientation="vertical" className="mr-2 data-vertical:h-4 data-vertical:self-auto" />
-      {/* `min-w-0` so a long project name truncates instead of pushing the
-          view toggles off a phone screen -- without it the chat's own
-          controls become unreachable on the device that needs them most. */}
-      <Breadcrumb className="min-w-0 flex-1">
-        <BreadcrumbList className="flex-nowrap">
-          {shown.map((crumb, i) => (
-            // The separator is its own <li>, so it has to be a sibling of the
-            // item rather than a child of it -- an <li> inside an <li> is
-            // invalid HTML and the browser's fix-up trips hydration.
-            <Fragment key={`${i}-${crumb.label}`}>
-              {i > 0 && <BreadcrumbSeparator className="hidden sm:inline-flex" />}
-              <BreadcrumbItem className={cn("min-w-0", i < shown.length - 1 && "hidden sm:inline-flex")}>
-                {crumb.href ? (
-                  <BreadcrumbLink
-                    className="flex min-w-0 items-center gap-1.5"
-                    render={<TransitionLink href={crumb.href} />}
-                  >
-                    {crumb.icon && <CrumbIcon>{crumb.icon}</CrumbIcon>}
-                    <span className="truncate">{crumb.label}</span>
-                  </BreadcrumbLink>
-                ) : (
-                  <BreadcrumbPage
-                    className={cn("flex min-w-0 items-center gap-1.5", i === shown.length - 1 && "font-medium")}
-                  >
-                    {crumb.icon && <CrumbIcon>{crumb.icon}</CrumbIcon>}
-                    <span className="truncate">{crumb.label}</span>
-                  </BreadcrumbPage>
-                )}
-              </BreadcrumbItem>
-            </Fragment>
-          ))}
-        </BreadcrumbList>
-      </Breadcrumb>
-      {inSettings && <CloseSettingsButton />}
-      {/* On a connection, or any database of it: how the server is reached. */}
-      {currentConnection && <ConnectionSettingsButton connection={currentConnection} />}
-      {/* Only a project has views to switch between, or files to put beside
-          them -- and only the project itself, not its notes or keys. */}
-      {projectHash && !projectPage && (
-        <div className="ml-auto flex shrink-0 items-center gap-1">
-          {/* Suspense because the button reads the search params, which
-              Next wants fenced off from any static parent. */}
-          {project && (
-            <Suspense>
-              <PreviewButton project={project} />
-            </Suspense>
-          )}
-          {/* The tree toggle lives inside this, at its right end. */}
-          <ViewModeToggle session={sessionWorkspace && project !== undefined} />
-        </div>
-      )}
-      {project && !projectPage && (
-        <div className="flex w-full min-w-0 flex-wrap items-center gap-1 border-t py-1.5" aria-label="Project commands">
-          <CommandButtons key={project.id} project={project} />
-        </div>
+    // A container: what fits is decided by the bar's own width, which an
+    // open sidebar narrows, not the window's.
+    <header className="bg-background border-border @container flex h-12 shrink-0 items-center gap-2 border-b px-2">
+      <SidebarToggle />
+      <Divider className="hidden @xl:block" />
+
+      {projectHash ? (
+        <ProjectContext
+          workspace={workspace}
+          projects={projects}
+          project={project}
+          projectHash={projectHash}
+          sessionHash={sessionHash}
+          pageTitle={projectPage ? projectPageById(projectPage).title : null}
+          sessionWorkspace={sessionWorkspace}
+          projectView={projectView}
+        />
+      ) : (
+        <>
+          <SectionCrumbs pathname={pathname} connections={connections} inSettings={inSettings} />
+          <div className="flex-1" />
+          {inSettings && <CloseSettingsButton />}
+          {currentConnection && <ConnectionSettingsButton connection={currentConnection} />}
+        </>
       )}
     </header>
   )
 }
 
-/** A crumb's mark -- a project's stack icon -- sized to the text beside it. */
-function CrumbIcon({ children }: { children: React.ReactNode }) {
+function SidebarToggle() {
+  const { toggleSidebar } = useSidebar()
+  const mac = useIsMac()
   return (
-    <span className="flex size-4 shrink-0 items-center justify-center [&_img]:size-4 [&_svg]:size-3.5">
-      {children}
-    </span>
+    <IconButton label="Toggle sidebar" keys={shortcut(mac, "B")} onClick={toggleSidebar} aria-keyshortcuts={mac ? "Meta+B" : "Control+B"}>
+      <PanelLeftIcon className="size-[17px]!" />
+    </IconButton>
+  )
+}
+
+/** The branch and change count of the tree on screen, from the Git view's own query. */
+function useGitSummary(project: Project | undefined, sessionHash: string | null, enabled: boolean) {
+  const hash = project?.hash ?? ""
+  const { data } = useQuery({
+    queryKey: qk.git.read("status", hash, sessionHash),
+    queryFn: () => fetchGitStatus(targetOf({ hash, sessionHash })),
+    enabled: enabled && Boolean(project),
+    // Never stale by time: the server says when it is (`resource.changed{git}`).
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+  return { branch: data?.branch ?? null, changes: data?.files.length ?? 0 }
+}
+
+/** The card of the session on screen, from the sidebar's list of the workspace's sessions. */
+function useOpenSession(
+  workspace: Workspace | undefined,
+  projectHash: string,
+  sessionHash: string | null,
+  sessionWorkspace: boolean,
+): SidebarSession | null {
+  const { data } = useWorkspaceSessions(workspace?.id ?? "", true)
+  if (!sessionWorkspace && !sessionHash) return null
+  return (
+    data?.sessions.find((s) =>
+      sessionWorkspace ? s.project.hash === projectHash : s.hash === sessionHash && s.project.hash === projectHash,
+    ) ?? null
   )
 }
 
 /**
- * Opens the preview dialog. Lit when a port is set, so the bar says at a
- * glance whether this project can be opened from outside.
+ * Everything the bar shows on a project: its context on the left, and on
+ * the project itself the view switcher, the run cluster and the utilities.
+ */
+function ProjectContext({
+  workspace,
+  projects,
+  project,
+  projectHash,
+  sessionHash,
+  pageTitle,
+  sessionWorkspace,
+  projectView,
+}: {
+  workspace: Workspace | undefined
+  projects: readonly Project[]
+  project: Project | undefined
+  projectHash: string
+  sessionHash: string | null
+  pageTitle: string | null
+  sessionWorkspace: boolean
+  projectView: boolean
+}) {
+  const ws = useWorkspaceHash()
+  const card = useOpenSession(workspace, projectHash, sessionHash, sessionWorkspace)
+  // The project's own list of sessions, for a title before the sidebar's list lands.
+  const { sessions } = useProjectSessions(sessionHash && project ? project : null)
+  const listed = sessionHash ? sessions?.find((s) => s.hash === sessionHash) : undefined
+  // A session workspace's sessions have no git of their own to show.
+  const git = useGitSummary(project, sessionHash, !sessionWorkspace)
+
+  const inSession = sessionWorkspace || Boolean(sessionHash)
+  const title = sessionWorkspace ? (card?.title ?? project?.name ?? "Session") : (card?.title ?? listed?.title ?? "Session")
+  const provider = card?.provider ?? listed?.provider ?? null
+  const branch = card?.branch ?? git.branch ?? (project?.defaultBranch || null)
+  // A hash the list does not know is a project you have just created, or one
+  // that will 404 in a moment: there is nothing better to call it.
+  const name = project?.name ?? "Project"
+
+  const projectLine = (
+    <TransitionLink
+      href={projectHref(ws, "project", projectHash)}
+      className="text-muted-foreground hover:text-foreground focus-visible:ring-focus-ring/60 flex min-w-0 items-center gap-1.5 rounded-sm text-[11px] transition-colors duration-150 outline-none focus-visible:ring-2"
+    >
+      <span className="flex size-3 shrink-0 items-center justify-center [&_img]:size-3 [&_svg]:size-3">
+        <ProjectStackIcon stack={project?.stack} />
+      </span>
+      <span className="truncate">{name}</span>
+      {branch && <BranchLabel branch={branch} />}
+    </TransitionLink>
+  )
+
+  let left: React.ReactNode
+  if (inSession && workspace && project) {
+    left = (
+      <Stack top={sessionWorkspace ? null : projectLine}>
+        <SessionMenu
+          workspace={workspace}
+          projects={projects}
+          project={project}
+          session={card}
+          branch={sessionWorkspace ? null : branch}
+          trigger={
+            <button
+              type="button"
+              aria-label={`${title}: session menu`}
+              className="group/title focus-visible:ring-focus-ring/60 text-foreground flex min-w-0 items-center gap-1.5 rounded-sm text-[13.5px] font-medium outline-none focus-visible:ring-2"
+            >
+              <HarnessIcon harness={provider} size={14} />
+              <span className="truncate">{title}</span>
+              <ChevronDownIcon className="text-text-subtle group-hover/title:text-foreground group-aria-expanded/title:text-foreground size-3 shrink-0 transition-colors duration-150" />
+            </button>
+          }
+        />
+      </Stack>
+    )
+  } else if (pageTitle) {
+    left = (
+      <Stack top={projectLine}>
+        <span className="text-foreground truncate text-[13.5px] font-medium">{pageTitle}</span>
+      </Stack>
+    )
+  } else {
+    // The project itself: its name, with the branch beside it.
+    left = (
+      <div className="flex min-w-0 items-center gap-1.5 text-[13.5px] font-medium">
+        <span className="flex size-3.5 shrink-0 items-center justify-center [&_img]:size-3.5 [&_svg]:size-3.5">
+          <ProjectStackIcon stack={project?.stack} />
+        </span>
+        <span className="text-foreground truncate">{name}</span>
+        {branch && <BranchLabel branch={branch} className="hidden text-[11px] @3xl:flex" />}
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {/* Its natural width, up to a share of the bar: the title is what
+          gives way when there is not room for everything. */}
+      <div className="flex max-w-[38%] min-w-0 shrink items-center lg:max-w-[28%] xl:max-w-[26rem]">{left}</div>
+
+      {/* Never narrower than its tabs: the title gives way instead. */}
+      <div className="flex flex-1 items-center justify-center @xl:px-2">
+        {projectView && <ViewModeToggle session={sessionWorkspace && project !== undefined} gitChanges={git.changes} />}
+      </div>
+
+      {projectView && project && (
+        <div className="flex shrink-0 items-center gap-2">
+          <RunCluster key={project.id} project={project} />
+          {/* Suspense because the button reads the search params, which
+              Next wants fenced off from any static parent. */}
+          <Suspense>
+            <PreviewButton project={project} />
+          </Suspense>
+          <Divider className="hidden md:@3xl:block" />
+          <FilesButton />
+          <SearchButton />
+          {/* In a session its menu carries the project's settings on a narrow bar. */}
+          {!sessionWorkspace && (
+            <ProjectSettingsButton project={project} className={inSession ? "hidden @3xl:inline-flex" : undefined} />
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
+/** Two lines, the small one on top -- hidden on a narrow bar, which is one line. */
+function Stack({ top, children }: { top: React.ReactNode | null; children: React.ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-col justify-center gap-px leading-tight">
+      {top && <div className="hidden min-w-0 @3xl:flex">{top}</div>}
+      <div className="flex min-w-0">{children}</div>
+    </div>
+  )
+}
+
+function BranchLabel({ branch, className }: { branch: string; className?: string }) {
+  return (
+    <span className={cn("text-text-subtle flex min-w-0 shrink items-center gap-0.5 font-mono", className)}>
+      <GitBranchIcon className="size-3 shrink-0" aria-hidden />
+      <span className="sr-only">on branch </span>
+      <span className="max-w-40 truncate">{branch}</span>
+    </span>
+  )
+}
+
+/** Off a project: the section, and the pages under it, as one line of crumbs. */
+function SectionCrumbs({
+  pathname,
+  connections,
+  inSettings,
+}: {
+  pathname: string
+  connections: readonly DatabaseConnectionSummary[]
+  inSettings: boolean
+}) {
+  const ws = useWorkspaceHash()
+  const section = sectionForPath(pathname)
+  const settingsPage = settingsPageFromPath(pathname)
+  const workspaceSettingsPage = workspaceSettingsPageFromPath(pathname)
+  const databasePath = databasePathFromPath(pathname)
+  const connectionId = connectionIdFromPath(pathname)
+
+  // Every crumb but the last is a link up a level; the last is where you are.
+  const crumbs: Crumb[] = connectionId
+    ? [
+        { label: "Connections", href: `/${ws}/database` },
+        { label: connections.find((c) => c.id === connectionId)?.name ?? "Connection" },
+      ]
+    : databasePath
+      ? [
+          { label: "Connections", href: `/${ws}/database` },
+          {
+            label: connections.find((c) => c.id === databasePath.connectionId)?.name ?? "Connection",
+            href: connectionHref(ws, databasePath.connectionId),
+          },
+          {
+            label: databasePath.db,
+            href: databasePath.table ? databaseHref(ws, databasePath.connectionId, databasePath.db) : undefined,
+          },
+          ...(databasePath.table ? [{ label: databasePath.table }] : []),
+        ]
+      : inSettings
+        ? [
+            { label: "Settings" },
+            ...(settingsPage ? [{ label: settingsPageById(settingsPage).title }] : []),
+            ...(workspaceSettingsPage ? [{ label: workspaceSettingsPageById(workspaceSettingsPage).title }] : []),
+          ]
+        : isCodePath(pathname)
+          ? [{ label: section.title, href: `/${ws}` }, { label: "Code" }]
+          : [{ label: section.title }]
+
+  return (
+    <nav aria-label="Breadcrumb" className="min-w-0">
+      <ol className="flex min-w-0 items-center gap-1.5 text-[13.5px]">
+        {crumbs.map((crumb, i) => {
+          const last = i === crumbs.length - 1
+          return (
+            <Fragment key={`${i}-${crumb.label}`}>
+              {i > 0 && (
+                <li aria-hidden className="text-text-subtle hidden sm:block">
+                  /
+                </li>
+              )}
+              {/* On a phone only where you are: the way up is the sidebar. */}
+              <li className={cn("min-w-0", !last && "hidden sm:block")}>
+                {crumb.href && !last ? (
+                  <TransitionLink
+                    href={crumb.href}
+                    className="text-muted-foreground hover:text-foreground block truncate transition-colors duration-150"
+                  >
+                    {crumb.label}
+                  </TransitionLink>
+                ) : (
+                  <span aria-current={last ? "page" : undefined} className={cn("block truncate", last ? "text-foreground font-medium" : "text-muted-foreground")}>
+                    {crumb.label}
+                  </span>
+                )}
+              </li>
+            </Fragment>
+          )
+        })}
+      </ol>
+    </nav>
+  )
+}
+
+/**
+ * Opens the preview dialog. Lit while the dialog is open, and while a port
+ * is set, so the bar says at a glance whether this project can be opened
+ * from outside.
  *
  * Also opens itself when the URL asks (`?preview=setup`): that is where the
  * share link sends someone who followed it before a port was chosen.
@@ -294,19 +466,17 @@ function PreviewButton({ project }: { project: Project }) {
     if (wantsSetup) setOpen(true)
   }, [wantsSetup])
 
+  const lit = open || Boolean(project.previewPort) || project.previewStaticDir != null
   return (
     <>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        aria-pressed={Boolean(project.previewPort)}
-        title={project.previewPort ? `Preview on port ${project.previewPort}` : "Preview"}
+      <IconButton
+        label={project.previewPort ? `Web preview on port ${project.previewPort}` : "Web preview"}
+        active={lit}
+        aria-pressed={lit}
         onClick={() => setOpen(true)}
-        className="text-muted-foreground aria-pressed:text-ucch-active"
       >
         <GlobeIcon />
-        <span className="sr-only">Preview</span>
-      </Button>
+      </IconButton>
       <PreviewDialog project={project} open={open} onOpenChange={setOpen} />
     </>
   )
@@ -316,18 +486,13 @@ function PreviewButton({ project }: { project: Project }) {
 function ConnectionSettingsButton({ connection }: { connection: DatabaseConnectionSummary }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="ml-auto flex shrink-0 items-center">
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        title={`Settings for ${connection.name}`}
-        onClick={() => setOpen(true)}
-        className="text-muted-foreground"
-      >
-        <SettingsIcon />
-        <span className="sr-only">Connection settings</span>
-      </Button>
+    <>
+      <Hint label={`Settings for ${connection.name}`}>
+        <button type="button" aria-label="Connection settings" className={ICON_BUTTON} onClick={() => setOpen(true)}>
+          <SettingsIcon />
+        </button>
+      </Hint>
       <ConnectionSettingsDialog connection={connection} open={open} onOpenChange={setOpen} />
-    </div>
+    </>
   )
 }

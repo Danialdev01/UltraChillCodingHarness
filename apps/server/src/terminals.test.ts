@@ -838,6 +838,45 @@ describe("a command button's terminal", () => {
     await until(/again=ok\r?\n/);
   }, 20_000);
 
+  it("lists how its command ended, and says so as it ends", async () => {
+    await writeCommands([{ id: "build", label: "Build", command: "sh -c 'exit 3'" }]);
+    const changed = vi.fn();
+    const own = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, changed }, () => {});
+    try {
+      own.react(
+        { type: "terminal.create", projectId: PROJECT, terminalId: TERMINAL, cols: 80, rows: 24, program: "command", commandId: "build" },
+        USER,
+      );
+      // Opened: listed, still running.
+      expect(own.list(PROJECT, USER)).toEqual([
+        expect.objectContaining({ id: TERMINAL, program: "command", commandId: "build", commandExit: null }),
+      ]);
+      expect(changed).toHaveBeenCalledWith(USER, PROJECT);
+
+      // The shell's end-of-command mark carries the status through.
+      const deadline = Date.now() + 10_000;
+      while (own.list(PROJECT, USER)[0]?.commandExit == null && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(own.list(PROJECT, USER)[0]?.commandExit).toBe(3);
+      expect(changed).toHaveBeenCalledTimes(2);
+
+      // Closed: off the list, and the owner's pages told.
+      own.close(TERMINAL);
+      expect(changed).toHaveBeenCalledTimes(3);
+      expect(own.list(PROJECT, USER)).toEqual([]);
+    } finally {
+      own.closeAll();
+    }
+  }, 20_000);
+
+  it("keeps a command that has not ended as running", async () => {
+    await writeCommands([{ id: "dev", label: "Dev", command: "echo up=yes; sleep 30" }]);
+    run("dev");
+    await until(/up=yes\r?\n/);
+    expect(reactor.list(PROJECT, USER)[0]).toMatchObject({ commandId: "dev", commandExit: null });
+  }, 20_000);
+
   it("refuses an id the file does not have, and runs nothing", async () => {
     await writeCommands([{ id: "dev", label: "Dev", command: "echo nope" }]);
     run("missing");

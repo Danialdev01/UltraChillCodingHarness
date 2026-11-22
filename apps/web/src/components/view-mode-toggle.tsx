@@ -2,20 +2,19 @@
 
 import * as React from "react"
 import {
+  BookOpenIcon,
   ChevronsUpDownIcon,
   FolderTreeIcon,
   GitBranchIcon,
   MessageSquareIcon,
   SquareTerminalIcon,
-  StickyNoteIcon,
   Trash2Icon,
 } from "lucide-react"
 
-import { SidebarToggles } from "@/components/file-explorer-toggle"
-import { Button } from "@/components/ui/button"
 import { ViewModeList } from "@/components/on-demand"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useFilesPanel, type ViewMode } from "@/components/files-panel"
+import { IconButton, isCommandKey, shortcut, useIsMac } from "@/components/topbar/primitives"
 import { cn } from "@/lib/utils"
 
 /**
@@ -28,15 +27,15 @@ export type Mode = { id: ViewMode; label: string; icon: typeof MessageSquareIcon
 
 const CHAT: Mode = { id: "chat", label: "Chat", icon: MessageSquareIcon }
 const FILES: Mode = { id: "file", label: "Files", icon: FolderTreeIcon }
-const DOCS: Mode = { id: "docs", label: "Knowledge", icon: StickyNoteIcon }
+const DOCS: Mode = { id: "docs", label: "Knowledge", icon: BookOpenIcon }
 const TERMINAL: Mode = { id: "terminal", label: "Terminal", icon: SquareTerminalIcon }
 const GIT: Mode = { id: "git", label: "Git", icon: GitBranchIcon }
 
 /**
- * A project's tabs. No Files tab: the tree toggle beside them opens the
- * files, and opening one shows the editor -- the tab only repeated that.
- * Its place goes to the project's documentation, read without leaving the
- * session.
+ * A project's tabs. No Files tab: the Files button at the right of the bar
+ * opens the tree, and opening a file shows the editor -- the tab only
+ * repeated that. Its place goes to the project's documentation, read
+ * without leaving the session.
  */
 const MODES = [CHAT, DOCS, TERMINAL, GIT]
 
@@ -50,26 +49,19 @@ const SESSION_MODES = [CHAT, FILES, TERMINAL]
 const ALL_MODES = [CHAT, FILES, DOCS, TERMINAL, GIT]
 
 /**
- * Which of the project's three views is on screen, and what is beside it.
+ * Which of the project's views is on screen: a segmented control in the
+ * middle of the top bar, with a pill that slides to the lit tab.
  *
- * A segmented toggle rather than a button that renames itself: with two views
- * the old button could say where it would take you, and with three it could
- * not -- and even with two, "Files" on screen while you are *in* the chat is
- * a label that has to be read twice. Here all three are visible and the lit
- * one is where you are.
- *
- * The two sidebar toggles sit inside the same pill, at its right end behind a
- * divider. They are a different kind of control -- a state, not a destination --
- * which is what the divider says; but they act on what the three tabs choose,
- * so putting them in the group keeps the header to one cluster of controls
- * instead of two that look alike.
- *
- * On a phone the four tabs do not fit beside everything else in the header,
- * so they fold into a picker shaped like the harness one in the chat.
+ * ⌘1-⌘4 (Ctrl elsewhere) pick a tab from anywhere, and the arrow keys move
+ * between them once one has focus. Labels fold away when the bar is narrow,
+ * leaving the icons, and narrower still the row becomes one picker, since
+ * the bar has the run buttons to fit beside it too. Measured on the bar
+ * (`@container`), not the window: an open sidebar takes its share.
  */
-export function ViewModeToggle({ session = false }: { session?: boolean }) {
+export function ViewModeToggle({ session = false, gitChanges = 0 }: { session?: boolean; gitChanges?: number }) {
   const { mode, setMode, tabs, closeAllTabs, terminals } = useFilesPanel()
   const modes = session ? SESSION_MODES : MODES
+  const mac = useIsMac()
 
   // The view is remembered across projects, so arriving in a session from a
   // project's Git or Knowledge view would otherwise show a tab that is
@@ -77,6 +69,20 @@ export function ViewModeToggle({ session = false }: { session?: boolean }) {
   React.useEffect(() => {
     if (session && (mode === "git" || mode === "docs")) setMode("chat")
   }, [session, mode, setMode])
+
+  // ⌘1..⌘n, wherever focus is: the tabs are the page's own top level.
+  React.useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (!isCommandKey(event) || event.defaultPrevented) return
+      const index = Number(event.key) - 1
+      const target = Number.isInteger(index) ? modes[index] : undefined
+      if (!target) return
+      event.preventDefault()
+      setMode(target.id)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [modes, setMode])
 
   // The sweep acts on the view you are in: the file tabs when reading files,
   // the shells when in the terminal. Nothing to sweep in the chat.
@@ -89,53 +95,127 @@ export function ViewModeToggle({ session = false }: { session?: boolean }) {
 
   return (
     <div className="flex items-center gap-1">
-      <ViewModeSelect modes={modes} mode={mode} onChange={setMode} />
+      <ViewModeSelect modes={modes} mode={mode} onChange={setMode} gitChanges={gitChanges} />
+      <SegmentedTabs modes={modes} mode={mode} onChange={setMode} gitChanges={gitChanges} mac={mac} />
 
-      {/* Drawn like `ui/segmented` -- the one look for "one of these" -- but
-          kept a tablist: these switch what the page shows, not a value. */}
-      <div className="bg-muted/60 hidden items-center gap-0.5 rounded-lg border p-0.5 md:flex">
-        <div role="tablist" aria-label="Project view" className="flex items-center gap-0.5">
-          {modes.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={mode === id}
-              title={label}
-              onClick={() => setMode(id)}
-              className={cn(
-                "flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors",
-                mode === id
-                  ? "bg-background text-foreground border-border shadow-xs"
-                  : "text-muted-foreground hover:text-foreground border-transparent",
-              )}
-            >
-              <Icon className="size-3.5" />
-              {/* Icons only until lg: beside a full sidebar, the labelled
-                  row left the page title a few letters. */}
-              <span className="sr-only lg:not-sr-only">{label}</span>
-            </button>
-          ))}
-        </div>
-
-        <SidebarToggles session={session} />
-      </div>
-
-      {/* Outside the pill: the pill is where you are and what is beside it,
-          and this throws things away. Only once there are enough tabs that
-          closing them singly is a chore. */}
+      {/* Beside the switcher rather than in it: the switcher is where you
+          are, and this throws things away. Only once there are enough tabs
+          that closing them singly is a chore. */}
       {sweep && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          title={sweep.label}
-          onClick={sweep.run}
-          className="text-muted-foreground hover:text-destructive"
-        >
+        <IconButton label={sweep.label} onClick={sweep.run} className="hover:text-danger">
           <Trash2Icon />
-          <span className="sr-only">{sweep.label}</span>
-        </Button>
+        </IconButton>
       )}
+    </div>
+  )
+}
+
+function SegmentedTabs({
+  modes,
+  mode,
+  onChange,
+  gitChanges,
+  mac,
+}: {
+  modes: readonly Mode[]
+  mode: ViewMode
+  onChange: (mode: ViewMode) => void
+  gitChanges: number
+  mac: boolean
+}) {
+  const listRef = React.useRef<HTMLDivElement>(null)
+  const tabRefs = React.useRef<Record<string, HTMLButtonElement | null>>({})
+  const [pill, setPill] = React.useState<{ left: number; width: number } | null>(null)
+  // No slide into place on the first paint, only between tabs after it.
+  const [settled, setSettled] = React.useState(false)
+  const activeIndex = modes.findIndex((m) => m.id === mode)
+
+  // Measured from the lit tab itself: its width moves with the git count,
+  // and with the labels folding at `lg` -- which the observer catches.
+  React.useLayoutEffect(() => {
+    const list = listRef.current
+    if (!list) return
+    const measure = () => {
+      const tab = activeIndex >= 0 ? tabRefs.current[modes[activeIndex]!.id] : null
+      setPill(tab ? { left: tab.offsetLeft, width: tab.offsetWidth } : null)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(list)
+    return () => observer.disconnect()
+  }, [activeIndex, modes, gitChanges])
+
+  React.useEffect(() => {
+    if (!pill || settled) return
+    const frame = requestAnimationFrame(() => setSettled(true))
+    return () => cancelAnimationFrame(frame)
+  }, [pill, settled])
+
+  function onKeyDown(event: React.KeyboardEvent) {
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0
+    const edge = event.key === "Home" ? 0 : event.key === "End" ? modes.length - 1 : null
+    if (!step && edge === null) return
+    event.preventDefault()
+    const from = activeIndex >= 0 ? activeIndex : 0
+    const next = modes[edge ?? (from + step + modes.length) % modes.length]!
+    onChange(next.id)
+    tabRefs.current[next.id]?.focus()
+  }
+
+  return (
+    <div
+      ref={listRef}
+      role="tablist"
+      aria-label="Project view"
+      onKeyDown={onKeyDown}
+      className="bg-muted/60 light:bg-sidebar relative hidden items-center rounded-[10px] p-[3px] @xl:flex"
+    >
+      {pill && (
+        <span
+          aria-hidden
+          className={cn(
+            "border-border bg-background light:border-border-strong light:shadow-rest dark:bg-foreground/[0.08] absolute top-[3px] bottom-[3px] rounded-[7px] border shadow-xs",
+            settled && "transition-[left,width] duration-200 ease-out motion-reduce:transition-none",
+          )}
+          style={{ left: pill.left, width: pill.width }}
+        />
+      )}
+      {modes.map(({ id, label, icon: Icon }, index) => {
+        const selected = mode === id
+        const count = id === "git" && gitChanges > 0 ? gitChanges : 0
+        return (
+          <button
+            key={id}
+            ref={(el) => {
+              tabRefs.current[id] = el
+            }}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            // One stop in the tab order: the lit tab, or the first when none is.
+            tabIndex={selected || (activeIndex < 0 && index === 0) ? 0 : -1}
+            title={`${label}  ${shortcut(mac, String(index + 1))}`}
+            aria-keyshortcuts={mac ? `Meta+${index + 1}` : `Control+${index + 1}`}
+            onClick={() => onChange(id)}
+            className={cn(
+              "focus-visible:ring-focus-ring/60 relative z-10 flex h-[26px] items-center gap-1.5 rounded-[7px] px-2.5 text-[13px] font-medium transition-colors duration-150 outline-none focus-visible:ring-2",
+              selected ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Icon className="size-3.5 shrink-0" />
+            {/* Icons only until the bar is 60rem wide -- the bar's width,
+                not the window's, since the sidebar takes its share. */}
+            <span className="sr-only @min-[60rem]:not-sr-only">{label}</span>
+            {count > 0 && (
+              <span className="bg-warning/15 text-warning rounded-full px-1.5 text-[10px] leading-4 font-semibold tabular-nums">
+                <span className="sr-only">, </span>
+                {count}
+                <span className="sr-only"> changed</span>
+              </span>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -145,10 +225,12 @@ function ViewModeSelect({
   modes,
   mode,
   onChange,
+  gitChanges,
 }: {
   modes: readonly Mode[]
   mode: ViewMode
   onChange: (mode: ViewMode) => void
+  gitChanges: number
 }) {
   const [open, setOpen] = React.useState(false)
   // Files has no tab in a project, but the tree still opens the editor.
@@ -159,20 +241,20 @@ function ViewModeSelect({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={
-          <Button
-            variant="outline"
+          <button
+            type="button"
             role="combobox"
             aria-expanded={open}
-            aria-label="Project view"
-            className="h-8 w-32 justify-between px-2 text-xs font-normal md:hidden"
+            aria-label={`Project view: ${current.label}`}
+            className="bg-muted/60 light:bg-sidebar text-foreground focus-visible:ring-focus-ring/60 relative flex h-8 items-center gap-1 rounded-[10px] px-2 outline-none focus-visible:ring-2 @xl:hidden"
           />
         }
       >
-        <span className="flex min-w-0 items-center gap-1.5">
-          <CurrentIcon className="size-3.5 shrink-0" />
-          <span className="truncate">{current.label}</span>
-        </span>
-        <ChevronsUpDownIcon className="text-muted-foreground size-3.5 shrink-0" />
+        <CurrentIcon className="size-3.5 shrink-0" />
+        {gitChanges > 0 && mode !== "git" && !modes.every((m) => m.id !== "git") && (
+          <span aria-hidden className="bg-warning absolute top-1 right-5 size-1.5 rounded-full" />
+        )}
+        <ChevronsUpDownIcon className="text-text-subtle size-3 shrink-0" />
       </PopoverTrigger>
 
       <PopoverContent className="w-44 p-0">

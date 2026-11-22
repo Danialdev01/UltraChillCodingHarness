@@ -1190,6 +1190,11 @@ export const LiveResource = z.enum([
    * install it waits on started, finished or failed.
    */
   "runtimes",
+  /**
+   * The caller's terminals in a project: one opened or closed, or a command
+   * button's command ended. Published to the owner's own topic.
+   */
+  "terminals",
 ]);
 export type LiveResource = z.infer<typeof LiveResource>;
 

@@ -5,6 +5,10 @@ export interface ProjectTerminal {
   /** The session whose worktree it opened in; null for the project's checkout. */
   sessionHash: string | null
   program: "shell" | "claude-login" | "codex-login" | "command"
+  /** The command button a `command` terminal runs. */
+  commandId?: string
+  /** How its command ended (its exit status), or null while it still runs. */
+  commandExit?: number | null
   createdAt: string
 }
 

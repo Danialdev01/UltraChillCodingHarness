@@ -95,6 +95,15 @@ interface Session {
   /** The tab's name, as the client asked for it. */
   label: string;
   program: TerminalProgram;
+  /** The command button it runs, for a `command` terminal. */
+  commandId?: string;
+  /**
+   * How the button's command ended, once it has: its exit status, read off
+   * the shell's own end-of-command mark (`COMMAND_DONE`). Null while it runs.
+   */
+  commandExit: number | null;
+  /** The end of the last output chunk, so a mark split across two is still seen. */
+  markTail: string;
   createdAt: number;
   /** Its recent output, oldest first; see `SCROLLBACK_BYTES`. */
   scrollback: string[];
@@ -116,6 +125,10 @@ export interface TerminalSummary {
   label: string;
   sessionHash: string | null;
   program: TerminalProgram;
+  /** The command button a `command` terminal runs. */
+  commandId?: string;
+  /** How its command ended: the exit status, or null while it is still running. */
+  commandExit?: number | null;
   createdAt: string;
 }
 
@@ -144,6 +157,12 @@ export interface TerminalOptions {
   projectLimit?: (projectId: string) => Promise<number>;
   /** Whether any page is showing the terminal: one that is is never idle-closed. */
   watched?: (terminalId: string) => boolean;
+  /**
+   * A user's list of terminals in a project changed: one opened or closed,
+   * or a command button's command ended. What the header's run buttons
+   * follow, without each page polling the list.
+   */
+  changed?: (userId: string, projectId: string) => void;
   /**
    * How to start a provider's sign-in flow for this user: the CLI, its
    * arguments, and the environment that points it at the user's own
@@ -184,6 +203,15 @@ export interface TerminalOptions {
     }): Promise<{ dispose(): Promise<void> } | null>;
   };
 }
+
+/**
+ * The end of a command, as the project shells mark it (`shell/ucch.fish`,
+ * `shell/ucch.bashrc`): the shell-integration sequence `OSC 133 ; D ; <status>`,
+ * ended by BEL or ST. xterm ignores it, so nothing shows on screen.
+ */
+const COMMAND_DONE = /\x1b\]133;D;(\d+)(?:\x07|\x1b\\)/;
+/** Enough of the previous chunk to finish a mark cut in two. */
+const MARK_TAIL = 24;
 
 /** How long a watched-but-not-yet-opened terminal id stays reserved. */
 const CLAIM_TTL_MS = 5 * 60_000;
@@ -376,6 +404,9 @@ export class TerminalReactor {
         label: session.label,
         sessionHash: session.sessionHash,
         program: session.program,
+        ...(session.program === "command"
+          ? { commandId: session.commandId, commandExit: session.commandExit }
+          : {}),
         createdAt: new Date(session.createdAt).toISOString(),
       }));
   }
@@ -574,6 +605,7 @@ export class TerminalReactor {
       child,
       early,
       program,
+      ...(program === "command" && commandId ? { commandId } : {}),
       label: label ?? "Terminal",
       // Only a shell in the session's own worktree belongs to the session.
       sessionHash: sessionHash && (program === "shell" || program === "command") ? sessionHash : null,
@@ -603,6 +635,7 @@ export class TerminalReactor {
     program,
     label,
     sessionHash,
+    commandId,
     beforeEarly,
   }: {
     terminalId: string;
@@ -611,6 +644,7 @@ export class TerminalReactor {
     child: TerminalProcess;
     early: EarlyInput | undefined;
     program: TerminalProgram;
+    commandId?: string;
     label: string;
     sessionHash: string | null;
     beforeEarly?: () => void;
@@ -622,6 +656,9 @@ export class TerminalReactor {
       sessionHash,
       label,
       program,
+      ...(commandId ? { commandId } : {}),
+      commandExit: null,
+      markTail: "",
       createdAt: Date.now(),
       scrollback: [],
       scrollbackBytes: 0,
@@ -633,6 +670,7 @@ export class TerminalReactor {
 
     child.onData((data) => {
       this.#keep(session, data);
+      if (session.program === "command" && session.commandExit === null) this.#watchForDone(session, data);
       // Split rather than truncated: a chunk cut in half mid-escape-sequence
       // would leave the client's parser waiting for the rest of a sequence
       // that never comes, and the screen wrong from then on.
@@ -652,6 +690,7 @@ export class TerminalReactor {
       if (current) this.#closed(session);
     });
 
+    this.#changed(session);
     beforeEarly?.();
 
     // What was typed while the shell was starting, at the size the screen
@@ -807,6 +846,35 @@ export class TerminalReactor {
       ...(session.projectId !== null ? { projectId: session.projectId } : {}),
       terminalId: session.id,
     });
+    this.#changed(session);
+  }
+
+  /** Tells the owner's pages that their list of the project's terminals moved. */
+  #changed(session: Session): void {
+    if (session.projectId === null) return;
+    try {
+      this.options.changed?.(session.userId, session.projectId);
+    } catch (error) {
+      this.onError(error);
+    }
+  }
+
+  /**
+   * Looks for the shell's end-of-command mark in a command terminal's
+   * output: the first one after the button's command is typed is how that
+   * command ended. Later commands typed by hand in the same tab are the
+   * user's own, and do not change it.
+   */
+  #watchForDone(session: Session, data: string): void {
+    const text = session.markTail + data;
+    const done = COMMAND_DONE.exec(text);
+    if (done) {
+      session.commandExit = Number(done[1]);
+      session.markTail = "";
+      this.#changed(session);
+      return;
+    }
+    session.markTail = text.slice(-MARK_TAIL);
   }
 
   get #idleMs(): number {
