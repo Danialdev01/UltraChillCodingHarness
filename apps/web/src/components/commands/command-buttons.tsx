@@ -19,6 +19,7 @@ import {
 import { useCachedState } from "@/lib/queries/cached-state"
 import { projectQueries } from "@/lib/queries/project-data"
 import type { Project } from "@/lib/session"
+import { cn } from "@/lib/utils"
 
 /**
  * The project's command buttons, from `.agent/commands.json`: the list, why
@@ -43,22 +44,30 @@ export function useProjectCommands(project: Project) {
 
 /**
  * The picker of the project's commands, opened from the run cluster's `›`
- * segment or with ⌘⇧P. Every command is here, Dev and Build included, with
- * the way to add or change them at the foot.
+ * segment or with ⌘⇧P. Every command is here -- the ones the bar has no
+ * room for too -- with what each is doing, and the way to add or change
+ * them at the foot.
  */
 export function CommandsMenu({
   project,
   open,
   onOpenChange,
   trigger,
+  onSelect,
+  decorate,
 }: {
   project: Project
   open: boolean
   onOpenChange: (open: boolean) => void
   /** The element that opens it; given the trigger's props by the menu. */
   trigger: React.ReactElement
+  /** What picking a command does; runs it by default. */
+  onSelect?: (command: ProjectCommand) => void
+  /** A command's live state, drawn in its row: its mark, colour and a word. */
+  decorate?: (command: ProjectCommand) => { icon: React.ReactNode; tone: string | null; state: string | null } | null
 }) {
   const { commands, error, run } = useProjectCommands(project)
+  const pick = onSelect ?? run
   const [managing, setManaging] = React.useState(false)
 
   return (
@@ -75,20 +84,26 @@ export function CommandsMenu({
             )}
             {commands.map((command) => {
               const Icon = commandIcon(command.icon)
+              const live = decorate?.(command) ?? null
               return (
-                <DropdownMenuItem key={command.id} onClick={() => run(command)}>
-                  <Icon />
+                <DropdownMenuItem key={command.id} onClick={() => pick(command)} className="group/seg">
+                  <span className={cn("grid size-4 shrink-0 place-items-center", live?.tone)}>
+                    {live ? live.icon : <Icon />}
+                  </span>
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate">{command.label}</span>
                     <span className="text-muted-foreground truncate font-mono text-[11px]">{command.command}</span>
                   </span>
+                  {live?.state && (
+                    <span className={cn("shrink-0 font-mono text-[11px]", live.tone)}>{live.state}</span>
+                  )}
                 </DropdownMenuItem>
               )
             })}
             {commands.length === 0 && !error && (
               <p className="text-muted-foreground px-2 pb-1.5 text-xs leading-snug">
-                Commands that run in a terminal tab, kept in <code>.agent/commands.json</code>. One with the id{" "}
-                <code>dev</code> becomes the Dev button, and <code>build</code> the Build button.
+                No commands yet. Each one you add gets its own button in the bar, and runs in a terminal tab. They
+                are kept in <code>.agent/commands.json</code>.
               </p>
             )}
           </DropdownMenuGroup>
