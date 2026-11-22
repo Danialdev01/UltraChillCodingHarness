@@ -5,8 +5,8 @@ import { usePathname } from "next/navigation"
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
-  ArrowLeftIcon,
   CheckIcon,
+  ChevronRightIcon,
   CircleCheckIcon,
   CopyIcon,
   PencilIcon,
@@ -24,6 +24,7 @@ import { FilterPopover } from "@/components/session-sidebar/filter-popover"
 import { ProjectGroupHeader } from "@/components/session-sidebar/project-group"
 import { ListRowsSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { renameProject } from "@/lib/create-project"
 import { sessionModelLabel } from "@/lib/harnesses"
@@ -74,8 +75,6 @@ import { useMe } from "@/lib/queries/bootstrap"
 /** Past this many cards the list lets the browser skip laying out what is off screen. */
 const VIRTUALIZE_AFTER = 100
 
-type Bucket = "settled" | "archived"
-
 /**
  * The sidebar's list of coding sessions: every session in the workspace,
  * either newest first (Sessions) or under their projects (Projects).
@@ -114,10 +113,12 @@ export function SessionSidebar({
   const [filters, dispatchFilter] = React.useReducer(filterReducer, NO_FILTERS)
   const [collapsed, toggleCollapsed] = useCollapsedProjects(workspace.id)
 
-  /** Settled or Archived, opened from the buttons at the foot, in place of the list. */
-  const [bucket, setBucket] = React.useState<Bucket | null>(null)
+  /** The Settled and Archived dropdowns at the foot, each opening its list under its row. */
+  const [settledOpen, setSettledOpen] = React.useState(false)
+  const [archivedOpen, setArchivedOpen] = React.useState(false)
   React.useEffect(() => {
-    setBucket(null)
+    setSettledOpen(false)
+    setArchivedOpen(false)
   }, [workspace.id])
 
   const { data, dataUpdatedAt, isPending } = useWorkspaceSessions(workspace.id, true)
@@ -164,7 +165,7 @@ export function SessionSidebar({
   const visible = matching.filter((s) => !s.archivedAt && s.settleState !== "settled")
   const settled = sortSessions(matching.filter((s) => !s.archivedAt && s.settleState === "settled"))
   const archived = sortSessions(matching.filter((s) => Boolean(s.archivedAt)))
-  const navigable = bucket === "settled" ? settled : bucket === "archived" ? archived : visible
+  const navigable = [...visible, ...(settledOpen ? settled : []), ...(archivedOpen ? archived : [])]
 
   const narrowed = filtersActive(filters)
 
@@ -423,14 +424,6 @@ export function SessionSidebar({
   let body: React.ReactNode
   if (isPending) {
     body = <ListRowsSkeleton rows={6} />
-  } else if (bucket) {
-    const sessions = bucket === "settled" ? settled : archived
-    body =
-      sessions.length > 0 ? (
-        byDay(sessions)
-      ) : (
-        <p className="text-muted-foreground px-1.5 py-2 text-xs">No {bucket} sessions.</p>
-      )
   } else if (mode === "sessions") {
     if (total === 0) {
       body = (
@@ -506,7 +499,7 @@ export function SessionSidebar({
       <div className="border-sidebar-border flex shrink-0 items-center gap-4 border-b px-3">
         <div role="tablist" aria-label="List sessions by" className="flex min-w-0 items-center gap-4">
           {tabs.map((tab) => {
-            const selected = !bucket && mode === tab.value
+            const selected = mode === tab.value
             return (
               <button
                 key={tab.value}
@@ -514,7 +507,6 @@ export function SessionSidebar({
                 role="tab"
                 aria-selected={selected}
                 onClick={() => {
-                  setBucket(null)
                   if (!sessionWorkspace) setMode(tab.value)
                 }}
                 className={cn(
@@ -547,47 +539,35 @@ export function SessionSidebar({
         className="flex min-h-0 flex-1 flex-col"
       >
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2.5 [scrollbar-width:thin]">
-          {bucket && (
-            <div className="mb-2 flex items-center gap-1 px-0.5">
-              <button
-                type="button"
-                onClick={() => setBucket(null)}
-                className="text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-hover focus-visible:ring-focus-ring flex items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors duration-150 outline-none focus-visible:ring-2"
-              >
-                <ArrowLeftIcon className="size-3.5" aria-hidden />
-                Back to {mode === "projects" && !sessionWorkspace ? "projects" : "sessions"}
-              </button>
-              <span className="flex-1" />
-              <span className="text-text-subtle text-2xs">{bucket === "settled" ? "Settled" : "Archived"}</span>
-            </div>
-          )}
           <div className="flex flex-col">{body}</div>
         </div>
         {!isPending && (
-          <div className="border-sidebar-border flex shrink-0 gap-1.5 border-t px-2.5 pt-2 pb-2.5">
-            {(
-              [
-                { id: "settled", label: "Settled", count: settled.length, icon: CircleCheckIcon },
-                { id: "archived", label: "Archived", count: archived.length, icon: ArchiveIcon },
-              ] as const
-            ).map(({ id, label, count, icon: Icon }) => (
-              <button
-                key={id}
-                type="button"
-                aria-pressed={bucket === id}
-                onClick={() => setBucket((current) => (current === id ? null : id))}
-                className={cn(
-                  "focus-visible:ring-focus-ring flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs transition-colors duration-150 outline-none focus-visible:ring-2",
-                  bucket === id
-                    ? "border-border-strong bg-sidebar-accent text-sidebar-foreground"
-                    : "border-sidebar-border text-muted-foreground hover:border-border-strong hover:text-sidebar-foreground",
-                )}
-              >
-                <Icon className="size-3.5 shrink-0" aria-hidden />
-                <span className="min-w-0 truncate">{label}</span>
-                <span className="flex-1" />
-                <span className="text-text-subtle tabular-nums">{count}</span>
-              </button>
+          // Dropdowns stacked at the foot. An open one lists its sessions
+          // under its row, capped so the main list above keeps its room.
+          <div className="border-sidebar-border flex shrink-0 flex-col gap-0.5 border-t px-2 pt-1.5 pb-2">
+            {[
+              { label: "Settled", sessions: settled, open: settledOpen, setOpen: setSettledOpen, icon: CircleCheckIcon },
+              { label: "Archived", sessions: archived, open: archivedOpen, setOpen: setArchivedOpen, icon: ArchiveIcon },
+            ].map(({ label, sessions, open, setOpen, icon: Icon }) => (
+              <Collapsible key={label} open={open} onOpenChange={setOpen}>
+                <CollapsibleTrigger className="text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-hover aria-expanded:text-sidebar-foreground focus-visible:ring-focus-ring flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs transition-colors duration-150 outline-none focus-visible:ring-2">
+                  <ChevronRightIcon
+                    aria-hidden
+                    className={cn("size-3.5 shrink-0 transition-transform duration-150", open && "rotate-90")}
+                  />
+                  <Icon aria-hidden className="size-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                  <span className="text-text-subtle tabular-nums">{sessions.length}</span>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="max-h-[25vh] overflow-y-auto [scrollbar-width:thin]">
+                  {open &&
+                    (sessions.length > 0 ? (
+                      <ul className="mt-1 mb-1 flex flex-col gap-1">{sessions.map((s) => card(s, false))}</ul>
+                    ) : (
+                      <p className="text-muted-foreground px-2 py-2 text-xs">No {label.toLowerCase()} sessions.</p>
+                    ))}
+                </CollapsibleContent>
+              </Collapsible>
             ))}
           </div>
         )}
