@@ -157,7 +157,7 @@ export function ActionDialogFooter({
           FOCUS,
           tone === "danger"
             ? live
-              ? "border-(--fd-danger-solid) bg-(--fd-danger-solid) font-semibold text-white enabled:hover:border-(--fd-danger-solid-hover) enabled:hover:bg-(--fd-danger-solid-hover)"
+              ? "border-(--fd-danger-solid) bg-(--fd-danger-solid) font-semibold text-(--fd-on-danger) enabled:hover:border-(--fd-danger-solid-hover) enabled:hover:bg-(--fd-danger-solid-hover)"
               : "cursor-not-allowed border-(--fd-danger-off-border) bg-(--fd-danger-off) font-medium text-(--fd-danger-off-text)"
             : cn(
                 "border-(--fd-accent) bg-(--fd-accent) font-semibold text-(--fd-on-accent) enabled:hover:border-(--fd-accent-hover) enabled:hover:bg-(--fd-accent-hover)",

@@ -3,6 +3,7 @@
 exports[`ompOverlay > writes the documentation preset under allow_all 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -134,6 +135,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the documentation preset under default 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -265,6 +267,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the documentation preset under normal 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -396,6 +399,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the documentation preset under strict 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -527,6 +531,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the research preset under allow_all 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -658,6 +663,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the research preset under default 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -789,6 +795,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the research preset under normal 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -920,6 +927,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the research preset under strict 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -1051,6 +1059,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the standard preset under allow_all 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -1182,6 +1191,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the standard preset under default 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -1313,6 +1323,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the standard preset under normal 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true
@@ -1444,6 +1455,7 @@ disabledProviders: ["claude", "claude-plugins", "codex", "cursor", "gemini", "op
 exports[`ompOverlay > writes the standard preset under strict 1`] = `
 "compaction:
   enabled: true
+  thresholdPercent: 55
   methodOrder: ["handoff", "remote", "shake", "soft"]
   keepRecentTokens: 20000
   midTurnEnabled: true

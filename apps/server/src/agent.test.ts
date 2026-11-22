@@ -507,7 +507,8 @@ describe("an OMP turn", () => {
       turnId: (events.find((e) => e.type === "turn.started") as { turnId: string }).turnId,
       usedTokens: 1280,
       windowTokens: 200000,
-      thresholdTokens: null,
+      // OMP hands off at CONTEXT_HANDOVER_RATIO (55%) of the window.
+      thresholdTokens: 110000,
     });
     // The session is the project's, under the subject; the overlay is gone.
     expect(await readdir(join(first.creds, USER, "omp", "sessions", PROJECT))).toHaveLength(1);
@@ -1025,7 +1026,8 @@ describe("an OMP turn", () => {
         threadId: THREAD,
         usedTokens: 320,
         windowTokens: 200000,
-        thresholdTokens: null,
+        // OMP hands off at CONTEXT_HANDOVER_RATIO (55%) of the window.
+        thresholdTokens: 110000,
       });
       expect(events.at(-1)).toEqual({ type: "thread.compaction_finished", threadId: THREAD, method });
       expect(events.some((e) => e.type === "turn.started")).toBe(false);

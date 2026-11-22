@@ -7,8 +7,8 @@
     "dev": "next dev --webpack -p 3000",
     "build": "next build --webpack",
     "start": "next start -p 3000",
-    "typecheck": "next typegen && tsc --noEmit",
-    "typecheck:rs": "next typegen && tsc-rs --noEmit",
+    "typecheck": "next typegen && bash ../../scripts/typecheck.sh",
+    "typecheck:tsc": "next typegen && tsc --noEmit",
     "e2e": "playwright test"
   },
   "dependencies": {

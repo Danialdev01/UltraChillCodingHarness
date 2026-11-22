@@ -35,7 +35,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # tsc-rs, then the same check with Microsoft's tsc: a few seconds more,
+      # and an error tsc-rs missed still fails the build.
       - run: pnpm typecheck
+      - run: pnpm typecheck:tsc
 
       - run: pnpm test
 

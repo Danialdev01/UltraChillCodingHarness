@@ -1011,6 +1011,8 @@
     --fd-danger: light-dark(#c62828, #ef4444);
     --fd-danger-solid: light-dark(#c62828, #dc2626);
     --fd-danger-solid-hover: light-dark(#a51f1f, #b91c1c);
+    /* The label on the solid red button: both themes' reds are dark enough for white. */
+    --fd-on-danger: #ffffff;
     --fd-danger-icon: light-dark(#c62828, #f87171);
     --fd-danger-tint: light-dark(#fdeeee, #2a1618);
     --fd-danger-tint-border: light-dark(#f3c7c7, #5a2328);

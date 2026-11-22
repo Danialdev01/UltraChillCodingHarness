@@ -249,8 +249,8 @@ describe("writeOmpOverlay", () => {
   it("returns where its compaction starts, for the context meter", async () => {
     const dir = mkdtempSync(join(tmpdir(), "omp-overlay-"));
     const written = await writeOmpOverlay(dir, "00000000-0000-4000-8000-000000000004", base);
-    // UCCH leaves OMP's own threshold in place, so the meter knows none.
-    expect(written.contextThreshold).toEqual({});
+    // The handover line UCCH sets (CONTEXT_HANDOVER_RATIO), as a share of the window.
+    expect(written.contextThreshold).toEqual({ percent: 55 });
     await written.dispose();
   });
 

@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { SESSION_BRANCH_PREFIX, isReservedBranchName, isSessionBranch, type GitBranchList, type GitStatus } from "@ucch/protocol"
+import { SESSION_BRANCH_PREFIX, isReservedBranchName, isSessionBranch } from "@ucch/protocol/plain"
+import type { GitBranchList, GitStatus } from "@ucch/protocol"
 import {
   ArrowDownIcon,
   ArrowUpIcon,

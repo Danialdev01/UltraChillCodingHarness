@@ -73,7 +73,7 @@ describe("components use semantic colour tokens", () => {
         // follows the theme through `currentColor`.
         ["logo-mark.tsx", 'fill="#377876"'],
         // Claude Code's generic mark keeps one warm tone in either theme.
-        ["icons/harness/claude.tsx", 'stroke="#D97757"'],
+        ["icons/harness/claude.tsx", 'fill="#D97757"'],
       ]),
     ).toEqual([])
   })
@@ -98,6 +98,13 @@ describe("text keeps the contrast the engine gave it", () => {
           // Disabled states, exempt from contrast (§6) and marked as such.
           ["column-form.tsx", 'disabled && "opacity-60"'],
           ["quick-actions.tsx", '"cursor-not-allowed opacity-40"'],
+          // The dialog's submit button while it cannot be pressed (`disabled`).
+          ["action-dialog.tsx", '!live && "cursor-not-allowed opacity-40"'],
+          // A delete choice that is not available: the radio is `disabled`.
+          ["delete-project-dialog.tsx", 'option.off && "opacity-50"'],
+          // A harness that is not ready: its card is `disabled`, and its name
+          // turns to the muted token rather than fading.
+          ["new-session-dialog.tsx", 'dim && "opacity-50"'],
           // An icon at 70% of the full ink: still well past 3:1.
           ["project-chat.tsx", '<XIcon className="size-3 opacity-70" />'],
         ],

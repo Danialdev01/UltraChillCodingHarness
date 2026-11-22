@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { isSessionBranch } from "@ucch/protocol"
+import { isSessionBranch } from "@ucch/protocol/plain"
 import { GitMergeIcon, GlobeIcon, Loader2Icon, MonitorPlayIcon, RulerIcon, SaveIcon, ShieldCheckIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"

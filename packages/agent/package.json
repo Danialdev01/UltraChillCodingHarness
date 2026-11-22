@@ -6,7 +6,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": { ".": "./src/index.ts" },
-  "scripts": { "typecheck": "tsc --noEmit", "typecheck:rs": "tsc-rs --noEmit" },
+  "scripts": { "typecheck": "bash ../../scripts/typecheck.sh", "typecheck:tsc": "tsc --noEmit" },
   "dependencies": {
     "@ucch/protocol": "workspace:*",
     "zod": "^3.24.1"

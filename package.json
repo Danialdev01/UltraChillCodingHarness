@@ -16,7 +16,7 @@
     "test:watch": "vitest",
     "db:generate": "pnpm --filter @ucch/db generate",
     "db:migrate": "pnpm --filter @ucch/db migrate",
-    "typecheck:rs": "pnpm -r typecheck:rs"
+    "typecheck:tsc": "pnpm -r typecheck:tsc"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

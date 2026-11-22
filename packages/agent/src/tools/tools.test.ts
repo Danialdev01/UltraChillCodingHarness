@@ -894,6 +894,7 @@ describe("the tool surface", () => {
       "show_widget",
       "ucch_agent",
       "ucch_sessions",
+      "ucch_session_read",
       "ucch_message",
       "ucch_inbox",
       "ucch_agent_status",

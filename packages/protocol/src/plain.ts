@@ -14,6 +14,7 @@ import type { Membership, WorkspacePermission, WorkspaceRole } from "./workspace
 
 export * from "./tokens.js";
 export * from "./paths.js";
+export * from "./session-branches.js";
 export * from "./media.js";
 export * from "./avatar.js";
 export * from "./hostname.js";

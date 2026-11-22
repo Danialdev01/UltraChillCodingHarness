@@ -563,7 +563,6 @@ export function SessionSidebar({
             setDeleteTarget(null)
             invalidate(qk.projects.all, qk.sessions.all, qk.bootstrap())
             if (deleted.hash === activeProjectHash) router.push(`/${ws}`)
-            router.refresh()
           }}
         />
       )}
