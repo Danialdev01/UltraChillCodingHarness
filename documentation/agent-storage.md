@@ -39,6 +39,25 @@ travel with the repository, and anyone who knows the project key can open them.
 It is never served by the public site (`isSecretPath`). The values are not put
 into terminals or command runs.
 
+## In sessions
+
+`commands.json` and `env.val` belong to the project, not to a branch. They are
+saved in the project's checkout, and every session worktree holds a live copy
+(`apps/server/src/agent-shared-files.ts`), so a session's Files view and its
+agent see the same commands and variables as the header:
+
+- A save in the project reaches every worktree straight away. A new worktree
+  starts from the project's copies, not from what its branch committed.
+- An edit made in a worktree (by hand, or by the agent) becomes the project's
+  and every other session's. The project's file being deleted removes the
+  copies; a copy going (the worktree being removed) never touches the project's.
+- Opening a tree catches up on edits made while nobody was watching it; the
+  newer copy wins.
+- Settling a session never commits its copies. Settle, pull and branch switch
+  move the checkout's uncommitted copies aside and put them back afterwards,
+  so git never refuses to overwrite them. A merge conflict in only these files
+  is settled with the base's version, and the live copy is put back on top.
+
 ## Documentation
 
 An existing page begins with frontmatter:

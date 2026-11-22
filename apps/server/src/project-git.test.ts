@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -289,5 +289,47 @@ describe("restoring a settled session's worktree", () => {
     await git.restoreWorktree(A, "sessiond0001", "ucch/sessiond0001", "main");
     expect(await out(tree, "branch", "--show-current")).toBe("ucch/sessiond0001");
     expect(await exists(join(tree, "notes.md"))).toBe(true);
+  });
+});
+
+describe("the project's commands and variables, copied into a session", () => {
+  const agentFile = (dir: string, name: string) => join(dir, ".agent", name);
+  const put = async (dir: string, name: string, body: string) => {
+    await mkdir(join(dir, ".agent"), { recursive: true });
+    await writeFile(agentFile(dir, name), body);
+  };
+
+  it("settles without committing the session's copies, while the checkout's stay uncommitted", async () => {
+    const repo = await cloneProject(A, await makeOrigin("shared", "main"));
+    const tree = await git.addWorktree(A, "sharedsess01", "ucch/sharedsess01", "main");
+    for (const dir of [repo, tree]) {
+      await put(dir, "commands.json", '{"commands":[]}\n');
+      await put(dir, "env.val", "vault\n");
+    }
+    await edit(tree, "feature.txt", "feature\n");
+
+    expect(await git.settle(settleInput(A, "sharedsess01", "main"))).toMatchObject({ state: "settled" });
+    expect(await out(repo, "show", "main:feature.txt")).toBe("feature");
+    expect(await out(repo, "ls-tree", "-r", "--name-only", "main", "--", ".agent")).toBe("");
+    expect(await readFile(agentFile(repo, "env.val"), "utf8")).toBe("vault\n");
+  });
+
+  it("settles a session whose agent committed them, keeping the checkout's live versions", async () => {
+    const repo = await cloneProject(A, await makeOrigin("shared2", "main"));
+    const tree = await git.addWorktree(A, "sharedsess02", "ucch/sharedsess02", "main");
+    await put(tree, "commands.json", "session's\n");
+    await edit(tree, "feature.txt", "feature\n", "agent committed everything");
+    await put(repo, "commands.json", "live\n");
+    // Modified after a commit is not "uncommitted changes" that block a settle either.
+    await put(repo, "env.val", "v1\n");
+    await sh(repo, "add", "-A");
+    await sh(repo, "commit", "-q", "--no-verify", "-m", "vault");
+    await put(repo, "env.val", "v2\n");
+
+    const settled = await git.settle(settleInput(A, "sharedsess02", "main"));
+    expect(settled, JSON.stringify(settled)).toMatchObject({ state: "settled" });
+    expect(await out(repo, "show", "main:feature.txt")).toBe("feature");
+    expect(await readFile(agentFile(repo, "commands.json"), "utf8")).toBe("live\n");
+    expect(await readFile(agentFile(repo, "env.val"), "utf8")).toBe("v2\n");
   });
 });

@@ -1,5 +1,6 @@
 import { mkdir, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { SHARED_AGENT_PATHS, WITHOUT_SHARED_AGENT_FILES, withSharedAgentFilesAside } from "./agent-shared-files.js";
 import { GitError, runGit, type GitRunOptions } from "./git-exec.js";
 import type { GitAuthor } from "./git.js";
 import { projectRoot, sessionTree, sessionTreesOf } from "./trees.js";
@@ -78,6 +79,11 @@ export class ProjectGit {
   /** Runs git against one directory of the project: its checkout, or a worktree of it. */
   async #run(dir: string, argv: string[], options: GitRunOptions = {}): Promise<string> {
     return runGit(["-C", dir, "-c", "core.hooksPath=/dev/null", ...argv], dir, this.timeoutMs, options);
+  }
+
+  /** `#run` bound to one tree, for `withSharedAgentFilesAside`. */
+  #runner(dir: string) {
+    return (argv: string[], options?: GitRunOptions) => this.#run(dir, argv, options);
   }
 
   git(projectId: string, argv: string[], options: GitRunOptions = {}): Promise<string> {
@@ -260,15 +266,19 @@ export class ProjectGit {
       throw new SettleRefusedError(`"${baseBranch}" is not a valid base branch -- set one in Project Settings`);
     }
 
-    // 1. Commit what the session left uncommitted.
+    // 1. Commit what the session left uncommitted. Not its copies of the
+    // project's commands and variables: those are the project's, kept in
+    // step with its checkout (`agent-shared-files.ts`), not the session's work.
     if (input.tree && (await exists(input.tree))) {
-      const dirty = (await this.#run(input.tree, ["status", "--porcelain"], { read: true })).trim();
+      const dirty = (
+        await this.#run(input.tree, ["status", "--porcelain", "--", ...WITHOUT_SHARED_AGENT_FILES], { read: true })
+      ).trim();
       if (dirty) {
         const files = dirty
           .split("\n")
           .map((line) => line.slice(3))
           .slice(0, 50);
-        await this.#run(input.tree, ["add", "-A"]);
+        await this.#run(input.tree, ["add", "-A", "--", ...WITHOUT_SHARED_AGENT_FILES]);
         await this.#run(input.tree, [
           ...who,
           "commit",
@@ -318,7 +328,9 @@ export class ProjectGit {
     let mergeDir = await this.#checkedOutAt(projectId, baseBranch);
     if (mergeDir) {
       const changes = (
-        await this.#run(mergeDir, ["status", "--porcelain", "--untracked-files=no"], { read: true })
+        await this.#run(mergeDir, ["status", "--porcelain", "--untracked-files=no", "--", ...WITHOUT_SHARED_AGENT_FILES], {
+          read: true,
+        })
       ).trim();
       if (changes) {
         throw new SettleRefusedError(
@@ -333,7 +345,12 @@ export class ProjectGit {
       if (local !== remote) {
         if (await this.#isAncestor(projectId, local, remote)) {
           // Behind origin: fast-forward, nothing else.
-          if (mergeDir) await this.#run(mergeDir, ["merge", "--ff-only", "--quiet", remote]);
+          if (mergeDir) {
+            const dir = mergeDir;
+            await withSharedAgentFilesAside(dir, this.#runner(dir), () =>
+              this.#run(dir, ["merge", "--ff-only", "--quiet", remote]),
+            );
+          }
           else await this.git(projectId, ["update-ref", `refs/heads/${baseBranch}`, remote, local]);
         } else if (!(await this.#isAncestor(projectId, remote, local))) {
           throw new SettleRefusedError(
@@ -358,28 +375,44 @@ export class ProjectGit {
     try {
       const before = (await this.#run(mergeDir, ["rev-parse", "HEAD"])).trim();
       let mergeError: unknown = null;
-      try {
-        await this.#run(mergeDir, [
-          ...who,
-          "merge",
-          "--no-ff",
-          "--no-verify",
-          "--no-edit",
-          "-m",
-          `Merge session “${input.title}” (${branch}) into ${baseBranch}`,
-          "--",
-          branch,
-        ]);
-      } catch (error) {
-        mergeError = error;
-      }
+      let conflicts: string[] = [];
+      const dir = mergeDir;
+      // The abort happens inside, before the project's copies of the shared
+      // files are put back: `merge --abort` would otherwise reset them.
+      await withSharedAgentFilesAside(dir, this.#runner(dir), async () => {
+        try {
+          await this.#run(dir, [
+            ...who,
+            "merge",
+            "--no-ff",
+            "--no-verify",
+            "--no-edit",
+            "-m",
+            `Merge session “${input.title}” (${branch}) into ${baseBranch}`,
+            "--",
+            branch,
+          ]);
+        } catch (error) {
+          conflicts = (await this.#run(dir, ["diff", "--name-only", "--diff-filter=U"], { read: true }))
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (conflicts.length && conflicts.every((path) => SHARED_AGENT_PATHS.includes(path))) {
+            // Only the project's own commands and variables differ, and the
+            // checkout's live copies replace whatever is merged anyway: the
+            // base's version settles it, and the merge goes through.
+            await this.#run(dir, ["checkout", "--ours", "--", ...conflicts]);
+            await this.#run(dir, ["add", "--", ...conflicts]);
+            await this.#run(dir, [...who, "commit", "--no-verify", "--no-edit"]);
+            conflicts = [];
+            return;
+          }
+          mergeError = error;
+          await this.#run(dir, ["merge", "--abort"], { okExitCodes: [0, 128] });
+        }
+      });
 
       if (mergeError) {
-        const conflicts = (await this.#run(mergeDir, ["diff", "--name-only", "--diff-filter=U"], { read: true }))
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        await this.#run(mergeDir, ["merge", "--abort"], { okExitCodes: [0, 128] });
         const after = (await this.#run(mergeDir, ["rev-parse", "HEAD"])).trim();
         if (after !== before || (await this.#refExists(mergeDir, "MERGE_HEAD"))) {
           throw new Error(`the merge into ${baseBranch} could not be aborted cleanly -- check the project checkout`);

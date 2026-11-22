@@ -82,15 +82,15 @@ export async function agentPath(root: string, sub: string): Promise<string> {
   return target;
 }
 
-/** Writes `content` to `path` (already checked by `agentPath`) via a temp file; untouched when unchanged. */
-export async function writeIfChanged(path: string, content: string | Buffer): Promise<boolean> {
+/** Writes `content` to `path` (already checked by `agentPath`) via a temp file; untouched when unchanged. A new file gets `mode`. */
+export async function writeIfChanged(path: string, content: string | Buffer, mode?: number): Promise<boolean> {
   const current = await readFile(path).catch(() => null);
   const next = typeof content === "string" ? Buffer.from(content) : content;
   if (current && current.equals(next)) return false;
   await mkdir(dirname(path), { recursive: true });
   const temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   try {
-    await writeFile(temp, next);
+    await writeFile(temp, next, mode === undefined ? undefined : { mode });
     await rename(temp, path);
   } catch (error) {
     await rm(temp, { force: true });

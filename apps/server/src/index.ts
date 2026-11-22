@@ -41,10 +41,11 @@ import { researchBackends } from "./research.js";
 import { DIAGRAM_FILES, diagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
 import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.js";
 import { WorktreeReactor } from "./worktrees.js";
+import { SharedAgentFiles, sharedAgentFileOf } from "./agent-shared-files.js";
 import { ProjectGit, SettleRefusedError } from "./project-git.js";
 import { projectDeletionCheck } from "./project-deletion.js";
 import { sessionFilesBeyondAgent, sessionProjectHasWork } from "./session-settle.js";
-import { projectOf, projectRoot, sessionTree, sessionTreesOf, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
+import { projectIdOfPath, projectOf, projectRoot, sessionTree, sessionTreesOf, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
 import {
   ConflictError,
   PathError,
@@ -697,6 +698,39 @@ const engine = new OrchestrationEngine(
  * the agent write is announced already and not reported twice.
  */
 const watcherEvents = new WeakSet<object>();
+/**
+ * The project's commands and variables, copied live into every session
+ * worktree and back: see `agent-shared-files.ts`.
+ */
+const sharedAgentFiles = new SharedAgentFiles({
+  workspaceRoot: config.WORKSPACE_ROOT,
+  onProjectChanged: async (projectId, file) => {
+    await refreshIndexFiles(projectRoot(config.WORKSPACE_ROOT, projectId)).catch(() => {});
+    if (file === "commands.json") {
+      bus.publish({ seq: null, projectId, threadId: null, event: { type: "resource.changed", projectId, resource: "commands" } });
+    }
+  },
+  onError: (error) => app.log.warn({ err: error }, "could not copy the project's .agent files"),
+});
+bus.tap(({ projectId, event }) => {
+  if (!projectId) return;
+  if (event.type === "file.changed") {
+    const file = sharedAgentFileOf(event.path);
+    if (!file) return;
+    if (!event.worktreeId) void sharedAgentFiles.fromProject(projectId);
+    // A worktree's copy going is the worktree going, not the project's file.
+    else if (event.change !== "deleted") void sharedAgentFiles.fromTree(projectId, event.worktreeId, file);
+  } else if (event.type === "thread.worktree_ready") {
+    void db
+      .select({ hash: threads.hash, treeHash: threads.treeHash })
+      .from(threads)
+      .where(eq(threads.id, event.threadId))
+      .limit(1)
+      .then(([thread]) => thread && sharedAgentFiles.seed(projectId, thread.treeHash ?? thread.hash))
+      .catch((error) => app.log.warn({ err: error }, "could not seed a worktree's .agent files"));
+  }
+});
+
 const fileWatcher = new FileWatcher({
   rootOf: (projectId, tree) =>
     tree ? sessionTree(config.WORKSPACE_ROOT, projectId, tree) : projectRoot(config.WORKSPACE_ROOT, projectId),
@@ -734,8 +768,12 @@ new ProjectActivityPublisher(
 ).start();
 
 const gateway = new WebSocketGateway(auth, engine, store, bus, {
-  onProjectWatch: (projectId, delta, tree) =>
-    delta === 1 ? fileWatcher.retain(projectId, tree) : fileWatcher.release(projectId, tree),
+  onProjectWatch: (projectId, delta, tree) => {
+    if (delta !== 1) return fileWatcher.release(projectId, tree);
+    fileWatcher.retain(projectId, tree);
+    // Edits made while nobody watched this tree, so no watcher heard them.
+    void sharedAgentFiles.reconcile(projectId, tree);
+  },
   access,
   composer,
   presence,
@@ -3352,13 +3390,15 @@ registerTranscribeRoutes(app, {
 registerCommandRoutes(app, {
   projectFor,
   rootOf: (projectId) => projectRoot(config.WORKSPACE_ROOT, projectId),
-  changed: (projectId) =>
+  changed: (projectId) => {
     bus.publish({
       seq: null,
       projectId,
       threadId: null,
       event: { type: "resource.changed", projectId, resource: "commands" },
-    }),
+    });
+    void sharedAgentFiles.fromProject(projectId);
+  },
 });
 
 registerTaskRoutes(app, {
@@ -3400,7 +3440,11 @@ registerEnvRoutes(app, {
     db,
     (projectId) => join(config.WORKSPACE_ROOT, projectId),
     config.SECRET_KEY ?? null,
-    (dir) => refreshIndexFiles(dir),
+    async (dir) => {
+      await refreshIndexFiles(dir);
+      const projectId = projectIdOfPath(config.WORKSPACE_ROOT, dir);
+      if (projectId) await sharedAgentFiles.fromProject(projectId);
+    },
   ),
 });
 

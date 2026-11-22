@@ -18,6 +18,7 @@ import {
   type GitResolveStrategy,
   type GitStatus,
 } from "@ucch/protocol";
+import { withSharedAgentFilesAside } from "./agent-shared-files.js";
 import { PathError } from "./files.js";
 import { GitError, runGit, safeRepoUrl } from "./git-exec.js";
 import type { TreeTarget } from "./trees.js";
@@ -334,7 +335,7 @@ export class GitService {
    * tracking it, or is simply switched to when `x` already exists.
    */
   checkout(projectId: GitTarget, branch: string, remote = false): Promise<GitChangedPath[]> {
-    return this.#serial(projectId, async (cwd) => {
+    return this.#serial(projectId, (cwd) => withSharedAgentFilesAside(cwd, this.#runner(cwd), async () => {
       const before = await this.#head(cwd);
       if (remote) {
         const local = branch.replace(/^[^/]+\//, "");
@@ -349,7 +350,7 @@ export class GitService {
         await this.#git(cwd, ["switch", "--", this.#branchName(branch)]);
       }
       return this.#changedBetween(cwd, before, await this.#head(cwd));
-    });
+    }));
   }
 
   createBranch(projectId: GitTarget, name: string): Promise<void> {
@@ -382,7 +383,7 @@ export class GitService {
     token: string | null,
     author: GitAuthor,
   ): Promise<{ conflicts: boolean; changed: GitChangedPath[] }> {
-    return this.#serial(projectId, async (cwd) => {
+    return this.#serial(projectId, (cwd) => withSharedAgentFilesAside(cwd, this.#runner(cwd), async () => {
       await this.#widenRefspec(cwd);
       const before = await this.#head(cwd);
       // A pull that has to merge writes a commit, and a commit needs a name.
@@ -404,7 +405,7 @@ export class GitService {
             .map((f): GitChangedPath => ({ path: f.path, change: f.status === "D" ? "deleted" : f.status === "A" ? "added" : "modified" }))
         : await this.#changedBetween(cwd, before, await this.#head(cwd));
       return { conflicts, changed };
-    });
+    }));
   }
 
   /** Pushes the current branch, publishing it when it has no upstream yet. */
@@ -525,6 +526,11 @@ export class GitService {
   }
 
   // ---- internals --------------------------------------------------------
+
+  /** `#git` bound to one tree, for `withSharedAgentFilesAside`. */
+  #runner(cwd: string) {
+    return (argv: string[], options?: { okExitCodes?: readonly number[]; read?: boolean }) => this.#git(cwd, argv, options);
+  }
 
   #git(
     cwd: string,
