@@ -1,7 +1,8 @@
 # Project files for agents
 
 Projects use `.agent/` (singular). Command buttons are defined by
-`.agent/commands.json`; documentation pages are stored in `.agent/notes/`.
+`.agent/commands.json`; environment variables are stored encrypted in
+`.agent/env.val`; documentation pages are stored in `.agent/notes/`.
 The server reconciles documentation at startup, after editor saves, and when
 watched project files change. Opening documentation also checks synchronization.
 
@@ -17,6 +18,26 @@ It edits the existing command file, preserving unrelated commands:
 The header refreshes after file changes. Clicking a button resolves its command
 from disk and opens a terminal. An agent can read the same file and execute the
 command with its shell tool. Merely writing a command does not execute it.
+
+## Environment variables
+
+The Environment Variables section saves to `.agent/env.val` and nowhere else
+(no database table). Only the values are encrypted. Names, tags and urls stay
+readable, so the list can show while the vault is locked:
+
+```json
+{"version":1,"kdf":{"name":"scrypt","salt":"…","N":32768,"r":8,"p":1},
+ "check":"iv.tag.ciphertext",
+ "vars":[{"id":"…","name":"API_TOKEN","tags":[],"url":null,"value":"iv.tag.ciphertext"}]}
+```
+
+Each value is AES-256-GCM encrypted under a key that scrypt derives from the
+project key. The project key itself is never stored. `check` is a known string
+encrypted the same way, so a wrong key is refused instead of returning garbage.
+The file is written with mode `600`. It is meant to be committed: the variables
+travel with the repository, and anyone who knows the project key can open them.
+It is never served by the public site (`isSecretPath`). The values are not put
+into terminals or command runs.
 
 ## Documentation
 

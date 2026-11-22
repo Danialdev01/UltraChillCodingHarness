@@ -1,7 +1,8 @@
 import Fastify from "fastify";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { ProjectCommandsFile } from "@ucch/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { registerCommandRoutes } from "./commands-routes.js";
 import type { ProjectSummary } from "./workspaces.js";
@@ -26,7 +27,9 @@ it("returns modal saves and subsequent manual file edits through the same button
   const commands = [{ id: "dev", label: "Dev server", command: "pnpm dev" }];
   const saved = await app.inject({ method: "PUT", url: "/api/projects/test/commands", payload: { commands } });
   expect(saved.statusCode).toBe(200);
-  expect(JSON.parse(await readFile(join(root, ".agent/commands.json"), "utf8")).commands).toEqual(commands);
+  expect(ProjectCommandsFile.parse(JSON.parse(await readFile(join(root, ".agent/commands.json"), "utf8"))).commands).toEqual(commands);
+  // .agent/commands.json is the only place a save lands.
+  expect(await readdir(root, { recursive: true })).toEqual([".agent", join(".agent", "commands.json")]);
   expect(changed).toHaveBeenCalledWith("project");
   expect((await app.inject("/api/projects/test/commands")).json().commands).toEqual(commands);
 

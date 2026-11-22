@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { encryptSecret } from "./crypto.js";
 import { registerEnvRoutes, WRONG_KEY_LIMIT } from "./env-routes.js";
 import { EnvVarService } from "./env-vars.js";
+import { decryptValue, readVault, unlockVault, WrongProjectKey } from "./env-vault.js";
 import type { ProjectSummary } from "./workspaces.js";
 
 const HASH = "abcdefghijkl";
@@ -101,6 +102,11 @@ describe("environment variable routes", () => {
     expect(file).toContain("OPENAI_API_KEY");
     expect(file).not.toContain("sk-secret");
     expect(file).not.toContain(KEY);
+    // The vault is a private file, and the stored value opens only under the project key.
+    expect((await stat(join(root, PROJECT.id, ".agent", "env.val"))).mode & 0o777).toBe(0o600);
+    const vault = (await readVault(join(root, PROJECT.id)))!;
+    expect(decryptValue(vault.vars[0]!, await unlockVault(vault, KEY))).toBe("sk-secret");
+    await expect(unlockVault(vault, "not the project key")).rejects.toBeInstanceOf(WrongProjectKey);
 
     const list = (await server.inject({ url: base })).json();
     expect(list.configured).toBe(true);
