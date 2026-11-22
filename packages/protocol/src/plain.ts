@@ -28,6 +28,9 @@ export * from "./text-replacement.js";
 export * from "./project-command-limits.js";
 export * from "./runtime-names.js";
 export * from "./model-routing.js";
+
+/** The most the per-project terminal setting (`WorkspaceAgentSettings.terminals`) may be set to. */
+export const MAX_TERMINALS_PER_PROJECT = 50;
 export * from "./widgets.js";
 export * from "./git-providers.js";
 export * from "./context-budget.js";

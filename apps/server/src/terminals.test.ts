@@ -854,3 +854,139 @@ describe("a command button's terminal", () => {
     expect(printed()).not.toContain("escaped");
   }, 20_000);
 });
+
+describe("terminals shared by a project's sessions", () => {
+  const P = "aaaaaaaa-0000-0000-0000-000000000000";
+  const Q = "bbbbbbbb-0000-0000-0000-000000000000";
+
+  /** A reactor of shell doubles that can print and exit on demand. */
+  function shared(options: {
+    maxPerProject?: number;
+    idleMs?: number;
+    projectLimit?: (projectId: string) => Promise<number>;
+    watched?: (terminalId: string) => boolean;
+  } = {}) {
+    const events: DomainEvent[] = [];
+    const shells: { data?: (d: string) => void; exit?: (e: { exitCode: number }) => void; killed: boolean }[] = [];
+    const spawn = (() => {
+      const shell: (typeof shells)[number] = { killed: false };
+      shells.push(shell);
+      return {
+        write() {},
+        resize() {},
+        kill() {
+          shell.killed = true;
+        },
+        onData(listener: (d: string) => void) {
+          shell.data = listener;
+        },
+        onExit(listener: (e: { exitCode: number }) => void) {
+          shell.exit = listener;
+        },
+      };
+    }) as unknown as typeof import("@lydell/node-pty").spawn;
+    const terminals = new TerminalReactor({ workspaceRoot: root, allowHostShell: true, spawn, ...options }, (_p, event) => {
+      events.push(event);
+    });
+    let n = 0;
+    const open = (projectId: string, userId: string, extra: { sessionHash?: string; label?: string } = {}) => {
+      const terminalId = `00000000-0000-0000-0000-${String(++n).padStart(12, "0")}`;
+      terminals.react({ type: "terminal.create", projectId, terminalId, cols: 80, rows: 24, ...extra }, userId);
+      return terminalId;
+    };
+    return { terminals, open, events, shells };
+  }
+
+  it("lists a person's terminals in the project, from every session, and nobody else's", async () => {
+    const { terminals, open } = shared();
+    const a = open(P, USER, { sessionHash: "aaaaaaaa", label: "Terminal 1" });
+    const b = open(P, USER, { sessionHash: "bbbbbbbb", label: "Terminal 2" });
+    open(P, OTHER);
+    open(Q, USER);
+    const list = terminals.list(P, USER);
+    expect(list.map((t) => [t.id, t.label, t.sessionHash, t.program])).toEqual([
+      [a, "Terminal 1", "aaaaaaaa", "shell"],
+      [b, "Terminal 2", "bbbbbbbb", "shell"],
+    ]);
+    expect(terminals.countProject(P)).toBe(3);
+    await terminals.closeAll();
+  });
+
+  it("keeps recent output for its owner only, dropping the oldest past the cap", async () => {
+    const { terminals, open, shells } = shared();
+    const id = open(P, USER);
+    expect(terminals.scrollback(id, USER)).toBeNull();
+    shells[0]!.data!("hello ");
+    shells[0]!.data!("world");
+    expect(terminals.scrollback(id, USER)).toEqual({ projectId: P, data: "hello world" });
+    expect(terminals.scrollback(id, OTHER)).toBeNull();
+
+    const big = "x".repeat(100 * 1024);
+    for (let i = 0; i < 4; i++) shells[0]!.data!(big);
+    const kept = terminals.scrollback(id, USER)!.data;
+    expect(kept.length).toBeLessThanOrEqual(256 * 1024);
+    expect(kept.startsWith("hello")).toBe(false);
+    await terminals.closeAll();
+  });
+
+  it("holds a project to its workspace's limit, under the server's ceiling", async () => {
+    const low = shared({ maxPerProject: 10, projectLimit: async () => 2 });
+    low.open(P, USER);
+    low.open(P, OTHER);
+    const third = low.open(P, USER);
+    await vi.waitFor(() => expect(low.shells.length).toBe(2));
+    await vi.waitFor(() =>
+      expect(low.events.some((e) => e.type === "terminal.output" && e.terminalId === third && /already has 2 terminals/.test(e.data))).toBe(true),
+    );
+    expect(await low.terminals.projectLimit(P)).toBe(2);
+    await low.terminals.closeAll();
+
+    const high = shared({ maxPerProject: 1, projectLimit: async () => 30 });
+    high.open(P, USER);
+    high.open(P, USER);
+    await vi.waitFor(() => expect(high.events.some((e) => e.type === "terminal.output" && /already has 1 terminals/.test(e.data))).toBe(true));
+    expect(high.shells.length).toBe(1);
+    expect(await high.terminals.projectLimit(P)).toBe(1);
+    await high.terminals.closeAll();
+  });
+
+  it("is never idle-closed while a page shows it", async () => {
+    vi.useFakeTimers();
+    try {
+      let watching = true;
+      const { terminals, open, shells } = shared({ idleMs: 1_000, watched: () => watching });
+      open(P, USER);
+      vi.advanceTimersByTime(5_000);
+      expect(shells[0]!.killed).toBe(false);
+      watching = false;
+      vi.advanceTimersByTime(1_500);
+      expect(shells[0]!.killed).toBe(true);
+      expect(terminals.countProject(P)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a session's terminals when its worktree goes, and only those", async () => {
+    const { terminals, open, shells } = shared();
+    open(P, USER, { sessionHash: "aaaaaaaa" });
+    open(P, USER, { sessionHash: "bbbbbbbb" });
+    open(P, USER);
+    terminals.closeSession(P, "aaaaaaaa");
+    expect(shells.map((s) => s.killed)).toEqual([true, false, false]);
+    await terminals.closeAll();
+  });
+
+  it("tells every page when a terminal is closed or exits by itself", async () => {
+    const { terminals, open, shells, events } = shared();
+    const closed = open(P, USER);
+    const exited = open(P, USER);
+    terminals.close(closed, USER);
+    shells[1]!.exit!({ exitCode: 0 });
+    const gone = events.filter((e) => e.type === "terminal.closed").map((e) => e.type === "terminal.closed" && e.terminalId);
+    expect(gone).toEqual([closed, exited]);
+    // Closing again is a no-op, not a second notice.
+    terminals.close(closed, USER);
+    expect(events.filter((e) => e.type === "terminal.closed")).toHaveLength(2);
+  });
+});

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ProviderId } from "./events.js";
+import { MAX_TERMINALS_PER_PROJECT } from "./plain.js";
 
 /**
  * A workspace's choices for how its agents run, beyond whose subscription
@@ -80,6 +81,14 @@ export const WorkspaceAgentSettings = z.object({
    * message. On by default. Off: sessions wait as they are.
    */
   idleCompaction: z.object({ enabled: z.boolean().default(true) }).default({}),
+  /**
+   * Terminals: how many may be open at once in one of the workspace's
+   * projects, counting every member's. The server's own
+   * `TERMINAL_MAX_PER_PROJECT` stays a ceiling above it.
+   */
+  terminals: z
+    .object({ maxPerProject: z.number().int().min(1).max(MAX_TERMINALS_PER_PROJECT).default(10) })
+    .default({}),
 });
 export type WorkspaceAgentSettings = z.infer<typeof WorkspaceAgentSettings>;
 

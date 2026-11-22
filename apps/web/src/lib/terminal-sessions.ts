@@ -60,7 +60,9 @@ export class TerminalSessions {
   ) {
     this.#theme = theme
     this.#offEvents = client.onEvent(({ event }) => {
-      if (event.type !== "terminal.output") return
+      // A replay is for a page coming back to a shell; this one's xterm
+      // already holds everything, and would print it twice.
+      if (event.type !== "terminal.output" || event.replay) return
       const session = this.#byTerminal.get(event.terminalId)
       if (!session) return
       session.term.write(event.data)

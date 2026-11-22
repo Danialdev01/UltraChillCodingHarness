@@ -73,6 +73,11 @@ export interface SessionLifecycleDeps {
   /** Tells the project's open views. Never throws. */
   announce(projectId: string, event: DomainEvent): Promise<void>;
   onCleanupError?(error: unknown, session: SessionRecord): void;
+  /**
+   * A session's worktree was removed: the terminals opened in it (by its
+   * tree hash) have nowhere to stand any more and are closed.
+   */
+  onTreeRemoved?(projectId: string, treeHash: string): void;
 }
 
 /** Refused for a reason the person can act on; the route answers 409. */
@@ -193,6 +198,7 @@ export class SessionLifecycle {
     if (outcome.state === "settled" && outcome.cleanupError) {
       this.deps.onCleanupError?.(new Error(outcome.cleanupError), session);
     }
+    if (outcome.state === "settled") this.deps.onTreeRemoved?.(session.projectId, treeHashOf(session));
 
     await this.deps.markSettled(session, outcome);
     await this.deps.announce(session.projectId, {
@@ -249,6 +255,7 @@ export class SessionLifecycle {
       } catch (error) {
         this.deps.onCleanupError?.(error, session);
       }
+      this.deps.onTreeRemoved?.(session.projectId, treeHashOf(session));
     }
     await this.deps.announce(session.projectId, {
       type: "thread.removed",

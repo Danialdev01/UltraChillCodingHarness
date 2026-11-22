@@ -48,15 +48,25 @@ const MAX_SESSIONS_TOTAL = 40;
 const MAX_EVENT_BYTES = 64 * 1024;
 
 /**
- * A terminal with nothing typed into it for this long is closed.
+ * A terminal nobody is watching and nobody has typed into for this long is
+ * closed.
  *
- * Short because of what it reclaims: leaving the project page closes its
- * terminals, but a browser tab closed outright, or a reload, drops the socket
- * without a `terminal.close` for each shell -- and a shell per abandoned page
- * would accumulate until the server restarted. Fifteen minutes is longer than
- * a pause for thought and shorter than a forgotten tab.
+ * Leaving a session's page keeps its terminals: every session of the
+ * project lists them, and a reload reattaches. So a shell outlives its page
+ * on purpose, and what this reclaims is the shell no page will come back
+ * for. While any page shows it the timer is put off (`watched`), so a dev
+ * server left running in a tab that is open is never cut off. Fifteen
+ * minutes is longer than a pause for thought and shorter than a forgotten
+ * tab.
  */
 const IDLE_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * Output kept per terminal, newest last, for a page that attaches to it
+ * later: switching session, a reload, a second tab. Enough to put the last
+ * few screens back; the scrollback beyond that is xterm's, in the page.
+ */
+const SCROLLBACK_BYTES = 256 * 1024;
 
 /** What a terminal opens at, before the client reports its real size. */
 const DEFAULT_COLS = 80;
@@ -80,6 +90,15 @@ interface Session {
   projectId: string | null;
   /** Who opened it. Nobody else may write to it, resize it, or close it. */
   userId: string;
+  /** The project session whose worktree it opened in; null for the project's checkout. */
+  sessionHash: string | null;
+  /** The tab's name, as the client asked for it. */
+  label: string;
+  program: TerminalProgram;
+  createdAt: number;
+  /** Its recent output, oldest first; see `SCROLLBACK_BYTES`. */
+  scrollback: string[];
+  scrollbackBytes: number;
   pty: TerminalProcess;
   idleTimer: NodeJS.Timeout;
   /** Its OMP bridge's files and token, once written; see `TerminalOptions.ompBridge`. */
@@ -90,6 +109,15 @@ interface Session {
 
 /** A program a terminal can run other than the shell. */
 export type TerminalProgram = "shell" | "claude-login" | "codex-login" | "command";
+
+/** A running terminal, as the pages that list a project's terminals see it. */
+export interface TerminalSummary {
+  id: string;
+  label: string;
+  sessionHash: string | null;
+  program: TerminalProgram;
+  createdAt: string;
+}
 
 export interface LoginLaunch {
   argv: string[];
@@ -107,8 +135,15 @@ export interface TerminalOptions {
   maxPerProject?: number;
   maxPerUser?: number;
   maxTotal?: number;
-  /** How long a terminal nobody types into stays open. */
+  /** How long a terminal nobody types into, and nobody watches, stays open. */
   idleMs?: number;
+  /**
+   * The project's own limit -- its workspace's setting -- read as a terminal
+   * opens. `maxPerProject` stays the ceiling above it. Absent: the ceiling.
+   */
+  projectLimit?: (projectId: string) => Promise<number>;
+  /** Whether any page is showing the terminal: one that is is never idle-closed. */
+  watched?: (terminalId: string) => boolean;
   /**
    * How to start a provider's sign-in flow for this user: the CLI, its
    * arguments, and the environment that points it at the user's own
@@ -199,26 +234,51 @@ export class TerminalReactor {
       case "terminal.create": {
         const program = command.program ?? "shell";
         const subject = command.credentialWorkspaceId ? `ws-${command.credentialWorkspaceId}` : userId;
-        const open = (profile?: ProfileRef) => {
+        // Both looked up before the shell starts; what is typed meanwhile
+        // waits in `#early`, as it does for any terminal still starting.
+        const wantsProfile = Boolean(command.profileId) && (program === "claude-login" || program === "codex-login");
+        const provider = program === "claude-login" ? "claude" : "codex";
+        const profile: Promise<ProfileRef | null | undefined> = wantsProfile
+          ? (this.options.profile?.(subject, command.profileId!, provider) ?? Promise.resolve(null))
+          : Promise.resolve(undefined);
+        const limit = this.options.projectLimit
+          ? this.options.projectLimit(command.projectId).catch((error: unknown) => {
+              this.onError(error);
+              return undefined;
+            })
+          : Promise.resolve(undefined);
+        const open = (found: ProfileRef | undefined, perProject: number | undefined) => {
           try {
-            this.#open(command.terminalId, command.projectId, userId, program, subject, command.sessionHash, command.commandId, profile);
+            this.#open({
+              terminalId: command.terminalId,
+              projectId: command.projectId,
+              userId,
+              program,
+              credentialSubject: subject,
+              ...(command.sessionHash ? { sessionHash: command.sessionHash } : {}),
+              ...(command.commandId ? { commandId: command.commandId } : {}),
+              ...(command.label ? { label: command.label } : {}),
+              ...(found ? { profile: found } : {}),
+              ...(perProject !== undefined ? { perProject } : {}),
+            });
           } catch (error) {
             this.onError(error);
           }
         };
-        if (command.profileId && (program === "claude-login" || program === "codex-login")) {
-          // Looked up before the shell starts; what is typed meanwhile waits
-          // in `#early`, as it does for any terminal still starting.
-          const provider = program === "claude-login" ? "claude" : "codex";
-          void (this.options.profile?.(subject, command.profileId, provider) ?? Promise.resolve(null))
-            .then((profile) => {
-              if (profile) open(profile);
-              else this.#say(command.projectId, command.terminalId, "That account is not one of yours, or it was deleted.\r\n");
-            })
-            .catch((error: unknown) => this.onError(error));
+        if (!wantsProfile && !this.options.projectLimit) {
+          // Nothing to wait for: opened in this turn of the loop, as before.
+          open(undefined, undefined);
           return;
         }
-        open();
+        void Promise.all([profile, limit])
+          .then(([found, perProject]) => {
+            if (found === null) {
+              this.#say(command.projectId, command.terminalId, "That account is not one of yours, or it was deleted.\r\n");
+              return;
+            }
+            open(found, perProject);
+          })
+          .catch((error: unknown) => this.onError(error));
         return;
       }
 
@@ -306,6 +366,51 @@ export class TerminalReactor {
     return true;
   }
 
+  /** This user's terminals in the project, oldest first: every session's. */
+  list(projectId: string, userId: string): TerminalSummary[] {
+    return [...this.#sessions.values()]
+      .filter((session) => session.projectId === projectId && session.userId === userId)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((session) => ({
+        id: session.id,
+        label: session.label,
+        sessionHash: session.sessionHash,
+        program: session.program,
+        createdAt: new Date(session.createdAt).toISOString(),
+      }));
+  }
+
+  /** Terminals open in the project, whoever opened them: what its limit counts. */
+  countProject(projectId: string): number {
+    let count = 0;
+    for (const session of this.#sessions.values()) if (session.projectId === projectId) count += 1;
+    return count;
+  }
+
+  /**
+   * The project's terminal limit as a terminal opening now would meet it:
+   * the workspace's setting under the server's ceiling.
+   */
+  async projectLimit(projectId: string): Promise<number> {
+    const ceiling = this.options.maxPerProject ?? MAX_SESSIONS_PER_PROJECT;
+    const setting = this.options.projectLimit ? await this.options.projectLimit(projectId) : ceiling;
+    return Math.min(setting, ceiling);
+  }
+
+  /** A terminal's recent output, for its owner only; null when there is none to give. */
+  scrollback(terminalId: string, userId: string): { projectId: string | null; data: string } | null {
+    const session = this.#mine(terminalId, userId);
+    if (!session || session.scrollback.length === 0) return null;
+    return { projectId: session.projectId, data: session.scrollback.join("") };
+  }
+
+  /** Closes the terminals opened in a session's worktree, which is going away. */
+  closeSession(projectId: string, sessionHash: string): void {
+    for (const session of [...this.#sessions.values()]) {
+      if (session.projectId === projectId && session.sessionHash === sessionHash) this.close(session.id);
+    }
+  }
+
   /** Kills a session. Idempotent: a tab closed twice is not an error. */
   close(terminalId: string, userId?: string): void {
     const session =
@@ -314,6 +419,7 @@ export class TerminalReactor {
 
     clearTimeout(session.idleTimer);
     this.#sessions.delete(terminalId);
+    this.#closed(session);
     try {
       // SIGHUP is what a closed terminal sends, so a shell and its children
       // wind up the way they would if the window had been shut.
@@ -355,7 +461,7 @@ export class TerminalReactor {
       this.#say(null, terminalId, `Could not start the terminal: ${error instanceof Error ? error.message : String(error)}\r\n`);
       return true;
     }
-    this.#attach(terminalId, null, userId, child, early);
+    this.#attach({ terminalId, projectId: null, userId, child, early, program: "shell", label: "Terminal", sessionHash: null });
     return true;
   }
 
@@ -394,16 +500,30 @@ export class TerminalReactor {
    * window where typing had neither a buffer nor a session to go to. The one
    * blocking call is a `mkdir` on a local path.
    */
-  #open(
-    terminalId: string,
-    projectId: string,
-    userId: string,
-    program: TerminalProgram,
-    credentialSubject: string = userId,
-    sessionHash?: string,
-    commandId?: string,
-    profile?: ProfileRef,
-  ): void {
+  #open({
+    terminalId,
+    projectId,
+    userId,
+    program,
+    credentialSubject = userId,
+    sessionHash,
+    commandId,
+    profile,
+    label,
+    perProject,
+  }: {
+    terminalId: string;
+    projectId: string;
+    userId: string;
+    program: TerminalProgram;
+    credentialSubject?: string;
+    sessionHash?: string;
+    commandId?: string;
+    profile?: ProfileRef;
+    label?: string;
+    /** The project's own limit, when it has one under the ceiling. */
+    perProject?: number;
+  }): void {
     if (this.#sessions.has(terminalId)) return;
     // An id somebody else is already watching would hand them this shell.
     const claim = this.#claims.get(terminalId);
@@ -418,7 +538,7 @@ export class TerminalReactor {
       this.#say(projectId, terminalId, "The terminal is disabled on this server.\r\n");
       return;
     }
-    const refused = this.#overLimit(projectId, userId);
+    const refused = this.#overLimit(projectId, userId, perProject);
     if (refused) {
       this.#say(projectId, terminalId, `${refused} Close one to open another.\r\n`);
       return;
@@ -447,10 +567,21 @@ export class TerminalReactor {
       env: launch.env,
     });
 
-    const session = this.#attach(terminalId, projectId, userId, child, early, () => {
-      // A command button's command, typed at the prompt as if by hand: the
-      // shell stays afterwards, to read the output, ctrl-C it, or run it again.
-      if (launch.input) child.write(launch.input);
+    const session = this.#attach({
+      terminalId,
+      projectId,
+      userId,
+      child,
+      early,
+      program,
+      label: label ?? "Terminal",
+      // Only a shell in the session's own worktree belongs to the session.
+      sessionHash: sessionHash && (program === "shell" || program === "command") ? sessionHash : null,
+      beforeEarly: () => {
+        // A command button's command, typed at the prompt as if by hand: the
+        // shell stays afterwards, to read the output, ctrl-C it, or run it again.
+        if (launch.input) child.write(launch.input);
+      },
     });
     if (bridged) {
       session.bridge = bridged
@@ -463,25 +594,45 @@ export class TerminalReactor {
   }
 
   /** Registers a started process as a terminal and wires its output, exit and early input. */
-  #attach(
-    terminalId: string,
-    projectId: string | null,
-    userId: string,
-    child: TerminalProcess,
-    early: EarlyInput | undefined,
-    beforeEarly?: () => void,
-  ): Session {
+  #attach({
+    terminalId,
+    projectId,
+    userId,
+    child,
+    early,
+    program,
+    label,
+    sessionHash,
+    beforeEarly,
+  }: {
+    terminalId: string;
+    projectId: string | null;
+    userId: string;
+    child: TerminalProcess;
+    early: EarlyInput | undefined;
+    program: TerminalProgram;
+    label: string;
+    sessionHash: string | null;
+    beforeEarly?: () => void;
+  }): Session {
     const session: Session = {
       id: terminalId,
       projectId,
       userId,
+      sessionHash,
+      label,
+      program,
+      createdAt: Date.now(),
+      scrollback: [],
+      scrollbackBytes: 0,
       pty: child,
-      idleTimer: setTimeout(() => this.close(terminalId), this.#idleMs),
+      idleTimer: setTimeout(() => this.#idle(session), this.#idleMs),
     };
     session.idleTimer.unref();
     this.#sessions.set(terminalId, session);
 
     child.onData((data) => {
+      this.#keep(session, data);
       // Split rather than truncated: a chunk cut in half mid-escape-sequence
       // would leave the client's parser waiting for the rest of a sequence
       // that never comes, and the screen wrong from then on.
@@ -492,10 +643,13 @@ export class TerminalReactor {
 
     child.onExit(({ exitCode, signal }) => {
       clearTimeout(session.idleTimer);
-      if (this.#sessions.get(terminalId) === session) this.#sessions.delete(terminalId);
+      const current = this.#sessions.get(terminalId) === session;
+      if (current) this.#sessions.delete(terminalId);
       void this.#closeBridge(session);
       const how = signal ? `signal ${signal}` : `code ${exitCode}`;
       this.#say(projectId, terminalId, `\r\n\x1b[2m[exited with ${how}]\x1b[0m\r\n`);
+      // Closed by hand already said so; an exit of its own says it here.
+      if (current) this.#closed(session);
     });
 
     beforeEarly?.();
@@ -623,8 +777,36 @@ export class TerminalReactor {
 
   #touch(session: Session): void {
     clearTimeout(session.idleTimer);
-    session.idleTimer = setTimeout(() => this.close(session.id), this.#idleMs);
+    session.idleTimer = setTimeout(() => this.#idle(session), this.#idleMs);
     session.idleTimer.unref();
+  }
+
+  /** The idle timer ran out: closed, unless a page is showing it, which puts it off again. */
+  #idle(session: Session): void {
+    if (this.#sessions.get(session.id) !== session) return;
+    if (this.options.watched?.(session.id)) {
+      this.#touch(session);
+      return;
+    }
+    this.close(session.id);
+  }
+
+  /** Adds output to the terminal's scrollback, dropping the oldest past the cap. */
+  #keep(session: Session, data: string): void {
+    session.scrollback.push(data);
+    session.scrollbackBytes += data.length;
+    while (session.scrollbackBytes > SCROLLBACK_BYTES && session.scrollback.length > 1) {
+      session.scrollbackBytes -= session.scrollback.shift()!.length;
+    }
+  }
+
+  /** Tells every page showing the terminal that it is gone. */
+  #closed(session: Session): void {
+    this.publish(session.projectId, {
+      type: "terminal.closed",
+      ...(session.projectId !== null ? { projectId: session.projectId } : {}),
+      terminalId: session.id,
+    });
   }
 
   get #idleMs(): number {
@@ -632,9 +814,10 @@ export class TerminalReactor {
   }
 
   /** Which limit one more terminal would go over, as the terminal says it; null when none. */
-  #overLimit(projectId: string | null, userId: string): string | null {
+  #overLimit(projectId: string | null, userId: string, projectSetting?: number): string | null {
     const open = [...this.#sessions.values()];
-    const perProject = this.options.maxPerProject ?? MAX_SESSIONS_PER_PROJECT;
+    const ceiling = this.options.maxPerProject ?? MAX_SESSIONS_PER_PROJECT;
+    const perProject = projectSetting === undefined ? ceiling : Math.min(projectSetting, ceiling);
     const perUser = this.options.maxPerUser ?? MAX_SESSIONS_PER_USER;
     const total = this.options.maxTotal ?? MAX_SESSIONS_TOTAL;
     if (projectId !== null && open.filter((s) => s.projectId === projectId).length >= perProject) {

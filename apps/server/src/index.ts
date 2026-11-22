@@ -608,6 +608,23 @@ const worktrees = new WorktreeReactor(
  * production while the other was not would be a distinction without a
  * difference.
  */
+/**
+ * A project's terminal limit as its workspace sets it (Workspace Settings >
+ * General). Read as each terminal opens -- rare, and one indexed lookup --
+ * so a change applies to the next one with nothing to invalidate.
+ */
+const terminalLimits = {
+  async get(projectId: string): Promise<number> {
+    const [row] = await db
+      .select({ agent: workspaces.agentSettings })
+      .from(projects)
+      .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    return readAgentSettings(row?.agent).terminals.maxPerProject;
+  },
+};
+
 const terminals = new TerminalReactor(
   {
     workspaceRoot: config.WORKSPACE_ROOT,
@@ -616,6 +633,10 @@ const terminals = new TerminalReactor(
     maxPerUser: config.TERMINAL_MAX_PER_USER,
     maxTotal: config.TERMINAL_MAX_TOTAL,
     idleMs: config.TERMINAL_IDLE_MINUTES * 60_000,
+    // The workspace's own limit (Workspace Settings > General), under the
+    // ceiling above; never idle-closed while a page shows it.
+    projectLimit: (projectId) => terminalLimits.get(projectId),
+    watched: (terminalId) => bus.watching({ name: "terminal", terminalId }),
     wrapArgv: wrapTerminal,
     runtimePath: (cwd) => runtimes.pathFor(cwd),
     // `claude` and `codex` started by hand get the OMP bridge when the
@@ -778,6 +799,7 @@ const gateway = new WebSocketGateway(auth, engine, store, bus, {
   composer,
   presence,
   mayWatchTerminal: (userId, terminalId) => terminals.mayWatch(terminalId, userId),
+  terminalScrollback: (userId, terminalId) => terminals.scrollback(terminalId, userId),
   terminals,
   queuedAhead: (threadId) => turnScheduler.aheadOf(threadId),
   contextReading: async (threadId) =>
@@ -1915,6 +1937,25 @@ app.get("/api/projects/:hash/preview/open", openPreview);
 app.get("/api/projects/:hash/preview/open/*", openPreview);
 
 /**
+ * The caller's terminals in a project -- opened from any of its sessions --
+ * and how many more the project has room for. Every session's terminal view
+ * lists these, so a shell opened in one session is a tab in all of them and
+ * a page coming back (another session, a reload) reattaches to it.
+ */
+app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/terminals", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const { projectId } = request.params;
+  if (!z.string().uuid().safeParse(projectId).success) return reply.code(400).send({ error: "invalid_project" });
+  if (!(await access.canAccessProject(principal.userId, projectId))) return reply.code(404).send({ error: "not_found" });
+  return {
+    terminals: terminals.list(projectId, principal.userId),
+    limit: await terminals.projectLimit(projectId),
+    open: terminals.countProject(projectId),
+  };
+});
+
+/**
  * Removes a project: the row, everything that cascades from it, and the
  * working tree on disk.
  *
@@ -2754,6 +2795,7 @@ const sessionLifecycle = new SessionLifecycle({
   },
   onCleanupError: (error, session) =>
     app.log.error({ err: error, threadId: session.id }, "could not remove a session's worktree"),
+  onTreeRemoved: (projectId, treeHash) => terminals.closeSession(projectId, treeHash),
 });
 
 /**

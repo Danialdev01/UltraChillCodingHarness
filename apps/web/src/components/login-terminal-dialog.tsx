@@ -88,7 +88,8 @@ export function useLoginTerminal({
     // Straight from the socket: `client.events` is a capped history, and a
     // cursor into it stops moving once it is full.
     const offEvents = client.onEvent(({ event }) => {
-      if (event.type !== "terminal.output" || event.terminalId !== id) return
+      // A replay would repeat what this dialog has already shown.
+      if (event.type !== "terminal.output" || event.terminalId !== id || event.replay) return
       batch.push(event.data)
       handlers.current.onData?.(event.data)
       // The reactor prints this line itself when the process ends; there

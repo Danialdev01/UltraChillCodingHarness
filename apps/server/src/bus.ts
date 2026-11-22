@@ -92,7 +92,7 @@ export class EventBus {
     // A terminal's bytes go to its own topic and nowhere else. They are one
     // person's shell -- including the device codes a sign-in terminal prints
     // -- and every member of a project watches the project topic.
-    if (publication.event.type === "terminal.output") {
+    if (publication.event.type === "terminal.output" || publication.event.type === "terminal.closed") {
       this.#deliver([`terminal:${publication.event.terminalId}`], publication);
       return;
     }

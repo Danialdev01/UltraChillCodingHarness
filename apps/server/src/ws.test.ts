@@ -42,6 +42,8 @@ let duringRead: () => void;
 /** Turns ahead of THREAD's waiting one, as the scheduler would say. */
 let queued: number | null;
 let composerActivity: string[];
+/** A running terminal's recent output, as the reactor would give it. */
+let scrollback: Record<string, string>;
 const sockets: WebSocket[] = [];
 
 beforeEach(async () => {
@@ -54,6 +56,7 @@ beforeEach(async () => {
   duringRead = () => {};
   queued = null;
   composerActivity = [];
+  scrollback = {};
   bus = new EventBus();
   const auth = {
     // The ticket is the user id, with the scopes after a colon.
@@ -109,6 +112,8 @@ beforeEach(async () => {
     composer: new ComposerStore(),
     onComposerActivity: async (threadId) => { composerActivity.push(threadId); },
     presence: new PresenceStore(),
+    terminalScrollback: (userId, terminalId) =>
+      userId === ALICE && scrollback[terminalId] ? { projectId: PROJECT, data: scrollback[terminalId]! } : null,
     terminals: {
       input: (terminalId, userId, data) => {
         delivered.push(`input ${terminalId} ${userId} ${JSON.stringify(data)}`);
@@ -232,6 +237,30 @@ describe("terminal frames", () => {
     alice.send({ kind: "dispatch", id: "1", command: { type: "terminal.input", terminalId: TERMINAL, data: "x" } });
     expect(await alice.settle()).toEqual([{ kind: "ack", id: "1", events: [] }]);
     expect(dispatched).toEqual([{ type: "terminal.input", terminalId: TERMINAL, data: "x" }]);
+  });
+});
+
+describe("a terminal subscription", () => {
+  it("starts with a running shell's recent output, marked as a replay", async () => {
+    scrollback[TERMINAL] = "$ ls\r\nREADME.md\r\n$ ";
+    const alice = await connect();
+    alice.send({ kind: "subscribe", id: "s1", topic: { name: "terminal", terminalId: TERMINAL } });
+    const frames = await alice.acked("s1");
+    const pushes = frames.filter((f) => f.kind === "push");
+    expect(pushes).toEqual([
+      expect.objectContaining({
+        kind: "push",
+        subscriptionId: "s1",
+        event: { type: "terminal.output", projectId: PROJECT, terminalId: TERMINAL, data: "$ ls\r\nREADME.md\r\n$ ", replay: true },
+      }),
+    ]);
+  });
+
+  it("starts with nothing for a shell that has not printed yet", async () => {
+    const alice = await connect();
+    alice.send({ kind: "subscribe", id: "s1", topic: { name: "terminal", terminalId: TERMINAL } });
+    const frames = await alice.acked("s1");
+    expect(frames.filter((f) => f.kind === "push")).toEqual([]);
   });
 });
 

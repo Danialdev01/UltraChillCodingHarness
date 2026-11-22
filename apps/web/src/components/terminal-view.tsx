@@ -6,7 +6,10 @@ import { PlusIcon, XIcon } from "lucide-react"
 import type { UcchClient } from "@/lib/client"
 import { useRealtime } from "@/lib/realtime"
 import { useFilesPanel } from "@/components/files-panel"
+import { Skeleton } from "@/components/ui/skeleton"
 import { XtermPane } from "@/components/xterm-pane"
+import { useProjectSessions } from "@/lib/project-sessions"
+import { fetchProjectTerminals } from "@/lib/terminal-api"
 import { EMPTY_OUTPUT, appendOutput, frameBatcher, type TerminalOutput } from "@/lib/terminal-output"
 import { cn } from "@/lib/utils"
 import { afterNextPaint, reportVital } from "@/lib/vitals"
@@ -23,6 +26,20 @@ const MAX_CHUNKS = 2_000
 interface Tab {
   id: string
   title: string
+  /** The session whose worktree the shell runs in; null for the project's checkout. */
+  sessionHash: string | null
+  /** Bumped when the server replays the tab's output, so its xterm starts afresh. */
+  generation: number
+}
+
+/** "Terminal N", N one past the highest in use, whichever session opened them. */
+function nextTitle(tabs: readonly Tab[]): string {
+  let highest = 0
+  for (const tab of tabs) {
+    const n = /^Terminal (\d+)$/.exec(tab.title)
+    if (n) highest = Math.max(highest, Number(n[1]))
+  }
+  return `Terminal ${highest + 1}`
 }
 
 /**
@@ -34,6 +51,13 @@ interface Tab {
  * works: line editing and completion from the shell itself, colour, ctrl-C,
  * job control, and full-screen programs like vim and top.
  *
+ * The tabs are the project's, not the page's: every session of a project
+ * shows all of the caller's terminals in it, whichever session opened them
+ * (each still runs in that session's worktree, which its tab names). Leaving
+ * a session -- or reloading -- only stops watching them; coming back lists
+ * them again (`GET /api/projects/:id/terminals`) and the server replays
+ * each one's recent output. Only closing a tab ends its shell.
+ *
  * This component owns the socket, the tabs and the output; the drawing is
  * xterm.js, in `XtermPane`.
  */
@@ -43,6 +67,15 @@ export function TerminalView({ project, active }: { project: Project; active: bo
   const [output, setOutput] = React.useState<Record<string, TerminalOutput>>({})
   const [ready, setReady] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  /** The project's terminal limit and how many are open, every member's; null until listed. */
+  const [room, setRoom] = React.useState<{ limit: number; open: number } | null>(null)
+  /** Whether the server's list has been read since mounting: until then, no first shell. */
+  const [listed, setListed] = React.useState(false)
+  // Ids the server has listed, so a later list without one says it ended --
+  // while the socket was down, say -- and an id just opened is not dropped
+  // before the server has it.
+  const knownRef = React.useRef(new Set<string>())
+  const { sessions } = useProjectSessions(project)
 
   const clientRef = React.useRef<UcchClient | null>(null)
   const unsubscribeRef = React.useRef<() => void>(() => {})
@@ -60,6 +93,23 @@ export function TerminalView({ project, active }: { project: Project; active: bo
    * nothing answered (a password prompt) gives way after a few seconds.
    */
   const echoRef = React.useRef<{ terminalId: string; at: number; answered: boolean } | null>(null)
+
+  /** Forgets a tab that has ended, wherever it was closed. */
+  const drop = React.useCallback((id: string) => {
+    clientRef.current?.unsubscribe({ name: "terminal", terminalId: id })
+    knownRef.current.delete(id)
+    setTabs((current) => {
+      if (!current.some((tab) => tab.id === id)) return current
+      const remaining = current.filter((tab) => tab.id !== id)
+      setActiveId((currentActive) => (currentActive === id ? (remaining.at(-1)?.id ?? null) : currentActive))
+      return remaining
+    })
+    setOutput((current) => {
+      if (!(id in current)) return current
+      const { [id]: _gone, ...rest } = current
+      return rest
+    })
+  }, [])
 
   /**
    * The socket opens the first time the terminal is looked at, not when the
@@ -105,7 +155,20 @@ export function TerminalView({ project, active }: { project: Project; active: bo
     })
     const offState = client.subscribeToChanges(() => setReady(client.state === "ready"))
     const offEvents = client.onEvent(({ event }) => {
+      if (event.type === "terminal.closed") {
+        // Closed in another page, exited, or reaped: the tab goes everywhere.
+        drop(event.terminalId)
+        return
+      }
       if (event.type !== "terminal.output") return
+      if (event.replay) {
+        // A shell already running, as this page attaches to it: what it
+        // printed recently replaces whatever the tab held, on a fresh xterm.
+        const id = event.terminalId
+        setOutput((current) => ({ ...current, [id]: appendOutput(EMPTY_OUTPUT, [event.data], MAX_CHUNKS) }))
+        setTabs((current) => current.map((tab) => (tab.id === id ? { ...tab, generation: tab.generation + 1 } : tab)))
+        return
+      }
       if (echoRef.current?.terminalId === event.terminalId) echoRef.current.answered = true
       batch.push({ terminalId: event.terminalId, data: event.data })
     })
@@ -120,30 +183,90 @@ export function TerminalView({ project, active }: { project: Project; active: bo
     // No cleanup here: this effect re-runs when `active` flips, and a
     // cleanup would drop the shells' output on every switch away. Closing
     // is the project effect's job below.
-  }, [active, project.id, shared])
+  }, [active, project.id, shared, drop])
 
-  // The shells belong to a project, so leaving it closes them rather than
-  // leaving a bash running for a page nobody has open -- and the socket
-  // goes with them.
+  // Leaving the session, or the project, only stops watching the shells:
+  // they run on, every session of the project lists them, and the server
+  // closes one nobody watches only after its idle time.
   React.useEffect(() => {
     return () => {
       const client = clientRef.current
       if (!client) return
-      for (const tab of tabsRef.current) {
-        void client.dispatch({ type: "terminal.close", terminalId: tab.id }).catch(() => {})
-        client.unsubscribe({ name: "terminal", terminalId: tab.id })
-      }
+      for (const tab of tabsRef.current) client.unsubscribe({ name: "terminal", terminalId: tab.id })
       unsubscribeRef.current()
       clientRef.current = null
+      knownRef.current = new Set()
+      setTabs([])
+      setActiveId(null)
+      setOutput({})
+      setRoom(null)
+      setListed(false)
       setReady(false)
     }
   }, [project.id])
+
+  /**
+   * Brings the tabs in line with the project's running terminals: a tab for
+   * each one this page does not show yet -- opened in another session, or
+   * before a reload -- subscribed to, which has the server replay it; and
+   * none for one that ended unseen.
+   */
+  const sync = React.useCallback(async () => {
+    const client = clientRef.current
+    if (!client) return
+    let listing
+    try {
+      listing = await fetchProjectTerminals(project.id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setListed(true)
+      return
+    }
+    if (clientRef.current !== client) return
+    setRoom({ limit: listing.limit, open: listing.open })
+    const running = new Set(listing.terminals.map((t) => t.id))
+    for (const id of knownRef.current) if (!running.has(id)) drop(id)
+    const shown = new Set(tabsRef.current.map((tab) => tab.id))
+    const added: Tab[] = []
+    for (const terminal of listing.terminals) {
+      knownRef.current.add(terminal.id)
+      if (shown.has(terminal.id)) continue
+      added.push({ id: terminal.id, title: terminal.label, sessionHash: terminal.sessionHash, generation: 0 })
+      void client.subscribe({ name: "terminal", terminalId: terminal.id }).catch(() => {})
+    }
+    if (added.length > 0) {
+      setTabs((current) => [...current, ...added.filter((tab) => !current.some((t) => t.id === tab.id))])
+      setOutput((current) => {
+        const next = { ...current }
+        for (const tab of added) next[tab.id] ??= EMPTY_OUTPUT
+        return next
+      })
+      // The newest of this session's own, else the newest of all.
+      const mine = added.filter((tab) => tab.sessionHash === (project.sessionHash ?? null))
+      setActiveId((current) => current ?? (mine.at(-1) ?? added.at(-1))!.id)
+    }
+    setListed(true)
+  }, [project.id, project.sessionHash, drop])
+
+  // Listed when the view is first looked at and whenever the socket is back
+  // -- a reconnect may have missed a tab opened or closed meanwhile -- and
+  // again when the browser tab regains focus, for one opened elsewhere.
+  React.useEffect(() => {
+    if (!active || !ready) return
+    void sync()
+    const onFocus = () => void sync()
+    window.addEventListener("focus", onFocus)
+    return () => window.removeEventListener("focus", onFocus)
+  }, [active, ready, sync])
+
+  const full = room !== null && room.open >= room.limit
 
   const open = React.useCallback(async (command?: { commandId: string; label: string }) => {
     const client = clientRef.current
     if (!client) return
 
     const id = crypto.randomUUID()
+    const title = command?.label ?? nextTitle(tabsRef.current)
     setError(null)
     try {
       // Subscribed before the shell starts: the first thing it prints is its
@@ -159,14 +282,17 @@ export function TerminalView({ project, active }: { project: Project; active: bo
         ...(project.sessionHash ? { sessionHash: project.sessionHash } : {}),
         // A command button: the server reads its command line from the project's file.
         ...(command ? { program: "command" as const, commandId: command.commandId } : {}),
+        // What every session's tab strip calls it.
+        label: title.slice(0, 60),
       })
-      setTabs((current) => [...current, { id, title: command?.label ?? `Terminal ${current.length + 1}` }])
+      setTabs((current) => [...current, { id, title, sessionHash: project.sessionHash ?? null, generation: 0 }])
       setActiveId(id)
       setOutput((current) => ({ ...current, [id]: EMPTY_OUTPUT }))
+      setRoom((current) => current && { ...current, open: current.open + 1 })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [project.id])
+  }, [project.id, project.sessionHash])
 
   // A command button clicked in the header: a tab of its own, once.
   const pendingCommand =
@@ -178,41 +304,47 @@ export function TerminalView({ project, active }: { project: Project; active: bo
   }, [ready, pendingCommand, open])
 
   // One shell to begin with, so the view is usable the moment it opens --
-  // unless a command button is about to open the first tab itself.
+  // once the server has said the project has none of the caller's running,
+  // and unless a command button is about to open the first tab itself or
+  // the project has no room for another.
   React.useEffect(() => {
-    if (!active || !ready || tabs.length > 0 || pendingCommand) return
+    if (!active || !ready || !listed || tabs.length > 0 || pendingCommand || full) return
     void open()
-  }, [active, ready, tabs.length, open, pendingCommand])
+  }, [active, ready, listed, tabs.length, open, pendingCommand, full])
 
+  /** Ends a tab's shell, in every session showing it. */
   function close(id: string) {
-    const client = clientRef.current
-    void client?.dispatch({ type: "terminal.close", terminalId: id }).catch(() => {})
-    client?.unsubscribe({ name: "terminal", terminalId: id })
-    setTabs((current) => {
-      const remaining = current.filter((tab) => tab.id !== id)
-      setActiveId((currentActive) =>
-        currentActive === id ? (remaining.at(-1)?.id ?? null) : currentActive,
-      )
-      return remaining
-    })
-    setOutput((current) => {
-      const { [id]: _gone, ...rest } = current
-      return rest
-    })
+    void clientRef.current?.dispatch({ type: "terminal.close", terminalId: id }).catch(() => {})
+    if (knownRef.current.has(id) || tabsRef.current.some((tab) => tab.id === id)) {
+      setRoom((current) => current && { ...current, open: Math.max(0, current.open - 1) })
+    }
+    drop(id)
   }
 
-  // Kills every shell at once. A fresh one opens by itself afterwards, the
-  // same way the view started, so closing all is never a dead end.
+  // Kills every shell at once -- all of the caller's in the project, from
+  // every session. A fresh one opens by itself afterwards, the same way the
+  // view started, so closing all is never a dead end.
   const closeAll = React.useCallback(() => {
     const client = clientRef.current
     for (const tab of tabs) {
       void client?.dispatch({ type: "terminal.close", terminalId: tab.id }).catch(() => {})
       client?.unsubscribe({ name: "terminal", terminalId: tab.id })
     }
+    knownRef.current = new Set()
+    setRoom((current) => current && { ...current, open: Math.max(0, current.open - tabs.length) })
     setTabs([])
     setActiveId(null)
     setOutput({})
   }, [tabs])
+
+  /** Which session's worktree a tab runs in, when it is not this one's. */
+  function originOf(tab: Tab): string | null {
+    const here = project.sessionHash ?? null
+    if (tab.sessionHash === here) return null
+    if (tab.sessionHash === null) return "main checkout"
+    const session = sessions?.find((s) => (s.treeHash ?? s.hash) === tab.sessionHash)
+    return session?.title || tab.sessionHash.slice(0, 8)
+  }
 
   // The header's close-all button lives outside this view, so the count and
   // the act are handed up to the shell.
@@ -252,9 +384,12 @@ export function TerminalView({ project, active }: { project: Project; active: bo
         role="tablist"
         className="no-scrollbar flex h-10 shrink-0 items-center gap-px overflow-x-auto border-b"
       >
-        {tabs.map((tab) => (
+        {tabs.map((tab) => {
+          const origin = originOf(tab)
+          return (
           <div
             key={tab.id}
+            title={origin ? `Opened in ${origin}; runs in its worktree` : undefined}
             className={cn(
               "group/tab flex h-full shrink-0 items-center gap-2 border-r pr-1 pl-3 text-sm",
               tab.id === activeId
@@ -271,9 +406,14 @@ export function TerminalView({ project, active }: { project: Project; active: bo
               // takes it as it is shown, and a focused button would keep it
               // away from the shell the user just asked for.
               onMouseDown={(event) => event.preventDefault()}
-              className="outline-hidden"
+              className="flex items-center gap-1.5 outline-hidden"
             >
               {tab.title}
+              {origin && (
+                <span className="bg-muted text-muted-foreground max-w-32 truncate rounded px-1 text-[10px] leading-4">
+                  {origin}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -287,13 +427,14 @@ export function TerminalView({ project, active }: { project: Project; active: bo
               <span className="sr-only">Close {tab.title}</span>
             </button>
           </div>
-        ))}
+          )
+        })}
 
         <button
           type="button"
           onClick={() => void open()}
-          disabled={!ready}
-          title="New terminal"
+          disabled={!ready || full}
+          title={full ? `This project has ${room!.limit} terminals open, its limit` : "New terminal"}
           className="text-muted-foreground hover:bg-muted/50 hover:text-foreground ml-1 flex size-7 shrink-0 items-center justify-center rounded-md disabled:opacity-40"
         >
           <PlusIcon className="size-4" />
@@ -307,14 +448,27 @@ export function TerminalView({ project, active }: { project: Project; active: bo
         </p>
       )}
 
-      {tabs.length === 0 ? (
+      {tabs.length === 0 && ready && !listed ? (
+        // Listing the project's running terminals: a pane's worth of lines,
+        // rather than "no terminal open" flashing before they arrive.
+        <div className="flex flex-1 flex-col gap-2 p-4" aria-hidden>
+          {[60, 40, 75, 30].map((w) => (
+            <Skeleton key={w} className="h-3" style={{ width: `${w}%` }} />
+          ))}
+        </div>
+      ) : tabs.length === 0 ? (
         <div className="text-muted-foreground flex flex-1 items-center justify-center p-8 text-sm">
-          {ready ? "No terminal open. Use + to start one." : "Connecting…"}
+          {!ready
+            ? "Connecting…"
+            : full
+              ? `This project already has ${room!.limit} terminals open, its limit. Close one in another session to open one here.`
+              : "No terminal open. Use + to start one."}
         </div>
       ) : (
         tabs.map((tab) => (
           <XtermPane
-            key={tab.id}
+            // A replay starts the pane afresh rather than writing over what it drew.
+            key={`${tab.id}:${tab.generation}`}
             // Hidden when the whole view is, too: a pane that only knew about
             // its own tab would not refit or refocus when the user switches
             // from the file browser back to the terminal.

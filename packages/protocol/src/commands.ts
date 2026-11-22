@@ -373,6 +373,11 @@ const TerminalCreate = z.object({
   profileId: z.string().uuid().optional(),
   /** A project session's hash: the shell opens in that session's worktree. */
   sessionHash: ThreadHash.optional(),
+  /**
+   * The tab's name, as every page that lists the project's terminals shows
+   * it: "Terminal 3", a command button's label. Display only.
+   */
+  label: z.string().min(1).max(60).optional(),
 });
 
 const TerminalInput = z.object({

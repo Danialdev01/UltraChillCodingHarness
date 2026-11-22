@@ -120,6 +120,13 @@ export interface GatewayOptions {
   onProjectWatch?: (projectId: string, delta: 1 | -1, tree: string | null) => void;
   /** Whether a user may watch a terminal's output; see `TerminalReactor.mayWatch`. */
   mayWatchTerminal?: (userId: string, terminalId: string) => boolean;
+  /**
+   * A running terminal's recent output, for its owner; see
+   * `TerminalReactor.scrollback`. Sent to a subscriber as it attaches, so a
+   * page that comes back to a shell -- another session, a reload -- sees
+   * what it last printed.
+   */
+  terminalScrollback?: (userId: string, terminalId: string) => { projectId: string | null; data: string } | null;
   /** Where `terminal_input` and `terminal_resize` frames go. Absent, they are refused. */
   terminals?: Pick<TerminalReactor, "input" | "resize">;
   /** How many turns are ahead of the thread's waiting one, or null; see `TurnScheduler.aheadOf`. */
@@ -409,6 +416,30 @@ export class WebSocketGateway {
         }
 
         replaying = false;
+
+        // A shell that was already running: its recent output first, in the
+        // same turn as the listener went on, so nothing is missed between
+        // the two and nothing arrives twice. `replay` has the page replace
+        // what it holds, so a resubscribe after a reconnect does not double it.
+        if (frame.topic.name === "terminal") {
+          const back = this.options.terminalScrollback?.(conn.principal.userId, frame.topic.terminalId);
+          if (back) {
+            send(conn.socket, {
+              kind: "push",
+              subscriptionId,
+              seq: null,
+              at: new Date().toISOString(),
+              ...(back.projectId ? { projectId: back.projectId } : {}),
+              event: {
+                type: "terminal.output",
+                ...(back.projectId ? { projectId: back.projectId } : {}),
+                terminalId: frame.topic.terminalId,
+                data: back.data,
+                replay: true,
+              },
+            });
+          }
+        }
 
         // Live state that is not in the log: what is being typed in the
         // thread's prompt box, whether its turn is waiting for a slot, and

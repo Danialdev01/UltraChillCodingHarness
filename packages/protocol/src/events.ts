@@ -1259,6 +1259,23 @@ const TerminalOutput = z.object({
   projectId: z.string().uuid().optional(),
   terminalId: z.string(),
   data: z.string(),
+  /**
+   * The terminal's recent output, sent to one subscriber as it attaches to
+   * a shell that was already running: it replaces what that page holds for
+   * the tab rather than adding to it, so a resubscribe never doubles it.
+   */
+  replay: z.boolean().optional(),
+});
+
+/**
+ * A terminal ended -- closed from some page, exited, or reaped -- to its
+ * own topic, so every page showing the tab drops it.
+ */
+const TerminalClosed = z.object({
+  type: z.literal("terminal.closed"),
+  /** Absent for a shell on a saved SSH host, which belongs to no project. */
+  projectId: z.string().uuid().optional(),
+  terminalId: z.string(),
 });
 
 /**
@@ -1455,6 +1472,7 @@ export const DomainEvent = z.discriminatedUnion("type", [
   PortOpened,
   PortClosed,
   TerminalOutput,
+  TerminalClosed,
   RemoteChatEvent,
   GitCommitted,
   GitPushed,
@@ -1486,6 +1504,7 @@ export type StoredEvent = z.infer<typeof StoredEvent>;
  */
 const TRANSIENT: ReadonlySet<DomainEventType> = new Set([
   "terminal.output",
+  "terminal.closed",
   "remote_chat.event",
   "agent.thinking_delta",
   "agent.text_delta",

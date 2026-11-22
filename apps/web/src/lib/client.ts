@@ -24,6 +24,7 @@ const EPHEMERAL: ReadonlySet<DomainEvent["type"]> = new Set([
   // A terminal's bytes: read straight off `onEvent` by the terminal views. In
   // the history they evicted the conversation and copied the array per chunk.
   "terminal.output",
+  "terminal.closed",
   // A turn's tokens, likewise: the chat folds them into runs of its own
   // (`thread-store.ts`), and as rows here a long answer pushed the rest of
   // the conversation out of the window.

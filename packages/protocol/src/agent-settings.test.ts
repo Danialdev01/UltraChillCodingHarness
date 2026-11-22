@@ -12,6 +12,7 @@ describe("readAgentSettings", () => {
         memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
         widgets: { enabled: true },
         idleCompaction: { enabled: true },
+        terminals: { maxPerProject: 10 },
       });
     }
   });
@@ -25,6 +26,7 @@ describe("readAgentSettings", () => {
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
       widgets: { enabled: true },
       idleCompaction: { enabled: true },
+      terminals: { maxPerProject: 10 },
     });
     expect(readAgentSettings({ isolatedFanOut: { enabled: true } }).isolatedFanOut).toEqual({ enabled: true });
     expect(readAgentSettings({ ompBridge: { enabled: true } }).ompBridge).toEqual({ enabled: true });
@@ -55,5 +57,16 @@ describe("idle compaction (plan2 §3.3)", () => {
   it("is on unless a workspace turns it off", () => {
     expect(readAgentSettings({}).idleCompaction).toEqual({ enabled: true });
     expect(readAgentSettings({ idleCompaction: { enabled: false } }).idleCompaction).toEqual({ enabled: false });
+  });
+});
+
+describe("terminals per project", () => {
+  it("is ten unless the workspace sets it, from 1 to 50", () => {
+    expect(readAgentSettings({}).terminals).toEqual({ maxPerProject: 10 });
+    expect(readAgentSettings({ terminals: { maxPerProject: 3 } }).terminals).toEqual({ maxPerProject: 3 });
+    expect(readAgentSettings({ terminals: { maxPerProject: 50 } }).terminals).toEqual({ maxPerProject: 50 });
+    for (const bad of [0, 51, 2.5, "4"]) {
+      expect(readAgentSettings({ terminals: { maxPerProject: bad } }).terminals).toEqual({ maxPerProject: 10 });
+    }
   });
 });

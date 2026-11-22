@@ -248,6 +248,7 @@ describe("workspace member routes", () => {
       widgets: { enabled: true },
       // On unless turned off (plan2 §3.3).
       idleCompaction: { enabled: true },
+      terminals: { maxPerProject: 10 },
     });
     const bad = await app.inject({
       method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN),
@@ -256,5 +257,17 @@ describe("workspace member routes", () => {
     expect(bad.statusCode).toBe(400);
     const empty = await app.inject({ method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(ADMIN), payload: {} });
     expect(empty.statusCode).toBe(400);
+  });
+
+  it("sets the terminals-per-project limit for an admin only, from 1 to 50", async () => {
+    const { app } = await server();
+    const patch = (who: string, maxPerProject: unknown) =>
+      app.inject({ method: "PATCH", url: `/api/workspaces/${WS}/settings`, headers: as(who), payload: { agent: { terminals: { maxPerProject } } } });
+    expect((await patch(MEMBER, 4)).statusCode).toBe(403);
+    const ok = await patch(ADMIN, 4);
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().agent.terminals).toEqual({ maxPerProject: 4 });
+    expect((await patch(ADMIN, 0)).statusCode).toBe(400);
+    expect((await patch(ADMIN, 51)).statusCode).toBe(400);
   });
 });
