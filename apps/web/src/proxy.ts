@@ -29,7 +29,7 @@ const WORKSPACE_PATH = /^\/([a-z0-9]{12})(?:\/|$)/;
  */
 const ROOT_SECTION = /^\/(?:dashboard|code|database|terminal|publish|todo|workspace-settings)(?:\/.*)?$/;
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const match = PUBLIC_SLUG.exec(request.nextUrl.pathname);
   if (match) {
     const url = request.nextUrl.clone();

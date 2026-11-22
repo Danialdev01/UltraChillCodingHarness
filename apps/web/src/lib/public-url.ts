@@ -1,5 +1,5 @@
 /**
- * The address the browser actually used, for redirects the middleware sends.
+ * The address the browser actually used, for redirects the proxy sends.
  *
  * Behind the server's proxy (apps/server/src/web-proxy.ts) the standalone
  * build listens on loopback, and Next builds `request.nextUrl` from its own

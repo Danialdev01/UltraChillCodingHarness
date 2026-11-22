@@ -8,6 +8,7 @@
   "exports": { ".": "./src/index.ts" },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "typecheck:rs": "tsc-rs --noEmit",
     "generate": "drizzle-kit generate",
     "migrate": "tsx src/migrate.ts"
   },

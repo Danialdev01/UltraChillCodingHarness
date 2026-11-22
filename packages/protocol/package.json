@@ -7,6 +7,6 @@
   "types": "./src/index.ts",
   "exports": { ".": "./src/index.ts", "./plain": "./src/plain.ts", "./database": "./src/database.ts" },
   "sideEffects": false,
-  "scripts": { "typecheck": "tsc --noEmit" },
+  "scripts": { "typecheck": "tsc --noEmit", "typecheck:rs": "tsc-rs --noEmit" },
   "dependencies": { "zod": "^3.24.1" }
 }

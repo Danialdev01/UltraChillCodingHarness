@@ -15,12 +15,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "pnpm --filter @ucch/db generate",
-    "db:migrate": "pnpm --filter @ucch/db migrate"
+    "db:migrate": "pnpm --filter @ucch/db migrate",
+    "typecheck:rs": "pnpm -r typecheck:rs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "tsc-rs": "0.8.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
+    "typescript": "^7.0.2",
     "vitest": "^2.1.8",
     "ws": "^8.18.0"
   }

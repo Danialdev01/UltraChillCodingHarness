@@ -77,7 +77,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN id="${BUILD_ID:-$(date -u +%Y%m%d%H%M%S)}" \
   && printf '%s' "$id" > /app/build-id \
   && cd apps/web && mkdir -p public \
-  && NEXT_PUBLIC_BUILD_ID="$id" pnpm exec next build
+  && NEXT_PUBLIC_BUILD_ID="$id" pnpm exec next build --webpack
 # The file-tree icons are read off disk at run time, so the standalone trace
 # only has them through next.config.ts's outputFileTracingIncludes; without
 # them every icon request is a 500. Fail the build rather than ship that.

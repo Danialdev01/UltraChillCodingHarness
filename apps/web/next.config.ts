@@ -55,7 +55,7 @@ const config: NextConfig = {
     // which the browser reports only as a network error. Match the server's
     // own upload limit (`UPLOAD_MAX_BYTES`, 25 MB by default) so a file the
     // API would take -- a knowledge document, a chat attachment -- gets there.
-    middlewareClientMaxBodySize: Number(process.env.UPLOAD_MAX_BYTES) || 25 * 1024 * 1024,
+    proxyClientMaxBodySize: Number(process.env.UPLOAD_MAX_BYTES) || 25 * 1024 * 1024,
   },
   async headers() {
     // The same baseline the API sends (apps/server/src/http-guards.ts). The

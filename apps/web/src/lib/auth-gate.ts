@@ -1,7 +1,7 @@
 /**
  * Which addresses need a session before anything renders.
  *
- * The middleware sends a visitor with no session cookie straight to the
+ * The proxy sends a visitor with no session cookie straight to the
  * sign-in page from here, rather than rendering the app shell only for it to
  * find out and redirect. Only the cookie's *absence* is decided here: whether
  * one that is present is still valid is the API's call, made by the shell.

@@ -11,9 +11,10 @@
  * -- the same sum `next build` prints, recomputed here so it can be compared
  * and kept.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { gzipSync } from "node:zlib";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
@@ -22,7 +23,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const baselineFile = join(here, "..", "e2e", "results", "bundle-baseline.json");
 const GROWTH = 1.1;
 
-const app = JSON.parse(readFileSync(join(dist, "app-build-manifest.json"), "utf8")).pages;
 const root = JSON.parse(readFileSync(join(dist, "build-manifest.json"), "utf8")).rootMainFiles ?? [];
 
 const sizes = new Map();
@@ -34,16 +34,52 @@ function gz(file) {
   return sizes.get(file);
 }
 
-const layouts = Object.keys(app).filter((k) => k.endsWith("/layout"));
+/**
+ * Next 16 no longer writes `app-build-manifest.json`, so each page's chunks
+ * come from its client reference manifest
+ * (`server/app/<route>/page_client-reference-manifest.js`). That manifest
+ * also lists the client modules of sibling routes, so a module counts only
+ * when one of its chunks is the entry chunk of a segment in this page's chain
+ * (`static/chunks/app/<segment>/{layout,page}-<hash>.js`): the root layout,
+ * every layout above the page, and the page. Chunk names come URL-encoded
+ * (`%5BworkspaceHash%5D`). On a Next 15 build this gave the same table as
+ * the old manifest, to the kilobyte.
+ */
+const ENTRY = /^static\/chunks\/app\/(?:(.*)\/)?(page|layout)-[0-9a-f]+\.js$/;
+const entryOf = (chunk) => {
+  const m = ENTRY.exec(chunk);
+  return m ? `${m[1] ? `${m[1]}/` : ""}${m[2]}` : null;
+};
+
+function* manifests(dir) {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) yield* manifests(path);
+    else if (name === "page_client-reference-manifest.js") yield path;
+  }
+}
+
+const require = createRequire(import.meta.url);
+const appDir = resolve(dist, "server", "app");
 const result = {};
-for (const key of Object.keys(app).filter((k) => k.endsWith("/page"))) {
-  const dir = key.slice(0, -"/page".length);
-  const chain = layouts.filter((l) => {
-    const ld = l.slice(0, -"/layout".length);
-    return ld === "" || dir === ld || dir.startsWith(`${ld}/`);
-  });
-  const files = new Set([...root, ...chain.flatMap((l) => app[l]), ...app[key]]);
-  result[dir || "/"] = Math.round([...files].reduce((sum, f) => sum + gz(f), 0) / 1024);
+for (const file of manifests(appDir)) {
+  const key = `/${relative(appDir, file).slice(0, -"_client-reference-manifest.js".length)}`;
+  globalThis.__RSC_MANIFEST = undefined;
+  require(file);
+  const manifest = globalThis.__RSC_MANIFEST?.[key];
+  if (!manifest) continue;
+  const dir = key.slice(1, -"/page".length);
+  const segments = dir ? dir.split("/") : [];
+  const chain = new Set(["layout", dir ? `${dir}/page` : "page"]);
+  for (let i = 1; i <= segments.length; i++) chain.add(`${segments.slice(0, i).join("/")}/layout`);
+  const files = new Set(root);
+  for (const mod of Object.values(manifest.clientModules)) {
+    const js = mod.chunks.filter((c) => c.endsWith(".js")).map(decodeURIComponent);
+    if (!js.some((c) => chain.has(entryOf(c)))) continue;
+    // Another segment's entry chunk can ride along with a shared module.
+    for (const c of js) if (entryOf(c) === null || chain.has(entryOf(c))) files.add(c);
+  }
+  result[dir ? `/${dir}` : "/"] = Math.round([...files].reduce((sum, f) => sum + gz(f), 0) / 1024);
 }
 
 const rows = Object.entries(result).sort((a, b) => b[1] - a[1]);

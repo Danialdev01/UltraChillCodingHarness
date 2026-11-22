@@ -2,7 +2,7 @@
 export const WORKSPACE_COOKIE_NAME = "ucch_workspace"
 
 /**
- * The same workspace by address, for the middleware: it sends an old
+ * The same workspace by address, for the proxy: it sends an old
  * root-level address (`/dashboard`, `/database/…`) on to `/{ws}/…` without
  * a lookup of its own.
  */

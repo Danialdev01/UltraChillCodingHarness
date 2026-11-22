@@ -7,7 +7,7 @@ import { fetchPublicProject } from "@/lib/public-project";
  * A project's public site: what the owner chose to show, read-only, to
  * anyone with the address.
  *
- * Reached as `/{slug}/…` through the middleware rewrite. Outside the `(app)`
+ * Reached as `/{slug}/…` through the proxy rewrite. Outside the `(app)`
  * group on purpose: no session is looked up, no sidebar or workspace is
  * rendered, and a visitor who is also the owner sees exactly what a
  * stranger would. An address that is unknown or switched off 404s here,

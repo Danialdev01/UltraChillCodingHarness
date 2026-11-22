@@ -34,7 +34,7 @@ export default defineConfig({
           timeout: 120_000,
         },
         {
-          command: `NEXT_DIST_DIR=.next-e2e pnpm exec next build && NEXT_DIST_DIR=.next-e2e pnpm exec next start -p ${WEB_PORT}`,
+          command: `NEXT_DIST_DIR=.next-e2e pnpm exec next build --webpack && NEXT_DIST_DIR=.next-e2e pnpm exec next start -p ${WEB_PORT}`,
           url: `http://127.0.0.1:${WEB_PORT}/healthz`,
           reuseExistingServer: true,
           timeout: 600_000,

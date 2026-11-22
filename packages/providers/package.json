@@ -9,7 +9,7 @@
     ".": "./src/index.ts",
     "./testing": "./src/testing.ts"
   },
-  "scripts": { "typecheck": "tsc --noEmit" },
+  "scripts": { "typecheck": "tsc --noEmit", "typecheck:rs": "tsc-rs --noEmit" },
   "dependencies": {
     "@ucch/protocol": "workspace:*"
   }

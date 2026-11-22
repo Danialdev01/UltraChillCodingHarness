@@ -31,7 +31,7 @@ export interface Session {
  * Wrapped in React's `cache`, so the layout and the page inside it -- and
  * every component that asks for the session, the workspaces or the open
  * workspace's projects -- share the one round trip. The workspace in the
- * address (the middleware's header) decides which is open, then the cookie's
+ * address (the proxy's header) decides which is open, then the cookie's
  * last one.
  *
  * The cookie is forwarded to the API directly rather than through the browser
