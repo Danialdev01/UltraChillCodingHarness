@@ -292,6 +292,26 @@ describe("health", () => {
     await svc.health(USER);
     expect(host.spawned.length).toBeGreaterThan(spawnedOnce);
   });
+
+  it("finds a CLI installed after the first look when refreshed", async () => {
+    // The host's scripts are the machine: Codex appears once it is "installed".
+    const machine = scripts(false);
+    const host = new FakeProcessHost(machine);
+    const svc = service(host);
+    const refreshPath = vi.fn(async () => undefined);
+    svc.refreshPath = refreshPath;
+    expect((await svc.health(USER)).codex.installed).toBe(false);
+
+    machine.push({ match: (a: readonly string[]) => a[0] === "codex" && a[1] === "--version", lines: [stdout("codex-cli 0.130.0")] });
+    // Still cached: the plain read does not look again inside the TTL.
+    expect((await svc.health(USER)).codex.installed).toBe(false);
+
+    const cards = await svc.refresh(USER);
+    expect(refreshPath).toHaveBeenCalledOnce();
+    expect(cards.codex).toMatchObject({ installed: true, version: "0.130.0" });
+    // And the refreshed cards are what the next plain read returns.
+    expect((await svc.health(USER)).codex.installed).toBe(true);
+  });
 });
 
 describe("sign out", () => {

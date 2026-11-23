@@ -28,6 +28,7 @@ import { ModelKeySettings } from "@/components/model-key-settings"
 import {
   fetchAccounts,
   fetchProviders,
+  refreshProviders,
   saveDefaultProvider,
   type AgentAccount,
   type ProviderCard,
@@ -168,10 +169,17 @@ export function ProviderSettings({
   const [projectId, setProjectId] = React.useState<string>(projects[0]?.id ?? "")
   const [selected, setSelected] = React.useState<ListedId | null>(null)
 
+  /**
+   * `fresh` is a full refresh: the server re-reads PATH and probes every CLI
+   * again, so one installed since it started shows up without a restart.
+   */
   const load = React.useCallback(async (fresh: boolean) => {
     setRefreshing(true)
     try {
-      const [providers, list] = await Promise.all([fetchProviders(fresh, workspaceId), fetchAccounts(workspaceId, fresh)])
+      const [providers, list] = await Promise.all([
+        fresh ? refreshProviders(workspaceId) : fetchProviders(false, workspaceId),
+        fetchAccounts(workspaceId, fresh),
+      ])
       setData(providers)
       setAccounts(list)
       setLoadError(null)
@@ -217,14 +225,14 @@ export function ProviderSettings({
             className="text-muted-foreground h-[30px] gap-1.5 px-2.5 text-xs"
             onClick={() => void load(true)}
             disabled={refreshing}
-            title="Check every provider again"
+            title="Refresh providers: look for a newly installed Claude Code or Codex"
           >
             <RefreshCwIcon className={cn("size-[13px]", refreshing && "animate-spin")} />
             {refreshing
-              ? "Checking…"
+              ? "Refreshing…"
               : checkedAt
                 ? `Checked ${checkedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
-                : "Check again"}
+                : "Refresh providers"}
           </Button>
         </div>
 

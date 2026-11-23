@@ -374,6 +374,25 @@ export function modelImages(attachments: readonly Attachment[]): MessageImage[] 
 export interface ClipboardLike {
   files: ArrayLike<File>;
   types: readonly string[];
+  /** The clipboard's text in a format; absent on a fake with no text. */
+  getData?(type: string): string;
+}
+
+/**
+ * Whether a paste is formatted text out of a document -- Word, Pages, Excel,
+ * Google Docs, a web page -- rather than a picture.
+ *
+ * Those apps put three things on the clipboard: the plain text, the same text
+ * as HTML or RTF, and an image of how it looked. The text is what was meant;
+ * the image is a rendering of it. A screenshot carries no text, and a file
+ * copied out of a file manager carries its name as text but no markup, so
+ * neither of those counts.
+ */
+export function pasteIsRichText(data: ClipboardLike): boolean {
+  const types = data.types ?? [];
+  if (!types.includes("text/plain")) return false;
+  if (!types.includes("text/html") && !types.includes("text/rtf")) return false;
+  return (data.getData?.("text/plain") ?? "").trim().length > 0;
 }
 
 /**
@@ -388,7 +407,12 @@ export interface ClipboardLike {
  * manager already has the name the person knows it by.
  */
 export function clipboardFiles(data: ClipboardLike, at: number = Date.now()): File[] {
-  return Array.from(data.files ?? []).map((file, i) =>
+  // Rich text: the pictures are the text drawn again, so only the text goes
+  // in. A real file that rode along (rare, but possible) is still attached.
+  const rich = pasteIsRichText(data);
+  return Array.from(data.files ?? [])
+    .filter((file) => !(rich && file.type.startsWith("image/")))
+    .map((file, i) =>
     file.type.startsWith("image/") && isGenericName(file.name)
       ? renamed(file, pastedName(file.type, at, i))
       : file,
@@ -399,8 +423,8 @@ export function clipboardFiles(data: ClipboardLike, at: number = Date.now()): Fi
  * Whether a paste carrying files should still insert text as well.
  *
  * Rich text often travels with a picture of itself -- a spreadsheet range, a
- * slide, a table out of a document -- and there the text is what was meant and
- * the image is a bonus. So the files are attached either way and the paste is
+ * slide, a table out of a document -- and there the text is what was meant;
+ * `clipboardFiles` drops that picture (see `pasteIsRichText`). The paste is
  * only swallowed when there was nothing to type: a screenshot, which has no
  * text at all.
  */

@@ -21,6 +21,7 @@ import { SubscriptionQuotaService } from "./quotas.js";
 
 export { isDefaultProfile, profileKey, type ProfileRef };
 import { terminalEnv } from "./terminals.js";
+import { refreshHostPath } from "./host-path.js";
 
 /**
  * Everything the CLI providers need from the server and must not reach for
@@ -412,6 +413,22 @@ export class ProviderService {
     };
     this.#profileCache.set(key, { at: Date.now(), card });
     return card;
+  }
+
+  /** Brings PATH up to date. Replaced in tests, which must not spawn a shell. */
+  refreshPath: () => Promise<unknown> = refreshHostPath;
+
+  /**
+   * Looks for the CLIs again from scratch: PATH re-read from a login shell,
+   * then every cached probe dropped -- an install is the host's, not one
+   * user's -- and this subject's cards probed fresh. How a Claude or Codex
+   * installed after the server started is found without a restart.
+   */
+  async refresh(subject: string): Promise<Record<ProviderId, ProviderCard>> {
+    await this.refreshPath();
+    this.#cache.clear();
+    this.#profileCache.clear();
+    return this.health(subject, { fresh: true });
   }
 
   /**

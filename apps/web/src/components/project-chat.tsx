@@ -81,6 +81,7 @@ import {
   withStaged,
   type Attachment,
 } from "@/lib/attachments";
+import { UploadTracker } from "@/lib/upload-tracker";
 import {
   AttachmentPreviewDialog,
   type PreviewableAttachment,
@@ -232,6 +233,14 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
    */
   const [reference, setReference] = useState<CodeReference | null>(null);
   const [sending, setSending] = useState(false);
+  /**
+   * A send is queued behind uploads still in flight. Sending goes out on its
+   * own once the last one settles; the send button cancels the wait.
+   */
+  const [waitingForUploads, setWaitingForUploads] = useState(false);
+  const [uploadTick, setUploadTick] = useState(0);
+  const uploads = useRef<UploadTracker | null>(null);
+  uploads.current ??= new UploadTracker(() => setUploadTick((t) => t + 1));
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -1273,6 +1282,14 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     // where to look but not what to do.
     // `/plan <request>`: the request is the first draft of a plan, and plan
     // mode stays on for the questions that follow.
+    if (!threadId || sending || worktreeBlocked) return;
+    // A picture still uploading would reach the model as "failed to upload".
+    // Wait for it instead -- the effect below sends once the last one lands.
+    // The tracker also covers a file still being read, before its chip shows.
+    if ((uploads.current?.size ?? 0) > 0 || attachments.some((a) => a.status === "uploading")) {
+      setWaitingForUploads(true);
+      return;
+    }
     const planned = /^\/plan\s+(\S[\s\S]*)$/.exec(draft);
     const typed = planned ? planned[1]! : draft;
     const text = composeMessage(
@@ -1403,6 +1420,17 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
       live = false;
     };
   }, [project.workspaceId]);
+  // The queued send, once every upload has settled. Runs after the render
+  // that put the staged chips in `attachments`, so `send` composes with them.
+  useEffect(() => {
+    if (!waitingForUploads) return;
+    if ((uploads.current?.size ?? 0) > 0 || attachments.some((a) => a.status === "uploading")) return;
+    setWaitingForUploads(false);
+    void send();
+  }, [attachments, send, uploadTick, waitingForUploads]);
+  // A queued send belongs to the thread it was queued on.
+  useEffect(() => setWaitingForUploads(false), [threadId]);
+
   const sendAfterDraft = useRef(false);
   useEffect(() => {
     if (!sendAfterDraft.current) return;
@@ -1429,12 +1457,18 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
       if (!list?.length) return;
       const picked = Array.from(list);
 
-      const staged = await Promise.all(
-        picked.map((file, i) => readAttachment(file, `${Date.now()}-${i}-${file.name}`)),
-      );
-      setAttachments((current) => [...current, ...staged]);
+      // Tracked from the first read, so a send pressed before the chips even
+      // appear still waits for these files.
+      await uploads.current!.track(
+        (async () => {
+          const staged = await Promise.all(
+            picked.map((file, i) => readAttachment(file, `${Date.now()}-${i}-${file.name}`)),
+          );
+          setAttachments((current) => [...current, ...staged]);
 
-      await Promise.all(staged.map((attachment, i) => stageOne(attachment, picked[i]!)));
+          await Promise.all(staged.map((attachment, i) => stageOne(attachment, picked[i]!)));
+        })(),
+      );
     },
     [stageOne],
   );
@@ -2451,6 +2485,10 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                     if (!running) void send();
                   }
                   // What the progress line above says it does.
+                  if (e.key === "Escape" && waitingForUploads) {
+                    e.preventDefault();
+                    setWaitingForUploads(false);
+                  }
                   if (e.key === "Escape" && running) {
                     e.preventDefault();
                     void cancel();
@@ -2671,22 +2709,30 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
                       empty && !draft.trim() && attachments.length === 0 && "@2xl:hidden",
                     )}
                     // Files on their own are a message too, so an empty
-                    // draft with something attached still sends -- but not
-                    // while one is still uploading, which would reach the
-                    // model as an id it cannot use.
+                    // draft with something attached still sends. One still
+                    // uploading queues the send rather than blocking it;
+                    // while queued, the button cancels the wait.
                     disabled={
-                      (!draft.trim() && attachments.length === 0) ||
-                      // A reference needs an instruction to go with it.
-                      (reference !== null && !draft.trim()) ||
-                      attachments.some((a) => a.status === "uploading") ||
-                      !threadId ||
-                      sending ||
-                      // The worktree notice says why.
-                      worktreeBlocked
+                      !waitingForUploads &&
+                      ((!draft.trim() && attachments.length === 0) ||
+                        // A reference needs an instruction to go with it.
+                        (reference !== null && !draft.trim()) ||
+                        !threadId ||
+                        sending ||
+                        // The worktree notice says why.
+                        worktreeBlocked)
                     }
+                    onClick={(e) => {
+                      if (!waitingForUploads) return;
+                      e.preventDefault();
+                      setWaitingForUploads(false);
+                    }}
+                    title={waitingForUploads ? "Waiting for uploads… (click to cancel)" : undefined}
+                    data-testid="composer-send"
+                    data-waiting={waitingForUploads || undefined}
                   >
-                    {sending ? <Loader2Icon className="animate-spin" /> : <ArrowUpIcon />}
-                    <span className="sr-only">Send</span>
+                    {sending || waitingForUploads ? <Loader2Icon className="animate-spin" /> : <ArrowUpIcon />}
+                    <span className="sr-only">{waitingForUploads ? "Waiting for uploads, click to cancel" : "Send"}</span>
                   </Button>
                 )}
               </div>

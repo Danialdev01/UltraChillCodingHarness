@@ -12,6 +12,7 @@ import {
   MAX_MODEL_IMAGES,
   modelImages,
   pasteCarriesText,
+  pasteIsRichText,
   pendingImageCount,
   previewKindOf,
   parseAttachments,
@@ -424,6 +425,49 @@ describe("clipboardFiles", () => {
 
   it("finds nothing on a clipboard holding only text", () => {
     expect(clipboardFiles({ files: [], types: ["text/plain"] })).toEqual([]);
+  });
+
+  function clipboard(types: string[], text: string, files: Array<{ name: string; type: string }>) {
+    return {
+      files: files.map(({ name, type }) => new File(["bytes"], name, { type })),
+      types,
+      getData: (type: string) => (type === "text/plain" ? text : type === "text/html" ? `<p>${text}</p>` : ""),
+    };
+  }
+
+  it("types a Word paste instead of attaching the picture of it", () => {
+    const word = clipboard(["text/plain", "text/html", "Files"], "Quarterly notes", [{ name: "image.png", type: "image/png" }]);
+    expect(pasteIsRichText(word)).toBe(true);
+    expect(clipboardFiles(word, AT)).toEqual([]);
+    expect(pasteCarriesText(word)).toBe(true);
+  });
+
+  it("treats RTF the same as HTML", () => {
+    const pages = clipboard(["text/plain", "text/rtf", "Files"], "Hello", [{ name: "image.png", type: "image/png" }]);
+    expect(clipboardFiles(pages, AT)).toEqual([]);
+  });
+
+  it("still attaches a screenshot", () => {
+    const shot = clipboard(["Files"], "", [{ name: "image.png", type: "image/png" }]);
+    expect(clipboardFiles(shot, AT)).toHaveLength(1);
+  });
+
+  it("still attaches a file copied out of a file manager", () => {
+    const copied = clipboard(["text/plain", "Files"], "report.pdf", [{ name: "report.pdf", type: "application/pdf" }]);
+    expect(clipboardFiles(copied, AT).map((f) => f.name)).toEqual(["report.pdf"]);
+  });
+
+  it("keeps the image when the markup carries no text", () => {
+    const img = clipboard(["text/plain", "text/html", "Files"], "  ", [{ name: "image.png", type: "image/png" }]);
+    expect(clipboardFiles(img, AT)).toHaveLength(1);
+  });
+
+  it("keeps a real file that rides along with rich text", () => {
+    const mixed = clipboard(["text/plain", "text/html", "Files"], "See attached", [
+      { name: "image.png", type: "image/png" },
+      { name: "data.csv", type: "text/csv" },
+    ]);
+    expect(clipboardFiles(mixed, AT).map((f) => f.name)).toEqual(["data.csv"]);
   });
 
   it("knows a screenshot from a table pasted with a picture of itself", () => {

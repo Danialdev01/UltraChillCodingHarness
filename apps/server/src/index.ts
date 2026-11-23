@@ -4851,6 +4851,32 @@ app.get<{ Querystring: { fresh?: string; workspace?: string } }>("/api/providers
   };
 });
 
+/**
+ * Looks for newly installed CLIs: PATH re-read from a login shell and every
+ * cached probe dropped, so a Claude or Codex installed since the server
+ * started is found without restarting it. Answers like `GET /api/providers`.
+ */
+app.post<{ Querystring: { workspace?: string } }>("/api/providers/refresh", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const subject = await providerSubject(principal.userId, request.query.workspace, "workspace.view");
+  if (!subject) return reply.code(404).send({ error: "workspace not found" });
+
+  const [row] = await db
+    .select({ defaultProvider: users.defaultProvider })
+    .from(users)
+    .where(eq(users.id, principal.userId))
+    .limit(1);
+
+  const providers = await providerService.refresh(subject);
+  return {
+    providers,
+    defaultProvider: row?.defaultProvider ?? "native",
+    cliEnabled: cliProvidersEnabled(config),
+    encryptionAvailable: Boolean(config.SECRET_KEY),
+  };
+});
+
 /** Signs a CLI provider out: its credential directory emptied. */
 app.delete<{ Params: { id: string }; Querystring: { workspace?: string } }>(
   "/api/providers/:id/credentials",

@@ -6,27 +6,46 @@ import { HarnessIcon } from "@/components/harness-icon"
 import { KindTile } from "@/components/model-key-settings"
 import { PickerChevron, pickerTrigger, type ModelSource, type PickerLook } from "@/components/model-picker"
 import { Button } from "@/components/ui/button"
-import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
+import { Command, CommandGroup, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   accountStatus,
   fetchAccounts,
   fetchProviders,
+  PROVIDERS_CHANGED,
   providerBlocker,
+  refreshProviders,
   type AgentAccount,
   type ProviderCard,
   type ProviderId,
 } from "@/lib/providers-api"
 import { KIND_NAMES } from "@/lib/model-keys"
+import { Loader2Icon, RefreshCwIcon } from "lucide-react"
 
 export interface ProvidersState {
   cards: Record<ProviderId, ProviderCard> | null
   defaultProvider: ProviderId | null
+  /** Looks for newly installed CLIs on the server; absent where nothing can. */
+  refresh?: () => Promise<void>
 }
 
-/** The provider cards, fetched once per mount. Null until they land. */
+/**
+ * The provider cards, fetched on mount and again whenever any page refreshes
+ * them (`PROVIDERS_CHANGED`), so a chat open in another tab hears about a
+ * Claude installed since it loaded. Null until they land.
+ */
 export function useProviders(): ProvidersState {
-  const [state, setState] = React.useState<ProvidersState>({ cards: null, defaultProvider: null })
+  const [state, setState] = React.useState<Omit<ProvidersState, "refresh">>({ cards: null, defaultProvider: null })
+  const [generation, setGeneration] = React.useState(0)
+  React.useEffect(() => {
+    const bump = () => setGeneration((g) => g + 1)
+    window.addEventListener(PROVIDERS_CHANGED, bump)
+    return () => window.removeEventListener(PROVIDERS_CHANGED, bump)
+  }, [])
+  const refresh = React.useCallback(async () => {
+    // The event this fires refetches every picker, this one included.
+    await refreshProviders()
+  }, [])
   React.useEffect(() => {
     let cancelled = false
     void fetchProviders()
@@ -40,8 +59,8 @@ export function useProviders(): ProvidersState {
     return () => {
       cancelled = true
     }
-  }, [])
-  return state
+  }, [generation])
+  return React.useMemo(() => ({ ...state, refresh }), [state, refresh])
 }
 
 /** The caller's own subscription accounts, fetched once per mount. Null until they land. */
@@ -134,7 +153,10 @@ export function ProviderSelect({
   look?: PickerLook
 }) {
   const [open, setOpen] = React.useState(false)
+  const [refreshing, setRefreshing] = React.useState(false)
   const cards = providers.cards
+  // Offered only when it could help: some harness is missing on the server.
+  const missing = cards !== null && ORDER.some((id) => id !== "native" && cards[id] && !cards[id].installed)
   const current = cards?.[value]
   const blocker = current ? providerBlocker(current) : null
   const keys = onModelKey ? (modelKeys ?? []) : []
@@ -252,6 +274,27 @@ export function ProviderSelect({
                 )
               })}
             </CommandGroup>
+            {missing && providers.refresh && (
+              <>
+                <CommandSeparator />
+                <CommandGroup>
+                  <CommandItem
+                    value="refresh-providers"
+                    disabled={refreshing}
+                    title="Look for a Claude Code or Codex installed since the server started"
+                    onSelect={() => {
+                      setRefreshing(true)
+                      void providers.refresh!()
+                        .catch(() => {})
+                        .finally(() => setRefreshing(false))
+                    }}
+                  >
+                    {refreshing ? <Loader2Icon className="size-4 animate-spin" /> : <RefreshCwIcon className="size-4" />}
+                    <span>{refreshing ? "Refreshing…" : "Refresh providers"}</span>
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
             {onAccount && (() => {
               const own = (accounts ?? []).filter((a) => a.provider === value)
               if (own.length < 2) return null

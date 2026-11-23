@@ -63,6 +63,25 @@ export async function fetchProviders(fresh = false, workspaceId?: string): Promi
   );
 }
 
+/** Fired on `window` after a refresh, so every open picker looks again. */
+export const PROVIDERS_CHANGED = "ucch:providers-changed";
+
+/**
+ * Looks for newly installed CLIs: the server re-reads PATH from a login shell
+ * and probes every provider afresh, so a Claude or Codex installed since it
+ * started is found without restarting it.
+ */
+export async function refreshProviders(workspaceId?: string): Promise<ProvidersResponse> {
+  const data = await check<ProvidersResponse>(
+    await fetch(scoped("/api/providers/refresh", { workspace: workspaceId }), {
+      method: "POST",
+      credentials: "include",
+    }),
+  );
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PROVIDERS_CHANGED));
+  return data;
+}
+
 export async function signOutProvider(id: "claude" | "codex", workspaceId?: string): Promise<void> {
   await check(
     await fetch(scoped(`/api/providers/${id}/credentials`, { workspace: workspaceId }), {
