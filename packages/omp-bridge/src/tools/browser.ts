@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { BROWSER_TOOLS } from "@ucch/browser/tools";
+import { BROWSER_ENTRY, BROWSER_TOOLS } from "@ucch/browser/tools";
 import type { BridgeConfig } from "../config.js";
 import { callBrowser } from "../spawn.js";
 
@@ -13,10 +13,17 @@ import { callBrowser } from "../spawn.js";
  *
  * Not behind the bridge's OMP call budget (`callGate`): a browser call
  * starts no `omp` and costs nothing but time.
+ *
+ * On `entry` only `browser_open` is listed at first. The others are
+ * registered but disabled, and enabled together once it succeeds; the SDK
+ * then sends `tools/list_changed`, so the CLI lists them for the rest of
+ * the turn. The next turn's bridge starts on `full` for the thread.
  */
 export function registerBrowserTools(server: McpServer, config: BridgeConfig): void {
+  const later: { enable(): void }[] = [];
+  let unlocked = config.browser !== "entry";
   for (const spec of BROWSER_TOOLS) {
-    server.registerTool(
+    const registered = server.registerTool(
       spec.name,
       {
         description: spec.description,
@@ -25,6 +32,13 @@ export function registerBrowserTools(server: McpServer, config: BridgeConfig): v
       },
       async (input: unknown, extra: { signal?: AbortSignal }): Promise<CallToolResult> => {
         const outcome = await callBrowser(config, spec.name, (input ?? {}) as Record<string, unknown>, extra.signal ? { signal: extra.signal } : {});
+        let unlockedNow = false;
+        if (!unlocked && spec.name === BROWSER_ENTRY && !outcome.isError) {
+          unlocked = true;
+          unlockedNow = true;
+          for (const tool of later) tool.enable();
+        }
+        if (unlockedNow) outcome.text = `${outcome.text}\n\nThe other browser tools are now available.`;
         return {
           content: [
             { type: "text", text: outcome.text || "(no output)" },
@@ -34,5 +48,9 @@ export function registerBrowserTools(server: McpServer, config: BridgeConfig): v
         };
       },
     );
+    if (!unlocked && spec.name !== BROWSER_ENTRY) {
+      registered.disable();
+      later.push(registered);
+    }
   }
 }

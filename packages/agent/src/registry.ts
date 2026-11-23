@@ -19,7 +19,7 @@ import {
 import { researchBrowse, researchRead, researchSearch } from "./tools/research.js";
 import { attachUpload } from "./tools/uploads.js";
 import { browserTools } from "./tools/browser.js";
-import { BROWSER_TOOL_NAMES } from "@ucch/browser/tools";
+import { BROWSER_ENTRY, BROWSER_TOOL_NAMES, type BrowserToolset } from "@ucch/browser/tools";
 import { webFetch, webSearch } from "./tools/web.js";
 import { showWidget } from "./tools/widget.js";
 
@@ -155,7 +155,7 @@ const toolCache = new Map<string, readonly AnyTool[]>();
 const schemaCache = new Map<string, readonly ToolSchema[]>();
 
 const cacheKey = (preset: ToolPreset, options: RegistryOptions): string =>
-  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}:${options.web ?? true}:${Boolean(options.coordination)}:${Boolean(options.subagents)}:${options.browser ?? false}`;
+  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}:${options.web ?? true}:${Boolean(options.coordination)}:${Boolean(options.subagents)}:${browserToolset(options)}`;
 
 /**
  * Filters a tool list to a preset, in the list's own order.
@@ -228,10 +228,21 @@ export interface RegistryOptions {
   web?: boolean;
   /**
    * Defaults to false: the browser tools need a browser behind them
-   * (`ToolContext.browser`), which only the server can bind. True offers
-   * them on every preset but `minimal`; `readonly` keeps the reads.
+   * (`ToolContext.browser`), which only the server can bind.
+   *
+   * "entry" offers `browser_open` alone, whose description says when a
+   * browser is worth opening: a thread that has not used the browser does
+   * not carry every browser schema on every request. "full" (or true)
+   * offers them all, on every preset but `minimal`; `readonly` keeps the
+   * reads. The loop moves a turn from "entry" to "full" once `browser_open`
+   * succeeds, and the server starts a thread that has used it on "full".
    */
-  browser?: boolean;
+  browser?: boolean | BrowserToolset;
+}
+
+/** `RegistryOptions.browser`, with the old boolean read as "full". */
+export function browserToolset(options: Pick<RegistryOptions, "browser">): BrowserToolset {
+  return options.browser === true ? "full" : (options.browser ?? false);
 }
 
 /** The browser tools, every one of them. */
@@ -261,7 +272,9 @@ export function selectPreset(
       if (!widgets && WIDGET_TOOLS.includes(tool.name)) return false;
       if (!web && WEB_TOOLS.includes(tool.name)) return false;
       if (BROWSER.includes(tool.name)) {
-        if (!options.browser || preset === "minimal") return false;
+        const browser = browserToolset(options);
+        if (!browser || preset === "minimal") return false;
+        if (browser === "entry" && tool.name !== BROWSER_ENTRY) return false;
         // Research drives pages as well as reading them; nothing else
         // beyond reads, except where the preset already allows it.
         if (preset === "research" && tool.name === "browser_act") return true;

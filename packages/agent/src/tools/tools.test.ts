@@ -911,6 +911,7 @@ describe("the tool surface", () => {
       "browser_tabs",
       "browser_logs",
       "browser_close",
+      "browser_motion",
     ]);
   });
 
@@ -921,7 +922,8 @@ describe("the tool surface", () => {
       expect(toolsFor(preset).some((t) => t.name.startsWith("browser_"))).toBe(false);
     }
     const on = { browser: true };
-    expect(toolsFor("standard", on).filter((t) => t.name.startsWith("browser_")).map((t) => t.name)).toHaveLength(12);
+    expect(toolsFor("standard", on).filter((t) => t.name.startsWith("browser_")).map((t) => t.name)).toHaveLength(13);
+    expect(toolsFor("standard", { browser: "full" })).toBe(toolsFor("standard", on));
     expect(toolsFor("minimal", on).some((t) => t.name.startsWith("browser_"))).toBe(false);
     const readonly = toolsFor("readonly", on).map((t) => t.name);
     expect(readonly).toContain("browser_screenshot");
@@ -932,6 +934,18 @@ describe("the tool surface", () => {
     expect(research).not.toContain("browser_eval");
     // A separate cached block: the default one is untouched.
     expect(toolsFor("standard", on)).not.toBe(toolsFor("standard"));
+  });
+
+  // Before a thread has used the browser: browser_open alone, last, so
+  // unlocking the rest only appends to the cached tool block.
+  it("offers browser_open alone on entry, ahead of the rest in the same place", () => {
+    const entry = toolsFor("standard", { browser: "entry" }).map((t) => t.name);
+    expect(entry.filter((n) => n.startsWith("browser_"))).toEqual(["browser_open"]);
+    expect(entry.at(-1)).toBe("browser_open");
+    const full = toolsFor("standard", { browser: "full" }).map((t) => t.name);
+    expect(full.slice(0, entry.length)).toEqual(entry);
+    expect(toolsFor("readonly", { browser: "entry" }).map((t) => t.name)).toContain("browser_open");
+    expect(toolsFor("minimal", { browser: "entry" }).some((t) => t.name.startsWith("browser_"))).toBe(false);
   });
 
   // The research tools are reads, which is exactly why they need a rule of

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { HostProcessHost, type ProcessHost, type RunResult, type SpawnSpec } from "@ucch/providers";
 import { afterEach, describe, expect, it } from "vitest";
 import { readBridgeConfig } from "./config.js";
@@ -209,11 +210,45 @@ describe("the shared browser on the bridge", () => {
     expect((await without.listTools()).tools.some((tool) => tool.name.startsWith("browser_"))).toBe(false);
     const client = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_BROWSER: "1" });
     const tools = (await client.listTools()).tools.filter((tool) => tool.name.startsWith("browser_"));
-    expect(tools.map((tool) => tool.name)).toHaveLength(12);
+    expect(tools.map((tool) => tool.name)).toHaveLength(13);
     const act = tools.find((tool) => tool.name === "browser_act")!;
     expect(act.inputSchema.properties).toHaveProperty("ref");
     expect(act.annotations?.readOnlyHint).toBe(false);
     expect(tools.find((tool) => tool.name === "browser_screenshot")!.annotations?.readOnlyHint).toBe(true);
+  });
+
+  it("on entry lists browser_open alone, and the rest once it has succeeded", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ucch-browser-bridge-"));
+    const path = join(dir, "s.sock");
+    let fail = true;
+    const server = createServer((socket) => {
+      socket.setEncoding("utf8");
+      socket.once("data", () => {
+        socket.end(`${JSON.stringify(fail ? { type: "result", text: "Blocked", isError: true } : { type: "result", text: "Opened tab t1" })}\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    try {
+      const client = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_BROWSER: "entry", UCCH_SCHEDULER_SOCK: path, UCCH_BRIDGE_TOKEN: "tok" });
+      let changed = 0;
+      client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+        changed++;
+      });
+      const names = async () => (await client.listTools()).tools.map((tool) => tool.name).filter((name) => name.startsWith("browser_"));
+      expect(await names()).toEqual(["browser_open"]);
+      const args = { session: null, url: "https://example.com", new_tab: null, viewport: null };
+      // A failed open unlocks nothing.
+      await client.callTool({ name: "browser_open", arguments: args });
+      expect(await names()).toEqual(["browser_open"]);
+      fail = false;
+      const opened = await client.callTool({ name: "browser_open", arguments: args });
+      expect(JSON.stringify(opened)).toContain("The other browser tools are now available.");
+      expect(await names()).toHaveLength(13);
+      expect(changed).toBeGreaterThan(0);
+    } finally {
+      server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("runs a call on the server and hands back its screenshot as an image", async () => {

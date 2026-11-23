@@ -3,8 +3,8 @@ import { contextAllowed, toRef, toView, type AgentProfiles } from "./agent-profi
 import type { ProfileRef } from "./profile-ref.js";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { and, count, desc, eq, inArray, isNotNull } from "drizzle-orm";
-import { projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
+import { and, count, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { events, projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
 import {
   HostExecutor,
   hostToolSchemas,
@@ -507,6 +507,33 @@ export class AgentTurnReactor {
     return Boolean(this.options.browser) && settings?.browser?.enabled !== false;
   }
 
+  /** Threads known to have used the browser: they are offered every browser tool from the start of a turn. */
+  readonly #browserUsed = new Set<string>();
+
+  /**
+   * Which browser tools a turn is offered. A thread that has never used the
+   * browser gets `browser_open` alone, whose description says when a browser
+   * is worth it; opening one unlocks the rest (the native loop and the
+   * bridge do that mid-turn). A thread that has used it gets them all.
+   * `history` is the thread's events when the caller has them in hand.
+   */
+  async #browserToolset(settings: WorkspaceAgentSettings | undefined | null, threadId: string, history?: readonly { event: DomainEvent }[]): Promise<false | "entry" | "full"> {
+    if (!this.#browserOn(settings)) return false;
+    if (this.#browserUsed.has(threadId)) return "full";
+    const used = history
+      ? history.some(({ event }) => event.type === "agent.tool_use" && /browser_/.test(event.name))
+      : (
+          await this.db
+            .select({ id: events.id })
+            .from(events)
+            .where(and(eq(events.threadId, threadId), eq(events.type, "agent.tool_use"), sql`${events.payload}->>'name' like '%browser\_%'`))
+            .limit(1)
+        ).length > 0;
+    if (!used) return "entry";
+    this.#browserUsed.add(threadId);
+    return "full";
+  }
+
   /** The browser bound to one agent session: its private session, its worktree for files. */
   #browserFor(projectId: string, threadId: string, worktree: string): BrowserProvider | undefined {
     const browser = this.options.browser;
@@ -523,6 +550,7 @@ export class AgentTurnReactor {
   async browserCall(holder: { threadId: string }, op: string, args: unknown, signal: AbortSignal): Promise<BrowserResult> {
     const browser = this.options.browser;
     if (!browser) return { text: "The browser is not available on this server.", isError: true };
+    this.#browserUsed.add(holder.threadId);
     if (!isBrowserOp(op)) return { text: `There is no browser tool called ${JSON.stringify(op)}.`, isError: true };
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, holder.threadId)).limit(1);
     if (!thread) return { text: "The session is gone.", isError: true };
@@ -1633,7 +1661,7 @@ export class AgentTurnReactor {
         // and `show_widget` together.
         registry: {
           ...this.options.registry,
-          browser: this.#browserOn(readAgentSettings(project.agent)),
+          browser: await this.#browserToolset(readAgentSettings(project.agent), threadId, history),
           widgets: widgetsOn(readAgentSettings(project.agent)) && !thread.parentThreadId,
           ...(noWeb ? { web: false } : {}),
           ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx), subagents: !thread.parentThreadId } : {}),
@@ -2664,8 +2692,13 @@ export class AgentTurnReactor {
       // The shared browser, on the bridge: a resumed session keeps the tool
       // list it started with, so one from before the browser stays without.
       const browserTools = provider !== "omp" && (stored ? stored.tools.browser === true : this.#browserOn(input.agentSettings));
+      // Codex lists every MCP tool it is given on every request, so a thread
+      // that has not used the browser is handed `browser_open` alone; the
+      // bridge lists the rest once it succeeds. Claude Code already keeps
+      // bridge tools behind ToolSearch until asked for, so it gets them all.
+      const browserOffer = !browserTools ? false : provider === "codex" ? await this.#browserToolset(input.agentSettings, input.threadId) : "full";
       if (provider !== "omp" && (ompTools || offersSubagents || widgets || messaging || browserTools)) {
-        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets, messaging, browser: browserTools });
+        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets, messaging, browser: browserOffer });
       }
       // UCCH's rules, the guides for the tools this turn really has, and the
       // runtime info (`cli-instructions.ts`). Logged part by part, as the
@@ -3020,7 +3053,7 @@ export class AgentTurnReactor {
       trusted?: boolean;
     },
     /** What the bridge carries: OMP's tools (the workspace's bridge), `ucch_agent`, `show_widget`, in any mix. */
-    offer: { omp: boolean; subagents: boolean; widgets?: boolean; messaging?: boolean; browser?: boolean },
+    offer: { omp: boolean; subagents: boolean; widgets?: boolean; messaging?: boolean; browser?: boolean | "entry" | "full" },
   ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { omp: boolean; dispose(): Promise<void> }) | null> {
     const options = this.options.ompBridge;
     const providers = this.options.providers;
@@ -3084,7 +3117,7 @@ export class AgentTurnReactor {
         subagents: offer.subagents,
         messaging: offer.messaging === true,
         widgets: offer.widgets === true,
-        browser: offer.browser === true,
+        browser: offer.browser === true ? "full" : (offer.browser ?? false),
         worktree: input.workspace,
         schedulerSock: options.socket,
         token: lease.token,

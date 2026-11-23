@@ -1,3 +1,4 @@
+import type { BrowserToolset } from "@ucch/browser/tools";
 import { readFileSync } from "node:fs";
 import { forbiddenEnvFor, isOmpCredentialEnv } from "@ucch/providers";
 
@@ -71,10 +72,13 @@ export interface BridgeConfig {
    */
   widgets: boolean;
   /**
-   * The shared browser's tools are offered (`UCCH_BROWSER=1`): each call
-   * goes to the server over the scheduler socket and runs in its Chromium.
+   * The shared browser's tools are offered: each call goes to the server
+   * over the scheduler socket and runs in its Chromium. `UCCH_BROWSER=1`
+   * (or `full`) lists them all; `entry` lists `browser_open` alone and the
+   * rest once it has succeeded (`tools/list_changed`), for a thread that
+   * has not used the browser yet.
    */
-  browser?: boolean;
+  browser?: BrowserToolset;
 }
 
 /**
@@ -124,7 +128,7 @@ export function readBridgeConfig(env: NodeJS.ProcessEnv, cwd: string = process.c
     subagents: env.UCCH_BRIDGE_SUBAGENTS === "1",
     messaging: env.UCCH_BRIDGE_MESSAGING === "1",
     widgets: env.UCCH_WIDGETS === "1",
-    browser: env.UCCH_BROWSER === "1",
+    browser: env.UCCH_BROWSER === "1" || env.UCCH_BROWSER === "full" ? "full" : env.UCCH_BROWSER === "entry" ? "entry" : false,
   };
 }
 

@@ -24,6 +24,26 @@ header{display:flex;justify-content:space-between;gap:var(--gap);padding:16px;ba
 <p id="out"></p>
 <table><tr><th>Item</th><th>Price</th></tr><tr><td>Tea</td><td>3</td></tr></table></main></body></html>`;
 
+/** Motion of every kind the motion tool tells apart. */
+const MOTION = `<!doctype html><html><head><title>Motion</title><style>
+body{margin:0;font-family:sans-serif;height:3000px}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.spinner{position:absolute;top:20px;left:20px;width:80px;height:80px;background:#e33;animation:spin 1000ms linear infinite}
+.card{position:absolute;top:20px;left:160px;width:120px;height:80px;background:#36c;transition:transform 400ms ease-out}
+.card:hover{transform:scale(1.2)}
+#js{position:absolute;top:20px;left:340px;width:60px;height:60px;background:#3a3}
+#waapi{position:absolute;top:20px;left:440px;width:60px;height:60px;background:#c3c}
+@keyframes grow{from{opacity:0;transform:translateY(80px)}to{opacity:1;transform:none}}
+#reveal{position:absolute;top:1800px;left:20px;width:300px;height:200px;background:#fa0;
+  animation:grow linear both;animation-timeline:view();animation-range:entry 0% cover 50%}
+</style></head><body>
+<div class="spinner"></div><button class="card">Hover me</button><div id="js"></div><div id="waapi"></div><div id="reveal"></div>
+<script>
+document.getElementById("waapi").animate([{opacity:1},{opacity:0.2}],{duration:800,iterations:Infinity,direction:"alternate"});
+const el=document.getElementById("js");let t=0;
+(function loop(){t+=1;el.style.transform="translateX("+(t%100)+"px)";requestAnimationFrame(loop)})();
+</script></body></html>`;
+
 let server: Server;
 let base: string;
 let worktree: string;
@@ -36,7 +56,7 @@ beforeAll(async () => {
       return;
     }
     res.setHeader("content-type", "text/html");
-    res.end(req.url === "/about" ? "<title>About</title><h1>About us</h1>" : PAGE);
+    res.end(req.url === "/about" ? "<title>About</title><h1>About us</h1>" : req.url === "/motion" ? MOTION : PAGE);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -221,6 +241,64 @@ describe.skipIf(!executable)("BrowserManager", () => {
       expect(frames.length).toBeGreaterThan(0);
       expect(frames[0]).toBe(1280);
       expect(m.list("p1")[0]?.tabs[0]?.url).toContain(base);
+    } finally {
+      await m.close();
+    }
+  }, 60_000);
+  const motionArgs = {
+    session: null,
+    tab: null,
+    ref: null,
+    selector: null,
+    viewport: null,
+    trigger: null,
+    count: null,
+    duration_ms: null,
+    timing: null,
+    from_y: null,
+    to_y: null,
+    settle_ms: null,
+    reduced_motion: null,
+  };
+
+  it("inspects motion: CSS animations, transitions, Web Animations, scroll timelines and JS", async () => {
+    const m = manager();
+    try {
+      await m.call(a(), "browser_open", { session: null, url: `${base}/motion`, new_tab: null, viewport: { width: 1000, height: 700 } });
+      const seen = await m.call(a(), "browser_motion", { ...motionArgs, mode: "inspect", duration_ms: 600 });
+      expect(seen.isError).toBeFalsy();
+      expect(seen.text).toContain('CSSAnimation "spin" on body > div.spinner');
+      expect(seen.text).toContain("rotate(360deg)");
+      expect(seen.text).toMatch(/Animation on div#waapi/);
+      expect(seen.text).toMatch(/CSSAnimation "grow" on div#reveal.*timeline view\(/);
+      expect(seen.text).toContain("div#js ×");
+      expect(seen.text).toContain("a JS animation loop is running");
+
+      const hovered = await m.call(a(), "browser_motion", { ...motionArgs, mode: "inspect", selector: ".card", trigger: "hover", duration_ms: 200 });
+      expect(hovered.text).toMatch(/CSSTransition "transform" on body > button\.card/);
+    } finally {
+      await m.close();
+    }
+  }, 60_000);
+
+  it("captures seeked frames of a CSS animation and steps a scroll", async () => {
+    const m = manager();
+    try {
+      await m.call(a(), "browser_open", { session: null, url: `${base}/motion`, new_tab: null, viewport: { width: 1000, height: 700 } });
+      const frames = await m.call(a(), "browser_motion", { ...motionArgs, mode: "frames", selector: ".spinner", count: 4 });
+      expect(frames.isError, frames.text).toBeFalsy();
+      expect(frames.text).toContain("Seeked 1 paused animation(s) through 0–1000ms in 4 frames");
+      expect(frames.text).toMatch(/[34] of 4 frames differ/);
+      expect(frames.images?.[0]?.path).toMatch(/^\.agent\/browser\/motion\/127\.0\.0\.1-frames-.*\/sheet\.png$/);
+      await stat(join(worktree, frames.images![0]!.path.replace("sheet.png", "04.png")));
+
+      const js = await m.call(a(), "browser_motion", { ...motionArgs, mode: "frames", selector: "#js", count: 3, duration_ms: 300 });
+      expect(js.text).toContain("in real time");
+
+      const scrolled = await m.call(a(), "browser_motion", { ...motionArgs, mode: "scroll", selector: "#reveal", count: 5 });
+      expect(scrolled.isError).toBeFalsy();
+      expect(scrolled.text.match(/^\d\. y=/gm)).toHaveLength(5);
+      expect(scrolled.text).toMatch(/div#reveal: (transform|opacity)/);
     } finally {
       await m.close();
     }

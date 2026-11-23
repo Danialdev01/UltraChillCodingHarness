@@ -515,3 +515,399 @@ export async function compareInPage(args: { a: string; b: string; threshold: num
     diffPng: out.toDataURL("image/png").replace(/^data:image\/png;base64,/, ""),
   };
 }
+
+// ---- motion --------------------------------------------------------------------
+//
+// Each function below is sent to the page as source (`inPage`), so each is
+// self-contained: helpers live inside it, and state that spans calls lives on
+// `window.__ucchMotion` / `window.__ucchSeek` / `window.__ucchScroll`.
+
+export interface MotionAnimation {
+  kind: string;
+  name: string;
+  target: string;
+  playState: string;
+  duration: string;
+  delay: number;
+  iterations: string;
+  direction: string;
+  fill: string;
+  easing: string;
+  timeline: string;
+  keyframes: { offset: number | null; easing: string; props: Record<string, string> }[];
+}
+
+export interface MotionReport {
+  listenedMs: number;
+  animations: MotionAnimation[];
+  /** Elements whose inline style changed while watching: JS-driven motion. */
+  styled: { target: string; changes: number; transform: string; opacity: string }[];
+  /** Elements whose class list changed while watching (often what starts a CSS transition). */
+  classed: { target: string; changes: number }[];
+  rafPerSecond: number;
+  libraries: string[];
+  canvases: { target: string; width: number; height: number; engine: string }[];
+  videos: { target: string; playing: boolean; loop: boolean; src: string }[];
+  reducedMotionRules: number;
+}
+
+/** Starts watching motion under `scope` (a selector) or the whole page. `motionStopInPage` reports. */
+export function motionStartInPage(args: { scope: string | null }): { ok: true } | { error: string } {
+  const w = window as unknown as Record<string, any>;
+  if (w.__ucchMotion) w.__ucchMotion.stop();
+  const root = args.scope ? document.querySelector(args.scope) : document.documentElement;
+  if (!root) return { error: `Nothing matches ${args.scope}.` };
+  const label = (el: Element | null): string => {
+    if (!el) return "(none)";
+    const parts: string[] = [];
+    let node: Element | null = el;
+    while (node && parts.length < 3 && node !== document.documentElement) {
+      let part = node.tagName.toLowerCase();
+      if (node.id) {
+        parts.unshift(`${part}#${node.id}`);
+        break;
+      }
+      const cls = [...node.classList].filter((c) => !c.startsWith("ucch-")).slice(0, 2);
+      if (cls.length) part += `.${cls.join(".")}`;
+      parts.unshift(part);
+      node = node.parentElement;
+    }
+    return parts.join(" > ");
+  };
+  const short = (v: unknown) => {
+    const s = String(v);
+    return s.length > 120 ? `${s.slice(0, 117)}…` : s;
+  };
+  const describe = (a: Animation): MotionAnimation => {
+    const effect = a.effect as KeyframeEffect | null;
+    const timing = effect?.getTiming?.() ?? ({} as EffectTiming);
+    const any = a as unknown as Record<string, any>;
+    const kind = a.constructor?.name || "Animation";
+    const timeline = a.timeline as unknown as Record<string, any> | null;
+    const tlName = timeline?.constructor?.name ?? "none";
+    let tl = tlName === "DocumentTimeline" ? "document" : tlName;
+    if (tlName === "ScrollTimeline") tl = `scroll(${timeline!.axis ?? "block"}${timeline!.source ? ` of ${label(timeline!.source)}` : ""})`;
+    if (tlName === "ViewTimeline") tl = `view(${timeline!.axis ?? "block"} of ${label(timeline!.subject ?? null)})`;
+    if (any.rangeStart && typeof any.rangeStart === "object") tl += ` range ${any.rangeStart.rangeName ?? ""} ${any.rangeStart.offset ?? ""} → ${any.rangeEnd?.rangeName ?? ""} ${any.rangeEnd?.offset ?? ""}`;
+    let keyframes: MotionAnimation["keyframes"] = [];
+    try {
+      keyframes = (effect?.getKeyframes() ?? []).slice(0, 12).map((k) => {
+        const props: Record<string, string> = {};
+        for (const [key, value] of Object.entries(k)) {
+          if (!["offset", "computedOffset", "easing", "composite"].includes(key) && value != null) props[key] = short(value);
+        }
+        return { offset: (k.computedOffset as number | null) ?? k.offset ?? null, easing: String(k.easing ?? "linear"), props };
+      });
+    } catch {
+      // A cross-origin or detached effect: report the timing alone.
+    }
+    return {
+      kind,
+      name: String(any.animationName || any.transitionProperty || a.id || ""),
+      target: `${label(effect?.target ?? null)}${effect?.pseudoElement ?? ""}`,
+      playState: a.playState,
+      duration: String(timing.duration ?? "auto"),
+      delay: Number(timing.delay ?? 0),
+      iterations: String(timing.iterations ?? 1),
+      direction: String(timing.direction ?? "normal"),
+      fill: String(timing.fill ?? "auto"),
+      easing: String(timing.easing ?? "linear"),
+      timeline: tl,
+      keyframes,
+    };
+  };
+  const ids = new WeakMap<Animation, number>();
+  let next = 1;
+  const seen = new Map<number, MotionAnimation>();
+  const sample = () => {
+    const list = args.scope ? (root as Element).getAnimations({ subtree: true }) : document.getAnimations();
+    for (const a of list.slice(0, 400)) {
+      let id = ids.get(a);
+      if (!id) {
+        id = next++;
+        ids.set(a, id);
+      }
+      const prev = seen.get(id);
+      if (prev) prev.playState = a.playState;
+      else if (seen.size < 200) seen.set(id, describe(a));
+    }
+  };
+  const styled = new Map<Element, number>();
+  const classed = new Map<Element, number>();
+  const observer = new MutationObserver((records) => {
+    for (const r of records) {
+      const el = r.target as Element;
+      const map = r.attributeName === "style" ? styled : classed;
+      map.set(el, (map.get(el) ?? 0) + 1);
+    }
+  });
+  observer.observe(root, { attributes: true, attributeFilter: ["style", "class"], subtree: true });
+  const originalRaf = window.requestAnimationFrame;
+  let rafs = 0;
+  window.requestAnimationFrame = function (cb: FrameRequestCallback) {
+    rafs++;
+    return originalRaf.call(window, cb);
+  };
+  const timer = setInterval(sample, 40);
+  sample();
+  const started = performance.now();
+  w.__ucchMotion = {
+    stop(): MotionReport {
+      clearInterval(timer);
+      sample();
+      observer.disconnect();
+      if (window.requestAnimationFrame !== originalRaf) window.requestAnimationFrame = originalRaf;
+      delete w.__ucchMotion;
+      const listenedMs = Math.round(performance.now() - started);
+      const libraries: string[] = [];
+      const has = (sel: string) => {
+        try {
+          return Boolean(document.querySelector(sel));
+        } catch {
+          return false;
+        }
+      };
+      if (w.gsap) libraries.push(`GSAP ${w.gsap.version ?? ""}`.trim());
+      if (w.ScrollTrigger || w.gsap?.core?.globals?.()?.ScrollTrigger) libraries.push("GSAP ScrollTrigger");
+      if (w.Lenis || w.lenis || document.documentElement.classList.contains("lenis")) libraries.push("Lenis (smooth scroll)");
+      if (w.LocomotiveScroll || has("[data-scroll-container]")) libraries.push("Locomotive Scroll");
+      if (has("[data-framer-appear-id],[data-framer-name],[data-projection-id]")) libraries.push("Framer / Framer Motion");
+      if (w.lottie || w.bodymovin || has("lottie-player,dotlottie-player,dotlottie-wc")) libraries.push("Lottie");
+      if (w.THREE) libraries.push(`three.js r${w.THREE.REVISION ?? "?"}`);
+      if (w.PIXI) libraries.push("PixiJS");
+      if (w.anime) libraries.push("anime.js");
+      if (w.Motion) libraries.push("Motion One");
+      if (w.AOS || has("[data-aos]")) libraries.push("AOS");
+      if (w.Swiper || has(".swiper")) libraries.push("Swiper");
+      if (w.barba) libraries.push("Barba.js");
+      if (w.ScrollMagic) libraries.push("ScrollMagic");
+      if (w.Splitting || has("[data-splitting]")) libraries.push("Splitting.js");
+      if (has("[data-rive],canvas.rive")) libraries.push("Rive");
+      const visible = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return r.width >= 40 && r.height >= 40;
+      };
+      const canvases = [...root.querySelectorAll("canvas")].filter(visible).slice(0, 10).map((c) => ({
+        target: label(c),
+        width: Math.round(c.getBoundingClientRect().width),
+        height: Math.round(c.getBoundingClientRect().height),
+        engine: c.getAttribute("data-engine") ?? "",
+      }));
+      const videos = [...root.querySelectorAll("video")].filter(visible).slice(0, 10).map((v) => ({
+        target: label(v),
+        playing: !v.paused && !v.ended,
+        loop: v.loop,
+        src: short(v.currentSrc || v.src || ""),
+      }));
+      let reducedMotionRules = 0;
+      for (const sheet of [...document.styleSheets]) {
+        try {
+          for (const rule of [...sheet.cssRules]) {
+            if (rule instanceof CSSMediaRule && rule.conditionText.includes("prefers-reduced-motion")) reducedMotionRules++;
+          }
+        } catch {
+          // Cross-origin stylesheet: unreadable.
+        }
+      }
+      const top = (map: Map<Element, number>) => [...map.entries()].filter(([el]) => el.isConnected).sort((a, b) => b[1] - a[1]).slice(0, 12);
+      return {
+        listenedMs,
+        animations: [...seen.values()],
+        styled: top(styled).map(([el, changes]) => {
+          const cs = getComputedStyle(el);
+          return { target: label(el), changes, transform: short(cs.transform), opacity: cs.opacity };
+        }),
+        classed: top(classed).slice(0, 8).map(([el, changes]) => ({ target: label(el), changes })),
+        rafPerSecond: Math.round((rafs / Math.max(listenedMs, 1)) * 1000),
+        libraries,
+        canvases,
+        videos,
+        reducedMotionRules,
+      };
+    },
+  };
+  return { ok: true };
+}
+
+export function motionStopInPage(): MotionReport | { error: string } {
+  const w = window as unknown as Record<string, any>;
+  if (!w.__ucchMotion) return { error: "The motion watcher was lost (the page navigated while watching)." };
+  return w.__ucchMotion.stop();
+}
+
+/**
+ * Pauses every CSS/WAAPI animation under `scope` on a document timeline, for
+ * seeking. Scroll-driven ones are left alone (they follow the scroll, not
+ * time). Answers how many were paused and how long they run, so a capture
+ * with no duration of its own can cover them.
+ */
+export async function motionPauseInPage(args: { scope: string | null }): Promise<{ paused: number; spanMs: number; scrollDriven: number }> {
+  const w = window as unknown as Record<string, any>;
+  await new Promise((r) => requestAnimationFrame(() => r(null)));
+  const root = args.scope ? document.querySelector(args.scope) : null;
+  const list = root ? root.getAnimations({ subtree: true }) : document.getAnimations();
+  const held: Animation[] = [];
+  let span = 0;
+  let scrollDriven = 0;
+  for (const a of list) {
+    if (a.timeline && a.timeline.constructor?.name !== "DocumentTimeline") {
+      scrollDriven++;
+      continue;
+    }
+    if (a.playState === "finished" || a.playState === "idle") continue;
+    const t = a.effect?.getTiming?.();
+    const duration = typeof t?.duration === "number" ? t.duration : 0;
+    const iterations = t?.iterations ?? 1;
+    const delay = t?.delay ?? 0;
+    span = Math.max(span, delay + duration * (Number.isFinite(iterations) ? iterations : 1));
+    a.pause();
+    held.push(a);
+  }
+  w.__ucchSeek = held;
+  return { paused: held.length, spanMs: Math.round(span), scrollDriven };
+}
+
+/** Moves every paused animation to `t` ms from its start, then waits for that frame to paint. */
+export async function motionSeekInPage(args: { t: number }): Promise<void> {
+  const held = ((window as unknown as Record<string, any>).__ucchSeek ?? []) as Animation[];
+  for (const a of held) {
+    try {
+      a.currentTime = args.t;
+    } catch {
+      // Cancelled meanwhile.
+    }
+  }
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+}
+
+export function motionResumeInPage(): void {
+  const w = window as unknown as Record<string, any>;
+  for (const a of (w.__ucchSeek ?? []) as Animation[]) {
+    try {
+      a.play();
+    } catch {
+      // Gone.
+    }
+  }
+  delete w.__ucchSeek;
+}
+
+/** Where a scroll capture runs: the page's scroll range, or the stretch in which an element crosses the viewport. */
+export function scrollRangeInPage(args: { scope: string | null }): { from: number; to: number; max: number; viewport: number } | { error: string } {
+  const max = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  if (!args.scope) return { from: 0, to: max, max, viewport: innerHeight };
+  const el = document.querySelector(args.scope);
+  if (!el) return { error: `Nothing matches ${args.scope}.` };
+  const r = el.getBoundingClientRect();
+  const top = r.top + scrollY;
+  const clamp = (v: number) => Math.round(Math.min(max, Math.max(0, v)));
+  return { from: clamp(top - innerHeight), to: clamp(top + r.height), max, viewport: innerHeight };
+}
+
+/** Jumps to `y` without smooth scrolling, and forgets the previous sample. */
+export async function scrollJumpInPage(args: { y: number }): Promise<number> {
+  const html = document.documentElement;
+  const before = html.style.scrollBehavior;
+  html.style.scrollBehavior = "auto";
+  window.scrollTo(0, args.y);
+  html.style.scrollBehavior = before;
+  delete (window as unknown as Record<string, any>).__ucchScroll;
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+  return Math.round(scrollY);
+}
+
+/**
+ * The scroll position, and the elements whose transform, opacity, clip or
+ * filter changed since the previous sample: what a scroll step animated.
+ */
+export async function scrollSampleInPage(): Promise<{ y: number; changed: { target: string; what: string }[] }> {
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+  const w = window as unknown as Record<string, any>;
+  const prev: Map<Element, string[]> | undefined = w.__ucchScroll;
+  const now = new Map<Element, string[]>();
+  const props = ["transform", "translate", "scale", "rotate", "opacity", "clip-path", "filter"];
+  const label = (el: Element): string => {
+    const parts: string[] = [];
+    let node: Element | null = el;
+    while (node && parts.length < 3 && node !== document.documentElement) {
+      let part = node.tagName.toLowerCase();
+      if (node.id) {
+        parts.unshift(`${part}#${node.id}`);
+        break;
+      }
+      const cls = [...node.classList].slice(0, 2);
+      if (cls.length) part += `.${cls.join(".")}`;
+      parts.unshift(part);
+      node = node.parentElement;
+    }
+    return parts.join(" > ");
+  };
+  const all = document.body ? document.body.querySelectorAll("*") : [];
+  for (let i = 0; i < all.length && i < 5000; i++) {
+    const el = all[i]!;
+    const cs = getComputedStyle(el);
+    now.set(el, props.map((p) => cs.getPropertyValue(p)));
+  }
+  const changed: { target: string; what: string }[] = [];
+  if (prev) {
+    for (const [el, values] of now) {
+      const before = prev.get(el);
+      if (!before) continue;
+      const diffs = props.flatMap((p, i) => (before[i] !== values[i] ? [`${p} ${before[i]} → ${values[i]}`] : []));
+      if (diffs.length) {
+        const r = el.getBoundingClientRect();
+        if (r.bottom < 0 || r.top > innerHeight || r.width * r.height < 16) continue;
+        changed.push({ target: label(el), what: diffs.join("; ").slice(0, 240) });
+      }
+    }
+  }
+  w.__ucchScroll = now;
+  // Document order: an animated parent comes before the children it moves.
+  return { y: Math.round(scrollY), changed: changed.slice(0, 10) };
+}
+
+/** Tiles frames into one labelled contact sheet. PNG, and a JPEG as well when the PNG is too heavy to show inline. */
+export async function contactSheetInPage(args: {
+  frames: { src: string; label: string }[];
+  maxWidth: number;
+  inlineBytes: number;
+}): Promise<{ png: string; jpeg: string | null; width: number; height: number; cols: number }> {
+  const load = (src: string) =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("a frame could not be decoded"));
+      img.src = src;
+    });
+  const images = await Promise.all(args.frames.map((f) => load(f.src)));
+  const n = images.length;
+  const first = images[0]!;
+  const aspect = first.naturalHeight / first.naturalWidth;
+  // Tall crops (a phone viewport, a narrow element) sit more to a row.
+  const cols = Math.min(n, aspect > 1.3 ? 6 : n <= 4 ? n : n <= 9 ? 3 : 4);
+  const gap = 8;
+  const bar = 22;
+  const tileW = Math.max(80, Math.min(first.naturalWidth, Math.floor((args.maxWidth - gap * (cols + 1)) / cols)));
+  const tileH = Math.round(tileW * aspect);
+  const rows = Math.ceil(n / cols);
+  const canvas = document.createElement("canvas");
+  canvas.width = gap + cols * (tileW + gap);
+  canvas.height = gap + rows * (tileH + bar + gap);
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#1b1b1f";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.font = "600 13px ui-monospace, Menlo, monospace";
+  ctx.textBaseline = "middle";
+  images.forEach((img, i) => {
+    const x = gap + (i % cols) * (tileW + gap);
+    const y = gap + Math.floor(i / cols) * (tileH + bar + gap);
+    ctx.fillStyle = "#2c2c33";
+    ctx.fillRect(x, y, tileW, bar);
+    ctx.fillStyle = "#f2f2f5";
+    ctx.fillText(args.frames[i]!.label, x + 6, y + bar / 2, tileW - 12);
+    ctx.drawImage(img, x, y + bar, tileW, tileH);
+  });
+  const png = canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+  const jpeg = png.length * 0.75 > args.inlineBytes ? canvas.toDataURL("image/jpeg", 0.8).replace(/^data:image\/jpeg;base64,/, "") : null;
+  return { png, jpeg, width: canvas.width, height: canvas.height, cols };
+}

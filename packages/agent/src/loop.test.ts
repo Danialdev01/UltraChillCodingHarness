@@ -1070,6 +1070,25 @@ describe("tool images", () => {
     expect(messages[2]!.content).toContain("this model does not accept images");
   });
 
+  it("offers browser_open alone on entry and every browser tool once it has opened", async () => {
+    const opener = {
+      async call() {
+        return { text: "Opened tab t1." };
+      },
+    };
+    const script = scripted(
+      reply({ toolCalls: [call("c1", "browser_open", '{"session":null,"url":"https://example.com","new_tab":null,"viewport":null}')] }),
+      reply({ text: "done" }),
+    );
+    const { input, appended } = harness({ complete: script.complete, registry: { browser: "entry" }, browser: opener });
+    await runTurn(input);
+    const offered = (i: number) => script.requests[i]!.tools!.map((t) => t.function.name).filter((n) => n.startsWith("browser_"));
+    expect(offered(0)).toEqual(["browser_open"]);
+    expect(offered(1)).toHaveLength(13);
+    expect(offered(1)).toContain("browser_motion");
+    expect(appended.find((e) => e.type === "agent.tool_result")).toMatchObject({ content: expect.stringContaining("The other browser tools are now available.") });
+  });
+
   it("offers no browser tool without the registry option, even with a browser bound", async () => {
     const script = scripted(reply({ toolCalls: [shot("c1")] }), reply({ text: "done" }));
     const { input, appended } = harness({ complete: script.complete, browser });

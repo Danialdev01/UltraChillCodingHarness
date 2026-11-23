@@ -31,8 +31,31 @@ Everything runs on the server's own headless Chromium through `playwright-core`.
 | `browser_tabs` | Lists sessions and tabs, switches the current tab, or closes a tab |
 | `browser_logs` | Returns console messages, page errors, and failed or erroring requests after a cursor |
 | `browser_close` | Closes a tab, or all of your tabs in a session |
+| `browser_motion` | Studies motion: `inspect` lists CSS animations, transitions and Web Animations (keyframes, timing, easing, scroll/view timelines) and JS-driven motion (inline-style churn, rAF rate, GSAP/Lenis/Framer/Lottie/three.js, canvases, videos); `frames` makes a contact sheet over time; `scroll` steps the scroll position and reports what changed at each step. Optional hover/focus/reload trigger and reduced-motion emulation. |
 
-Screenshots and captures are saved under the agent's worktree in `.agent/browser/shots/` and `.agent/browser/designs/`, so an agent can commit them or put them in a PR.
+`viewport` takes a preset or an exact `{ width, height }` (240–3840 by 240–2400), for checking a layout at a breakpoint's edge.
+
+## On demand
+
+A thread that has never used the browser is offered `browser_open` alone. Its description says when a browser is the right tool: a site's design or animations, content that only renders with JavaScript, a redesign or the dev server, a layout at a given width. It also says when `web_search`/`web_fetch` are the cheaper choice. Once `browser_open` succeeds, the other twelve tools are offered for the rest of the thread. Chromium itself still starts only on the first call and exits when idle.
+
+| Harness | Before the first open | After |
+|---|---|---|
+| Native loop | `browser_open` only (`RegistryOptions.browser: "entry"`) | The loop switches to `"full"` within the same turn. The tools sit at the end of the list, so the cached prefix holds up to them. |
+| Codex | The bridge registers every tool but lists only `browser_open` (`UCCH_BROWSER=entry`) | It enables the rest and sends `tools/list_changed`; the next turn's bridge starts on `full` |
+| Claude Code | All tools, which Claude Code already keeps behind ToolSearch until asked for | — |
+| OMP | All tools (host tools are set once per turn) | — |
+
+The server decides per turn: a thread with any `browser_*` tool use in its log, or a browser call over the bridge, gets the full set (`#browserToolset` in `apps/server/src/agent.ts`).
+
+## Motion
+
+- **inspect** watches for `duration_ms` (1.5 s by default). Short-lived transitions are caught because it polls `getAnimations()` every 40 ms, not only once at the end. Inline-style changes (what GSAP, Framer Motion and most JS animation set) are counted with a MutationObserver. The rAF rate misses a library that saved `requestAnimationFrame` before watching began.
+- **frames** with `timing: seek` pauses every CSS/Web Animation on the document timeline and sets `currentTime` for each frame, so the frames land at exact times. With no duration given, they cover the animations' own length (one iteration for infinite ones). Script, canvas and video motion cannot be seeked, so `auto` captures those in real time; the labels give the real times. A ref or selector crops each frame to the element, with room for it to grow.
+- **scroll** scrolls with the mouse wheel, not `scrollTo`, so smooth-scroll libraries and scroll listeners react. It settles longer when Lenis or Locomotive is present. With a ref or selector, the range is where that element crosses the viewport.
+- Each capture is saved as numbered PNGs plus `sheet.png` under `.agent/browser/motion/<host>-<mode>-<time>/`. The sheet is the image the model sees, as a JPEG when the PNG is over 3 MB.
+
+Screenshots and captures are saved under the agent's worktree in `.agent/browser/shots/`, `.agent/browser/designs/` and `.agent/browser/motion/`, so an agent can commit them or put them in a PR.
 
 A model that can see (`supportsImages`) gets each picture in a user message that follows the tool results. Only the two most recent of those messages keep their images; older ones are replaced by their captions. A model that cannot see is told the image was saved and pointed at `browser_snapshot` and `browser_design`.
 

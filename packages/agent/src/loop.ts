@@ -1,5 +1,5 @@
 import { asksForWidget, cacheHitRatio, isModelImageType, occupancy, WIDGET_TURN_NUDGE, type DomainEvent, type TokenUsage } from "@ucch/protocol";
-import type { BrowserProvider } from "@ucch/browser/tools";
+import { BROWSER_ENTRY, type BrowserProvider } from "@ucch/browser/tools";
 import type { ChatMessage, Complete, TextPart, ToolCall, UserContentPart } from "./completion.js";
 import type { Executor } from "./executor.js";
 import {
@@ -12,7 +12,7 @@ import {
   PRUNE_RATIO,
 } from "./context.js";
 import { buildPrompt, segmentsFor } from "./prompt.js";
-import { namedToolset, schemasFor, type RegistryOptions, type ToolPreset } from "./registry.js";
+import { browserToolset, namedToolset, schemasFor, type RegistryOptions, type ToolPreset } from "./registry.js";
 import type { DocumentsBackends } from "./documents.js";
 import type { ResearchBackends } from "./research.js";
 import { runTool, turnTool, type ToolOutcome } from "./run-tool.js";
@@ -253,7 +253,12 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
 
   // The frozen per-preset array, passed straight through: the same object
   // every request is what keeps the cached prefix byte-identical.
-  const tools = input.toolset ? namedToolset(input.toolset).schemas : schemasFor(input.preset, input.registry);
+  //
+  // Replaced once at most: a turn offered only `browser_open` gets every
+  // browser tool after that call succeeds. They sit at the end of the
+  // list, so the cached prefix holds up to them.
+  let registry = input.registry;
+  let tools = input.toolset ? namedToolset(input.toolset).schemas : schemasFor(input.preset, registry);
 
   const usage: TokenUsage = {
     inputTokens: 0,
@@ -429,7 +434,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
 
     // `runTool` never rejects, so this cannot reject and no sibling result
     // can be lost to another's failure.
-    const results = await dispatch(calls, input);
+    const results = await dispatch(calls, registry === input.registry ? input : { ...input, registry });
 
     // A model that cannot see why a call failed will often send it again
     // unchanged, and again, until the iteration cap ends the turn with
@@ -448,6 +453,19 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
             `again: change the arguments, or reach the goal another way.`,
         );
       }
+    }
+
+    // The browser is open: the rest of its tools from the next request on.
+    // Before the results are stored, so a replay sends the same bytes.
+    if (
+      !input.toolset &&
+      browserToolset(registry) === "entry" &&
+      results.some((result, index) => !result.isError && calls[index]!.function.name === BROWSER_ENTRY)
+    ) {
+      registry = { ...registry, browser: "full" };
+      tools = schemasFor(input.preset, registry);
+      const opened = results.find((result, index) => !result.isError && calls[index]!.function.name === BROWSER_ENTRY)!;
+      opened.content = `${opened.content}\n\nThe other browser tools are now available.`;
     }
 
     for (const result of results) {

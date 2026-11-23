@@ -66,6 +66,13 @@ describe("readBridgeConfig", () => {
       browser: false,
     });
   });
+
+  it("reads UCCH_BROWSER as all the browser tools, or browser_open first", () => {
+    expect(readBridgeConfig({ UCCH_BROWSER: "1" }, "/here").browser).toBe("full");
+    expect(readBridgeConfig({ UCCH_BROWSER: "full" }, "/here").browser).toBe("full");
+    expect(readBridgeConfig({ UCCH_BROWSER: "entry" }, "/here").browser).toBe("entry");
+    expect(readBridgeConfig({ UCCH_BROWSER: "0" }, "/here").browser).toBe(false);
+  });
 });
 
 describe("withEnvFile", () => {

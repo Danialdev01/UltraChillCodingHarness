@@ -1,8 +1,27 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Locator, Page } from "playwright-core";
 import { BrowserError, type BrowserManager, type BrowserScope, type Session, type Tab } from "./manager.js";
-import { compareInPage, designInPage, extractInPage, inlineHtmlInPage, type CompareOutcome, type DesignNode } from "./page-scripts.js";
+import {
+  compareInPage,
+  contactSheetInPage,
+  designInPage,
+  extractInPage,
+  inlineHtmlInPage,
+  motionPauseInPage,
+  motionResumeInPage,
+  motionSeekInPage,
+  motionStartInPage,
+  motionStopInPage,
+  scrollJumpInPage,
+  scrollRangeInPage,
+  scrollSampleInPage,
+  type CompareOutcome,
+  type DesignNode,
+  type MotionAnimation,
+  type MotionReport,
+} from "./page-scripts.js";
 import type { BrowserImage, BrowserInput, BrowserOp, BrowserResult } from "./tools.js";
 
 const VIEWPORTS = {
@@ -44,6 +63,8 @@ export async function runOp(manager: BrowserManager, scope: BrowserScope, op: Br
       return logs(manager, scope, args);
     case "browser_close":
       return close(manager, scope, args);
+    case "browser_motion":
+      return motion(manager, scope, args);
   }
 }
 
@@ -154,10 +175,13 @@ async function image(tab: Tab, png: Buffer, rel: string, fullPage: boolean, loca
   return { mediaType: "image/jpeg", data: jpeg.toString("base64"), path: rel };
 }
 
-async function applyViewport(tab: Tab, viewport: keyof typeof VIEWPORTS | null): Promise<string> {
+type Viewport = BrowserInput<"browser_open">["viewport"];
+
+async function applyViewport(tab: Tab, viewport: Viewport): Promise<string> {
   if (!viewport) return "";
-  await tab.page.setViewportSize(VIEWPORTS[viewport]);
-  return ` (viewport ${viewport} ${VIEWPORTS[viewport].width}x${VIEWPORTS[viewport].height})`;
+  const size = typeof viewport === "string" ? VIEWPORTS[viewport] : viewport;
+  await tab.page.setViewportSize({ width: size.width, height: size.height });
+  return ` (viewport ${typeof viewport === "string" ? `${viewport} ` : ""}${size.width}x${size.height})`;
 }
 
 // ---- ops ---------------------------------------------------------------------
@@ -488,4 +512,298 @@ async function close(manager: BrowserManager, scope: BrowserScope, args: Browser
   session.current.delete(scope.agentId);
   if (session.tabs.size === 0) await manager.closeSession(session);
   return { text: `Closed ${mine.length} tab(s) of yours in ${session.name}.` };
+}
+
+// ---- motion ------------------------------------------------------------------
+
+/** Wide enough to read a frame, narrow enough not to be downscaled away by the model. */
+const MOTION_SHEET_WIDTH = 1800;
+const MOTION_TEXT_CHARS = 24_000;
+
+interface Scoped {
+  /** A CSS selector for the element, for the in-page scripts (they cannot resolve refs). */
+  selector: string | null;
+  locator: Locator | null;
+  untag(): Promise<void>;
+}
+
+/** Tags the element a ref or selector names, so in-page scripts can find it by a plain selector. */
+async function scopeOf(page: Page, ref: string | null, selector: string | null): Promise<Scoped> {
+  const locator = target(page, ref, selector);
+  if (!locator) return { selector: null, locator: null, untag: async () => {} };
+  if (!ref && selector) return { selector, locator, untag: async () => {} };
+  const mark = `m${Date.now().toString(36)}`;
+  await locator.evaluate((el, m) => el.setAttribute("data-ucch-motion", m), mark, { timeout: 10_000 });
+  return {
+    selector: `[data-ucch-motion="${mark}"]`,
+    locator,
+    untag: () => locator.evaluate((el) => el.removeAttribute("data-ucch-motion"), null, { timeout: 2000 }).then(() => {}, () => {}),
+  };
+}
+
+/** Starts the motion a trigger names. A reload loses the tag on a ref'd element, so a reload with a scope needs a selector. */
+async function fire(page: Page, trigger: "hover" | "focus" | "reload" | null, scoped: Scoped): Promise<void> {
+  if (!trigger) return;
+  if (trigger === "reload") {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    return;
+  }
+  if (!scoped.locator) throw new BrowserError(`trigger ${trigger} needs a ref or selector.`);
+  if (trigger === "hover") {
+    // From outside the element, so the hover really starts (a pointer already over it changes nothing).
+    await page.mouse.move(0, 0);
+    // force: the stability wait would never end on an element that is already moving.
+    await scoped.locator.hover({ timeout: 10_000, force: true });
+  } else {
+    await scoped.locator.focus({ timeout: 10_000 });
+  }
+}
+
+/** The element's box with room for it to grow (a hover scale, a shadow), clamped to the viewport. */
+async function clipFor(page: Page, locator: Locator | null): Promise<{ x: number; y: number; width: number; height: number } | undefined> {
+  if (!locator) return undefined;
+  const box = await locator.boundingBox({ timeout: 10_000 });
+  const view = page.viewportSize();
+  if (!box || !view) return undefined;
+  const padX = Math.max(8, box.width * 0.12);
+  const padY = Math.max(8, box.height * 0.12);
+  const x = Math.max(0, Math.floor(box.x - padX));
+  const y = Math.max(0, Math.floor(box.y - padY));
+  const width = Math.min(view.width - x, Math.ceil(box.width + padX * 2));
+  const height = Math.min(view.height - y, Math.ceil(box.height + padY * 2));
+  return width > 4 && height > 4 ? { x, y, width, height } : undefined;
+}
+
+function describeAnimation(a: MotionAnimation, i: number): string {
+  const ms = (v: string | number) => (Number.isFinite(Number(v)) ? `${Math.round(Number(v))}ms` : String(v));
+  const lines = [
+    `${i + 1}. ${a.kind}${a.name ? ` "${a.name}"` : ""} on ${a.target} — ${a.playState}, ${ms(a.duration)}` +
+      `${a.delay ? `, delay ${ms(a.delay)}` : ""}, ×${a.iterations === "Infinity" ? "∞" : a.iterations}` +
+      `${a.direction !== "normal" ? ` ${a.direction}` : ""}, ${a.easing}${a.fill !== "auto" && a.fill !== "none" ? `, fill ${a.fill}` : ""}` +
+      `${a.timeline !== "document" ? `, timeline ${a.timeline}` : ""}`,
+  ];
+  for (const k of a.keyframes) {
+    const props = Object.entries(k.props).map(([p, v]) => `${p}: ${v}`).join("; ");
+    const at = k.offset === null ? "?" : `${Math.round(k.offset * 1000) / 10}%`;
+    lines.push(`     ${at.padStart(6)}  ${props || "(no properties)"}${k.easing !== "linear" ? `  [${k.easing}]` : ""}`);
+  }
+  return lines.join("\n");
+}
+
+function describeReport(r: MotionReport): string {
+  const out: string[] = [];
+  out.push(r.animations.length ? `CSS / Web Animations (${r.animations.length}):` : "CSS / Web Animations: none ran while watching.");
+  out.push(...r.animations.map(describeAnimation));
+  if (r.styled.length) {
+    out.push("", "JS-driven (inline style changed while watching; a library or script is animating these):");
+    for (const s of r.styled) out.push(`  - ${s.target} ×${s.changes}: transform ${s.transform}, opacity ${s.opacity}`);
+  }
+  if (r.classed.length) {
+    out.push("", "Class changes (these often start CSS transitions):");
+    for (const c of r.classed) out.push(`  - ${c.target} ×${c.changes}`);
+  }
+  out.push(
+    "",
+    `requestAnimationFrame: ~${r.rafPerSecond}/s${r.rafPerSecond >= 20 ? " (a JS animation loop is running)" : ""}` +
+      " (a library that saved requestAnimationFrame before watching began is not counted)",
+  );
+  out.push(`Libraries: ${r.libraries.join(", ") || "none recognised"}`);
+  if (r.canvases.length) out.push(`Canvases (motion inside them is only visible in frames): ${r.canvases.map((c) => `${c.target} ${c.width}x${c.height}${c.engine ? ` ${c.engine}` : ""}`).join(", ")}`);
+  if (r.videos.length) out.push(`Videos: ${r.videos.map((v) => `${v.target} ${v.playing ? "playing" : "paused"}${v.loop ? ", loop" : ""}`).join("; ")}`);
+  out.push(
+    r.reducedMotionRules
+      ? `Reduced motion: ${r.reducedMotionRules} @media (prefers-reduced-motion) rule(s) in readable stylesheets.`
+      : "Reduced motion: no @media (prefers-reduced-motion) rules in readable stylesheets.",
+  );
+  return out.join("\n");
+}
+
+async function sheetOf(manager: BrowserManager, scope: BrowserScope, folder: string, frames: { png: Buffer; label: string }[]): Promise<{ text: string; image: BrowserImage }> {
+  const paths: string[] = [];
+  for (const [i, frame] of frames.entries()) {
+    const file = await artifact(scope, folder, `${String(i + 1).padStart(2, "0")}.png`);
+    await writeFile(file.full, frame.png);
+    paths.push(file.rel);
+  }
+  const sheet = await manager.scratch((page) =>
+    inPage(page, contactSheetInPage, {
+      frames: frames.map((f) => ({ src: `data:image/png;base64,${f.png.toString("base64")}`, label: f.label })),
+      maxWidth: MOTION_SHEET_WIDTH,
+      inlineBytes: INLINE_PNG_BYTES,
+    }),
+  );
+  const file = await artifact(scope, folder, "sheet.png");
+  await writeFile(file.full, Buffer.from(sheet.png, "base64"));
+  const distinct = new Set(frames.map((f) => createHash("sha1").update(f.png).digest("hex"))).size;
+  const text =
+    `Contact sheet ${file.rel} (${sheet.cols} per row, read left to right), frames ${paths[0]} … ${paths.at(-1)}.\n` +
+    (distinct === 1 ? "All frames are identical: nothing moved in this area over this span." : `${distinct} of ${frames.length} frames differ.`);
+  return {
+    text,
+    image: sheet.jpeg ? { mediaType: "image/jpeg", data: sheet.jpeg, path: file.rel } : { mediaType: "image/png", data: sheet.png, path: file.rel },
+  };
+}
+
+async function motion(manager: BrowserManager, scope: BrowserScope, args: BrowserInput<"browser_motion">): Promise<BrowserResult> {
+  if (args.trigger === "reload" && args.ref) throw new BrowserError("Refs do not survive a reload; with trigger reload, name the element by selector.");
+  const changes = args.mode === "scroll" || args.trigger !== null;
+  return withCurrent(manager, scope, args, changes, async (session, tab) => {
+    const page = tab.page;
+    const sized = await applyViewport(tab, args.viewport);
+    if (args.reduced_motion) await page.emulateMedia({ reducedMotion: "reduce" });
+    let scoped: Scoped = { selector: null, locator: null, untag: async () => {} };
+    try {
+      const notes = [`${header(session, tab)}${sized}${args.reduced_motion ? " · prefers-reduced-motion: reduce" : ""}${args.trigger ? ` · trigger ${args.trigger}` : ""}`];
+      const host = (() => {
+        try {
+          return new URL(page.url()).hostname.replace(/[^A-Za-z0-9.-]/g, "_") || "page";
+        } catch {
+          return "page";
+        }
+      })();
+      const folder = `motion/${host}-${args.mode}-${stamp()}`;
+
+      // A reload comes first: it would throw away a watcher or a tag.
+      if (args.trigger === "reload") await fire(page, "reload", scoped);
+      scoped = await scopeOf(page, args.ref, args.selector);
+      // Not scrollIntoViewIfNeeded: it waits for the element to be stable, and an animating one never is.
+      if (scoped.locator && args.mode !== "scroll") {
+        await scoped.locator.evaluate(
+          (el) => {
+            const r = el.getBoundingClientRect();
+            if (r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth) el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+          },
+          null,
+          { timeout: 10_000 },
+        );
+      }
+      const later = args.trigger === "reload" ? null : args.trigger;
+
+      if (args.mode === "inspect") {
+        const started = await inPage(page, motionStartInPage, { scope: scoped.selector });
+        if ("error" in started) throw new BrowserError(started.error);
+        await fire(page, later, scoped);
+        await page.waitForTimeout(args.duration_ms ?? 1500);
+        const report = await inPage(page, motionStopInPage, null);
+        if ("error" in report) throw new BrowserError(report.error);
+        notes.push(`Watched ${report.listenedMs}ms${scoped.selector ? " (the element's subtree)" : ""}.`, "", describeReport(report));
+        const js = report.styled.length > 0 || report.canvases.length > 0 || report.rafPerSecond >= 20;
+        notes.push(
+          "",
+          `Next: browser_motion frames${js ? " with timing realtime for the JS/canvas motion" : ""}` +
+            `${report.animations.some((a) => a.timeline !== "document") || report.libraries.some((l) => /Scroll|Lenis/.test(l)) ? ", or scroll for the scroll-driven effects" : ""}.`,
+        );
+        let text = notes.join("\n");
+        if (text.length > MOTION_TEXT_CHARS) text = `${text.slice(0, MOTION_TEXT_CHARS)}\n… cut; pass a ref or selector to inspect one region.`;
+        return { text };
+      }
+
+      if (args.mode === "frames") {
+        const count = args.count ?? 8;
+        let timing = args.timing ?? "auto";
+        let why = "";
+        if (timing === "auto") {
+          // A short look before the trigger: script-driven motion cannot be paused and seeked.
+          const started = await inPage(page, motionStartInPage, { scope: scoped.selector });
+          if ("error" in started) throw new BrowserError(started.error);
+          await page.waitForTimeout(300);
+          const probe = await inPage(page, motionStopInPage, null);
+          const js = "error" in probe ? false : probe.styled.length > 0 || probe.canvases.length > 0 || probe.videos.some((v) => v.playing);
+          timing = js ? "realtime" : "seek";
+          why = js ? "script, canvas or video motion was seen" : "CSS / Web Animations";
+        }
+        await fire(page, later, scoped);
+        const clip = await clipFor(page, scoped.locator);
+        const shoot = () => page.screenshot({ type: "png", animations: "allow", caret: "initial", ...(clip ? { clip } : {}) });
+        const frames: { png: Buffer; label: string }[] = [];
+        let span = args.duration_ms ?? 2000;
+        if (timing === "seek") {
+          const paused = await inPage(page, motionPauseInPage, { scope: scoped.selector });
+          if (paused.paused === 0) {
+            await inPage(page, motionResumeInPage, null);
+            timing = "realtime";
+            why = `no CSS / Web Animation was running to seek${paused.scrollDriven ? ` (${paused.scrollDriven} scroll-driven: use mode scroll)` : ""}`;
+          } else {
+            span = args.duration_ms ?? Math.min(10_000, paused.spanMs || 2000);
+            try {
+              for (let k = 0; k < count; k++) {
+                const t = Math.round((span * k) / (count - 1));
+                await inPage(page, motionSeekInPage, { t });
+                frames.push({ png: await shoot(), label: `${k + 1}  t=${t}ms` });
+              }
+            } finally {
+              await inPage(page, motionResumeInPage, null).catch(() => {});
+            }
+            notes.push(`Seeked ${paused.paused} paused animation(s) through 0–${span}ms in ${count} frames (${why || "seek"}).`);
+          }
+        }
+        if (timing === "realtime") {
+          const start = Date.now();
+          for (let k = 0; k < count; k++) {
+            const due = start + (span * k) / (count - 1);
+            const wait = due - Date.now();
+            if (wait > 0) await page.waitForTimeout(wait);
+            const t = Date.now() - start;
+            frames.push({ png: await shoot(), label: `${k + 1}  t=${t}ms` });
+          }
+          const took = Date.now() - start;
+          notes.push(
+            `Captured ${count} frames in real time over ~${took}ms${why ? ` (${why})` : ""}.` +
+              (took > span * 1.25 ? " Capturing was slower than the span asked for, so frames are further apart than planned; the labels give the real times." : ""),
+          );
+        }
+        const sheet = await sheetOf(manager, scope, folder, frames);
+        notes.push(sheet.text);
+        return { text: notes.join("\n"), images: [sheet.image] };
+      }
+
+      // scroll
+      const range = await inPage(page, scrollRangeInPage, { scope: scoped.selector });
+      if ("error" in range) throw new BrowserError(range.error);
+      const from = Math.min(range.max, args.from_y ?? range.from);
+      const to = Math.min(range.max, args.to_y ?? range.to);
+      if (range.max === 0) notes.push("The page does not scroll at this viewport.");
+      const count = args.count ?? 6;
+      const smooth = await inPage(page, () => {
+        const w = window as unknown as Record<string, unknown>;
+        return Boolean(w.Lenis || w.lenis || w.LocomotiveScroll || document.documentElement.classList.contains("lenis"));
+      }, null);
+      const settle = args.settle_ms ?? (smooth ? 900 : 300);
+      await fire(page, later, scoped);
+      const view = page.viewportSize() ?? { width: 1280, height: 800 };
+      await page.mouse.move(Math.round(view.width / 2), Math.round(view.height / 2));
+      let y = await inPage(page, scrollJumpInPage, { y: from });
+      await page.waitForTimeout(settle);
+      const frames: { png: Buffer; label: string }[] = [];
+      const steps: string[] = [];
+      for (let k = 0; k < count; k++) {
+        const goal = Math.round(from + ((to - from) * k) / Math.max(1, count - 1));
+        if (k > 0 && goal !== y) {
+          // The wheel, not scrollTo: smooth-scroll libraries and scroll listeners react to wheel input.
+          await page.mouse.wheel(0, goal - y);
+          await page.waitForTimeout(settle);
+        }
+        const sample = await inPage(page, scrollSampleInPage, null);
+        y = sample.y;
+        frames.push({ png: await page.screenshot({ type: "png", animations: "allow", caret: "initial" }), label: `${k + 1}  y=${y}px` });
+        steps.push(
+          `${k + 1}. y=${y}px${Math.abs(y - goal) > 4 ? ` (aimed at ${goal})` : ""}` +
+            (k === 0 ? "" : sample.changed.length ? `\n${sample.changed.map((c) => `     ${c.target}: ${c.what}`).join("\n")}` : "  — no transform/opacity/clip/filter changed"),
+        );
+      }
+      notes.push(
+        `Scrolled ${from}→${to}px of ${range.max}px in ${count} wheel steps, ${settle}ms settle${smooth ? " (smooth-scroll library detected)" : ""}. The page is left at y=${y}.`,
+        "",
+        ...steps,
+      );
+      const sheet = await sheetOf(manager, scope, folder, frames);
+      notes.push("", sheet.text);
+      let text = notes.join("\n");
+      if (text.length > MOTION_TEXT_CHARS) text = `${text.slice(0, MOTION_TEXT_CHARS)}\n… cut.`;
+      return { text, images: [sheet.image] };
+    } finally {
+      await scoped.untag();
+      if (args.reduced_motion) await page.emulateMedia({ reducedMotion: null }).catch(() => {});
+    }
+  });
 }
