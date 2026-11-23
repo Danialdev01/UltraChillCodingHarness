@@ -1158,6 +1158,8 @@ const ProjectActivity = z.object({
 
 export const LiveResource = z.enum([
   "keys",
+  /** The project's shared browser: a session or tab opened, closed, navigated, taken or handed back. */
+  "browser",
   "database_connections",
   /** A workspace's saved SSH hosts (the Terminal section); `id` is the workspace. */
   "ssh_hosts",

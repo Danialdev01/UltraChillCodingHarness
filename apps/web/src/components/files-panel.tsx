@@ -40,7 +40,7 @@ export type { FileNode as Node }
 export const DRAG_TYPE = "application/x-ucch-file"
 
 /** What the project page is showing: the conversation, the files, or a shell. */
-export type ViewMode = "chat" | "file" | "docs" | "terminal" | "git"
+export type ViewMode = "chat" | "file" | "docs" | "terminal" | "git" | "browser"
 
 /** Which panel the right-hand column is showing, or none. */
 export type Sidebar = "files" | "search" | "chat"

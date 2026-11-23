@@ -36,6 +36,7 @@ COPY packages/protocol/package.json packages/protocol/
 COPY packages/db/package.json packages/db/
 COPY packages/agent/package.json packages/agent/
 COPY packages/providers/package.json packages/providers/
+COPY packages/browser/package.json packages/browser/
 
 # --- web build ---------------------------------------------------------------
 
@@ -96,6 +97,7 @@ COPY packages/protocol ./packages/protocol
 COPY packages/db ./packages/db
 COPY packages/agent ./packages/agent
 COPY packages/providers ./packages/providers
+COPY packages/browser ./packages/browser
 COPY apps/server ./apps/server
 RUN cd apps/server && node build.mjs
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \

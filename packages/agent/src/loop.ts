@@ -1,5 +1,6 @@
 import { asksForWidget, cacheHitRatio, isModelImageType, occupancy, WIDGET_TURN_NUDGE, type DomainEvent, type TokenUsage } from "@ucch/protocol";
-import type { ChatMessage, Complete, ToolCall } from "./completion.js";
+import type { BrowserProvider } from "@ucch/browser/tools";
+import type { ChatMessage, Complete, TextPart, ToolCall, UserContentPart } from "./completion.js";
 import type { Executor } from "./executor.js";
 import {
   compact,
@@ -102,6 +103,11 @@ export interface TurnInput {
   signal: AbortSignal;
   /** Staged attachments, for `attach_upload`. Omitted where there are none. */
   uploads?: UploadStaging;
+  /**
+   * The shared browser, bound to this agent's session. Offered as tools
+   * only when `registry.browser` is also set.
+   */
+  browser?: BrowserProvider;
   /**
    * `research` runs the research pipeline: its prompt addendum, and the
    * `research` preset's tools with `research` below behind them. The
@@ -459,8 +465,12 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
     }
 
     for (const result of results) {
-      messages.push({ role: "tool", tool_call_id: result.toolUseId, content: result.content });
+      const unseen = result.images?.length && !input.supportsImages
+        ? "\n\n(The image is saved but not shown: this model does not accept images. Use the text above, browser_snapshot or browser_design.)"
+        : "";
+      messages.push({ role: "tool", tool_call_id: result.toolUseId, content: result.content + unseen });
     }
+    if (input.supportsImages) showToolImages(messages, results);
 
     if (signal.aborted) {
       stopReason = "cancelled";
@@ -708,6 +718,47 @@ async function dispatch(
 
   await drain();
   return results;
+}
+
+/** How many of a turn's tool-image messages stay in the conversation; older ones become their captions. */
+const KEPT_IMAGE_MESSAGES = 2;
+
+/** Marks the user messages this loop adds to carry tool images, so they can be found again. */
+const TOOL_IMAGES = "Images from the tool results above";
+
+/**
+ * A tool message is text only on the wire, so pictures a tool produced
+ * follow its results as one user message. Each one is sent once at full
+ * size; after the next two such messages it is replaced by its caption, so
+ * a long browsing turn does not resend every screenshot it ever took.
+ */
+export function showToolImages(messages: ChatMessage[], results: readonly ToolOutcome[]): void {
+  const parts: UserContentPart[] = [];
+  for (const result of results) {
+    for (const image of result.images ?? []) {
+      parts.push({ type: "text", text: `${image.path} (from tool call ${result.toolUseId}):` });
+      parts.push({ type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } });
+    }
+  }
+  if (parts.length === 0) return;
+  messages.push({ role: "user", content: [{ type: "text", text: `${TOOL_IMAGES}:` }, ...parts] });
+  let kept = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role !== "user" || typeof message.content === "string") continue;
+    const first = message.content[0];
+    if (first?.type !== "text" || !first.text.startsWith(TOOL_IMAGES)) continue;
+    if (++kept <= KEPT_IMAGE_MESSAGES) continue;
+    if (!message.content.some((part) => part.type === "image_url")) break;
+    messages[i] = {
+      role: "user",
+      content: `${TOOL_IMAGES} (no longer shown): ${message.content
+        .filter((part): part is TextPart => part.type === "text")
+        .slice(1)
+        .map((part) => part.text.replace(/:$/, ""))
+        .join("; ")}`,
+    };
+  }
 }
 
 /** For the event payload and the UI. The wire always gets the raw string. */

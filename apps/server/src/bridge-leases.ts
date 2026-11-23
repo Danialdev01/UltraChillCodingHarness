@@ -28,6 +28,14 @@ import type { TurnScheduler } from "./turn-scheduler.js";
  * and the connection is the subagent's life as it is a slot's: closing it
  * stops the subagent.
  *
+ * And the shared browser's calls (`omp-bridge/src/tools/browser.ts`):
+ *
+ *   bridge -> {"type":"browser","token":"…","op":"browser_open","args":{…}}\n
+ *   server -> {"type":"result","text":"…","images":[{mediaType,data,path}],"isError":false}\n
+ *          or {"type":"refused","reason":"…"}\n
+ *
+ * Closing the connection cancels the call.
+ *
  * The connection is the lease, so a bridge that crashes, or a CLI killed
  * with its children, can never keep a slot: the socket closes and the slot
  * comes back.
@@ -61,6 +69,14 @@ export type Spawner = (holder: Holder, frame: SpawnFrame, signal: AbortSignal) =
 
 type Collaborator = (holder: Holder, name: string, args: Record<string, unknown>) => Promise<{ text: string } | { error: string }>;
 
+/** Runs one browser call for the turn `holder` names. */
+export type BrowserCaller = (
+  holder: Holder,
+  op: string,
+  args: unknown,
+  signal: AbortSignal,
+) => Promise<{ text: string; images?: { mediaType: string; data: string; path: string }[]; isError?: boolean }>;
+
 export interface BridgeLeaseOptions {
   waitMs?: number;
 }
@@ -73,8 +89,12 @@ export class BridgeLeases {
   #server: Server | null = null;
   #spawner: Spawner | null = null;
   #collaborator: Collaborator | null = null;
+  #browser: BrowserCaller | null = null;
 
   setCollaborator(handler: Collaborator): void { this.#collaborator = handler; }
+
+  /** Where browser frames go: bound late, as the browser and the turns are built after the leases. */
+  setBrowser(handler: BrowserCaller): void { this.#browser = handler; }
 
   constructor(scheduler: TurnScheduler, options: BridgeLeaseOptions = {}) {
     this.#scheduler = scheduler;
@@ -143,15 +163,27 @@ export class BridgeLeases {
       const end = buffer.indexOf("\n");
       if (end < 0) return;
       asked = true;
-      let request: { type?: unknown; token?: unknown; description?: unknown; task?: unknown; model?: unknown; background?: unknown; name?: unknown; args?: unknown };
+      let request: { type?: unknown; token?: unknown; description?: unknown; task?: unknown; model?: unknown; background?: unknown; name?: unknown; args?: unknown; op?: unknown };
       try {
         request = JSON.parse(buffer.slice(0, end)) as typeof request;
       } catch {
         return refuse("not a lease request");
       }
-      if (request.type !== "lease" && request.type !== "spawn" && request.type !== "collaboration") return refuse("not a lease request");
+      if (request.type !== "lease" && request.type !== "spawn" && request.type !== "collaboration" && request.type !== "browser") return refuse("not a lease request");
       const holder = typeof request.token === "string" ? this.#tokens.get(request.token) : undefined;
       if (!holder) return refuse("no turn holds this token: the bridge belongs to a turn that is over");
+      if (request.type === "browser") {
+        const browser = this.#browser;
+        if (!browser) return refuse("this server has no browser");
+        if (typeof request.op !== "string" || !request.args || typeof request.args !== "object") return refuse("invalid browser request");
+        void browser(holder, request.op, request.args, gone.signal)
+          .catch((error: unknown) => ({ text: error instanceof Error ? error.message : String(error), isError: true }))
+          .then((outcome) => {
+            reply({ type: "result", ...outcome });
+            socket.end();
+          });
+        return;
+      }
       if (request.type === "collaboration") {
         if (!this.#collaborator || typeof request.name !== "string" || !request.args || typeof request.args !== "object" || Array.isArray(request.args)) return refuse("invalid collaboration request");
         void this.#collaborator(holder, request.name, request.args as Record<string, unknown>)

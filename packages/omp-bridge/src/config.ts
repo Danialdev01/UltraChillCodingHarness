@@ -70,6 +70,11 @@ export interface BridgeConfig {
    * interactive widgets. It runs nothing; the chat draws the call's input.
    */
   widgets: boolean;
+  /**
+   * The shared browser's tools are offered (`UCCH_BROWSER=1`): each call
+   * goes to the server over the scheduler socket and runs in its Chromium.
+   */
+  browser?: boolean;
 }
 
 /**
@@ -119,6 +124,7 @@ export function readBridgeConfig(env: NodeJS.ProcessEnv, cwd: string = process.c
     subagents: env.UCCH_BRIDGE_SUBAGENTS === "1",
     messaging: env.UCCH_BRIDGE_MESSAGING === "1",
     widgets: env.UCCH_WIDGETS === "1",
+    browser: env.UCCH_BROWSER === "1",
   };
 }
 

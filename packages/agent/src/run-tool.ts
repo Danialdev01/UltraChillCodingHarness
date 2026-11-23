@@ -4,7 +4,7 @@ import { bindDocuments } from "./documents.js";
 import type { TurnInput } from "./loop.js";
 import { namedToolset, toolByName } from "./registry.js";
 import { bindResearch } from "./research.js";
-import type { AnyTool, ToolContext } from "./tool.js";
+import type { AnyTool, ToolContext, ToolImage } from "./tool.js";
 import { clamp, describe } from "./tools/format.js";
 import { openrouterPluginProvider } from "./web.js";
 
@@ -42,6 +42,7 @@ export type ToolRunInput = Pick<
   | "documents"
   | "approve"
   | "append"
+  | "browser"
 >;
 
 export interface ToolOutcome {
@@ -49,6 +50,8 @@ export interface ToolOutcome {
   content: string;
   isError: boolean;
   durationMs: number;
+  /** Pictures the tool produced, for a model that can see them. */
+  images?: ToolImage[];
 }
 
 /**
@@ -149,6 +152,7 @@ export async function runTool(call: ToolCall, input: ToolRunInput): Promise<Tool
     }),
     complete: input.complete,
     ...(input.uploads ? { uploads: input.uploads } : {}),
+    ...(input.browser ? { browser: input.browser } : {}),
     // Bound here for the same reason `web` is: the key is the turn's, and
     // the tools should not have to know which turn they are in.
     ...(input.mode === "research" && input.research
@@ -179,8 +183,9 @@ export async function runTool(call: ToolCall, input: ToolRunInput): Promise<Tool
       );
     });
 
-    const result = await Promise.race([tool.run(parsed.value, ctx), deadline]);
-    return finish(result.content, result.isError ?? false);
+    const result: { content: string; isError?: boolean; images?: ToolImage[] } = await Promise.race([tool.run(parsed.value, ctx), deadline]);
+    const outcome = finish(result.content, result.isError ?? false);
+    return result.images?.length ? { ...outcome, images: result.images } : outcome;
   } catch (error) {
     if (input.signal.aborted) return finish(`${name} was cancelled.`, true);
     return finish(`${name} failed: ${describe(error)}`, true);

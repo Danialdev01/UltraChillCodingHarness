@@ -164,3 +164,18 @@ it("binds collaboration requests to a live turn and rejects revoked tokens", asy
   expect(await ask(path, frame).answer).toMatchObject({ type: "refused" });
   expect(seen).toHaveLength(1);
 });
+
+it("runs a browser call for a live turn and answers with its images", async () => {
+  const { path, leases } = await serve(1);
+  const seen: unknown[] = [];
+  leases.setBrowser(async (holder, op, args) => {
+    seen.push({ holder, op, args });
+    return { text: "shot", images: [{ mediaType: "image/png", data: "AAAA", path: "a.png" }] };
+  });
+  const turn = leases.register({ ownerId: "u1", threadId: "t1" });
+  const frame = JSON.stringify({ type: "browser", token: turn.token, op: "browser_screenshot", args: { session: null } });
+  expect(await ask(path, frame).answer).toEqual({ type: "result", text: "shot", images: [{ mediaType: "image/png", data: "AAAA", path: "a.png" }] });
+  expect(seen).toEqual([{ holder: { ownerId: "u1", threadId: "t1" }, op: "browser_screenshot", args: { session: null } }]);
+  turn.revoke();
+  expect(await ask(path, frame).answer).toMatchObject({ type: "refused" });
+});

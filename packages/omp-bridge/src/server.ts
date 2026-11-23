@@ -8,6 +8,7 @@ import { coordinationTools } from "./tools/coordination.js";
 import { ucchAgent } from "./tools/agent.js";
 import { BRIDGE_TOOLS } from "./tools/index.js";
 import { showWidget } from "./tools/widget.js";
+import { registerBrowserTools } from "./tools/browser.js";
 
 /**
  * The bridge as an MCP server: OMP's tools, offered to Claude Code and Codex
@@ -79,6 +80,9 @@ export function createBridgeServer(config: BridgeConfig, host: ProcessHost, pare
       },
     );
   }
+
+  // The shared browser, where the workspace allows it.
+  if (config.browser) registerBrowserTools(server, config);
 
   return server;
 }

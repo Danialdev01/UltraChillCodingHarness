@@ -74,6 +74,14 @@ export const WorkspaceAgentSettings = z.object({
    */
   widgets: z.object({ enabled: z.boolean().default(true) }).default({}),
   /**
+   * The shared browser (`@ucch/browser`): every agent -- native, Claude
+   * Code, Codex, OMP -- gets the browser_* tools on the server's headless
+   * Chromium, each in a private session or a named one it shares with the
+   * project's other agents, and people watch and take over tabs in the
+   * Browser view. On by default where the server has a Chromium.
+   */
+  browser: z.object({ enabled: z.boolean().default(true) }).default({}),
+  /**
    * Compact idle sessions while the prompt cache is warm (plan2 §3.3): a
    * Claude Code session that ended a turn holding 200k tokens or more is
    * sent `/compact` two minutes before its cache runs out, so the summary is

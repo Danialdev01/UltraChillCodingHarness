@@ -300,7 +300,9 @@ export interface SessionPrefixPlan {
 
 /** The parts of a session's prefix that must hold for its text to be kept. */
 export function sessionTools(tools: SessionPrefix["tools"]): string {
-  return `${tools.omp ? 1 : 0}${tools.subagents ? 1 : 0}${tools.messaging ? 1 : 0}${tools.widgets ? 1 : 0}`;
+  // The browser is appended only when on, so a session stored before it
+  // existed keeps its text.
+  return `${tools.omp ? 1 : 0}${tools.subagents ? 1 : 0}${tools.messaging ? 1 : 0}${tools.widgets ? 1 : 0}${tools.browser ? "b" : ""}`;
 }
 
 /**

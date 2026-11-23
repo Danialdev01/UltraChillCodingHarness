@@ -1,3 +1,4 @@
+import type { BrowserImage, BrowserProvider } from "@ucch/browser/tools";
 import type { DomainEvent } from "@ucch/protocol";
 import type { z } from "zod/v4";
 import type { Complete } from "./completion.js";
@@ -61,7 +62,16 @@ export interface ToolContext {
    * reports rather than assuming.
    */
   uploads?: UploadStaging;
+  /**
+   * The project's shared headless Chromium, bound to this agent's session
+   * (`@ucch/browser`). Absent when the server has no browser or the
+   * workspace turned it off; the registry then offers no browser tools.
+   */
+  browser?: BrowserProvider;
 }
+
+/** A picture a tool produced, shown to a model that can see (`TurnInput.supportsImages`). */
+export type ToolImage = BrowserImage;
 
 export interface ToolResult {
   /** Exactly what the model sees. Never empty -- several providers reject that. */
@@ -69,6 +79,12 @@ export interface ToolResult {
   isError?: boolean;
   /** For the chat UI only. Never sent to the model. */
   display?: { title?: string; path?: string; language?: string };
+  /**
+   * Pictures for the model, beside `content`: a tool message carries text
+   * only, so the loop follows the results with one user message holding
+   * them. `content` must still say what each is and where it was saved.
+   */
+  images?: ToolImage[];
 }
 
 /**

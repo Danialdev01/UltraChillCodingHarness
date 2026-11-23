@@ -8,6 +8,7 @@
   "exports": { ".": "./src/index.ts" },
   "scripts": { "typecheck": "bash ../../scripts/typecheck.sh", "typecheck:tsc": "tsc --noEmit" },
   "dependencies": {
+    "@ucch/browser": "workspace:*",
     "@ucch/protocol": "workspace:*",
     "zod": "^3.24.1"
   }

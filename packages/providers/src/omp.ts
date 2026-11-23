@@ -1659,7 +1659,12 @@ class OmpTurn implements AgentRun {
         this.#send({
           type: "host_tool_result",
           id: call.id,
-          result: { content: [{ type: "text", text: result.content }] },
+          result: {
+            content: [
+              { type: "text", text: result.content },
+              ...(result.images ?? []).map((image) => ({ type: "image", data: image.data, mimeType: image.mediaType })),
+            ],
+          },
           ...(result.isError ? { isError: true } : {}),
         });
       });

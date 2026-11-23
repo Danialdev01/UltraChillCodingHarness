@@ -181,6 +181,8 @@ export interface HostToolCall {
 export interface HostToolResult {
   content: string;
   isError: boolean;
+  /** Pictures for OMP's model (a browser screenshot), beside the text. */
+  images?: { mediaType: "image/png" | "image/jpeg"; data: string; path: string }[];
 }
 
 /** The files an OMP turn runs with (solution §3.1). Absolute paths. */

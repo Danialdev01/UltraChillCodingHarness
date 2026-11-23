@@ -58,6 +58,8 @@ const RESOURCES: Record<LiveResource, CacheEffect> = {
   // A terminal opened or closed, or a command button's command ended: the
   // header's Dev and Build buttons read the list again.
   terminals: { invalidate: [qk.terminals.all] },
+  // An agent or a person opened, closed, navigated or took a tab.
+  browser: { invalidate: [qk.browser.all] },
 }
 
 const NONE: CacheEffect = { invalidate: [] }

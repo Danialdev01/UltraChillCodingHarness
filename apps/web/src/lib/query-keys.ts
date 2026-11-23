@@ -84,6 +84,11 @@ export const qk = {
     all: ["terminals"] as const,
     list: (projectId: string) => ["terminals", projectId] as const,
   },
+  /** A project's shared browser: its sessions and tabs (`GET /api/projects/:hash/browser`). */
+  browser: {
+    all: ["browser"] as const,
+    list: (projectHash: string) => ["browser", projectHash] as const,
+  },
   /** A project's runtime versions, from `.agent/runtimes.json` and the server's installs. */
   runtimes: {
     all: ["runtimes"] as const,

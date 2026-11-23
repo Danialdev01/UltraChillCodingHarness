@@ -41,6 +41,7 @@ describe("readBridgeConfig", () => {
       subagents: true,
       messaging: false,
       widgets: true,
+      browser: false,
     });
   });
 
@@ -62,6 +63,7 @@ describe("readBridgeConfig", () => {
       subagents: false,
       messaging: false,
       widgets: false,
+      browser: false,
     });
   });
 });

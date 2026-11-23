@@ -18,6 +18,8 @@ import {
 } from "./tools/documents.js";
 import { researchBrowse, researchRead, researchSearch } from "./tools/research.js";
 import { attachUpload } from "./tools/uploads.js";
+import { browserTools } from "./tools/browser.js";
+import { BROWSER_TOOL_NAMES } from "@ucch/browser/tools";
 import { webFetch, webSearch } from "./tools/web.js";
 import { showWidget } from "./tools/widget.js";
 
@@ -68,6 +70,10 @@ export const ALL: readonly AnyTool[] = Object.freeze([
   // workspace turns widgets off (`RegistryOptions.widgets`).
   showWidget,
   ...coordinationTools,
+  // The shared browser. At the end for the reason above; withheld unless
+  // the server has a browser and the workspace allows it
+  // (`RegistryOptions.browser`).
+  ...browserTools,
 ]);
 
 /**
@@ -149,7 +155,7 @@ const toolCache = new Map<string, readonly AnyTool[]>();
 const schemaCache = new Map<string, readonly ToolSchema[]>();
 
 const cacheKey = (preset: ToolPreset, options: RegistryOptions): string =>
-  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}:${options.web ?? true}:${Boolean(options.coordination)}:${Boolean(options.subagents)}`;
+  `${preset}:${options.allowHostShell ?? true}:${options.widgets ?? true}:${options.web ?? true}:${Boolean(options.coordination)}:${Boolean(options.subagents)}:${options.browser ?? false}`;
 
 /**
  * Filters a tool list to a preset, in the list's own order.
@@ -220,7 +226,16 @@ export interface RegistryOptions {
    * a knowledge-only turn answers from its knowledge bases alone.
    */
   web?: boolean;
+  /**
+   * Defaults to false: the browser tools need a browser behind them
+   * (`ToolContext.browser`), which only the server can bind. True offers
+   * them on every preset but `minimal`; `readonly` keeps the reads.
+   */
+  browser?: boolean;
 }
+
+/** The browser tools, every one of them. */
+const BROWSER: readonly string[] = BROWSER_TOOL_NAMES;
 
 /** Tools withheld when the web is off: search, fetch, and research's own. */
 const WEB_TOOLS: readonly string[] = ["web_search", "web_fetch", ...RESEARCH_ONLY];
@@ -245,6 +260,12 @@ export function selectPreset(
       if (!allowHostShell && HOST_SHELL.includes(tool.name)) return false;
       if (!widgets && WIDGET_TOOLS.includes(tool.name)) return false;
       if (!web && WEB_TOOLS.includes(tool.name)) return false;
+      if (BROWSER.includes(tool.name)) {
+        if (!options.browser || preset === "minimal") return false;
+        // Research drives pages as well as reading them; nothing else
+        // beyond reads, except where the preset already allows it.
+        if (preset === "research" && tool.name === "browser_act") return true;
+      }
       if (preset !== "research" && RESEARCH_ONLY.includes(tool.name)) return false;
       if (preset !== "documentation" && DOCUMENTATION_ONLY.includes(tool.name)) return false;
       switch (preset) {
@@ -336,6 +357,9 @@ const HOST_TOOLS: readonly string[] = [
   "show_widget",
   ...RESEARCH_ONLY,
   ...DOCUMENTATION_ONLY,
+  // OMP has a browser of its own; UCCH keeps it off so every agent shares
+  // one Chromium, one set of sessions and one live view.
+  ...BROWSER,
 ];
 
 /** What a preset hands OMP to take over: research writes nothing. */

@@ -725,3 +725,32 @@ export function TerminalWorkspaceSkeleton() {
     </div>
   )
 }
+
+/** The Browser view: the sessions column, the address bar and the page. */
+export function BrowserViewSkeleton() {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <div className="flex w-64 shrink-0 flex-col gap-2 border-r p-3">
+        <Skeleton className="h-3 w-20" />
+        {[70, 55, 80].map((w, i) => (
+          <div key={i} className="flex flex-col gap-1.5 py-1">
+            <Skeleton className="h-3.5" style={{ width: `${w}%` }} />
+            <Skeleton className="h-2.5 w-24" />
+          </div>
+        ))}
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex h-10 shrink-0 items-center gap-2 border-b px-2">
+          <Skeleton className="size-6 rounded-md" />
+          <Skeleton className="size-6 rounded-md" />
+          <Skeleton className="h-7 flex-1 rounded-md" />
+          <Skeleton className="h-7 w-28 rounded-md" />
+        </div>
+        <div className="h-7 shrink-0 border-b" />
+        <div className="flex flex-1 items-center justify-center bg-muted p-3">
+          <Skeleton className="aspect-video w-4/5 rounded-md" />
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -48,6 +48,7 @@ const CHUNKS: ReadonlyArray<() => Promise<unknown>> = [
   () => import("@/components/vim-editor"),
   () => import("@/components/notes/note-editor-impl"),
   () => import("@/components/git/git-view"),
+  () => import("@/components/browser-view"),
   () => import("@/components/database/sql-editor"),
 ]
 

@@ -202,3 +202,41 @@ it("offers messaging to children without allowing recursive spawning", async () 
   expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["ucch_sessions", "ucch_session_read", "ucch_message", "ucch_inbox", "ucch_agent_status", "ucch_agent_cancel"]);
   expect((await client.callTool({ name: "ucch_message", arguments: { sessionId: "33333333-3333-4333-8333-333333333333", text: "hello" } })).isError).toBe(true);
 });
+
+describe("the shared browser on the bridge", () => {
+  it("offers the browser tools only with UCCH_BROWSER, with their shared schemas", async () => {
+    const without = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_WIDGETS: "1" });
+    expect((await without.listTools()).tools.some((tool) => tool.name.startsWith("browser_"))).toBe(false);
+    const client = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_BROWSER: "1" });
+    const tools = (await client.listTools()).tools.filter((tool) => tool.name.startsWith("browser_"));
+    expect(tools.map((tool) => tool.name)).toHaveLength(12);
+    const act = tools.find((tool) => tool.name === "browser_act")!;
+    expect(act.inputSchema.properties).toHaveProperty("ref");
+    expect(act.annotations?.readOnlyHint).toBe(false);
+    expect(tools.find((tool) => tool.name === "browser_screenshot")!.annotations?.readOnlyHint).toBe(true);
+  });
+
+  it("runs a call on the server and hands back its screenshot as an image", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ucch-browser-bridge-"));
+    const path = join(dir, "s.sock");
+    const seen: unknown[] = [];
+    const server = createServer((socket) => {
+      socket.setEncoding("utf8");
+      socket.once("data", (line: string) => {
+        seen.push(JSON.parse(line));
+        socket.end(`${JSON.stringify({ type: "result", text: "Saved shot.png", images: [{ mediaType: "image/png", data: "AAAA", path: "shot.png" }] })}\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    try {
+      const client = await connect({ UCCH_BRIDGE_OMP_TOOLS: "0", UCCH_BROWSER: "1", UCCH_SCHEDULER_SOCK: path, UCCH_BRIDGE_TOKEN: "tok" });
+      const args = { session: "demo", tab: null, full_page: true, ref: null, selector: null, viewport: null, name: null };
+      const result = await client.callTool({ name: "browser_screenshot", arguments: args });
+      expect(result).toEqual({ content: [{ type: "text", text: "Saved shot.png" }, { type: "image", data: "AAAA", mimeType: "image/png" }] });
+      expect(seen).toEqual([{ type: "browser", token: "tok", op: "browser_screenshot", args }]);
+    } finally {
+      server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

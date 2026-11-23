@@ -135,6 +135,32 @@ const Env = z.object({
   DOC_JOBS_MAX: z.coerce.number().int().positive().default(1),
 
   /**
+   * The agents' shared browser (`@ucch/browser`): one headless Chromium,
+   * driven by playwright-core, no download and no paid service. Off when
+   * `BROWSER_ENABLED=false` or when no Chromium is found (the image ships
+   * `chromium`; `BROWSER_EXECUTABLE` names another).
+   */
+  BROWSER_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== "false" && v !== "0"),
+  BROWSER_EXECUTABLE: z.string().optional(),
+  /** Browser contexts open at once, across every project; the least recently used idle one makes room. */
+  BROWSER_MAX_CONTEXTS: z.coerce.number().int().positive().default(8),
+  BROWSER_MAX_TABS_PER_AGENT: z.coerce.number().int().positive().default(6),
+  /** A session idle (and unwatched) this long is saved and closed. */
+  BROWSER_IDLE_MS: z.coerce.number().int().positive().default(15 * 60_000),
+  /**
+   * Pages may reach private networks (10/8, 192.168/16, …). Off by default:
+   * loopback is allowed for the projects' dev servers, everything else
+   * private is refused, as `web_fetch` refuses it.
+   */
+  BROWSER_ALLOW_PRIVATE: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
+
+  /**
    * The hard stop on the agent loop. A model that keeps calling tools without
    * ever answering costs money on every iteration, so the cap is a budget
    * bound as much as a liveness one; hitting it is reported as

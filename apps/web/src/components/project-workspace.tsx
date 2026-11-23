@@ -7,6 +7,7 @@ import { ChatDock, ChatPortal } from "@/components/chat-dock"
 import { CodeEditor } from "@/components/code-editor"
 import { useCurrentProject, useFilesPanel, type ViewMode } from "@/components/files-panel"
 import { NotesWorkspace, type DocLocation } from "@/components/notes/notes-workspace"
+import { BrowserViewSkeleton } from "@/components/page-skeletons"
 import { ProjectChat } from "@/components/project-chat"
 import { SessionContextCard } from "@/components/session-context-card"
 import { useProject } from "@/lib/queries/project"
@@ -22,6 +23,10 @@ const TerminalView = dynamic(
 )
 const GitView = dynamic(() => import("@/components/git/git-view").then((m) => m.GitView), {
   ssr: false,
+})
+const BrowserView = dynamic(() => import("@/components/browser-view").then((m) => m.BrowserView), {
+  ssr: false,
+  loading: () => <BrowserViewSkeleton />,
 })
 
 /**
@@ -97,6 +102,10 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
 
       {/* Mounted only while shown, like the editor: its socket and poll have
           no reason to run behind the chat. */}
+      {/* Mounted only while shown: its live stream costs the server a
+          screencast for as long as it is open. */}
+      {mode === "browser" && <BrowserView project={project} />}
+
       {mode === "git" && <GitView project={project} session={session ?? null} onFixWithAI={(text) => {
         setGitRepair((previous) => ({ token: (previous?.token ?? 0) + 1, text }))
         setMode("chat")
@@ -106,7 +115,7 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
 }
 
 /** The views worth a link: a file view needs a file open, so it is not one. */
-const LINKED_VIEWS: ReadonlySet<ViewMode> = new Set(["docs", "terminal", "git"])
+const LINKED_VIEWS: ReadonlySet<ViewMode> = new Set(["docs", "terminal", "git", "browser"])
 
 /**
  * Keeps the view in the URL's `?view=` so a reload or a shared link opens

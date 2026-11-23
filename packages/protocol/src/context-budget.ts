@@ -182,7 +182,7 @@ export interface SessionPrefix {
   model: string | null;
   effort: string | null;
   /** The bridge's tool set, decided once at the session's start. */
-  tools: { omp: boolean; subagents: boolean; messaging: boolean; widgets: boolean };
+  tools: { omp: boolean; subagents: boolean; messaging: boolean; widgets: boolean; browser?: boolean };
   /**
    * The bridge the text was written for: null when none opened (no bundle,
    * nothing to carry), `omp` when OMP's tools were on it. A turn that opens

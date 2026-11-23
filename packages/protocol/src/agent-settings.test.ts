@@ -11,6 +11,7 @@ describe("readAgentSettings", () => {
         ompVerify: { enabled: false },
         memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
         widgets: { enabled: true },
+      browser: { enabled: true },
         idleCompaction: { enabled: true },
         terminals: { maxPerProject: 10 },
       });
@@ -25,6 +26,7 @@ describe("readAgentSettings", () => {
       ompVerify: { enabled: false },
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
       widgets: { enabled: true },
+      browser: { enabled: true },
       idleCompaction: { enabled: true },
       terminals: { maxPerProject: 10 },
     });

@@ -6,6 +6,7 @@ import {
   ChevronsUpDownIcon,
   FolderTreeIcon,
   GitBranchIcon,
+  GlobeIcon,
   MessageSquareIcon,
   SquareTerminalIcon,
   Trash2Icon,
@@ -30,6 +31,8 @@ const FILES: Mode = { id: "file", label: "Files", icon: FolderTreeIcon }
 const DOCS: Mode = { id: "docs", label: "Knowledge", icon: BookOpenIcon }
 const TERMINAL: Mode = { id: "terminal", label: "Terminal", icon: SquareTerminalIcon }
 const GIT: Mode = { id: "git", label: "Git", icon: GitBranchIcon }
+/** The agents' shared browser, live: the project's, so sessions have it too. */
+const BROWSER: Mode = { id: "browser", label: "Browser", icon: GlobeIcon }
 
 /**
  * A project's tabs. No Files tab: the Files button at the right of the bar
@@ -37,16 +40,16 @@ const GIT: Mode = { id: "git", label: "Git", icon: GitBranchIcon }
  * repeated that. Its place goes to the project's documentation, read
  * without leaving the session.
  */
-const MODES = [CHAT, DOCS, TERMINAL, GIT]
+const MODES = [CHAT, DOCS, TERMINAL, GIT, BROWSER]
 
 /**
  * A session is a chat with a working directory: no Git tab, and no project
  * whose documentation there would be to read.
  */
-const SESSION_MODES = [CHAT, FILES, TERMINAL]
+const SESSION_MODES = [CHAT, FILES, TERMINAL, BROWSER]
 
 /** Every view, for naming the one on screen when it has no tab of its own. */
-const ALL_MODES = [CHAT, FILES, DOCS, TERMINAL, GIT]
+const ALL_MODES = [CHAT, FILES, DOCS, TERMINAL, GIT, BROWSER]
 
 /**
  * Which of the project's views is on screen: a segmented control in the

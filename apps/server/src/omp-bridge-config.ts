@@ -49,6 +49,8 @@ export interface BridgeServerInput {
   memory: boolean;
   /** The workspace allows interactive widgets: `show_widget` exists. */
   widgets?: boolean;
+  /** The shared browser's tools (`browser_*`), run by the server over the scheduler socket. */
+  browser?: boolean;
 }
 
 export function bridgeServer(input: BridgeServerInput): BridgeServer {
@@ -73,6 +75,7 @@ export function bridgeServer(input: BridgeServerInput): BridgeServer {
       ...(input.trusted ? { UCCH_OMP_TRUSTED: "1" } : {}),
       ...(input.memory ? { UCCH_OMP_MEMORY: "1" } : {}),
       ...(input.widgets ? { UCCH_WIDGETS: "1" } : {}),
+      ...(input.browser ? { UCCH_BROWSER: "1" } : {}),
     },
   };
 }

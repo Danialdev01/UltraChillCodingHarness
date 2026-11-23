@@ -1026,3 +1026,55 @@ describe("the context reading (plan2 §1.2)", () => {
     expect(appended.some((event) => event.type === "context.usage")).toBe(false);
   });
 });
+
+describe("tool images", () => {
+  const shot = (id: string) =>
+    call(id, "browser_screenshot", '{"session":null,"tab":null,"full_page":null,"ref":null,"selector":null,"viewport":null,"name":null}');
+  const browser = {
+    calls: 0,
+    async call() {
+      this.calls++;
+      return { text: `Saved .agent/browser/shots/${this.calls}.png.`, images: [{ mediaType: "image/png" as const, data: "AAAA", path: `.agent/browser/shots/${this.calls}.png` }] };
+    },
+  };
+
+  it("shows a screenshot to a model that can see, and only the latest two at full size", async () => {
+    browser.calls = 0;
+    const script = scripted(
+      reply({ toolCalls: [shot("c1")] }),
+      reply({ toolCalls: [shot("c2")] }),
+      reply({ toolCalls: [shot("c3")] }),
+      reply({ text: "done" }),
+    );
+    const { input } = harness({ complete: script.complete, registry: { browser: true }, browser, supportsImages: true });
+    await runTurn(input);
+
+    const second = script.requests[1]!.messages;
+    expect(second.map((m) => m.role)).toEqual(["system", "assistant", "tool", "user"]);
+    expect(second[3]).toMatchObject({ content: expect.arrayContaining([{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }]) });
+
+    // After the third screenshot, the first is a caption and the newer two are pictures.
+    const last = script.requests[3]!.messages.filter((m) => m.role === "user");
+    expect(last).toHaveLength(3);
+    expect(last[0]!.content).toBe("Images from the tool results above (no longer shown): .agent/browser/shots/1.png (from tool call c1)");
+    expect(Array.isArray(last[1]!.content) && Array.isArray(last[2]!.content)).toBe(true);
+  });
+
+  it("tells a model that cannot see that the image was saved, and sends no picture", async () => {
+    browser.calls = 0;
+    const script = scripted(reply({ toolCalls: [shot("c1")] }), reply({ text: "done" }));
+    const { input } = harness({ complete: script.complete, registry: { browser: true }, browser, supportsImages: false });
+    await runTurn(input);
+    const messages = script.requests[1]!.messages;
+    expect(messages.map((m) => m.role)).toEqual(["system", "assistant", "tool"]);
+    expect(messages[2]!.content).toContain("this model does not accept images");
+  });
+
+  it("offers no browser tool without the registry option, even with a browser bound", async () => {
+    const script = scripted(reply({ toolCalls: [shot("c1")] }), reply({ text: "done" }));
+    const { input, appended } = harness({ complete: script.complete, browser });
+    await runTurn(input);
+    expect(script.requests[0]!.tools?.some((t) => t.function.name.startsWith("browser_"))).toBeFalsy();
+    expect(appended.find((e) => e.type === "agent.tool_result")).toMatchObject({ isError: true });
+  });
+});

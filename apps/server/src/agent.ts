@@ -112,6 +112,8 @@ import type { EventBus } from "./bus.js";
 import { catalogue } from "./openrouter.js";
 import { accountOpenRouterKey, anonCatalogue, baseUrlFor, parseKeyedModel, type ModelKeyStore } from "./model-keys.js";
 import type { Complete } from "@ucch/agent";
+import type { BrowserManager } from "@ucch/browser";
+import { browserSpec, isBrowserOp, type BrowserProvider, type BrowserResult } from "@ucch/browser/tools";
 import { ChoiceWaiters, accountBlocker, harnessAvailability, harnessLabel, limitOptions, type LimitAccount } from "./choices.js";
 import { AgentMessaging, COLLABORATION_GUIDE } from "./agent-messaging.js";
 import { assembleCliInstructions, planSessionPrefix } from "./cli-instructions.js";
@@ -221,6 +223,11 @@ export interface AgentOptions {
    * it every run reads and writes its project's one bank.
    */
   memory?: SessionMemory;
+  /**
+   * The agents' shared browser (`@ucch/browser`). Absent: no Chromium on
+   * this server, or `BROWSER_ENABLED=false`; no turn gets browser tools.
+   */
+  browser?: BrowserManager;
 }
 
 /** What the server knows about the OMP bridge: where it is, and where its calls take a slot. */
@@ -493,6 +500,34 @@ export class AgentTurnReactor {
         ...(windows.length ? { usedPercent: Math.max(...windows.map((w) => w.usedPercent)) } : {}),
         ...(cards?.[provider].modelsAuthoritative ? { models: cards[provider].models } : {}) };
     }));
+  }
+
+  /** The shared browser is on for a workspace: the server has one, and the workspace has not turned it off. */
+  #browserOn(settings: WorkspaceAgentSettings | undefined | null): boolean {
+    return Boolean(this.options.browser) && settings?.browser?.enabled !== false;
+  }
+
+  /** The browser bound to one agent session: its private session, its worktree for files. */
+  #browserFor(projectId: string, threadId: string, worktree: string): BrowserProvider | undefined {
+    const browser = this.options.browser;
+    if (!browser) return undefined;
+    const scope = { projectId, agentId: threadId, worktree };
+    return { call: (op, args, signal) => browser.call(scope, op, args, signal) };
+  }
+
+  /**
+   * A Claude Code or Codex turn's browser call, from its bridge over the
+   * scheduler socket. The token already says the turn is live and was
+   * offered the browser; the session's worktree is where its files go.
+   */
+  async browserCall(holder: { threadId: string }, op: string, args: unknown, signal: AbortSignal): Promise<BrowserResult> {
+    const browser = this.options.browser;
+    if (!browser) return { text: "The browser is not available on this server.", isError: true };
+    if (!isBrowserOp(op)) return { text: `There is no browser tool called ${JSON.stringify(op)}.`, isError: true };
+    const [thread] = await this.db.select().from(threads).where(eq(threads.id, holder.threadId)).limit(1);
+    if (!thread) return { text: "The session is gone.", isError: true };
+    const worktree = treeFor(this.options.workspaceRoot, thread.projectId, thread);
+    return browser.call({ projectId: thread.projectId, agentId: thread.id, worktree }, op, args, signal);
   }
 
   async collaboration(holder: { threadId: string }, name: string, args: Record<string, unknown>) {
@@ -1598,6 +1633,7 @@ export class AgentTurnReactor {
         // and `show_widget` together.
         registry: {
           ...this.options.registry,
+          browser: this.#browserOn(readAgentSettings(project.agent)),
           widgets: widgetsOn(readAgentSettings(project.agent)) && !thread.parentThreadId,
           ...(noWeb ? { web: false } : {}),
           ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx), subagents: !thread.parentThreadId } : {}),
@@ -1614,6 +1650,7 @@ export class AgentTurnReactor {
           ...(turnKnowledge?.dirs.length ? { readOnlyRoots: turnKnowledge.dirs } : {}),
         }),
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
+        ...(this.#browserOn(readAgentSettings(project.agent)) ? { browser: this.#browserFor(thread.projectId, threadId, workspace) } : {}),
         complete: route.complete,
         signal: controller.signal,
         approve: (request) =>
@@ -2624,8 +2661,11 @@ export class AgentTurnReactor {
       // subagent, whose answer goes to its parent rather than the reader.
       const widgets = !input.subagent && (stored ? stored.tools.widgets : widgetsOn(input.agentSettings));
       const messaging = Boolean(this.messaging) && (stored ? stored.tools.messaging : true);
-      if (provider !== "omp" && (ompTools || offersSubagents || widgets || messaging)) {
-        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets, messaging });
+      // The shared browser, on the bridge: a resumed session keeps the tool
+      // list it started with, so one from before the browser stays without.
+      const browserTools = provider !== "omp" && (stored ? stored.tools.browser === true : this.#browserOn(input.agentSettings));
+      if (provider !== "omp" && (ompTools || offersSubagents || widgets || messaging || browserTools)) {
+        bridge = await this.#openBridge(provider, input, { omp: ompTools, subagents: offersSubagents, widgets, messaging, browser: browserTools });
       }
       // UCCH's rules, the guides for the tools this turn really has, and the
       // runtime info (`cli-instructions.ts`). Logged part by part, as the
@@ -2655,7 +2695,7 @@ export class AgentTurnReactor {
           stored: kept?.sessionPrefix ?? null,
           resumeToken: input.resumeToken,
           build: { ...build, provider: session },
-          tools: { omp: ompTools, subagents: offersSubagents, messaging, widgets },
+          tools: { omp: ompTools, subagents: offersSubagents, messaging, widgets, ...(browserTools ? { browser: true } : {}) },
         });
         instructions = plan.instructions;
         injected = input.compaction ? [] : plan.injected;
@@ -2680,8 +2720,9 @@ export class AgentTurnReactor {
       let host: Pick<ProviderRunInput, "hostTools" | "onHostToolCall"> = {};
       if (provider === "omp") {
         const providers = this.options.providers;
+        const browserOn = this.#browserOn(input.agentSettings);
         const hostTools = [
-          ...hostToolSchemas(preset, { ...this.options.registry, widgets, ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx) } : {}) }),
+          ...hostToolSchemas(preset, { ...this.options.registry, widgets, browser: browserOn, ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx) } : {}) }),
           ...(offersSubagents ? [UCCH_AGENT_HOST_TOOL] : []),
         ];
         // The session's bank and the ones it may recall, under the subject that pays.
@@ -2725,6 +2766,7 @@ export class AgentTurnReactor {
               preset,
               advertised: new Set(hostTools.map((tool) => tool.name)),
               apiKey: openrouterKey!,
+              browser: browserOn,
             }),
         };
       }
@@ -2978,7 +3020,7 @@ export class AgentTurnReactor {
       trusted?: boolean;
     },
     /** What the bridge carries: OMP's tools (the workspace's bridge), `ucch_agent`, `show_widget`, in any mix. */
-    offer: { omp: boolean; subagents: boolean; widgets?: boolean; messaging?: boolean },
+    offer: { omp: boolean; subagents: boolean; widgets?: boolean; messaging?: boolean; browser?: boolean },
   ): Promise<(Pick<ProviderRunInput, "mcpConfigPath" | "codexMcp"> & { omp: boolean; dispose(): Promise<void> }) | null> {
     const options = this.options.ompBridge;
     const providers = this.options.providers;
@@ -2993,7 +3035,7 @@ export class AgentTurnReactor {
         openrouterKey = null;
       }
     }
-    if (!openrouterKey && !offer.subagents && !offer.widgets && !offer.messaging) return null;
+    if (!openrouterKey && !offer.subagents && !offer.widgets && !offer.messaging && !offer.browser) return null;
     // A bridge for `ucch_agent` alone is offered to every Claude Code and
     // Codex turn, so a server without the bundle must not hand the CLI an
     // MCP server it cannot start.
@@ -3042,6 +3084,7 @@ export class AgentTurnReactor {
         subagents: offer.subagents,
         messaging: offer.messaging === true,
         widgets: offer.widgets === true,
+        browser: offer.browser === true,
         worktree: input.workspace,
         schedulerSock: options.socket,
         token: lease.token,
@@ -3122,6 +3165,8 @@ export class AgentTurnReactor {
       preset: OmpPreset;
       advertised: ReadonlySet<string>;
       apiKey: string;
+      /** The browser tools were advertised: the registry must offer them too, or `runTool` cannot find them. */
+      browser?: boolean;
     },
   ): Promise<HostToolResult> {
     // OMP only calls what it was offered; this keeps it so if it ever does not.
@@ -3140,7 +3185,8 @@ export class AgentTurnReactor {
         model,
         searchModel: this.options.searchModel,
         preset: input.preset,
-        registry: this.options.registry,
+        registry: { ...this.options.registry, browser: input.browser === true },
+        ...(input.browser ? { browser: this.#browserFor(input.projectId, input.threadId, input.workspace) } : {}),
         executor: new HostExecutor(input.workspace, {
           heavyJobs: this.options.heavyJobs,
           wrapArgv: this.options.wrapArgv,
@@ -3166,7 +3212,7 @@ export class AgentTurnReactor {
         },
       },
     );
-    return { content: outcome.content, isError: outcome.isError };
+    return { content: outcome.content, isError: outcome.isError, ...(outcome.images?.length ? { images: outcome.images } : {}) };
   }
 
   /**
@@ -3652,6 +3698,9 @@ export function widgetsOn(settings: WorkspaceAgentSettings | undefined | null): 
 export function claudePromptNeedsPerson(mode: AgentPermissionMode, toolName: string, input: unknown): boolean {
   // Draws a widget in the chat and does nothing else: never worth asking about.
   if (toolName === ompBridgeToolName(SHOW_WIDGET_TOOL)) return false;
+  // The shared browser asks as a native turn's browser tools do: by what each one is.
+  const browserOp = toolName.startsWith(ompBridgeToolName("browser_")) ? toolName.slice(ompBridgeToolName("").length) : null;
+  if (browserOp && isBrowserOp(browserOp)) return needsApproval(mode, { kind: browserSpec(browserOp).permission });
   if (toolName.startsWith(ompBridgeToolName(""))) {
     return mode === "allow_all" ? false : !(mode === "normal" && OMP_BRIDGE_READS.has(toolName));
   }

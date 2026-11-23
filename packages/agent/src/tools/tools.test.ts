@@ -899,7 +899,39 @@ describe("the tool surface", () => {
       "ucch_inbox",
       "ucch_agent_status",
       "ucch_agent_cancel",
+      "browser_open",
+      "browser_navigate",
+      "browser_snapshot",
+      "browser_act",
+      "browser_screenshot",
+      "browser_extract",
+      "browser_design",
+      "browser_compare",
+      "browser_eval",
+      "browser_tabs",
+      "browser_logs",
+      "browser_close",
     ]);
+  });
+
+  // Withheld unless the server binds a browser, and then on every preset
+  // but minimal: reads where the preset reads, and clicking for research.
+  it("offers the browser tools only when the registry is told there is a browser", () => {
+    for (const preset of ["standard", "readonly", "minimal", "ptc", "research", "documentation"] as const) {
+      expect(toolsFor(preset).some((t) => t.name.startsWith("browser_"))).toBe(false);
+    }
+    const on = { browser: true };
+    expect(toolsFor("standard", on).filter((t) => t.name.startsWith("browser_")).map((t) => t.name)).toHaveLength(12);
+    expect(toolsFor("minimal", on).some((t) => t.name.startsWith("browser_"))).toBe(false);
+    const readonly = toolsFor("readonly", on).map((t) => t.name);
+    expect(readonly).toContain("browser_screenshot");
+    expect(readonly).not.toContain("browser_act");
+    expect(readonly).not.toContain("browser_eval");
+    const research = toolsFor("research", on).map((t) => t.name);
+    expect(research).toContain("browser_act");
+    expect(research).not.toContain("browser_eval");
+    // A separate cached block: the default one is untouched.
+    expect(toolsFor("standard", on)).not.toBe(toolsFor("standard"));
   });
 
   // The research tools are reads, which is exactly why they need a rule of
@@ -929,7 +961,7 @@ describe("the tool surface", () => {
     }
     // And the standard preset is exactly what it was before they existed.
     expect(toolsFor("standard").map((t) => t.name)).toEqual(
-      ALL.map((t) => t.name).filter((n) => !n.startsWith("research_") && !n.startsWith("doc_") && !n.startsWith("ucch_")),
+      ALL.map((t) => t.name).filter((n) => !n.startsWith("research_") && !n.startsWith("doc_") && !n.startsWith("ucch_") && !n.startsWith("browser_")),
     );
   });
 

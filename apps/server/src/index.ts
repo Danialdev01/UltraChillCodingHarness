@@ -164,6 +164,8 @@ import { removeCliSessionFiles, removeOrphanCliFiles } from "./cli-session-files
 import { reviveSession } from "./session-revive.js";
 import { ProjectActivityPublisher } from "./project-activity.js";
 import { ResourceSampler } from "./resource-sampler.js";
+import { BrowserManager, findChromium } from "@ucch/browser";
+import { BrowserLive, browserNotifier, browserRefusal, registerBrowserRoutes } from "./browser.js";
 import { openRouterWindows, type SessionQuota, type SessionQuotas } from "./quotas.js";
 
 const config = loadConfig();
@@ -410,6 +412,31 @@ const bridgeLeases = new BridgeLeases(turnScheduler);
 const BRIDGE_SOCKET = join(config.CREDS_ROOT, "omp-scheduler.sock");
 
 /**
+ * The agents' shared browser: one headless Chromium for every agent of
+ * every project, launched on first use (`@ucch/browser`). Sessions' cookies
+ * are kept under the credentials root, beside the other secrets.
+ */
+const browserExecutable = config.BROWSER_ENABLED ? await findChromium(config.BROWSER_EXECUTABLE ?? null) : null;
+const browserUnavailable = !config.BROWSER_ENABLED
+  ? "The browser is turned off on this server (BROWSER_ENABLED=false)."
+  : browserExecutable
+    ? null
+    : "No Chromium was found on this server; set BROWSER_EXECUTABLE.";
+const browser = browserExecutable
+  ? new BrowserManager({
+      executablePath: browserExecutable,
+      stateDir: join(config.CREDS_ROOT, "browser"),
+      maxContexts: config.BROWSER_MAX_CONTEXTS,
+      maxTabsPerAgent: config.BROWSER_MAX_TABS_PER_AGENT,
+      idleMs: config.BROWSER_IDLE_MS,
+      refuse: (url) => browserRefusal(url, { allowPrivate: config.BROWSER_ALLOW_PRIVATE, deniedLocalPorts: [config.PORT] }),
+      onChange: browserNotifier((projectId, event) => bus.publish({ seq: null, projectId, threadId: null, event })),
+      // `app` is built further down; this runs only once it is.
+      log: { warn: (obj, msg) => app.log.warn(obj, msg) },
+    })
+  : undefined;
+
+/**
  * The container, checkpoint and preview reactors still arrive in later
  * phases; the agent one is here, so a user message is answered.
  */
@@ -477,12 +504,15 @@ const agentTurns = new AgentTurnReactor(
     dispatch: (principal, command) => engine.dispatch(principal, command),
     // For following a `ucch_agent` subagent's session to its end.
     bus,
+    ...(browser ? { browser } : {}),
   },
   (error) => app.log.error({ err: error }, "agent turn failed"),
 );
 // A bridge's `ucch_agent` call arrives on the scheduler socket.
 bridgeLeases.setSpawner((holder, frame, signal) => agentTurns.spawnSubagent(holder, frame, signal));
 bridgeLeases.setCollaborator((holder, name, args) => agentTurns.collaboration(holder, name, args));
+// A bridge's browser call (Claude Code, Codex) arrives on the same socket.
+if (browser) bridgeLeases.setBrowser((holder, op, args, signal) => agentTurns.browserCall(holder, op, args, signal));
 bus.tap(({ event }) => {
   if (event.type === "agent.session_message") agentTurns.messaging?.requestDelivery(event.threadId);
 });
@@ -3753,6 +3783,22 @@ registerPublicRoutes(app, {
   uploads,
 });
 
+if (config.BROWSER_ENABLED && !browserExecutable) app.log.warn("no Chromium found: agents get no browser tools");
+registerBrowserRoutes(app, {
+  browser,
+  unavailable: browserUnavailable,
+  projectFor,
+  principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  workspaceRoot: config.WORKSPACE_ROOT,
+});
+const browserLive = browser
+  ? new BrowserLive({
+      browser,
+      redeemTicket: (ticket) => auth.redeemTicket(ticket),
+      canAccessProject: (userId, projectId) => access.canAccessProject(userId, projectId),
+    })
+  : null;
+
 registerGitRoutes(app, {
   projectFor,
   treeFor: sessionTarget,
@@ -5438,6 +5484,8 @@ app.server.on("upgrade", (request, socket, head) => {
   if (collab?.handleUpgrade(request, socket, head)) return;
 
   const url = new URL(request.url ?? "/", "http://localhost");
+  // One browser tab, live, for the Browser view.
+  if (url.pathname === "/browser-ws" && browserLive) return browserLive.handleUpgrade(request, socket, head);
   if (url.pathname !== "/ws") {
     socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
     socket.destroy();
@@ -5505,6 +5553,9 @@ const shutdown = async (signal: string) => {
   await fileWatcher.closeAll();
   await agentTurns.killAll();
   await bridgeLeases.close();
+  browserLive?.close();
+  // Saves every session's cookies for the next start.
+  await browser?.close().catch((error: unknown) => app.log.error({ err: error }, "could not close the browser"));
   await app.close();
   web?.close();
   process.exit(0);
