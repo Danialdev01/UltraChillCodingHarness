@@ -20,6 +20,7 @@
 
 - create view for proper git tree managment view. I want the ability for the person to review changes, comment changes, merge changes, review pr and more.
 - inside every empty section create a button to add a new item for the section.
+- add color edit file changes like the claude cli for the transcript chat view.
 
 ## Important
 
@@ -44,12 +45,12 @@
 
 ### Fix
 
+- add select model and harness to continue using other ai model if the primary model hit their limit. or set time to run and continue the task using the same subscription.
 - Fix the terminal agent chat section
+
   - add ai model select and proper close and open agent tab.
   - manage agent session context window
 
 * **Reliable image sends.** Messages now wait for images to finish uploading before sending.
 * **Rich text pasting.** Paste text from Microsoft Word and other rich text apps into the composer instead of attaching an image.
-* **Provider refresh.** Refresh providers to find newly installed Claude or Codex without restarting the server on macOS and Linux.
-
-<!-- - inside the new project modal, turn the git select button into tab, there is 3 types. Git, New Repo, Empty. If the user choose git then it will display the repository search select option but it will combine all of the connected git account. The available git provider that is allowed to be connected is gitlab, github and gitea. For now just integrate with the current github integration. For the New Repo section it will display all of the available provider that the user can create repo in and all of the default settings. the empty just display create the project with no git repo.  -->
+* **Provider refresh.** Refresh providers to find newly installed Claude or Codex without restarting the server.
