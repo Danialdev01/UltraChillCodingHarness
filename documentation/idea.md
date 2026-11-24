@@ -11,10 +11,8 @@
 - monitoring
 - - add monitoring section for monitor system vps or website statistics.
   - add monitoring for the ai agents, if the server usage is too high then the AI agents will be in standby or queue mode to avoid server crashing.
-- agent
 
-  - add reviewer function, after the output the system will create another sub agent using another type of ai model to reivaluate the prev ai agent's work.
-  - add council function, the AI will discuss with multiple ai agents on how to solve or optinion about a decision.
+- create a default queue for ai model based on limit. priority choice 
 
 ## UI UX
 
@@ -47,10 +45,5 @@
 
 - add select model and harness to continue using other ai model if the primary model hit their limit. or set time to run and continue the task using the same subscription.
 - Fix the terminal agent chat section
-
   - add ai model select and proper close and open agent tab.
   - manage agent session context window
-
-* **Reliable image sends.** Messages now wait for images to finish uploading before sending.
-* **Rich text pasting.** Paste text from Microsoft Word and other rich text apps into the composer instead of attaching an image.
-* **Provider refresh.** Refresh providers to find newly installed Claude or Codex without restarting the server.
