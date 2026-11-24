@@ -2,7 +2,6 @@
 
 import * as React from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { usePathname } from "next/navigation"
 
 import { NavUser } from "@/components/nav-user"
 import { RAIL_BUTTON, RailIndicator, RailItem } from "@/components/rail-flyout"
@@ -13,7 +12,7 @@ import { SectionPanel } from "@/components/section-panel"
 import { SkyBackdrop } from "@/components/sidebar/sky-backdrop"
 import { WorkspaceHeader } from "@/components/sidebar/workspace-header"
 import { WorkspaceLogo } from "@/components/sidebar/workspace-logo"
-import { WorkspaceSwitcher, type Workspace } from "@/components/workspace-switcher"
+import { WorkspaceSwitcher } from "@/components/workspace-switcher"
 import {
   Sidebar,
   SidebarContent,
@@ -23,10 +22,8 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { SETTINGS, WORKSPACE_SETTINGS, projectHashFromPath, SECTIONS, sectionForPath, type Section } from "@/lib/sections"
-import type { Project } from "@/lib/session"
-import type { DatabaseConnectionSummary } from "@ucch/protocol"
-import { useTransitionRouter } from "@/lib/view-transitions"
-import { useMe, useShellLists } from "@/lib/queries/bootstrap"
+import { useShellPathname } from "@/lib/view-transitions"
+import { useShell } from "@/lib/workspace-context"
 import { useWorkspaceSessionStats } from "@/lib/queries/workspace-sessions"
 import { useResourcesPanel } from "@/lib/resources-panel"
 import { ResourcesPanel } from "@/components/resources/resources-panel"
@@ -47,39 +44,22 @@ import { FolderIcon } from "lucide-react"
  * clicking an icon while collapsed does something visible rather than
  * nothing.
  */
-export function AppSidebar({
-  user,
-  workspaces: serverWorkspaces,
-  activeWorkspaceId,
-  projects: serverProjects,
-  connections: serverConnections,
-  ...props
-}: React.ComponentProps<typeof Sidebar> & {
-  user: { name: string; email: string; avatar?: string }
-  workspaces: Workspace[]
-  activeWorkspaceId: string
-  projects: Project[]
-  connections: DatabaseConnectionSummary[]
-}) {
-  // Kept current by realtime events rather than by re-rendering the layout.
-  const { workspaces, projects, connections } = useShellLists({
-    workspaces: serverWorkspaces,
-    activeWorkspaceId,
-    projects: serverProjects,
-    connections: serverConnections,
-  })
-  // The live account, so a new name or avatar shows without the layout
-  // being rendered again; the server's until the cache has it.
-  const me = useMe()
-  const shownUser = me
-    ? { name: me.name ?? me.login ?? "User", email: me.email ?? "", avatar: me.avatarUrl ?? undefined }
-    : user
+export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
+  // Follows the address and realtime events, not the layout's own render.
+  const { me, workspace: activeWorkspace, workspaces, projects, connections, loading } = useShell()
+  const activeWorkspaceId = activeWorkspace?.id ?? ""
+  const shownUser = {
+    name: me.name ?? me.login ?? "User",
+    email: me.email ?? "",
+    // `undefined`, never "": an empty `src` is a request for the page
+    // itself, which the browser then reports as a broken image.
+    avatar: me.avatarUrl ?? undefined,
+  }
   const queryClient = useQueryClient()
   const { setOpen, setOpenMobile } = useSidebar()
-  const pathname = usePathname()
+  const pathname = useShellPathname()
   const active = sectionForPath(pathname)
   const activeProjectHash = projectHashFromPath(pathname) ?? undefined
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
   const sessionWorkspace = activeWorkspace?.kind === "session"
   // Resources replaces the panel, not the page: while it is open the rail
   // lights its folder rather than the URL's section.
@@ -93,7 +73,7 @@ export function AppSidebar({
   // session's card) in the sidebar.
   const refreshedFor = React.useRef<string | null>(null)
   const missing =
-    activeProjectHash !== undefined && !projects.some((p) => p.hash === activeProjectHash)
+    !loading && activeProjectHash !== undefined && !projects.some((p) => p.hash === activeProjectHash)
   React.useEffect(() => {
     if (!missing || refreshedFor.current === activeProjectHash) return
     refreshedFor.current = activeProjectHash ?? null
@@ -201,7 +181,7 @@ export function AppSidebar({
                   />
                 }
                 running={stats.running}
-                projectCount={projects.length}
+                projectCount={loading ? (activeWorkspace?.projectCount ?? 0) : projects.length}
                 sessionCount={stats.sessions}
                 sessionWorkspace={sessionWorkspace}
               />
@@ -229,6 +209,7 @@ export function AppSidebar({
             ) : (
               <SectionPanel
                 section={active}
+                loading={loading}
                 projects={projects}
                 connections={connections}
                 workspaces={workspaces}

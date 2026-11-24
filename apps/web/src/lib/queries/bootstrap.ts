@@ -5,7 +5,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { qk } from "@/lib/query-keys"
 import type { Bootstrap } from "@/lib/session"
-import { useActiveWorkspace } from "@/lib/workspace-context"
 
 /**
  * What the shell knows about the signed-in person: the server renders it
@@ -37,43 +36,15 @@ export function BootstrapSeed({ data }: { data: Bootstrap }) {
   return null
 }
 
-export function useBootstrap(ws?: string | null) {
-  return useQuery({
+/** One workspace's bootstrap, as both the shell and the switcher's preload ask for it. */
+export function bootstrapQuery(ws?: string | null) {
+  return {
     queryKey: qk.bootstrap(ws),
     queryFn: () => fetchBootstrap(ws),
     meta: { persist: true },
-  })
-}
-
-/**
- * The signed-in person, live: the open workspace's bootstrap, which an
- * `account_settings` event invalidates, so a new name or avatar shows
- * without the shell being rendered again. Undefined until the shell has
- * seeded it.
- */
-export function useMe(): Bootstrap["me"] | undefined {
-  return useBootstrap(useActiveWorkspace()?.hash ?? null).data?.me
-}
-
-/**
- * The shell's lists -- workspaces, the open workspace's projects and
- * connections -- live: the server's copy until the cache has one, then the
- * cache's, which realtime events keep current (`realtime-cache.ts`). This is
- * what lets another member's new project appear in the sidebar without the
- * layout being rendered again.
- */
-export function useShellLists<W extends { id: string; hash: string }, P, C>(initial: {
-  workspaces: W[]
-  activeWorkspaceId: string
-  projects: P[]
-  connections: C[]
-}): { workspaces: W[]; projects: P[]; connections: C[] } {
-  const hash = initial.workspaces.find((w) => w.id === initial.activeWorkspaceId)?.hash ?? null
-  const { data } = useBootstrap(hash)
-  if (!data || data.activeWorkspaceId !== initial.activeWorkspaceId) return initial
-  return {
-    workspaces: data.workspaces as unknown as W[],
-    projects: data.projects as unknown as P[],
-    connections: data.connections as unknown as C[],
   }
+}
+
+export function useBootstrap(ws?: string | null) {
+  return useQuery(bootstrapQuery(ws))
 }

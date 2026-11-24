@@ -18,7 +18,6 @@ import { useSidebar } from "@/components/ui/sidebar"
 import { fetchGitStatus } from "@/lib/git-api"
 import { targetOf } from "@/lib/project-target"
 import { useProjectSessions } from "@/lib/project-sessions"
-import { useShellLists } from "@/lib/queries/bootstrap"
 import { useWorkspaceSessions } from "@/lib/queries/workspace-sessions"
 import { qk } from "@/lib/query-keys"
 import {
@@ -43,8 +42,8 @@ import type { Project, Workspace } from "@/lib/session"
 import type { SidebarSession } from "@/lib/session-sidebar"
 import type { DatabaseConnectionSummary } from "@ucch/protocol"
 import { cn } from "@/lib/utils"
-import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
-import { useWorkspaceHash } from "@/lib/workspace-context"
+import { TransitionLink, useShellPathname, useTransitionRouter } from "@/lib/view-transitions"
+import { useShell, useWorkspaceHash } from "@/lib/workspace-context"
 
 type Crumb = { label: string; href?: string }
 
@@ -56,7 +55,9 @@ function isCodePath(pathname: string): boolean {
 /** Where Settings' close button goes: the last page that was not a settings page. */
 const RETURN_KEY = "ucch:settings-return"
 
-function useRememberLeavingSettings(pathname: string, inSettings: boolean) {
+function useRememberLeavingSettings(pathname: string) {
+  const id = sectionForPath(pathname).id
+  const inSettings = id === SETTINGS.id || id === WORKSPACE_SETTINGS.id
   useEffect(() => {
     if (inSettings) return
     try {
@@ -116,25 +117,10 @@ function CloseSettingsButton() {
  * layout already holds -- so the bar is right while the page is still a
  * skeleton, and never flips from one name to another once it lands.
  */
-export function AppHeader({
-  projects: serverProjects,
-  connections: serverConnections,
-  workspace: serverWorkspace,
-}: {
-  projects: readonly Project[]
-  connections: readonly DatabaseConnectionSummary[]
-  /** The open workspace, with the caller's permissions in it. */
-  workspace?: Workspace
-}) {
-  const { workspaces, projects, connections } = useShellLists({
-    workspaces: serverWorkspace ? [serverWorkspace] : [],
-    activeWorkspaceId: serverWorkspace?.id ?? "",
-    projects: serverProjects as Project[],
-    connections: serverConnections as DatabaseConnectionSummary[],
-  })
-  const workspace = workspaces.find((w) => w.id === serverWorkspace?.id) ?? serverWorkspace
+export function AppHeader() {
+  const { workspace, projects, connections } = useShell()
   const sessionWorkspace = workspace?.kind === "session"
-  const pathname = usePathname()
+  const pathname = useShellPathname()
   const projectHash = projectHashFromPath(pathname)
   const project = projectHash ? projects.find((p) => p.hash === projectHash) : undefined
   // Notes, Timeline, Keys: a page of the project rather than the project.
@@ -142,7 +128,7 @@ export function AppHeader({
   const sessionHash = projectSessionHashFromPath(pathname)
   const section = sectionForPath(pathname)
   const inSettings = section.id === SETTINGS.id || section.id === WORKSPACE_SETTINGS.id
-  useRememberLeavingSettings(pathname, inSettings)
+  useRememberLeavingSettings(usePathname())
 
   // The connection any database page is on, for the settings button.
   const databasePath = databasePathFromPath(pathname)

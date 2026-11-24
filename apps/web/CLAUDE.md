@@ -26,6 +26,10 @@ enforces the mechanical parts.
 - **Link to the final URL, not a redirect stub.** A server `redirect()` costs a
   second round trip. Keep redirect pages for old bookmarks, and give them a
   `loading.tsx` that renders the *destination's* skeleton.
+- **Switching workspace is optimistic.** Going to another workspace's dashboard
+  skips the view transition: the shell and a skeleton switch in the same frame
+  (`useShellPathname`, `WorkspacePage`). Shell components read the open workspace
+  and its lists from `useShell()`, never from layout props.
 - **Client components waiting on their first fetch render a skeleton.** Track
   "loaded" separately from "empty", so the empty state ("No tasks yet") never
   flashes before the data arrives. Reuse the pieces in `page-skeletons.tsx`

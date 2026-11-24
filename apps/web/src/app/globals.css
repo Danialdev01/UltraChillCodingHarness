@@ -573,7 +573,7 @@
     animation: none !important;
   }
 
-  .ucch-page > * {
+  :is(.ucch-page, .ucch-page-content) > * {
     animation: none;
   }
 }

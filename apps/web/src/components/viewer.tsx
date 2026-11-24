@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { useMe } from "@/lib/queries/bootstrap"
+import { useMe } from "@/lib/workspace-context"
 
 /**
  * Who is signed in, for the client components that address them by name.

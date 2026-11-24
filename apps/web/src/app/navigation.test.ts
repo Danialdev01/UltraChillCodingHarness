@@ -128,7 +128,7 @@ describe("navigation goes through view transitions", () => {
    */
   const REFRESH_ALLOWED: Record<string, string> = {
     "lib/view-transitions.tsx": "the wrapper itself",
-    "lib/workspace-context.tsx": "the address names another workspace: the shell is another one",
+    "lib/workspace-context.tsx": "the new workspace's lists could not be read from the client",
     "components/workspace-members-settings.tsx": "you left the workspace on screen",
     "components/database/tables-column.tsx": "the emptied table's grid reads its rows outside the query cache",
   }

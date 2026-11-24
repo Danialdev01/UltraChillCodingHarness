@@ -27,6 +27,7 @@ export function WorkspaceList({
   showArchived,
   onToggleArchived,
   onSelect,
+  onHighlight,
   onAdd,
   rowMenu,
 }: {
@@ -36,12 +37,19 @@ export function WorkspaceList({
   showArchived: boolean;
   onToggleArchived: () => void;
   onSelect: (workspace: Workspace) => void;
+  /** A row became the highlighted one, by pointer or keyboard. */
+  onHighlight: (workspace: Workspace) => void;
   onAdd: () => void;
   /** The 3-dot menu at the end of a row, or null when there is nothing in it. */
   rowMenu: (workspace: Workspace) => ReactNode;
 }) {
   return (
-    <Command>
+    <Command
+      onValueChange={(value) => {
+        const workspace = live.find((w) => value.endsWith(w.id));
+        if (workspace) onHighlight(workspace);
+      }}
+    >
       <CommandInput placeholder="Search workspaces…" />
       <CommandList>
         <CommandEmpty>No workspace matches that.</CommandEmpty>

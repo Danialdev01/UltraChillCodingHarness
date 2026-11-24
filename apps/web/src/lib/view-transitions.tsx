@@ -4,6 +4,7 @@ import * as React from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 
+import { workspaceHashFromPath } from "@/lib/sections"
 import { markNavigationCommit, markNavigationStart } from "@/lib/vitals"
 
 /**
@@ -32,6 +33,31 @@ interface Navigator {
   transition: (navigate: () => void, href?: string) => void
 }
 
+/**
+ * The dashboard address of a workspace other than the one on screen: the
+ * one navigation that replaces the whole shell. It cannot count on a
+ * prefetched skeleton, and a view transition would freeze the window until
+ * the server answered, so it is shown optimistically instead.
+ */
+export function workspaceSwitchTarget(pathname: string, currentPathname: string): string | null {
+  const ws = workspaceHashFromPath(pathname)
+  if (!ws || ws === workspaceHashFromPath(currentPathname)) return null
+  return pathname.replace(/\/$/, "") === `/${ws}` ? `/${ws}` : null
+}
+
+const PendingPathContext = React.createContext<string | null>(null)
+
+/** The workspace dashboard being switched to, until its route commits. */
+export function usePendingPath(): string | null {
+  return React.useContext(PendingPathContext)
+}
+
+/** The address the shell should draw: the one being switched to, else the current one. */
+export function useShellPathname(): string {
+  const pathname = usePathname()
+  return usePendingPath() ?? pathname
+}
+
 const NavigatorContext = React.createContext<Navigator | null>(null)
 
 /**
@@ -45,6 +71,8 @@ const RELEASE_TIMEOUT_MS = 1500
 
 export function ViewTransitionsProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  // Reverts by itself when the navigation commits, fails or is superseded.
+  const [pending, setPending] = React.useOptimistic<string | null>(null)
   const release = React.useRef<(() => void) | null>(null)
   // A ref so `transition` can stay stable while still comparing against the
   // page that is current at click time.
@@ -62,6 +90,19 @@ export function ViewTransitionsProvider({ children }: { children: React.ReactNod
   const value = React.useMemo<Navigator>(
     () => ({
       transition(navigate, href) {
+        const target =
+          href === undefined
+            ? null
+            : workspaceSwitchTarget(new URL(href, location.href).pathname, current.current)
+        if (target) {
+          release.current?.()
+          release.current = null
+          React.startTransition(() => {
+            setPending(target)
+            navigate()
+          })
+          return
+        }
         if (
           typeof document === "undefined" ||
           typeof document.startViewTransition !== "function" ||
@@ -93,10 +134,14 @@ export function ViewTransitionsProvider({ children }: { children: React.ReactNod
         started.updateCallbackDone.catch(() => {})
       },
     }),
-    [],
+    [setPending],
   )
 
-  return <NavigatorContext.Provider value={value}>{children}</NavigatorContext.Provider>
+  return (
+    <NavigatorContext.Provider value={value}>
+      <PendingPathContext.Provider value={pending}>{children}</PendingPathContext.Provider>
+    </NavigatorContext.Provider>
+  )
 }
 
 function useNavigator(): Navigator {
@@ -120,6 +165,7 @@ export function useTransitionRouter() {
       push: (href: string) => transition(() => router.push(href), href),
       replace: (href: string) => transition(() => router.replace(href), href),
       refresh: () => router.refresh(),
+      prefetch: (href: string) => router.prefetch(href),
       back: () => transition(() => router.back()),
     }),
     [router, transition],

@@ -39,7 +39,7 @@ import { NOTE_FIELD, useNoteCollab, type NoteCollab } from "@/lib/note-collab"
 import { createAutosave, type Autosave, type SaveStatus } from "@/lib/note-autosave"
 import { updateNote, uploadNoteImage, type Note, type NoteSummary } from "@/lib/notes-api"
 import { personColor } from "@/lib/person-color"
-import { useMe } from "@/lib/queries/bootstrap"
+import { useMe } from "@/lib/workspace-context"
 import { useRealtime } from "@/lib/realtime"
 import { cn } from "@/lib/utils"
 

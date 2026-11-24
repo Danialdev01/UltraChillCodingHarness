@@ -35,6 +35,7 @@ import { TransitionLink } from "@/lib/view-transitions"
 import { useProjectHref } from "@/lib/workspace-context"
 import { NewSessionDialog } from "@/components/on-demand"
 import { ProjectStackIcon } from "@/components/project-stack-icon"
+import { ListRowsSkeleton } from "@/components/page-skeletons"
 import { SettingsNav } from "@/components/settings-nav"
 
 /**
@@ -66,6 +67,7 @@ export function SectionPanel({
   sessionWorkspace = false,
   activeProjectHash,
   compact = false,
+  loading = false,
   onNavigate,
 }: {
   section: Section
@@ -87,6 +89,8 @@ export function SectionPanel({
    * somewhere; managing a project is what the panel is for.
    */
   compact?: boolean
+  /** The workspace's lists are still on their way. */
+  loading?: boolean
   /** Called when a row is followed, so a flyout can close itself. */
   onNavigate?: () => void
 }) {
@@ -232,6 +236,7 @@ export function SectionPanel({
   }
 
   if (section.id === "database") {
+    if (loading) return <ListRowsSkeleton className="px-4 py-2" />
     return (
       <ConnectionsPanel
         connections={connections}

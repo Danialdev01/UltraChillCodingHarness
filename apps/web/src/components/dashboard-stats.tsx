@@ -21,11 +21,11 @@ import { TransitionLink } from "@/lib/view-transitions";
  */
 export function DashboardStats({
   stats,
-  quota,
+  quotaCard,
 }: {
   stats: WorkspaceStats | null;
-  /** The account's OpenRouter standing. Its own fetch, so its own failure. */
-  quota: QuotaResult;
+  /** The account's OpenRouter standing, streamed: it waits on OpenRouter itself. */
+  quotaCard: React.ReactNode;
 }) {
   if (!stats) {
     return (
@@ -60,31 +60,7 @@ export function DashboardStats({
       {/* What is left to spend, beside what has been spent: the two cards
           answer the question the first one raises. The account's, not the
           workspace's -- one key pays for every workspace. */}
-      {quota.status === "ok" ? (
-        <StatCard icon={WalletIcon} label="OpenRouter quota" {...describeQuota(quota.quota)} />
-      ) : (
-        <StatCard
-          icon={WalletIcon}
-          label="OpenRouter quota"
-          value="—"
-          detail={
-            quota.status === "no_key" ? "No OpenRouter key on this account" : "Could not reach OpenRouter"
-          }
-          footnote={
-            quota.status === "no_key" ? (
-              <TransitionLink
-                href="/setting/api"
-                className="text-ucch-active underline underline-offset-2"
-              >
-                Add one in Settings
-              </TransitionLink>
-            ) : (
-              "The balance will show once it answers again."
-            )
-          }
-          muted
-        />
-      )}
+      {quotaCard}
 
       <StatCard
         icon={ListTodoIcon}
@@ -112,6 +88,35 @@ export function DashboardStats({
       />
     </div>
   );
+}
+
+/** The OpenRouter balance card. */
+export function QuotaCard({ quota }: { quota: QuotaResult }) {
+  return quota.status === "ok" ? (
+        <StatCard icon={WalletIcon} label="OpenRouter quota" {...describeQuota(quota.quota)} />
+      ) : (
+        <StatCard
+          icon={WalletIcon}
+          label="OpenRouter quota"
+          value="—"
+          detail={
+            quota.status === "no_key" ? "No OpenRouter key on this account" : "Could not reach OpenRouter"
+          }
+          footnote={
+            quota.status === "no_key" ? (
+              <TransitionLink
+                href="/setting/api"
+                className="text-ucch-active underline underline-offset-2"
+              >
+                Add one in Settings
+              </TransitionLink>
+            ) : (
+              "The balance will show once it answers again."
+            )
+          }
+          muted
+        />
+      );
 }
 
 export function StatCard({

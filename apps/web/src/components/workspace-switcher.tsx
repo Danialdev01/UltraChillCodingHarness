@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
@@ -22,6 +23,8 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { Workspace } from "@/lib/session";
 import { RAIL_OVERLAP_PX } from "@/lib/sidebar-metrics";
+import { bootstrapQuery } from "@/lib/queries/bootstrap";
+import { fetchWorkspaceSessions } from "@/lib/queries/workspace-sessions";
 import { useToast } from "@/lib/realtime";
 import { useTransitionRouter } from "@/lib/view-transitions";
 import { qk } from "@/lib/query-keys";
@@ -58,6 +61,7 @@ export function WorkspaceSwitcher({
   onOpenChange: (open: boolean) => void;
 }) {
   const transitionRouter = useTransitionRouter();
+  const queryClient = useQueryClient();
   const invalidate = useInvalidate();
   const toast = useToast();
   const [creating, setCreating] = useState(false);
@@ -73,6 +77,20 @@ export function WorkspaceSwitcher({
 
   function select(workspace: { hash: string }) {
     transitionRouter.push(`/${workspace.hash}`);
+  }
+
+  /**
+   * Loads what the shell draws of a workspace while its row is highlighted,
+   * by pointer or arrow keys, so picking it finds the lists already here.
+   */
+  function preview(workspace: Workspace) {
+    if (workspace.id === active?.id) return;
+    transitionRouter.prefetch(`/${workspace.hash}`);
+    void queryClient.prefetchQuery(bootstrapQuery(workspace.hash));
+    void queryClient.prefetchQuery({
+      queryKey: qk.sessions.workspace(workspace.id, true),
+      queryFn: () => fetchWorkspaceSessions(workspace.id, true),
+    });
   }
 
   /**
@@ -234,6 +252,7 @@ export function WorkspaceSwitcher({
                   setOpen(false);
                   select(workspace);
                 }}
+                onHighlight={preview}
                 onAdd={() => {
                   setOpen(false);
                   setCreating(true);

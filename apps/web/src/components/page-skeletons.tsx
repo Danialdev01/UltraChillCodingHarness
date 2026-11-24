@@ -69,21 +69,28 @@ export function CodeSkeleton() {
   )
 }
 
+/** One of the dashboard's stat cards. */
+export function StatCardSkeleton() {
+  return (
+    <div className="flex flex-col rounded-lg border p-4">
+      <div className="flex items-center gap-2">
+        <Skeleton className="size-4 rounded-sm" />
+        <Skeleton className="h-3 w-16" />
+      </div>
+      <Skeleton className="mt-3 h-8 w-14" />
+      <Skeleton className="mt-2 h-3.5 w-28" />
+      <Skeleton className="mt-3 h-3 w-20 opacity-70" />
+    </div>
+  )
+}
+
 /** Dashboard: the four stat cards, then the table. */
 export function DashboardSkeleton() {
   return (
     <div className="flex flex-1 flex-col gap-4 p-4">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {Array.from({ length: 4 }, (_, i) => (
-          <div key={i} className="flex flex-col rounded-lg border p-4">
-            <div className="flex items-center gap-2">
-              <Skeleton className="size-4 rounded-sm" />
-              <Skeleton className="h-3 w-16" />
-            </div>
-            <Skeleton className="mt-3 h-8 w-14" />
-            <Skeleton className="mt-2 h-3.5 w-28" />
-            <Skeleton className="mt-3 h-3 w-20 opacity-70" />
-          </div>
+          <StatCardSkeleton key={i} />
         ))}
       </div>
       <ProjectsTableSkeleton />

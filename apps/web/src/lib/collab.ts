@@ -5,7 +5,7 @@ import { HocuspocusProvider } from "@hocuspocus/provider"
 
 import { websocketOrigin } from "@/lib/client"
 import { personColor } from "@/lib/person-color"
-import { useMe } from "@/lib/queries/bootstrap"
+import { useMe } from "@/lib/workspace-context"
 import { useRealtime } from "@/lib/realtime"
 
 /**

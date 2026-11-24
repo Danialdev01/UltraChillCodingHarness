@@ -6,7 +6,7 @@ import { useQueryClient } from "@tanstack/react-query"
 
 import { whenIdle } from "@/components/prefetch"
 import { preload } from "@/lib/preload"
-import type { ProjectKind } from "@/lib/sections"
+import { useShell } from "@/lib/workspace-context"
 
 /**
  * Loads the app's data (`lib/preload.ts`) from inside the shell, once the
@@ -16,13 +16,9 @@ import type { ProjectKind } from "@/lib/sections"
  * back, not after a refresh. The lists stay fresh through the realtime
  * cache, and a page is rendered when it is opened.
  */
-export function RouteWarmup({
-  workspace,
-  projectHashes,
-}: {
-  workspace: { hash: string; kind: ProjectKind } | null
-  projectHashes: readonly string[]
-}) {
+export function RouteWarmup() {
+  const { workspace, projects, loading } = useShell()
+  const projectHashes = React.useMemo(() => projects.map((p) => p.hash), [projects])
   const client = useQueryClient()
   const pathname = usePathname()
   // The latest of each, for the run below without restarting it.
@@ -32,6 +28,8 @@ export function RouteWarmup({
   const wsKind = workspace?.kind ?? null
 
   React.useEffect(() => {
+    // The project list is what there is to warm.
+    if (loading) return
     let cancelled = false
     void whenIdle().then(() => {
       if (cancelled) return
@@ -45,7 +43,7 @@ export function RouteWarmup({
     return () => {
       cancelled = true
     }
-  }, [client, wsHash, wsKind])
+  }, [client, wsHash, wsKind, loading])
 
   return null
 }

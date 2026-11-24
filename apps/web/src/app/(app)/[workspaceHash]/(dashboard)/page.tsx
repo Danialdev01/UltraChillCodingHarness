@@ -1,4 +1,7 @@
-import { DashboardStats } from "@/components/dashboard-stats";
+import { Suspense } from "react";
+
+import { DashboardStats, QuotaCard } from "@/components/dashboard-stats";
+import { StatCardSkeleton } from "@/components/page-skeletons";
 import { ProjectsTable } from "@/components/projects-table";
 import {
   getOpenRouterQuota,
@@ -19,18 +22,30 @@ export default async function DashboardPage({ params }: { params: Promise<{ work
   // Also where an old `/{projectHash}` bookmark lands, and is sent on from.
   const active = await requireWorkspace(workspaceHash);
 
-  // The quota is the account's, not the workspace's: one key pays for all
-  // of them, so it is fetched alongside rather than through the workspace.
-  const [stats, projects, quota] = await Promise.all([
+  const [stats, projects] = await Promise.all([
     getWorkspaceStats(active.id),
     listProjects(active.id),
-    getOpenRouterQuota(),
   ]);
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-4">
-      <DashboardStats stats={stats} quota={quota} />
+      <DashboardStats
+        stats={stats}
+        quotaCard={
+          <Suspense fallback={<StatCardSkeleton />}>
+            <OpenRouterQuotaCard />
+          </Suspense>
+        }
+      />
       <ProjectsTable projects={projects} />
     </div>
   );
+}
+
+/**
+ * The quota is the account's, and asked of OpenRouter itself, which can take
+ * seconds: streamed on its own so the dashboard never waits for it.
+ */
+async function OpenRouterQuotaCard() {
+  return <QuotaCard quota={await getOpenRouterQuota()} />;
 }

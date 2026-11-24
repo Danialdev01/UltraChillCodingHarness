@@ -45,7 +45,7 @@ import { useMinuteClock } from "@/lib/uptime"
 import { cn } from "@/lib/utils"
 import { TransitionLink, useTransitionRouter } from "@/lib/view-transitions"
 import { useWorkspaceHash } from "@/lib/workspace-context"
-import { useMe } from "@/lib/queries/bootstrap"
+import { useMe } from "@/lib/workspace-context"
 
 /** Past this many cards the list lets the browser skip laying out what is off screen. */
 const VIRTUALIZE_AFTER = 100

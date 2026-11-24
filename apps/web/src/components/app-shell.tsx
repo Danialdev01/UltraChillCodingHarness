@@ -10,6 +10,7 @@ import { RouteWarmup } from "@/components/route-warmup"
 import { ViewerProvider } from "@/components/viewer"
 import { MAIN_CONTENT_ID, SkipLink } from "@/components/skip-link"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
+import { WorkspacePage } from "@/components/workspace-page"
 import { UpdateToast } from "@/components/update-toast"
 import { LastLocation } from "@/lib/last-location"
 import { BootstrapSeed } from "@/lib/queries/bootstrap"
@@ -43,8 +44,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
   // the request -- so a page that asks for its workspace costs nothing more.
   const boot = await getBootstrap()
   if (!boot) redirect("/login")
-  const { me: session, workspaces, projects, connections } = boot
-  const active = workspaces.find((w) => w.id === boot.activeWorkspaceId)
+  const session = boot.me
 
   // SidebarProvider writes `sidebar_state` on toggle but does not read it
   // back, so without this a collapsed sidebar silently re-expands on reload.
@@ -67,38 +67,19 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
       <SkipLink />
       <QueryProvider userId={session.userId} buildId={boot.buildId}>
       <BootstrapSeed data={boot} />
-      {/* Loads the recent projects' lists once the page is idle, so later clicks find them loaded. */}
-      <RouteWarmup
-        workspace={active ? { hash: active.hash, kind: active.kind } : null}
-        projectHashes={projects.map((p) => p.hash)}
-      />
       <LastLocation />
-      <ActiveWorkspaceProvider workspace={active} workspaces={workspaces}>
+      <ActiveWorkspaceProvider boot={boot}>
+        {/* Loads the recent projects' lists once the page is idle, so later clicks find them loaded. */}
+        <RouteWarmup />
         {/* "New version available", when a deploy lands while this tab is open. */}
         <UpdateToast />
         <RealtimeProvider>
           <ViewerProvider name={session.name ?? session.login ?? "User"}>
             <FilesPanelProvider>
               <ResourcesPanelProvider>
-              <AppSidebar
-                user={{
-                  name: session.name ?? session.login ?? "User",
-                  email: session.email ?? "",
-                  // `undefined`, never "": an empty `src` is a request for the
-                  // page itself, which the browser then reports as a broken image.
-                  avatar: session.avatarUrl ?? undefined,
-                }}
-                workspaces={workspaces}
-                activeWorkspaceId={active?.id ?? ""}
-                projects={projects}
-                connections={connections}
-              />
+              <AppSidebar />
               <SidebarInset className="min-h-0 overflow-hidden">
-                <AppHeader
-                  projects={projects}
-                  connections={connections}
-                  workspace={active}
-                />
+                <AppHeader />
                 {/* The right-hand column -- the file tree or the search results -- is
                     a flex sibling of the page rather than an overlay, so opening it
                     narrows the content instead of covering it; and it lives inside
@@ -117,7 +98,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
                     tabIndex={-1}
                     className="ucch-page flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto has-[[data-chat-panel]]:overflow-hidden [view-transition-name:page] focus-visible:outline-none"
                   >
-                    {children}
+                    <WorkspacePage>{children}</WorkspacePage>
                   </div>
                   <RightSidebar />
                 </div>
