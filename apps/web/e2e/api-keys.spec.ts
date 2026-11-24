@@ -71,8 +71,8 @@ const resendCard = (page: Page) => page.getByRole("region", { name: "Resend" })
 async function stepUpIfAsked(page: Page) {
   const dialog = page.getByRole("dialog")
   if (await dialog.isVisible().catch(() => false)) {
-    await dialog.getByLabel("Password").fill(password)
-    await dialog.getByLabel("Password").press("Enter")
+    await dialog.getByLabel("Password", { exact: true }).fill(password)
+    await dialog.getByLabel("Password", { exact: true }).press("Enter")
     await expect(dialog).toBeHidden()
   }
 }
@@ -87,13 +87,13 @@ test("the step-up dialog: a wrong password stays, the right one reveals", async 
 
   const dialog = page.getByRole("dialog", { name: "Reveal Resend key" })
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByLabel("Password")).toBeFocused()
-  await dialog.getByLabel("Password").fill("not the password")
-  await dialog.getByLabel("Password").press("Enter")
+  await expect(dialog.getByLabel("Password", { exact: true })).toBeFocused()
+  await dialog.getByLabel("Password", { exact: true }).fill("not the password")
+  await dialog.getByLabel("Password", { exact: true }).press("Enter")
   await expect(dialog.getByRole("alert")).toHaveText("That password isn't right.")
   await expect(dialog).toBeVisible()
 
-  await dialog.getByLabel("Password").fill(password)
+  await dialog.getByLabel("Password", { exact: true }).fill(password)
   await dialog.getByRole("button", { name: "Reveal key" }).click()
   await expect(dialog).toBeHidden()
   const revealed = page.getByRole("textbox", { name: /Resend key, revealed/ })
@@ -162,7 +162,7 @@ test("Copy puts the key on the clipboard without ever showing it", async ({ page
   await card.getByRole("button", { name: "Copy" }).click()
   const dialog = page.getByRole("dialog", { name: "Copy Resend key" })
   if (await dialog.isVisible().catch(() => false)) {
-    await dialog.getByLabel("Password").fill(password)
+    await dialog.getByLabel("Password", { exact: true }).fill(password)
     await dialog.getByRole("button", { name: "Copy key" }).click()
   }
   await expect(card.getByRole("button", { name: "Copied" })).toBeVisible()

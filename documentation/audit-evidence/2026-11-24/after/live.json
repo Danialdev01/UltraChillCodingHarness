@@ -1,0 +1,11 @@
+{
+ "login": 200,
+ "socketOfSignedOutSession": 4001,
+ "ticketAfterLogout": "refused",
+ "otherSessionSocket": "open",
+ "guessesFromForgedAddresses": "429 after 30",
+ "longPassword": 400,
+ "loginAssets_br": "19 files, 245691 bytes, br+raw",
+ "loginAssets_gzip": "19 files, 288231 bytes, gzip+raw",
+ "loginAssets_identity": "19 files, 1009812 bytes, raw"
+}

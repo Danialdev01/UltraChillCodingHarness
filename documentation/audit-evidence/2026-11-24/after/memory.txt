@@ -1,0 +1,10 @@
+ucch-audit-app 373.3MiB / 8GiB
+ucch-audit-app after 631.5MiB / 8GiB
+  RSS COMMAND
+338156 node --max-old-space-size=1536 --enable-source-maps /app/server/dist/server.mjs
+330928 next-server (v16.4.6)
+85216 node --max-old-space-size=512 --enable-source-maps /app/server/dist/collab.mjs
+75808 node /load/mock-openrouter.mjs --rate 60 --length 1500
+ 4224 ps -eo rss,args --sort=-rss
+ 1404 sleep infinity
+ 1340 sleep infinity

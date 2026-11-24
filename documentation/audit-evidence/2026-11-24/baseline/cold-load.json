@@ -1,0 +1,23 @@
+{
+ "chat": {
+  "fcp": 1056,
+  "lcp": 3820,
+  "dcl": 1011,
+  "load": 3245,
+  "staticBytesAtLoad": 3170311
+ },
+ "home": {
+  "fcp": 2192,
+  "lcp": 2212,
+  "dcl": 1048,
+  "load": 1865,
+  "staticBytesAtLoad": 1540432
+ },
+ "login": {
+  "fcp": 1252,
+  "lcp": 1252,
+  "dcl": 937,
+  "load": 1140,
+  "staticBytesAtLoad": 1000926
+ }
+}

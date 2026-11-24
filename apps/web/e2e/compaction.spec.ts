@@ -41,7 +41,7 @@ test("a compaction mid-turn is a divider with its figures", async ({ page, conte
   // The meter reads the session's own measure (OMP OM4.2), which the
   // compaction cut: fake-omp's 1280 tokens after the model call, a quarter
   // of that after -- not the turn's usage, and not the catalogue's window.
-  await expect(page.locator('button[title^="Context "]')).toHaveAttribute("title", /\(320 \/ 200k tokens\)/, { timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "Context window" })).toHaveAttribute("title", /\(320 \/ 200k tokens\)/, { timeout: 15_000 });
 
   // And it stays where it was once the page is drawn from the log.
   await page.reload();

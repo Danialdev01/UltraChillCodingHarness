@@ -15,7 +15,7 @@ Notation: **UI** is where a person finds it; **Flow** is the path through the sy
 - **GitHub OAuth** (`GITHUB_CLIENT_ID`/`SECRET`). Admission follows `GITHUB_ALLOWED_USERS` / `GITHUB_ALLOWED_ORGS`; with neither set, only existing accounts may sign in. The OAuth token is kept, encrypted, and doubles as the account's GitHub token for listing repositories.
 - **`DEV_AUTH_BYPASS=true`** (development only): every request is a fixed local user.
 
-**Flow.** `POST /api/auth/login` checks the scrypt hash and creates a `sessions` row with a cookie (20 tries a minute per address). `/api/auth/github` → GitHub → `/api/auth/github/callback` creates or matches the user. `POST /api/auth/logout` deletes the session, and every socket on it gets `revoked`. The middleware (`apps/web/src/middleware.ts`) sends signed-out visitors to `/login`, and after sign-in they return to the page they asked for, else the last one they were on.
+**Flow.** `POST /api/auth/login` checks the scrypt hash and creates a `sessions` row with a cookie (20 tries a minute per address; after 30 failures in 15 minutes an account answers 429 to addresses that have never signed in to it). `/api/auth/github` → GitHub → `/api/auth/github/callback` creates or matches the user. `POST /api/auth/logout` deletes the session and closes everything it holds open: its tickets, sockets, editors and previews. The middleware (`apps/web/src/middleware.ts`) sends signed-out visitors to `/login`, and after sign-in they return to the page they asked for, else the last one they were on.
 
 **Account page** (`/setting/account`): display name, email, password (needs the current one), avatar (an image shrunk in the browser to a `data:` URL, size-capped). Each is its own form with its own save (`PUT /api/account/{name,email,password,avatar}`).
 
@@ -317,7 +317,7 @@ The dialog shows "Listening" / "Nothing on port" live.
 **Flow.**
 1. `PUT /api/projects/:hash/preview` stores the port or folder.
 2. `GET /api/projects/:hash/preview/open[/*]` checks membership, mints a single-use ticket and redirects to the preview host.
-3. The preview host swaps the ticket for its own cookie.
+3. The preview host swaps the ticket for its own cookie, which holds only while the session it came from and the membership do.
 4. `preview.ts` proxies HTTP and WebSocket upgrades to `127.0.0.1:{port}`, only for that project's stored port.
 5. `port-watcher.ts` probes the port while someone has the project open and pushes `port.opened` / `port.closed`.
 
@@ -396,7 +396,7 @@ The dialog shows "Listening" / "Nothing on port" live.
 
 **UI.** `/{ws}/p/{project}/activity` for a project, and the account-level feed (`GET /api/activity`), with filter chips by action.
 
-**Flow.** Every command and every successful REST write produces an `audit_log` row and a live `audit.recorded` event. REST writes are described by `route-audit.ts`; routes with richer entries write their own (notes, files, tasks and timeline carry diffs). Bodies are never logged: no key values, passwords or SQL. Repeated saves of one thing by one person fold into one line.
+**Flow.** Every command and every successful REST write produces an `audit_log` row and a live `audit.recorded` event. REST writes are described by `route-audit.ts`; routes with richer entries write their own (notes, files, tasks and timeline carry diffs). Bodies are never logged: no key values, passwords or SQL. Repeated saves of one thing by one person fold into one line. Rows are kept forever unless `AUDIT_RETENTION_DAYS` is set.
 
 ---
 
@@ -488,6 +488,8 @@ Browser-only preferences (font sizes, keybindings, theme presets, document width
 
   One-join state loading in the engine (PF1.12) was measured at ~0.5% and dropped: the cost is in the append.
 - **CI**: confirm `ci.yml` and `image.yml` run green on GitHub and that Dokploy deploys from the pulled image with no build on the VPS.
+- **zod 4**: closes the one high advisory left by the [2026-11-24 audit](./audit-2026-11-24.md).
+- **Shutdown**: the container takes 60 s to stop; find what holds it.
 - **Isolation**: a separate UID or container per project, so users can't read each other's workspaces and CLI logins. The `Executor` / `ProcessHost` interfaces are the seam.
 
 ### Backlog (ideas)

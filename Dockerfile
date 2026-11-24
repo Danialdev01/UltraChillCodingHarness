@@ -159,8 +159,9 @@ RUN python3 -m venv /opt/doc-venv \
     python-docx==1.1.2 pypdf==5.1.0 pdfplumber==0.11.4 vl-convert-python==1.7.0
 ENV DOC_PYTHON=/opt/doc-venv/bin/python
 # Chromium from apt rather than Puppeteer's download; doc_diagram.py points
-# mmdc at it.
+# mmdc at it. Its packages ship 100 MB of source maps nothing here reads.
 RUN PUPPETEER_SKIP_DOWNLOAD=1 npm install -g "@mermaid-js/mermaid-cli@${MERMAID_CLI_VERSION}" \
+  && find /usr/local/lib/node_modules/@mermaid-js -name '*.map' -delete \
   && npm cache clean --force
 # Typst reads packages from the running user's cache; the server runs as node.
 RUN set -e; dir=/home/node/.cache/typst/packages/preview; \

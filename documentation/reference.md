@@ -235,7 +235,7 @@ Every `/api` route except `auth/*`, `public/*` (rate-limited per address), `inte
 | `GET /collab` (upgrade) | passed through to the Hocuspocus service |
 | `p{port}-{hash}.<ROOT_DOMAIN>/*` | live-preview reverse proxy (HTTP and WebSocket), before any route |
 | `/{hash}/preview[/*]` | the web app's alias that sends you on to the preview host |
-| `/_next/static/*`, `/sw.js` | static files from the web build |
+| `/_next/static/*`, `/sw.js` | static files from the web build, precompressed |
 | everything else | streamed to the Next.js server |
 
 ### Web app routes (`apps/web/src/app`)

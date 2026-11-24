@@ -1,3 +1,4 @@
+import { newThread } from "./omp-thread";
 import { expect, test, type Page } from "@playwright/test";
 
 /**
@@ -64,8 +65,8 @@ function text(page: Page): Promise<string> {
 
 async function open(page: Page, href: string, path: string) {
   await page.goto(href);
-  // Enabled once the page knows its project; the header has it twice, one hidden.
-  await page.locator('button[title="Show the file explorer"]:visible').first().click();
+  // The header's, enabled once the page knows its project; the rail has another.
+  await page.locator('button[aria-label="Files"][data-slot="tooltip-trigger"]').click();
   await page.getByRole("button", { name: path }).click();
   // Live: bound to the shared document, and writable.
   await expect(page.getByTitle(/Shared live with everyone/)).toBeVisible({ timeout: 30_000 });
@@ -78,6 +79,9 @@ test("two people type into one file at once, and an outside edit keeps their cur
   baseURL,
 }) => {
   const file = await newFile();
+  // Files open inside a session. This one is in the project's first checkout,
+  // where `newFile` writes.
+  file.href = (await newThread(new URL(baseURL!).origin, "coedit file spec")).href;
   try {
     const host = new URL(baseURL!).hostname;
     const people = await Promise.all(

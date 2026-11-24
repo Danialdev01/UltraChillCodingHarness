@@ -47,7 +47,7 @@ flowchart TB
 
 **The server is the execution boundary.** Every terminal, git command, file read or write, agent turn and dev-server proxy runs in the API server process or a child of it. The browser renders events and diffs. It never executes anything and has no independent model of the world.
 
-**One public port.** The server owns `:3000`. It serves `/api/*`, `/ws`, `/health` and `/metrics`, passes `/collab` upgrades to the collab service, serves `/_next/static/*` and `/sw.js` from disk, and streams every other request to Next.js on loopback (`apps/server/src/web-proxy.ts`). Requests for `p{port}-{hash}.<ROOT_DOMAIN>` are intercepted before Fastify sees them and reverse-proxied to that project's dev server (`apps/server/src/preview.ts`).
+**One public port.** The server owns `:3000`. It serves `/api/*`, `/ws`, `/health` and `/metrics`, passes `/collab` upgrades to the collab service, serves `/_next/static/*` (as the `.br`/`.gz` copies `apps/web/scripts/precompress.mjs` made at build time, by `Accept-Encoding`) and `/sw.js` from disk, and streams every other request to Next.js on loopback (`apps/server/src/web-proxy.ts`). Requests for `p{port}-{hash}.<ROOT_DOMAIN>` are intercepted before Fastify sees them and reverse-proxied to that project's dev server (`apps/server/src/preview.ts`).
 
 ---
 
@@ -368,8 +368,10 @@ Built from the `Dockerfile` (stages `base → deps → web-build / server-build 
 - **Dokploy**: an Application built from the Dockerfile (or pulled from GHCR, which `.github/workflows/image.yml` pushes after `ci.yml` passes). Domain `ROOT_DOMAIN` → port 3000, a volume at `/data`, and update order **stop-first**. A start-first rollout would run two Postgres servers on one data directory.
 - **Live previews** need a `*.<ROOT_DOMAIN>` DNS record and a wildcard certificate (Traefik DNS-01). See `README.md`.
 - **Scaling** is vertical only: one container, one replica. Live terminals, the bus and the processes are in-memory state.
-- **Backups**: `ucch-backup` runs `pg_dump` and copies `secret_key` to `/data/backups/<ts>/`, keeping `BACKUP_KEEP` (7). `ucch-restore` restores one.
+- **Backups**: `ucch-backup` runs `pg_dump` and copies `secret_key` to `/data/backups/<ts>/`, keeping `BACKUP_KEEP` (7). A backup is written under a hidden name and renamed once whole, so a failed run leaves none. `ucch-restore` restores one.
 - **Security model**: everyone who can sign in gets a shell as the container's unprivileged `node` user, so they can read other users' workspaces and CLI logins. Only give accounts to trusted people. Keep `GITHUB_ALLOWED_USERS` / `GITHUB_ALLOWED_ORGS` tight. The Docker socket is not mounted.
+- **Ending access**: `AuthService` announces every session that ends (signed out, password changed elsewhere, expired -- swept each minute). Its tickets stop working and its gateway, browser, collab and preview sockets close. When a person loses a project or workspace, their sockets, editors, preview grants and terminals there end too; a preview cookie is checked against the live session and membership (5 s cache).
+- **Client addresses**: `TRUSTED_PROXIES` says whose `X-Forwarded-For` counts. Sign-in is limited per address (20/min) and per account (30 failures in 15 minutes from addresses that have never signed in to it).
 
 ### 8.2 Development
 
@@ -423,6 +425,8 @@ Configuration is validated once at boot by zod (`apps/server/src/config.ts`). A 
 | `SECRET_KEY`                                                           | generated in the image                                                             | 64 hex chars; AES-256-GCM for stored secrets; collab secret derived from it                                                         |
 | `DEFAULT_USER_EMAIL`, `DEFAULT_USER_PASSWORD`                        | unset                                                                              | seeded once when the email is unused                                                                                                |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`                           | unset                                                                              | GitHub OAuth                                                                                                                        |
+| `TRUSTED_PROXIES` | `loopback, linklocal, uniquelocal` | whose `X-Forwarded-*` headers are believed; `none` for nobody |
+| `AUDIT_RETENTION_DAYS` | `0` | days activity-log rows are kept; 0 keeps them all |
 | `GITHUB_ALLOWED_USERS`, `GITHUB_ALLOWED_ORGS`                        | unset                                                                              | who GitHub sign-in admits; both empty = existing accounts only                                                                      |
 | `DEV_AUTH_BYPASS`                                                      | `false`                                                                          | every request is a fixed local user; refused in production                                                                          |
 | `ANTHROPIC_API_KEY`                                                    | unset                                                                              | never passed to CLIs                                                                                                                |

@@ -28,7 +28,7 @@ test("compact and hand off between turns", async ({ page, context, baseURL }) =>
   expect(String(refused)).toMatch(/no conversation to compact yet/);
 
   await dispatch(origin, "compact-spec-send", { type: "thread.send", threadId, text: "Fourth question.", provider: "native" });
-  const meter = page.locator('button[title^="Context "]');
+  const meter = page.getByRole("button", { name: "Context window" });
   await expect(meter).toHaveAttribute("title", /\(320 \/ 200k tokens\)/, { timeout: 30_000 });
   await expect(composer).toBeEnabled({ timeout: 30_000 });
   const dividers = page.getByTestId("compaction-divider");
@@ -47,7 +47,7 @@ test("compact and hand off between turns", async ({ page, context, baseURL }) =>
 
   // `/handoff` with nothing more: picked from the menu as it stands.
   await composer.fill("/handoff ");
-  await expect(page.getByText("Hand off now")).toBeVisible();
+  await expect(page.getByText("Hand over now")).toBeVisible();
   await composer.press("Enter");
   await expect(dividers).toHaveCount(3, { timeout: 30_000 });
   await expect(dividers.nth(2)).toContainText("Context compacted (handoff) · 80 → 20 tokens");
