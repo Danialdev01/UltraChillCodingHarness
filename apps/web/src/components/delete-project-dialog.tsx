@@ -29,6 +29,7 @@ import { FOCUS } from "@/components/form-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { confirmsName } from "@/lib/confirm-name";
 import { fetchGitStatus, gitCommit, gitPush, gitStage } from "@/lib/git-api";
+import { useToast } from "@/lib/realtime";
 import type { Project } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -77,6 +78,7 @@ export function DeleteProjectDialog({
   /** Runs after the server has confirmed it, so the caller can navigate. */
   onDeleted: (project: Project) => void;
 }) {
+  const toast = useToast();
   const [typed, setTyped] = useState("");
   const [stage, setStage] = useState<Stage>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -169,6 +171,14 @@ export function DeleteProjectDialog({
       // so it is shown rather than flattened into "could not delete".
       setError(body.error ?? "Could not delete the project.");
       return false;
+    }
+    const body = (await response.json().catch(() => ({}))) as { leftFiles?: boolean };
+    if (body.leftFiles) {
+      toast({
+        title: `Deleted ${project.name}`,
+        description: "Some of its files belong to another system user or are in use. The server keeps trying to remove them.",
+        tone: "error",
+      });
     }
     return true;
   }

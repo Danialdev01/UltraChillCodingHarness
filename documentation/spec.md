@@ -83,7 +83,7 @@ The stack is re-checked every 5 turns.
   - Tasks-board agent and schedule;
   - documentation page width.
 
-**Rename** with `PATCH /api/projects/:hash`. **Delete** with `DELETE /api/projects/:hash`: type the project's name to confirm. It removes the files and the entire event log, with no undo.
+**Rename** with `PATCH /api/projects/:hash`. **Delete** with `DELETE /api/projects/:hash`: type the project's name to confirm. It removes the files and the entire event log, with no undo. The project's terminals and processes are stopped first. Anything that still cannot be removed stays in `WORKSPACE_ROOT/.trash` where possible, which is emptied again at boot and every hour.
 
 **Keys** (`/{ws}/p/{project}/keys`): named secrets for the project (API keys, tokens), encrypted at rest. The list never carries values. A value is fetched on demand (`GET …/keys/:keyId/value`) and hides itself again after a while.
 

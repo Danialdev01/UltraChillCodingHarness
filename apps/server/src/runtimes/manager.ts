@@ -15,6 +15,7 @@ import {
   type RuntimeInstallProgress,
 } from "@ucch/protocol";
 
+import { forceRemove } from "../project-files.js";
 import { agentPath, writeIfChanged } from "../agent-sync.js";
 import { refreshIndexFiles } from "../dev-database.js";
 import { projectIdOfPath, projectRoot } from "../trees.js";
@@ -151,7 +152,7 @@ export class RuntimeManager {
   /** Remove this project's links and stop pending installs from recreating them. */
   async removeProject(projectId: string): Promise<void> {
     for (const install of this.#installs.values()) install.waiters.delete(projectId);
-    await rm(join(this.options.root, "projects", projectId), { recursive: true, force: true });
+    await forceRemove(join(this.options.root, "projects", projectId));
   }
 
   #versionDir(id: RuntimeId, version: string): string {

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import compress from "@fastify/compress";
 import cookie from "@fastify/cookie";
@@ -42,10 +42,10 @@ import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.j
 import { WorktreeReactor } from "./worktrees.js";
 import { SharedAgentFiles, sharedAgentFileOf } from "./agent-shared-files.js";
 import { ProjectGit, SettleRefusedError } from "./project-git.js";
+import { emptyTrash, removeProjectFolders, stopProjectProcesses } from "./project-files.js";
 import { projectDeletionCheck } from "./project-deletion.js";
 import { sessionFilesBeyondAgent, sessionProjectHasWork } from "./session-settle.js";
-import { TurnSnapshots } from "./turn-snapshot.js";
-import { projectIdOfPath, projectOf, projectRoot, sessionTree, sessionTreesOf, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
+import { projectIdOfPath, projectOf, projectRoot, sessionTree, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
 import {
   ConflictError,
   PathError,
@@ -2094,46 +2094,44 @@ app.delete<{ Params: { hash: string }; Body: unknown }>("/api/projects/:hash", a
     app.log.error({ err: error }, "could not re-check access"),
   );
 
-  if (!(await removeProjectFiles(result.projectId))) {
-    // Do not report complete deletion if any project files remain.
-    return reply.code(500).send({ error: "The project was deleted, but some files could not be removed. Contact the server administrator to finish cleanup." });
-  }
-
-  return { ok: true };
+  // The project is gone either way; anything left is retried (`emptyTrash`).
+  const leftFiles = !(await removeProjectFiles(result.projectId));
+  return { ok: true, leftFiles };
 });
 
 /**
  * A deleted project's files: its checkout, worktrees, runtime links and
- * attachment staging. After the row, not before: a failed delete must not
- * leave a project pointing at a directory that is already gone. The id is a
- * uuid from the database rather than anything the caller supplied, so it
- * cannot climb out of the workspace root. False when something was left.
+ * attachment staging, once the processes writing to them are stopped. After
+ * the row, not before: a failed delete must not leave a project pointing at a
+ * directory that is already gone. The id is a uuid from the database rather
+ * than anything the caller supplied, so it cannot climb out of the workspace
+ * root. One part failing does not stop the rest. False when something was left.
  */
 async function removeProjectFiles(projectId: string): Promise<boolean> {
-  const workspace = join(config.WORKSPACE_ROOT, projectId);
-  try {
-    await terminals.closeProject(projectId);
-    // Worktrees, runtime links and attachment staging live outside the
-    // checkout and must be removed separately.
-    const cleanup = await Promise.allSettled([
-      rm(workspace, { recursive: true, force: true }),
-      rm(sessionTreesOf(config.WORKSPACE_ROOT, projectId), { recursive: true, force: true }),
-      rm(TurnSnapshots.dirOf(config.WORKSPACE_ROOT, projectId), { recursive: true, force: true }),
-      runtimes.removeProject(projectId),
-      uploads.discardAll(projectId),
-      // Every session's memory, under every subject that paid for one.
-      sessionMemory.forget({ projectId }),
-      // And every CLI's transcripts of its sessions.
-      removeOrphanCliFiles(config.CREDS_ROOT, config.WORKSPACE_ROOT, (id) => id !== projectId),
-    ]);
-    const failed = cleanup.find((result) => result.status === "rejected");
-    if (failed?.status === "rejected") throw failed.reason;
-    return true;
-  } catch (error) {
-    app.log.error({ err: error, workspace }, "could not remove the project workspace");
-    return false;
-  }
+  const errors: unknown[] = [];
+  const attempt = (work: Promise<unknown>) => work.catch((error: unknown) => void errors.push(error));
+
+  await attempt(terminals.closeProject(projectId));
+  await attempt(stopProjectProcesses(config.WORKSPACE_ROOT, projectId, runtimes.binDir(projectId)));
+  await Promise.all([
+    removeProjectFolders(config.WORKSPACE_ROOT, projectId).then((failed) => void errors.push(...failed)),
+    attempt(runtimes.removeProject(projectId)),
+    // Every session's memory, under every subject that paid for one.
+    attempt(sessionMemory.forget({ projectId })),
+    // And every CLI's transcripts of its sessions.
+    attempt(removeOrphanCliFiles(config.CREDS_ROOT, config.WORKSPACE_ROOT, (id) => id !== projectId)),
+  ]);
+  for (const error of errors) app.log.error({ err: error, projectId }, "could not remove all of a deleted project's files");
+  return errors.length === 0;
 }
+
+/** Files a deletion could not remove, tried again at boot and every hour. */
+async function retryTrash(): Promise<void> {
+  const left = await emptyTrash(config.WORKSPACE_ROOT);
+  if (left.length) app.log.warn({ left }, "some deleted projects' files still cannot be removed");
+}
+void retryTrash();
+setInterval(() => void retryTrash(), 60 * 60_000).unref();
 
 // -- Settling in a session workspace -------------------------------------------
 //
