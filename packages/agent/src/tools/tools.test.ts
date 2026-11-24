@@ -175,6 +175,7 @@ describe("write_file", () => {
     expect(result.content).toContain("Created fresh/nested/note.md");
     expect(emitted).toEqual([
       { type: "file.changed", projectId: PROJECT, path: "fresh/nested/note.md", change: "added" },
+      expect.objectContaining({ type: "agent.file_diff", files: [expect.objectContaining({ change: "added", patch: "@@ -0,0 +1,2 @@\n+# Title\n+body" })] }),
     ]);
   });
 
@@ -200,6 +201,7 @@ describe("delete_file", () => {
     expect(result.content).toBe("Deleted doomed.html.")
     expect(emitted).toEqual([
       { type: "file.changed", projectId: PROJECT, path: "doomed.html", change: "deleted" },
+      expect.objectContaining({ type: "agent.file_diff", files: [expect.objectContaining({ change: "deleted", removed: 1 })] }),
     ])
   })
 

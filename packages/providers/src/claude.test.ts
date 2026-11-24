@@ -776,7 +776,7 @@ describe("probeClaude", () => {
     ]);
     const health = await probeClaude(ctx(host), "claude");
     expect(health).toMatchObject({ installed: true, authenticated: false, authMode: "none", version: "2.1.270" });
-    expect(health.caps).toEqual({ permissionPrompts: true, settingSources: true, mcpConfig: true });
+    expect(health.caps).toEqual({ permissionPrompts: true, settingSources: true, mcpConfig: true, thinkingDisplay: false, subagentText: false });
     expect(health.account).toBeUndefined();
   });
 

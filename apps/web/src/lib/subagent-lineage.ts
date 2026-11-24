@@ -347,8 +347,9 @@ function sameSteps(a: readonly MessagePart[], b: readonly MessagePart[]): boolea
   if (a.length !== b.length) return false
   return a.every((x, i) => {
     const y = b[i]!
-    if (x.kind === "tool" && y.kind === "tool") return x.id === y.id && x.result === y.result && x.isError === y.isError
+    if (x.kind === "tool" && y.kind === "tool") return x.id === y.id && x.result === y.result && x.isError === y.isError && x.diffs?.length === y.diffs?.length
     if (x.kind === "text" && y.kind === "text") return x.text === y.text
+    if (x.kind === "thinking" && y.kind === "thinking") return x.text === y.text
     return x.kind === y.kind
   })
 }

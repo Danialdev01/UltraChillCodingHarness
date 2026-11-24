@@ -11,13 +11,13 @@ export function subagentConversation(rows: readonly Row[], id: string): ChatMess
   let pending = false;
   let deliveryTurn: string | undefined;
   const assistant = (at?: number) => answer ??= (() => {
-    const message: ChatMessage = { role: "assistant", text: "", parts: [], reasoning: "", streaming: true, startedAt: at ?? null, completedAt: null };
+    const message: ChatMessage = { role: "assistant", text: "", parts: [], streaming: true, startedAt: at ?? null, completedAt: null };
     messages.push(message);
     return message;
   })();
   for (const { event, receivedAt } of rows) {
     if (event.type === "user.message" && event.subagentId === id) {
-      messages.push({ role: "user", text: event.text, parts: [], reasoning: "", streaming: false, startedAt: receivedAt ?? null, completedAt: null });
+      messages.push({ role: "user", text: event.text, parts: [], streaming: false, startedAt: receivedAt ?? null, completedAt: null });
       answer = null;
       pending = true;
       deliveryTurn = undefined;
@@ -37,6 +37,9 @@ export function subagentConversation(rows: readonly Row[], id: string): ChatMess
     } else if (event.type === "agent.tool_result") {
       const tool = tools.get(event.toolUseId);
       if (tool) { tool.result = event.content; tool.isError = event.isError; tool.durationMs = event.durationMs; }
+    } else if (event.type === "agent.file_diff") {
+      const tool = tools.get(event.toolUseId);
+      if (tool) tool.diffs = [...(tool.diffs ?? []), ...event.files];
     } else if (event.type === "agent.subagent_finished" && event.subagentId === id) {
       const message = assistant(receivedAt);
       message.streaming = false;

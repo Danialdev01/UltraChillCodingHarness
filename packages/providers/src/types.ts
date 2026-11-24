@@ -258,6 +258,8 @@ export interface AgentProvider {
    * turn, and the reading comes from the turn's own stream instead.
    */
   rateLimits?(ctx: RunContext): Promise<ProviderRateLimits>;
+  /** Before a turn: learns what the CLI can do, when no probe has yet. */
+  prepare?(ctx: RunContext): Promise<void>;
   /** Start or resume a turn. */
   run(input: ProviderRunInput): AgentRun;
   /**

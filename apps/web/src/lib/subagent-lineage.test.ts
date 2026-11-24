@@ -25,7 +25,7 @@ function call(overrides: Partial<ToolPart>): ToolPart {
 }
 
 function assistant(parts: ToolPart[]): ChatMessage {
-  return { role: "assistant", text: "", parts, reasoning: "", streaming: false } as unknown as ChatMessage;
+  return { role: "assistant", text: "", parts, streaming: false } as unknown as ChatMessage;
 }
 
 function entry(id: string, status: LineageEntry["run"]["status"]): LineageEntry {

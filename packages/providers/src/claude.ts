@@ -11,6 +11,7 @@ import {
   type ReasoningEffort,
   type TokenUsage,
 } from "@ucch/protocol";
+import { claudeFileDiff, fileDiffEvent } from "./file-diff.js";
 import type { ExitStatus } from "./process.js";
 import { exitedBySignal, runCli, type Normaliser } from "./run.js";
 import type {
@@ -65,6 +66,23 @@ export interface ClaudeCapabilities {
   settingSources: boolean;
   /** `--mcp-config` with `--strict-mcp-config`: what the OMP bridge is offered through. */
   mcpConfig: boolean;
+  /** `--thinking-display`, which the help does not list: known by version. */
+  thinkingDisplay?: boolean;
+  /** `--forward-subagent-text`: a subagent's prose and thinking come too. */
+  subagentText?: boolean;
+}
+
+/** The first version `--thinking-display` was checked on. */
+const THINKING_DISPLAY_SINCE = [2, 1, 331] as const;
+
+export function claudeShowsThinking(version: string): boolean {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!match) return false;
+  for (let i = 0; i < 3; i++) {
+    const diff = Number(match[i + 1]) - THINKING_DISPLAY_SINCE[i]!;
+    if (diff !== 0) return diff > 0;
+  }
+  return true;
 }
 
 /**
@@ -148,6 +166,9 @@ export function claudeArgv(input: {
   // Newer CLIs default prompts to the host; named so a future default
   // cannot quietly turn into "none" and stall or deny behind our back.
   if (input.caps.permissionPrompts) argv.push("--permission-prompts", "host");
+  // Unasked, newer models send their thinking empty; the chat shows it.
+  if (input.caps.thinkingDisplay) argv.push("--thinking-display", "summarized");
+  if (input.caps.subagentText) argv.push("--forward-subagent-text");
   // The user's settings only. A cloned repository's `.claude/settings.json`
   // -- its hooks, its MCP servers -- is model-visible instruction from
   // whoever wrote the repository, and this is a harness that clones anything.
@@ -217,6 +238,8 @@ export async function probeClaude(
   const help = await ctx.host.run(spec(["-p", "--help"]), { timeoutMs: 15_000 }).catch(() => null);
   const helpText = help?.stdout ?? "";
   caps.permissionPrompts = helpText.includes("--permission-prompts");
+  caps.thinkingDisplay = claudeShowsThinking(version.stdout);
+  caps.subagentText = helpText.includes("--forward-subagent-text");
   caps.settingSources = helpText.includes("--setting-sources");
   caps.mcpConfig = helpText.includes("--strict-mcp-config");
 
@@ -392,7 +415,7 @@ interface Line {
   message?: { id?: string; content?: Block[]; usage?: Record<string, unknown> };
   /** `system` `init`: the model the session runs, as the CLI resolved it. */
   model?: string;
-  tool_use_result?: { type?: string };
+  tool_use_result?: { type?: string } | string | null;
   attempt?: number;
   max_retries?: number;
   retry_delay_ms?: number;
@@ -829,12 +852,16 @@ export class ClaudeNormaliser implements Normaliser {
             isError,
             durationMs: call ? Math.max(0, this.#now() - call.startedAt) : 0,
           });
+          if (call && !isError && WRITING_TOOLS.has(call.name)) {
+            const diff = claudeFileDiff((path) => workspaceRelative(this.ctx.workspace, path) ?? path, line.tool_use_result);
+            if (diff) events.push(...fileDiffEvent(ids, block.tool_use_id, [diff]));
+          }
           if (call?.path && !isError) {
             events.push({
               type: "file.changed",
               projectId: this.ctx.projectId,
               path: call.path,
-              change: call.name === "Write" && line.tool_use_result?.type === "create"
+              change: call.name === "Write" && (line.tool_use_result as { type?: string } | null | undefined)?.type === "create"
                 ? "added"
                 : "modified",
             });
@@ -1321,6 +1348,10 @@ export class ClaudeProvider implements AgentProvider {
     const { caps, ...health } = await probeClaude(ctx, this.bin);
     if (health.installed) this.#caps = caps;
     return health;
+  }
+
+  async prepare(ctx: RunContext): Promise<void> {
+    if (!this.#caps) await this.probe(ctx);
   }
 
   ask(input: ProviderAskInput): Promise<string> {

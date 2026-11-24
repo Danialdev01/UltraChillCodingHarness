@@ -1,3 +1,5 @@
+import { codexFileDiffs, fileDiffEvent } from "./file-diff.js";
+import { workspaceRelative } from "./claude.js";
 import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { createReadStream, statSync } from "node:fs";
@@ -49,7 +51,11 @@ export class CodexSubagents {
   #seen = new Map<string, Set<string>>();
   #parentSession = "";
   #parentTurn = "";
-  constructor(private readonly ctx: { threadId: string; turnId: string; now?: () => number }) { this.since = this.#now(); }
+  /** Who pairs this session's own file changes with their calls. */
+  fileChanges: { observeFileChange(item: unknown): DomainEvent[]; settleFileChanges(all: boolean): DomainEvent[] } | null = null;
+  /** Reading an earlier turn's history, for identity alone. */
+  replaying = false;
+  constructor(private readonly ctx: { threadId: string; turnId: string; workspace?: string; now?: () => number }) { this.since = this.#now(); }
   #ids() { return { threadId: this.ctx.threadId, turnId: this.ctx.turnId }; }
   #now() { return (this.ctx.now ?? Date.now)(); }
   #at(record: Record<string, unknown>) {
@@ -203,6 +209,9 @@ export class CodexSubagents {
     }
     if (record.type !== "event_msg") return [];
     if (payload.type === "task_started") this.#parentTurn = string(payload.turn_id) ?? "";
+    if (payload.type === "item_completed" && object(payload.item).type === "FileChange") {
+      return this.replaying ? [] : this.fileChanges?.observeFileChange(payload.item) ?? [];
+    }
     if (payload.type === "collab_agent_spawn_end" && typeof payload.new_thread_id === "string") {
       const call = string(payload.call_id) ?? [...this.spawnCalls].find(([call, prompt]) => prompt === payload.prompt && ![...this.children.values()].some(child => child.call === call))?.[0];
       return this.observe({ id: call, tool: "spawn_agent", prompt: payload.prompt, model: payload.model,
@@ -287,6 +296,7 @@ export class CodexSubagents {
     if (!child.taskTurn && (this.#parentTurn || record.timestamp)) return [];
     if (record.type === "event_msg") {
       if (payload.turn_id && child.taskTurn && payload.turn_id !== child.taskTurn) return [];
+      if (payload.type === "item_completed" && object(payload.item).type === "FileChange") return this.#childChange(id, object(payload.item));
       if (payload.type === "task_complete") return this.finish(id, "completed", string(payload.last_agent_message) ?? null, at,
         typeof payload.duration_ms === "number" ? payload.duration_ms : undefined);
       if (payload.type === "turn_aborted") return this.finish(id, "aborted", string(payload.reason) ?? "Agent interrupted.", at);
@@ -309,11 +319,30 @@ export class CodexSubagents {
         input: toolInput(payload.input ?? payload.arguments) }, ...this.progress(id, string(payload.name) ?? "tool")];
     }
     if (["function_call_output", "custom_tool_call_output"].includes(payload.type) && typeof payload.call_id === "string") {
-      const content = typeof payload.output === "string" ? payload.output : JSON.stringify(payload.output ?? "");
+      const blocks: unknown[] = Array.isArray(payload.output) ? payload.output : [];
+      const content = typeof payload.output === "string" ? payload.output
+        : blocks.length && blocks.every((block) => typeof object(block).text === "string") ? blocks.map((block) => object(block).text as string).join("\n")
+        : JSON.stringify(payload.output ?? "");
       return [{ type: "agent.tool_result", ...this.#ids(), toolUseId: `${id}:${payload.call_id}`, content: content.slice(0, 20_000), isError: payload.is_error === true,
         durationMs: typeof payload.duration_ms === "number" ? Math.max(0, Math.round(payload.duration_ms)) : 0 }];
     }
     return [];
+  }
+
+  /** A worker's file change: a call of its own, its rollout having no other that names the diff. */
+  #childChange(id: string, item: Record<string, any>): DomainEvent[] {
+    if (typeof item.id !== "string") return [];
+    const name = (path: string) => (this.ctx.workspace ? workspaceRelative(this.ctx.workspace, path) : null) ?? path;
+    const files = codexFileDiffs(name, item);
+    if (files.length === 0) return [];
+    const toolUseId = `${id}:${item.id}`;
+    const isError = item.status === "failed" || item.status === "declined";
+    const changes = files.map((f) => ({ path: f.path, kind: f.change === "added" ? "add" : f.change === "deleted" ? "delete" : "update" }));
+    return [
+      { type: "agent.tool_use", ...this.#ids(), subagentId: id, toolUseId, name: "file_change", input: { changes } },
+      { type: "agent.tool_result", ...this.#ids(), toolUseId, content: changes.map((c) => `${c.kind} ${c.path}`).join("\n"), isError, durationMs: 0 },
+      ...(isError ? [] : fileDiffEvent(this.#ids(), toolUseId, files)),
+    ];
   }
 
   /** Restore identity only. Old tasks stay dormant until this turn resumes them. */
@@ -413,6 +442,7 @@ export function withCodexSubagents(input: ProviderRunInput, run: AgentRun, agent
         const path = offsets.get(id)?.path ?? codexRollout(input.ctx.env.CODEX_HOME, session);
         if (path) events.push(...await read(id, path, false));
       }
+      events.push(...(agents.fileChanges?.settleFileChanges(false) ?? []));
       return events;
     };
     const iterator = run.events[Symbol.asyncIterator]();
@@ -422,9 +452,10 @@ export function withCodexSubagents(input: ProviderRunInput, run: AgentRun, agent
     try {
       if (previous && previousOffset > 0) {
         const history = createInterface({ input: createReadStream(previous, { start: 0, end: previousOffset - 1 }), crlfDelay: Infinity });
+        agents.replaying = true;
         try { for await (const line of history) agents.parentRollout(line); }
         catch { /* Identity recovery is optional when a rollout was removed. */ }
-        finally { history.close(); agents.restored(); }
+        finally { agents.replaying = false; history.close(); agents.restored(); }
       }
       let nextPoll = Date.now() + 300;
       while (true) {
@@ -449,6 +480,7 @@ export function withCodexSubagents(input: ProviderRunInput, run: AgentRun, agent
         for (const event of await poll()) yield event;
         if (!backlog) break;
       }
+      for (const event of agents.fileChanges?.settleFileChanges(true) ?? []) yield event;
       // The exec process/observer has ended. This says observation was interrupted,
       // not that the child succeeded, failed, or its reusable session was closed.
       for (const [id] of agents.children) for (const event of agents.finish(id, "aborted", "Codex execution ended before the child's outcome was observed.")) yield event;

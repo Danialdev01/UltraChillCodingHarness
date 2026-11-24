@@ -314,7 +314,6 @@ export function SubagentDetail({
           role: "assistant",
           text: "",
           parts: run.steps,
-          reasoning: "",
           streaming: running,
           startedAt: null,
           completedAt: null,

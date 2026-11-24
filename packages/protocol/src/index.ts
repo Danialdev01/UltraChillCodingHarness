@@ -1,6 +1,7 @@
 export * from "./plain.js";
 export * from "./ids.js";
 export * from "./events.js";
+export * from "./file-diff.js";
 export * from "./commands.js";
 export * from "./rpc.js";
 export * from "./git.js";

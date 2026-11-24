@@ -38,7 +38,7 @@ describe("transcript", () => {
     role: "assistant",
     text: "",
     parts,
-    reasoning: "secret plan",
+
     streaming: false,
     startedAt: null,
     completedAt: null,
@@ -52,7 +52,6 @@ describe("transcript", () => {
         text: "what is this?",
         attachments: [{ name: "notes.md", size: 1, type: "text/markdown", uploadId: "u1" }],
         parts: [],
-        reasoning: "",
         streaming: false,
         startedAt: null,
         completedAt: null,

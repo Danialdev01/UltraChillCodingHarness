@@ -61,6 +61,8 @@ export interface GitRunOptions {
    * watcher again, and took the index lock from under the agent.
    */
   read?: boolean;
+  /** Added to the rebuilt environment: another git directory or work tree. */
+  env?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -134,6 +136,7 @@ export async function runGit(
           GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new",
           GIT_CONFIG_GLOBAL: "/dev/null",
           GIT_CONFIG_SYSTEM: "/dev/null",
+          ...options.env,
           ...(options.read ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
         },
       },

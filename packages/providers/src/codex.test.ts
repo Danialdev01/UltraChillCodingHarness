@@ -166,7 +166,7 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
   it("is unchanged with the bridge off", () => {
     expect(codexArgv({ bin: "codex", isRepo: false, caps, resumeToken: "th-1", model: "gpt-5" })).toEqual([
       "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--skip-git-repo-check",
-      "--ignore-rules", "--model", "gpt-5", "resume", "th-1",
+      "--ignore-rules", "--model", "gpt-5", "-c", 'model_reasoning_summary="detailed"', "resume", "th-1",
     ]);
   });
 
@@ -179,10 +179,10 @@ describe("codexArgv with the OMP bridge (solution §10.3)", () => {
       "-c", 'mcp_servers.omp.default_tools_approval_mode="approve"',
     ];
     expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp })).toEqual([
-      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", ...flags,
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", "-c", 'model_reasoning_summary="detailed"', ...flags,
     ]);
     expect(codexArgv({ bin: "codex", isRepo: true, caps, mcp, resumeToken: "th-1" })).toEqual([
-      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", ...flags, "resume", "th-1",
+      "codex", "exec", "--json", "--sandbox", "workspace-write", "-c", "features.image_generation=true", "--ignore-rules", "-c", 'model_reasoning_summary="detailed"', ...flags, "resume", "th-1",
     ]);
   });
 
@@ -236,7 +236,7 @@ describe("CodexNormaliser", () => {
     const use = events.find((e) => e.type === "agent.tool_use" && e.toolUseId === "item_1");
     const result = events.find((e) => e.type === "agent.tool_result" && e.toolUseId === "item_1");
     expect(use).toMatchObject({ name: "bash", input: { command: "bash -lc ls" } });
-    expect(result).toMatchObject({ content: "README.md\nsrc\n", isError: false, durationMs: 100 });
+    expect(result).toMatchObject({ content: "README.md\nsrc\nexit code: 0", isError: false, durationMs: 100 });
   });
 
   it("turns a file_change into a tool row and workspace-relative file events", () => {
@@ -251,7 +251,7 @@ describe("CodexNormaliser", () => {
 
   it("streams a whole message as one delta and stores it durably", () => {
     const delta = events.find((e) => e.type === "agent.text_delta");
-    const message = events.find((e) => e.type === "agent.message");
+    const message = events.filter((e) => e.type === "agent.message").at(-1);
     expect(delta).toMatchObject({ text: "I updated the entry point and added a doc." });
     expect(message).toMatchObject({ content: [{ type: "text", text: "I updated the entry point and added a doc." }] });
   });

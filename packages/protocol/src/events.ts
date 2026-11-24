@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ProjectDatabase } from "./database.js";
+import { FileDiff } from "./file-diff.js";
 import { BranchName, PreviewHash, ProjectHash, ThreadHash } from "./ids.js";
 import { PROJECT_MODES } from "./plain.js";
 import type { ProjectTask } from "./tasks.js";
@@ -951,6 +952,34 @@ export const ChangeOrigin = z.object({
 });
 export type ChangeOrigin = z.infer<typeof ChangeOrigin>;
 
+/**
+ * What a tool call did to the files it changed. Apart from the call's
+ * result because it can be learned later: Codex tells a change's diff in its
+ * rollout, not on stdout.
+ */
+const AgentFileDiff = z.object({
+  type: z.literal("agent.file_diff"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  toolUseId: z.string(),
+  files: z.array(FileDiff),
+});
+
+/**
+ * Everything a turn changed in its tree, by comparing the tree before and
+ * after: it has the files a shell command changed, which no call tells of.
+ */
+const AgentTurnDiff = z.object({
+  type: z.literal("agent.turn_diff"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid(),
+  files: z.array(FileDiff),
+  /** The tree is not the session's own, so another writer's changes may be among these. */
+  shared: z.boolean(),
+  /** Files past the event's cap, not named here. */
+  omittedFiles: z.number().int().nonnegative(),
+});
+
 const CheckpointCaptured = z.object({
   type: z.literal("checkpoint.captured"),
   threadId: z.string().uuid(),
@@ -1463,6 +1492,8 @@ export const DomainEvent = z.discriminatedUnion("type", [
   AgentSubagentStarted,
   AgentSubagentProgress,
   AgentSubagentOutput,
+  AgentFileDiff,
+  AgentTurnDiff,
   AgentSubagentFinished,
   CheckpointCaptured,
   CheckpointReverted,

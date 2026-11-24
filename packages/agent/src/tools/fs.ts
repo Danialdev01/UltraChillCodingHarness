@@ -1,3 +1,4 @@
+import { diffFromTexts, type FileDiff } from "@ucch/protocol";
 import { z } from "zod/v4";
 import { defineTool, type ToolContext, type ToolResult } from "../tool.js";
 import { clamp, describe, languageOf, numberLines } from "./format.js";
@@ -164,6 +165,7 @@ export const writeFile = defineTool({
     // Whether the file already existed decides the change kind, and it can
     // only be known before the write.
     const existed = await exists(ctx, input.path);
+    const before = existed ? await textOf(ctx, input.path) : "";
     await ctx.executor.writeFile(input.path, input.content);
 
     await ctx.emit({
@@ -172,6 +174,8 @@ export const writeFile = defineTool({
       path: input.path,
       change: existed ? "modified" : "added",
     });
+
+    if (before !== null) await showDiff(ctx, input.path, existed ? "modified" : "added", before, input.content);
 
     const lines = input.content === "" ? 0 : input.content.split("\n").length;
     return {
@@ -248,6 +252,8 @@ export const editFile = defineTool({
       change: "modified",
     });
 
+    await showDiff(ctx, input.path, "modified", content, updated);
+
     const replaced = input.replace_all ? occurrences : 1;
     return {
       content: `Replaced ${replaced} occurrence${replaced === 1 ? "" : "s"} in ${input.path}.`,
@@ -270,6 +276,7 @@ export const deleteFile = defineTool({
       return { content: "Give the path of a file to delete.", isError: true };
     }
 
+    const before = await textOf(ctx, input.path);
     let removed: boolean;
     try {
       removed = await ctx.executor.removeFile(input.path);
@@ -289,10 +296,33 @@ export const deleteFile = defineTool({
       path: input.path,
       change: "deleted",
     });
+    if (before !== null) await showDiff(ctx, input.path, "deleted", before, "");
 
     return { content: `Deleted ${input.path}.`, display: { path: input.path } };
   },
 });
+
+/** A file's text, or null when it is too large or not text: there is no diff to show then. */
+async function textOf(ctx: ToolContext, path: string): Promise<string | null> {
+  try {
+    const text = await ctx.executor.readFile(path, { maxBytes: MAX_FILE_BYTES });
+    return text.includes("\0") || text.length >= MAX_FILE_BYTES ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+/** What the call did to the file, for the chat. */
+async function showDiff(ctx: ToolContext, path: string, change: FileDiff["change"], before: string, after: string): Promise<void> {
+  if (before === after && change === "modified") return;
+  await ctx.emit({
+    type: "agent.file_diff",
+    threadId: ctx.threadId,
+    turnId: ctx.turnId,
+    toolUseId: ctx.toolUseId,
+    files: [diffFromTexts({ path, change }, before, after)],
+  });
+}
 
 async function exists(ctx: ToolContext, path: string): Promise<boolean> {
   try {

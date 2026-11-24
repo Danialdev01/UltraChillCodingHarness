@@ -3180,7 +3180,6 @@ const Message = memo(function Message({
     | { kind: "compaction"; key: string; part: CompactionPart }
     | { kind: "widget"; key: string; call: ToolPart }
   )[] = [];
-  if (message.reasoning) work.push({ kind: "think", key: "reasoning", text: message.reasoning });
   // Subagents are drawn on the page, not folded into the work: they are
   // the turn's delegated work, and a reader wants to see who is on what
   // without opening anything.
@@ -3192,6 +3191,10 @@ const Message = memo(function Message({
       if (isShowWidgetTool(part.name)) flow.push({ kind: "widget", key: part.id, call: part });
       else if (isSubagentCall(part.name) || part.subagents) delegated.push(part);
       else work.push({ kind: "tool", key: part.id, call: part });
+      return;
+    }
+    if (part.kind === "thinking") {
+      if (part.text.trim()) work.push({ kind: "think", key: `thinking-${i}`, text: part.text });
       return;
     }
     if (part.kind === "compaction") {
@@ -3223,7 +3226,6 @@ const Message = memo(function Message({
       {transcript && (
         <TranscriptTurn
           message={message}
-          renderOther={(call) => <ToolRow key={call.id} call={call} />}
           renderCompaction={(part, key) => <CompactionDivider key={key} part={part} />}
           caret={
             <p className="text-sm">
@@ -3365,7 +3367,6 @@ function renderSubagentWork(message: ChatMessage) {
   return (
     <TranscriptTurn
       message={message}
-      renderOther={(call) => <ToolRow key={call.id} call={call} />}
       renderCompaction={(part, key) => <CompactionDivider key={key} part={part} />}
       caret={
         <p className="text-sm">

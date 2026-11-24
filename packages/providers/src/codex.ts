@@ -1,7 +1,8 @@
 import { CodexSubagents, withCodexSubagents } from "./codex-subagents.js";
 import { statSync } from "node:fs";
-import { cliContextWindow, codexCompactThreshold, occupancy, type DomainEvent, type ReasoningEffort, type TokenUsage } from "@ucch/protocol";
+import { cliContextWindow, codexCompactThreshold, occupancy, type DomainEvent, type FileDiff, type ReasoningEffort, type TokenUsage } from "@ucch/protocol";
 import { CODEX_IMAGE_INSTRUCTIONS, codexRollout, rolloutImagePaths, withCodexImages } from "./codex-images.js";
+import { codexFileDiffs, fileDiffEvent } from "./file-diff.js";
 import { lastCallUsage, readCodexRollout, turnUsage } from "./codex-rollout.js";
 import { workspaceRelative } from "./claude.js";
 import type { ExitStatus } from "./process.js";
@@ -265,6 +266,9 @@ export function codexArgv(input: {
   if (input.effort && input.effort !== "off") {
     argv.push("-c", `model_reasoning_effort=${JSON.stringify(input.effort)}`);
   }
+  // Every current model's own default is no summary at all, and the chat
+  // shows what the model thought.
+  argv.push("-c", 'model_reasoning_summary="detailed"');
   // No `model_auto_compact_token_limit`: Codex compacts at its own default
   // (plan2 §3.1). Every compaction leaves the cache cold, so fewer and later
   // is cheaper; the server compacts between turns before the window fills.
@@ -439,7 +443,75 @@ export class CodexNormaliser implements Normaliser {
       workspace: string;
       now?: () => number;
     },
-  ) { this.subagents = new CodexSubagents(ctx); }
+  ) {
+    this.subagents = new CodexSubagents(ctx);
+    this.subagents.fileChanges = this;
+  }
+
+  /** Changes stdout told of, whose diffs the rollout has yet to. */
+  #undiffed: { id: string; key: string }[] = [];
+  /** Changes the rollout told of first, and how many polls ago. */
+  #unannounced: { id: string; key: string; files: FileDiff[]; polls: number }[] = [];
+  /** Told from the rollout alone: their own stdout item, should it come late, is the same change. */
+  #told: string[] = [];
+
+  #name(path: string): string {
+    return workspaceRelative(this.ctx.workspace, path) ?? path;
+  }
+
+  /**
+   * A `FileChange` from this turn's rollout. The rollout and stdout number
+   * their items apart, so a change is known by the files it touched, oldest
+   * first.
+   */
+  observeFileChange(item: unknown): DomainEvent[] {
+    const { id, changes, status } = (item ?? {}) as { id?: unknown; changes?: unknown; status?: unknown };
+    if (typeof id !== "string" || status === "failed" || status === "declined" || typeof changes !== "object" || changes === null) return [];
+    const files = codexFileDiffs((path) => this.#name(path), item);
+    if (files.length === 0) return [];
+    const key = changeKey(Object.keys(changes).map((path) => this.#name(path)));
+    const at = this.#undiffed.findIndex((call) => call.key === key);
+    if (at >= 0) return fileDiffEvent(this.#ids(), this.#undiffed.splice(at, 1)[0]!.id, files);
+    this.#unannounced.push({ id, key, files, polls: 0 });
+    return [];
+  }
+
+  /** Changes stdout has had its time to announce become calls of their own. */
+  settleFileChanges(all: boolean): DomainEvent[] {
+    const due = this.#unannounced.filter((change) => all || ++change.polls > 2);
+    this.#unannounced = this.#unannounced.filter((change) => !due.includes(change));
+    return due.flatMap((change) => {
+      this.#told.push(change.key);
+      const changes = change.files.map((f) => ({ path: f.path, kind: f.change === "added" ? "add" : f.change === "deleted" ? "delete" : "update" }));
+      return [
+        ...this.#tool("item.completed", change.id, "file_change", { changes }, () => ({
+          content: changes.map((c) => `${c.kind} ${c.path}`).join("\n"),
+          isError: false,
+        })),
+        ...fileDiffEvent(this.#ids(), change.id, change.files),
+        ...this.#changed(changes),
+      ];
+    });
+  }
+
+  #ids() {
+    return { threadId: this.ctx.threadId, turnId: this.ctx.turnId };
+  }
+
+  #changed(changes: readonly { path?: string; kind?: string }[]): DomainEvent[] {
+    return changes.flatMap((change): DomainEvent[] => {
+      const path = workspaceRelative(this.ctx.workspace, change.path!);
+      if (!path) return [];
+      return [
+        {
+          type: "file.changed",
+          projectId: this.ctx.projectId,
+          path,
+          change: change.kind === "add" ? "added" : change.kind === "delete" ? "deleted" : "modified",
+        },
+      ];
+    });
+  }
 
   get sessionId(): string | null {
     return this.#sessionId;
@@ -547,17 +619,31 @@ export class CodexNormaliser implements Normaliser {
 
       case "reasoning":
         if (!completed || !item.text) return [];
-        return [{ type: "agent.thinking_delta", ...ids, text: item.text }];
+        // Durable as well as live: a delta is never stored.
+        return [
+          { type: "agent.thinking_delta", ...ids, text: item.text },
+          { type: "agent.message", ...ids, content: [{ type: "thinking", thinking: item.text }] },
+        ];
 
       case "command_execution":
         return this.#tool(phase, id, "bash", { command: item.command ?? "" }, () => ({
-          content: item.aggregated_output ?? "",
+          content: [item.aggregated_output ?? "", ...(typeof item.exit_code === "number" ? [`exit code: ${item.exit_code}`] : [])]
+            .filter(Boolean)
+            .join(item.aggregated_output?.endsWith("\n") ? "" : "\n"),
           isError: (item.exit_code ?? 0) !== 0 || item.status === "failed",
         }));
 
       case "file_change": {
         if (!completed) return [];
         const changes = (item.changes ?? []).filter((c) => typeof c.path === "string");
+        const key = changeKey(changes.map((c) => this.#name(c.path!)));
+        const told = this.#told.indexOf(key);
+        if (told >= 0 && item.status !== "failed" && !this.#completed.has(id)) {
+          this.#told.splice(told, 1);
+          this.#completed.add(id);
+          return [];
+        }
+        const replayed = this.#completed.has(id);
         const events = this.#tool(
           "item.completed",
           id,
@@ -569,16 +655,12 @@ export class CodexNormaliser implements Normaliser {
           }),
         );
         if (item.status === "failed") return events;
-        for (const change of changes) {
-          const path = workspaceRelative(this.ctx.workspace, change.path!);
-          if (!path) continue;
-          events.push({
-            type: "file.changed",
-            projectId: this.ctx.projectId,
-            path,
-            change: change.kind === "add" ? "added" : change.kind === "delete" ? "deleted" : "modified",
-          });
+        if (!replayed) {
+          const at = this.#unannounced.findIndex((change) => change.key === key);
+          if (at >= 0) events.push(...fileDiffEvent(ids, id, this.#unannounced.splice(at, 1)[0]!.files));
+          else this.#undiffed.push({ id, key });
         }
+        events.push(...this.#changed(changes));
         return events;
       }
 
@@ -650,6 +732,10 @@ export class CodexNormaliser implements Normaliser {
     });
     return events;
   }
+}
+
+function changeKey(paths: readonly string[]): string {
+  return [...new Set(paths)].sort().join("\0");
 }
 
 function describe(value: unknown): string {

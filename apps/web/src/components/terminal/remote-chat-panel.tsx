@@ -251,7 +251,6 @@ export function RemoteChatPanel({
                 <div key={index} className="text-sm">
                   <TranscriptTurn
                     message={message}
-                    renderOther={(call) => <ToolRow key={call.id} call={call} />}
                     renderCompaction={(_part, key) => <hr key={key} className="my-2" />}
                     caret={<Loader2Icon className="text-muted-foreground size-3 animate-spin" />}
                   />
@@ -377,31 +376,6 @@ function UserBubble({ text }: { text: string }) {
         </pre>
       )}
     </div>
-  )
-}
-
-function ToolRow({ call }: { call: ToolPart }) {
-  const running = call.result === null
-  const summary = summariseInput(call.input)
-  const duration = formatDuration(call.durationMs)
-  return (
-    <details className={cn("group/tool rounded-md border text-xs", call.isError && "border-destructive/40")}>
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 select-none [&::-webkit-details-marker]:hidden">
-        <ChevronRightIcon className="text-muted-foreground size-3.5 shrink-0 transition-transform group-open/tool:rotate-90" />
-        <span className="font-mono font-medium">{call.name}</span>
-        {summary && <span className="text-muted-foreground truncate font-mono">{summary}</span>}
-        <span className="ml-auto shrink-0">
-          {running ? (
-            <Loader2Icon className="text-muted-foreground size-3 animate-spin" />
-          ) : (
-            duration && <span className="text-muted-foreground tabular-nums">{duration}</span>
-          )}
-        </span>
-      </summary>
-      {call.result !== null && (
-        <pre className="max-h-60 overflow-auto border-t px-3 py-2 font-mono text-[11px] whitespace-pre-wrap">{call.result}</pre>
-      )}
-    </details>
   )
 }
 

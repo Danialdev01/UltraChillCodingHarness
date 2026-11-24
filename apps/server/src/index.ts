@@ -45,6 +45,7 @@ import { SharedAgentFiles, sharedAgentFileOf } from "./agent-shared-files.js";
 import { ProjectGit, SettleRefusedError } from "./project-git.js";
 import { projectDeletionCheck } from "./project-deletion.js";
 import { sessionFilesBeyondAgent, sessionProjectHasWork } from "./session-settle.js";
+import { TurnSnapshots } from "./turn-snapshot.js";
 import { projectIdOfPath, projectOf, projectRoot, sessionTree, sessionTreesOf, treeFor, worktreeIdOf, type TreeTarget } from "./trees.js";
 import {
   ConflictError,
@@ -2125,6 +2126,7 @@ async function removeProjectFiles(projectId: string): Promise<boolean> {
     const cleanup = await Promise.allSettled([
       rm(workspace, { recursive: true, force: true }),
       rm(sessionTreesOf(config.WORKSPACE_ROOT, projectId), { recursive: true, force: true }),
+      rm(TurnSnapshots.dirOf(config.WORKSPACE_ROOT, projectId), { recursive: true, force: true }),
       runtimes.removeProject(projectId),
       uploads.discardAll(projectId),
       // Every session's memory, under every subject that paid for one.

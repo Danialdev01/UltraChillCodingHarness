@@ -88,6 +88,7 @@ import { workspaceSubject, type ProviderService } from "./providers.js";
 import { toPolicy } from "./workspaces.js";
 import { applyProjection, readingOf } from "./engine.js";
 import { treeFor, worktreeIdOf } from "./trees.js";
+import { TurnSnapshots } from "./turn-snapshot.js";
 import type { Principal } from "./auth.js";
 import type { EngineResult } from "./engine.js";
 import { cliTranscriptExists } from "./cli-session-files.js";
@@ -424,6 +425,8 @@ export class AgentTurnReactor {
   readonly messaging: AgentMessaging | null;
   #ompProbe: { at: number; value: Promise<boolean> } | null = null;
 
+  readonly #snapshots: TurnSnapshots;
+
   /**
    * Each running turn's `ucch_agent` calls not yet matched to the subagent
    * they started: a bridge call reaches the server without the CLI's tool
@@ -437,6 +440,7 @@ export class AgentTurnReactor {
     private readonly options: AgentOptions,
     private readonly onError: (error: unknown) => void,
   ) {
+    this.#snapshots = new TurnSnapshots(options.workspaceRoot);
     this.#scheduler =
       options.scheduler ?? new TurnScheduler({ cliPerUser: 2, cliTotal: Infinity, nativeTotal: Infinity });
     const { bus, dispatch } = options;
@@ -1285,6 +1289,30 @@ export class AgentTurnReactor {
           spawnCalls.calls.push({ toolUseId: event.toolUseId, task: typeof task === "string" ? task : null });
         }
       }
+      const diff = batch.some((event) => event.type === "agent.turn_completed" || event.type === "agent.turn_failed")
+        ? turnDiff()
+        : null;
+      return diff ? diff.then((found) => store([...found, ...batch])) : store(batch);
+    };
+    // The tree as the turn found it, until its end has been compared with it.
+    let snapshot: string | null = null;
+    const turnDiff = (): Promise<DomainEvent[]> | null => {
+      const before = snapshot;
+      snapshot = null;
+      if (before === null) return null;
+      return this.#snapshots.changes(thread.projectId, workspace, before).then(
+        ({ files, omitted }) =>
+          files.length > 0
+            ? [{ type: "agent.turn_diff", threadId, turnId, files, shared: !worktreeId, omittedFiles: omitted }]
+            : [],
+        (error: unknown) => {
+          // Never the turn's failure: there is only nothing to show.
+          this.onError(error);
+          return [];
+        },
+      );
+    };
+    const store = (batch: readonly DomainEvent[]) => {
       const events = worktreeId
         ? batch.map((event) => (event.type === "file.changed" ? { ...event, worktreeId } : event))
         : batch;
@@ -1378,6 +1406,11 @@ export class AgentTurnReactor {
       const pictures = await this.#placeAttachments(thread.projectId, workspace, text, images).catch((error: unknown) => {
         this.onError(error);
         return [] as ProviderImage[];
+      });
+
+      snapshot = await this.#snapshots.capture(thread.projectId, workspace).catch((error: unknown) => {
+        this.onError(error);
+        return null;
       });
 
       // The knowledge bases picked for this message: the folders their text
@@ -2803,6 +2836,7 @@ export class AgentTurnReactor {
             }),
         };
       }
+      await resolved.provider.prepare?.(resolved.ctx(input.workspace)).catch(this.onError);
       run = resolved.provider.run({
         ctx: resolved.ctx(input.workspace),
         ...(input.subagentId ? { subagentId: input.subagentId } : {}),

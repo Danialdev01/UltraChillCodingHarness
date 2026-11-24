@@ -1,4 +1,4 @@
-import type { DomainEvent, MessageMode, PlanStage } from "@ucch/protocol";
+import type { DomainEvent, FileDiff, MessageMode, PlanStage } from "@ucch/protocol";
 import { isUcchAgentTool, PLAN_CLOSE, PLAN_OPEN, proposedPlanIn, stripPlanTags } from "@ucch/protocol/plain";
 import { parseAttachments, type MessageAttachment } from "./attachments.js";
 
@@ -22,6 +22,14 @@ export interface TextPart {
   streaming: boolean;
 }
 
+/** A run of thinking, where it happened among the prose and the calls. */
+export interface ThinkingPart {
+  kind: "thinking";
+  text: string;
+  /** As on `TextPart`. */
+  streaming: boolean;
+}
+
 /** One tool call and, once it lands, its result. */
 export interface ToolPart {
   kind: "tool";
@@ -32,6 +40,10 @@ export interface ToolPart {
   result: string | null;
   isError: boolean;
   durationMs: number | null;
+  /** When it was made, Unix ms; absent when that was not seen. */
+  startedAt?: number;
+  /** What it did to the files it changed (`agent.file_diff`). */
+  diffs?: FileDiff[];
   /** Paused on a permission prompt: the CLI is waiting, not working. */
   awaitingApproval?: boolean;
   /**
@@ -178,7 +190,7 @@ export interface CompactionPart {
   tokensAfter: number | null;
 }
 
-export type MessagePart = TextPart | ToolPart | CompactionPart;
+export type MessagePart = TextPart | ThinkingPart | ToolPart | CompactionPart;
 
 /** A CLI's question, open until a person or the end of the turn answers it. */
 export interface PermissionPrompt {
@@ -283,7 +295,8 @@ export interface ChatMessage {
   agentMessage?: { id: string; sessionId: string; hash?: string | null; direction: "from" | "to"; delivered: boolean; depth: number };
   raw?: string;
   parts: MessagePart[];
-  reasoning: string;
+  /** Everything the turn changed in its tree (`agent.turn_diff`). */
+  turnDiff?: { files: FileDiff[]; shared: boolean; omittedFiles: number };
   /** True while the turn is open: no `turn_completed` and no `turn_failed`. */
   streaming: boolean;
   /** Not a turn: the row where the session switched harness. */
@@ -415,7 +428,6 @@ export function toMessages(
         role: "assistant",
         text: "",
         parts: [],
-        reasoning: "",
         streaming: true,
         turnId,
         startedAt: null,
@@ -425,6 +437,15 @@ export function toMessages(
       messages.push(message);
     }
     return message;
+  };
+
+  /** The thought the current model response is streaming into. */
+  const openThinking = (message: ChatMessage): ThinkingPart => {
+    const last = message.parts.at(-1);
+    if (last?.kind === "thinking" && last.streaming) return last;
+    const part: ThinkingPart = { kind: "thinking", text: "", streaming: true };
+    message.parts.push(part);
+    return part;
   };
 
   /** The prose block the current model response is streaming into. */
@@ -455,7 +476,7 @@ export function toMessages(
   const settle = (message: ChatMessage): void => {
     message.streaming = false;
     for (const part of message.parts) {
-      if (part.kind === "text") part.streaming = false;
+      if (part.kind === "text" || part.kind === "thinking") part.streaming = false;
       // Native children are observed by the parent's process. Independent
       // application child sessions can continue after their parent replies.
       if (part.kind === "tool") for (const run of part.subagents ?? []) if (run.status === "running" && !run.childThreadId) run.status = "aborted";
@@ -484,7 +505,7 @@ export function toMessages(
       case "agent.session_message":
       case "agent.session_message_sent": {
         const incoming = event.type === "agent.session_message";
-        messages.push({ role: "user", text: event.text, parts: [], reasoning: "", streaming: false, startedAt: row.receivedAt ?? null, completedAt: null,
+        messages.push({ role: "user", text: event.text, parts: [], streaming: false, startedAt: row.receivedAt ?? null, completedAt: null,
           agentMessage: { id: event.messageId, sessionId: incoming ? event.fromThreadId : event.toThreadId,
             hash: incoming ? event.fromHash : event.toHash, direction: incoming ? "from" : "to", depth: event.depth, delivered: deliveredMessages.has(event.messageId) } });
         break;
@@ -511,7 +532,6 @@ export function toMessages(
           ...(event.mode ? { mode: event.mode } : {}),
           ...(event.plan ? { plan: event.plan } : {}),
           parts: [],
-          reasoning: "",
           streaming: false,
           startedAt: row.receivedAt ?? null,
           completedAt: null,
@@ -541,37 +561,16 @@ export function toMessages(
         break;
 
       case "agent.thinking_delta":
-        turn(event.turnId).reasoning += event.text;
+        openThinking(turn(event.turnId)).text += event.text;
         count(event.turnId, event.text.length);
         break;
 
       case "agent.message": {
         const message = turn(event.turnId);
-        const text = event.content
-          .map((block) =>
-            typeof block === "object" && block !== null && "type" in block &&
-            (block as { type: unknown }).type === "text"
-              ? String((block as { text?: unknown }).text ?? "")
-              : "",
-          )
-          .join("");
-
         // One of these lands per iteration, and it closes that iteration's
-        // prose: what follows belongs to the next model response, after the
-        // tools have run. Appending instead of replacing is what keeps a
-        // two-iteration turn from losing its opening line.
-        const last = message.parts.at(-1);
-        if (last?.kind === "text" && last.streaming) {
-          // Deltas already drew this; the stored message is the authority on
-          // what they added up to -- unless it is empty, which means the
-          // response was tool calls alone and the streamed text, if any, is
-          // all there is.
-          if (text) last.text = text;
-          last.streaming = false;
-          if (!last.text) message.parts.pop();
-        } else if (text) {
-          message.parts.push({ kind: "text", text, streaming: false });
-        }
+        // prose and thoughts: what follows belongs to the next model
+        // response, after the tools have run.
+        settleResponse(message.parts, event.content);
 
         // Tool calls also ride in `content`, and are deliberately ignored
         // here: `agent.tool_use` carries the same calls as durable events of
@@ -591,6 +590,7 @@ export function toMessages(
           result: null,
           isError: false,
           durationMs: null,
+          ...(row.receivedAt ? { startedAt: row.receivedAt } : {}),
         };
         // A subagent's call is on its card and its page, not among the turn's.
         const owner = event.subagentId ? subagent(event.subagentId) : undefined;
@@ -600,6 +600,18 @@ export function toMessages(
         } else turn(event.turnId).parts.push(call);
         break;
       }
+
+      case "agent.file_diff": {
+        const call =
+          subagentCalls.get(event.toolUseId) ??
+          turn(event.turnId).parts.find((part): part is ToolPart => part.kind === "tool" && part.id === event.toolUseId);
+        if (call) call.diffs = [...(call.diffs ?? []), ...event.files];
+        break;
+      }
+
+      case "agent.turn_diff":
+        turn(event.turnId).turnDiff = { files: event.files, shared: event.shared, omittedFiles: event.omittedFiles };
+        break;
 
       case "agent.subagent_output": {
         const run = subagent(event.subagentId);
@@ -792,7 +804,6 @@ export function toMessages(
           role: "assistant",
           text: "",
           parts: [],
-          reasoning: "",
           streaming: false,
           stopReason: "dequeued",
           startedAt: null,
@@ -889,7 +900,6 @@ export function toMessages(
           role: "assistant",
           text: "",
           parts: [],
-          reasoning: "",
           streaming: false,
           startedAt: null,
           completedAt: row.receivedAt ?? null,
@@ -913,7 +923,6 @@ export function toMessages(
           role: "assistant",
           text: "",
           parts: [],
-          reasoning: "",
           streaming: false,
           startedAt: null,
           completedAt: row.receivedAt ?? null,
@@ -1065,6 +1074,50 @@ export function formatDuration(ms: number | null): string | null {
 function truncate(value: string, max = 80): string {
   const flat = value.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * Closes the parts a response streamed into with the stored message, which
+ * is the authority on what they added up to. A kind of block the message
+ * has none of keeps what streamed: an empty message was tool calls alone,
+ * and a CLI may withhold its thinking from what it stores. With nothing
+ * streamed -- a reload -- the blocks become the parts, in their order.
+ */
+function settleResponse(parts: MessagePart[], content: readonly unknown[]): void {
+  const blocks: { kind: "text" | "thinking"; text: string }[] = [];
+  for (const raw of content) {
+    const block = (typeof raw === "object" && raw !== null ? raw : {}) as { type?: unknown; text?: unknown; thinking?: unknown };
+    const kind = block.type === "text" ? "text" : block.type === "thinking" ? "thinking" : null;
+    if (!kind) continue;
+    const text = String((kind === "text" ? block.text : block.thinking) ?? "");
+    if (kind === "thinking" ? !text.trim() : !text) continue;
+    const last = blocks.at(-1);
+    if (last?.kind === "text" && kind === "text") last.text += text;
+    else blocks.push({ kind, text });
+  }
+
+  const open = parts.filter((p): p is TextPart | ThinkingPart => (p.kind === "text" || p.kind === "thinking") && p.streaming);
+  for (const kind of ["text", "thinking"] as const) {
+    const told = blocks.filter((b) => b.kind === kind);
+    const streamed = open.filter((p) => p.kind === kind);
+    streamed.forEach((part, i) => {
+      // More streamed than was stored, or the other way: the last one takes the rest.
+      const rest = i === streamed.length - 1 ? told.slice(i) : told.slice(i, i + 1);
+      if (told.length > 0) part.text = rest.map((b) => b.text).join(kind === "thinking" ? "\n\n" : "");
+    });
+    if (streamed.length > 0 || told.length === 0) continue;
+    const added = told.map((b): MessagePart => ({ kind: b.kind, text: b.text, streaming: false }));
+    // Thoughts come before the prose they led to, when that is already drawn.
+    const firstOpen = kind === "thinking" ? parts.findIndex((p) => p.kind === "text" && p.streaming) : -1;
+    if (firstOpen >= 0) parts.splice(firstOpen, 0, ...added);
+    else if (open.length > 0) parts.push(...added);
+  }
+  if (open.length === 0) parts.push(...blocks.map((b): MessagePart => ({ kind: b.kind, text: b.text, streaming: false })));
+  for (const part of open) part.streaming = false;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i]!;
+    if (open.includes(part as TextPart) && !(part as TextPart).text) parts.splice(i, 1);
+  }
 }
 
 /** A slice of a text part: what the model thought, or what it said. */

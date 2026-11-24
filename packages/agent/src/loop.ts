@@ -391,6 +391,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutcome> {
         threadId,
         turnId,
         content: [
+          // For the reader: never replayed to the model (`readBlocks`).
+          ...(completion.reasoning?.trim() ? [{ type: "thinking", thinking: completion.reasoning }] : []),
           ...(completion.text ? [{ type: "text", text: completion.text }] : []),
           ...calls.map((call) => ({
             type: "tool_use",
