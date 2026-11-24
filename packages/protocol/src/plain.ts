@@ -31,6 +31,9 @@ export * from "./model-routing.js";
 
 /** The most the per-project terminal setting (`WorkspaceAgentSettings.terminals`) may be set to. */
 export const MAX_TERMINALS_PER_PROJECT = 50;
+
+/** The most the tabs-per-session setting (`WorkspaceAgentSettings.browser`) may be set to. */
+export const MAX_BROWSER_TABS_PER_SESSION = 20;
 export * from "./widgets.js";
 export * from "./git-providers.js";
 export * from "./context-budget.js";

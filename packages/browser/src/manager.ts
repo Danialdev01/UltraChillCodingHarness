@@ -1,9 +1,10 @@
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Page } from "playwright-core";
-import type { BrowserOp, BrowserResult, BrowserSessionInfo, BrowserTabInfo } from "./tools.js";
+import type { BrowserCapture, BrowserOp, BrowserResult, BrowserSessionInfo, BrowserTabInfo } from "./tools.js";
 import { browserSpec } from "./tools.js";
-import { runOp } from "./ops.js";
+import { inPage, runOp } from "./ops.js";
+import { annotateInPage } from "./page-scripts.js";
 
 /**
  * One headless Chromium for the whole server, shared by every agent.
@@ -35,7 +36,10 @@ export interface BrowserManagerOptions {
   headless?: boolean;
   /** Open contexts, across every project, before the least recently used idle one is closed. */
   maxContexts?: number;
+  /** Open tabs one agent session may have, whatever `tabLimit` says. */
   maxTabsPerAgent?: number;
+  /** The project's own limit on an agent session's open tabs. */
+  tabLimit?: (projectId: string) => Promise<number>;
   /** A session nobody used or watched for this long is saved and closed. */
   idleMs?: number;
   /**
@@ -58,6 +62,8 @@ export interface LogEntry {
 
 export interface Tab {
   id: string;
+  /** What the person who opened it called it. */
+  name: string | null;
   page: Page;
   openedBy: string;
   busy: string | null;
@@ -84,6 +90,8 @@ export interface Session {
   inFlight: number;
   /** Who the page being opened by `newTab` belongs to, so the `page` event credits them. */
   opening: string | null;
+  /** The tab limit as last read, for popups, which cannot wait for it. */
+  limit: number;
 }
 
 export interface BrowserFrame {
@@ -109,6 +117,22 @@ export const PRIVATE_PREFIX = "private-";
 
 export class BrowserError extends Error {}
 
+/** What a person typed as an address, as one: a bare host is https, or http on this machine. */
+export function addressOf(raw: string): string {
+  const text = raw.trim();
+  // "localhost:5173" parses as a scheme, so a scheme counts only with its slashes.
+  const scheme = /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(text);
+  const local = /^(localhost|[^/:]+\.localhost|127\.\d+\.\d+\.\d+|\[::1\])(:|\/|\?|#|$)/i.test(text);
+  let url: URL;
+  try {
+    url = new URL(scheme ? text : `${local ? "http" : "https"}://${text}`);
+  } catch {
+    throw new BrowserError("Not a URL.");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new BrowserError("Only http and https.");
+  return url.href;
+}
+
 export class BrowserManager {
   readonly options: BrowserManagerOptions;
   readonly #sessions = new Map<string, Session>();
@@ -116,6 +140,8 @@ export class BrowserManager {
   #sweeper: NodeJS.Timeout | null = null;
   #closed = false;
   #scratches = 0;
+  /** Per project: opening a tab waits for the one before, so each counts the last. */
+  readonly #opens = new Map<string, Promise<unknown>>();
 
   constructor(options: BrowserManagerOptions) {
     this.options = options;
@@ -203,12 +229,20 @@ export class BrowserManager {
       current: new Map(),
       inFlight: 0,
       opening: null,
+      limit: await this.maxTabs(scope.projectId),
     };
     context.on("page", (page) => {
       // A popup or target=_blank: tracked like any tab, opened by whoever opened its opener.
       if ([...session.tabs.values()].some((t) => t.page === page)) return;
       const opener = session.opening ?? [...session.tabs.values()].find((t) => t.busy)?.busy ?? session.owner ?? "human";
-      this.#track(session, page, opener);
+      const full = session.opening === null && this.#count(session, opener) >= session.limit;
+      const tab = this.#track(session, page, opener);
+      if (!full) return;
+      const note = `A popup was closed: this session already has ${session.limit} tabs, the most it may.`;
+      for (const t of session.tabs.values()) {
+        if (t !== tab) t.logs.push({ seq: ++t.seq, at: new Date().toISOString(), kind: "console", level: "warning", text: note });
+      }
+      void page.close().catch(() => {});
     });
     this.#sessions.set(session.key, session);
     this.#startSweeper();
@@ -216,19 +250,60 @@ export class BrowserManager {
     return session;
   }
 
-  async newTab(session: Session, openedBy: string): Promise<Tab> {
-    const max = this.options.maxTabsPerAgent ?? 6;
-    const mine = [...session.tabs.values()].filter((t) => t.openedBy === openedBy).length;
-    if (openedBy !== "human" && mine >= max) {
-      throw new BrowserError(`You already have ${mine} tabs in ${session.name}; close one (browser_close) or reuse it.`);
+  /** How many tabs one agent session may have open. */
+  async maxTabs(projectId: string): Promise<number> {
+    const ceiling = this.options.maxTabsPerAgent ?? 20;
+    const chosen = this.options.tabLimit ? await this.options.tabLimit(projectId).catch(() => 5) : 5;
+    return Math.min(ceiling, chosen);
+  }
+
+  /** An agent session's open tabs: all of its private session's, and those it opened in shared ones. */
+  tabsOf(projectId: string, agentId: string): number {
+    let count = 0;
+    for (const s of this.#sessions.values()) {
+      if (s.projectId !== projectId) continue;
+      if (s.owner === agentId) count += s.tabs.size;
+      else for (const t of s.tabs.values()) if (t.openedBy === agentId) count++;
     }
-    session.opening = openedBy;
-    try {
-      const page = await session.context.newPage();
-      return this.#tabOf(session, page) ?? this.#track(session, page, openedBy);
-    } finally {
-      session.opening = null;
-    }
+    return count;
+  }
+
+  /** Whether an agent's private session has a tab open, whoever opened it. */
+  ownsTabs(agentId: string): boolean {
+    return [...this.#sessions.values()].some((s) => s.owner === agentId && s.tabs.size > 0);
+  }
+
+  /** The tabs that count against the limit when `openedBy` opens another in `session`. */
+  #count(session: Session, openedBy: string): number {
+    if (session.owner) return this.tabsOf(session.projectId, session.owner);
+    if (openedBy !== "human") return this.tabsOf(session.projectId, openedBy);
+    return [...session.tabs.values()].filter((t) => t.openedBy === "human").length;
+  }
+
+  newTab(session: Session, openedBy: string, name: string | null = null): Promise<Tab> {
+    const run = async () => {
+      const max = (session.limit = await this.maxTabs(session.projectId));
+      const open = this.#count(session, openedBy);
+      if (open >= max) {
+        throw new BrowserError(
+          openedBy === "human"
+            ? `This session already has ${open} of ${max} tabs open. Close one, or raise the limit in the workspace's settings.`
+            : `You already have ${open} of ${max} tabs open; close one (browser_close) or reuse one (browser_tabs lists them).`,
+        );
+      }
+      session.opening = openedBy;
+      try {
+        const page = await session.context.newPage();
+        const tab = this.#tabOf(session, page) ?? this.#track(session, page, openedBy);
+        tab.name = name;
+        return tab;
+      } finally {
+        session.opening = null;
+      }
+    };
+    const opened = (this.#opens.get(session.projectId) ?? Promise.resolve()).then(run, run);
+    this.#opens.set(session.projectId, opened.catch(() => {}));
+    return opened;
   }
 
   #tabOf(session: Session, page: Page): Tab | undefined {
@@ -238,6 +313,7 @@ export class BrowserManager {
   #track(session: Session, page: Page, openedBy: string): Tab {
     const tab: Tab = {
       id: `t${session.nextTab++}`,
+      name: null,
       page,
       openedBy,
       busy: null,
@@ -366,6 +442,7 @@ export class BrowserManager {
         lastUsedAt: new Date(s.lastUsed).toISOString(),
         tabs: [...s.tabs.values()].map((t): BrowserTabInfo => ({
           id: t.id,
+          name: t.name,
           title: "",
           url: t.page.url(),
           openedBy: t.openedBy,
@@ -473,14 +550,7 @@ export class BrowserManager {
         await page.keyboard.insertText(event.text);
         return;
       case "navigate": {
-        let url: URL;
-        try {
-          url = new URL(/^[a-z]+:/i.test(event.url) ? event.url : `https://${event.url}`);
-        } catch {
-          throw new BrowserError("Not a URL.");
-        }
-        if (url.protocol !== "http:" && url.protocol !== "https:") throw new BrowserError("Only http and https.");
-        await page.goto(url.href, { waitUntil: "commit" });
+        await page.goto(addressOf(event.url), { waitUntil: "commit" });
         return;
       }
       case "history":
@@ -491,15 +561,52 @@ export class BrowserManager {
     }
   }
 
-  /** A person opens a tab in a session from the Browser view. */
-  async humanTab(projectId: string, session: string, userId: string, url: string | null): Promise<string> {
-    const s = this.find(projectId, session);
-    if (!s) throw new BrowserError(`There is no session ${session}.`);
-    const tab = await this.newTab(s, "human");
-    tab.controlledBy = userId;
-    if (url) await this.input(projectId, session, tab.id, userId, { type: "navigate", url });
-    this.#changed(projectId);
-    return tab.id;
+  /**
+   * A person opens a tab. `agentId` is the chat session it is for: the tab
+   * is in that agent's private session, and the agent may use it at once. With a
+   * `session` name instead it is in that shared session.
+   */
+  async humanTab(scope: BrowserScope, session: string | null, url: string, name: string | null): Promise<{ session: string; tab: string }> {
+    const href = addressOf(url);
+    const existed = this.find(scope.projectId, this.sessionName(scope, session)) !== undefined;
+    const s = await this.open(scope, session);
+    let tab: Tab;
+    try {
+      tab = await this.newTab(s, "human", name);
+    } catch (error) {
+      if (!existed && s.tabs.size === 0) await this.closeSession(s);
+      throw error;
+    }
+    // The agent's next call should land on what was just opened for it, unless it is working elsewhere.
+    if (s.owner && !s.current.has(s.owner)) s.current.set(s.owner, tab.id);
+    try {
+      await tab.page.goto(href, { waitUntil: "commit" });
+    } catch (error) {
+      await tab.page.close().catch(() => {});
+      if (!existed && s.tabs.size === 0) await this.closeSession(s);
+      throw new BrowserError(`Could not open ${href}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+    }
+    this.#changed(scope.projectId);
+    return { session: s.name, tab: tab.id };
+  }
+
+  /** Resizes a tab's page. A person need not be in control, but nobody else may be. */
+  async resize(projectId: string, session: string, tabId: string, userId: string, width: number, height: number): Promise<void> {
+    const { session: s, tab } = this.#liveTab(projectId, session, tabId);
+    await this.withTab(s, tab, "human", false, async () => {
+      if (tab.controlledBy && tab.controlledBy !== userId) throw new BrowserError("Someone else is controlling this tab.");
+      await tab.page.setViewportSize({ width, height });
+    });
+  }
+
+  /** A tab's picture and the elements in it, taken together, for marking up. */
+  async annotate(projectId: string, session: string, tabId: string): Promise<BrowserCapture> {
+    const { session: s, tab } = this.#liveTab(projectId, session, tabId);
+    return this.withTab(s, tab, "human", false, async () => {
+      const image = await tab.page.screenshot({ type: "png", scale: "css" });
+      const page = await inPage(tab.page, annotateInPage, null);
+      return { ...page, viewport: tab.page.viewportSize() ?? page.viewport, url: tab.page.url(), image: image.toString("base64") };
+    });
   }
 
   async humanClose(projectId: string, session: string, tabId: string | null): Promise<void> {

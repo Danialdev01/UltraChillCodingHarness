@@ -90,11 +90,19 @@ export interface BrowserRouteDeps {
   unavailable: string | null;
   projectFor(request: { cookies: Record<string, string | undefined>; params: { hash: string } }): Promise<ProjectSummary | null>;
   principalFor(cookies: Record<string, string | undefined>): Promise<Principal | null>;
+  /** Whether a chat session is one of the project's. */
+  threadInProject(threadId: string, projectId: string): Promise<boolean>;
   workspaceRoot: string;
 }
 
 const SessionName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/);
-const OpenTab = z.object({ session: SessionName, url: z.string().max(4000).nullable().default(null) });
+/** A tab for a chat session's agent, or, without one, in a named shared session. */
+const OpenTab = z.object({
+  thread: z.string().uuid().nullable().default(null),
+  session: SessionName.default("shared"),
+  url: z.string().trim().min(1).max(4000),
+  name: z.string().trim().max(60).nullable().default(null),
+});
 
 /**
  * The Browser view's routes under `/api/projects/:hash/browser`: the
@@ -109,8 +117,8 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRouteDe
   app.get<{ Params: Hash }>("/api/projects/:hash/browser", async (request, reply) => {
     const project = await deps.projectFor(request);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    if (!deps.browser) return { available: false, reason: deps.unavailable, sessions: [] };
-    return { available: true, reason: null, sessions: await deps.browser.describe(project.id) };
+    if (!deps.browser) return { available: false, reason: deps.unavailable, maxTabs: 0, sessions: [] };
+    return { available: true, reason: null, maxTabs: await deps.browser.maxTabs(project.id), sessions: await deps.browser.describe(project.id) };
   });
 
   app.post<{ Params: Hash }>("/api/projects/:hash/browser/tabs", async (request, reply) => {
@@ -120,14 +128,23 @@ export function registerBrowserRoutes(app: FastifyInstance, deps: BrowserRouteDe
     if (!principal.scopes.includes("exec")) return reply.code(403).send({ error: "you cannot drive this project's browser" });
     if (!deps.browser) return reply.code(409).send({ error: deps.unavailable ?? "no browser on this server" });
     const parsed = OpenTab.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "a session name (letters, digits, . _ -) is required" });
+    if (!parsed.success) return reply.code(400).send({ error: "a URL is required, and a name of at most 60 characters" });
     try {
-      const browser = deps.browser;
-      if (!browser.find(project.id, parsed.data.session)) {
-        await browser.open({ projectId: project.id, agentId: "human", worktree: projectRoot(deps.workspaceRoot, project.id) }, parsed.data.session);
-      }
-      const tab = await browser.humanTab(project.id, parsed.data.session, principal.userId, parsed.data.url);
-      return { session: parsed.data.session, tab };
+      const { thread, session, url, name } = parsed.data;
+      if (thread && !(await deps.threadInProject(thread, project.id))) return reply.code(404).send({ error: "session not found" });
+      const scope = { projectId: project.id, agentId: thread ?? "human", worktree: projectRoot(deps.workspaceRoot, project.id) };
+      return await deps.browser.humanTab(scope, thread ? null : session, url, name || null);
+    } catch (error) {
+      return reply.code(error instanceof BrowserError ? 400 : 500).send(failure(error));
+    }
+  });
+
+  app.post<{ Params: Hash & { session: string; tab: string } }>("/api/projects/:hash/browser/tabs/:session/:tab/capture", async (request, reply) => {
+    const project = await deps.projectFor(request);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (!deps.browser) return reply.code(409).send({ error: deps.unavailable ?? "no browser on this server" });
+    try {
+      return await deps.browser.annotate(project.id, request.params.session, request.params.tab);
     } catch (error) {
       return reply.code(error instanceof BrowserError ? 400 : 500).send(failure(error));
     }
@@ -165,6 +182,7 @@ const InputEvent: z.ZodType<BrowserInputEvent> = z.discriminatedUnion("type", [
 
 const LiveMessage = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("control"), take: z.boolean() }),
+  z.object({ kind: z.literal("resize"), width: z.number().int().min(240).max(3840), height: z.number().int().min(240).max(2400) }),
   z.object({ kind: z.literal("input"), event: InputEvent }),
 ]);
 
@@ -184,7 +202,8 @@ export interface BrowserLiveDeps {
  * page's CSS width and height, uint16 big-endian), which is the space input
  * coordinates are in; and JSON text: `{"kind":"error","message"}`,
  * `{"kind":"closed"}`. Client to server, JSON text: `{"kind":"control",
- * "take":bool}` and `{"kind":"input","event":…}` while in control.
+ * "take":bool}`, `{"kind":"resize","width","height"}`, and
+ * `{"kind":"input","event":…}` while in control.
  *
  * Its own socket rather than the event bus: frames are large, frequent and
  * worthless a second later, and nothing about them belongs in the log.
@@ -265,7 +284,8 @@ export class BrowserLive {
           if (message.kind === "control") {
             browser.control(projectId, session, tab, principal.userId, message.take);
             controlling = message.take;
-          } else await browser.input(projectId, session, tab, principal.userId, message.event);
+          } else if (message.kind === "resize") await browser.resize(projectId, session, tab, principal.userId, message.width, message.height);
+          else await browser.input(projectId, session, tab, principal.userId, message.event);
         } catch (error) {
           say({ kind: "error", message: error instanceof Error ? error.message.split("\n")[0] : String(error) });
         }

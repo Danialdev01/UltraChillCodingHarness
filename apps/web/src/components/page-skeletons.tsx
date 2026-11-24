@@ -737,8 +737,11 @@ export function TerminalWorkspaceSkeleton() {
 export function BrowserViewSkeleton() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      <div className="flex w-64 shrink-0 flex-col gap-2 border-r p-3">
-        <Skeleton className="h-3 w-20" />
+      <div className="flex w-64 shrink-0 flex-col gap-2 border-r p-3 pt-0">
+        <div className="-mx-3 flex h-10 items-center justify-between border-b px-3">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="size-6 rounded-md" />
+        </div>
         {[70, 55, 80].map((w, i) => (
           <div key={i} className="flex flex-col gap-1.5 py-1">
             <Skeleton className="h-3.5" style={{ width: `${w}%` }} />
@@ -754,6 +757,10 @@ export function BrowserViewSkeleton() {
           <Skeleton className="h-7 w-28 rounded-md" />
         </div>
         <div className="h-7 shrink-0 border-b" />
+        <div className="flex h-10 shrink-0 items-center gap-2 border-b px-2">
+          <Skeleton className="h-7 w-72 rounded-md" />
+          <Skeleton className="ml-auto h-7 w-28 rounded-md" />
+        </div>
         <div className="flex flex-1 items-center justify-center bg-muted p-3">
           <Skeleton className="aspect-video w-4/5 rounded-md" />
         </div>

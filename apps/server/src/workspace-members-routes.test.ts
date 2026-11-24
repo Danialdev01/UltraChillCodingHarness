@@ -246,7 +246,7 @@ describe("workspace member routes", () => {
       ompVerify: { enabled: false },
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
       widgets: { enabled: true },
-      browser: { enabled: true },
+      browser: { enabled: true, maxTabsPerSession: 5 },
       // On unless turned off (plan2 §3.3).
       idleCompaction: { enabled: true },
       terminals: { maxPerProject: 10 },

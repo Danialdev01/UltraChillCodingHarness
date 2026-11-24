@@ -4,6 +4,7 @@ import { DefaultSettings } from "@/components/default-settings"
 import { FontSizeSettings, TreeFontSizeSettings } from "@/components/font-size-settings"
 import { KeybindingSettings } from "@/components/keybinding-settings"
 import { SettledSessionsSettings } from "@/components/settled-sessions-settings"
+import { BrowserLimitSettings } from "@/components/browser-limit-settings"
 import { TerminalLimitSettings } from "@/components/terminal-limit-settings"
 import { WorkspaceHarnessSettings } from "@/components/workspace-harness-settings"
 import { WorkspaceMembersSettings } from "@/components/workspace-members-settings"
@@ -43,6 +44,7 @@ export function WorkspaceSettingsPage({
           <FontSizeSettings />
           <TreeFontSizeSettings />
           <TerminalLimitSettings workspace={workspace} />
+          <BrowserLimitSettings workspace={workspace} />
           <SettledSessionsSettings workspace={workspace} />
         </div>
       )

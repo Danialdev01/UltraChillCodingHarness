@@ -423,6 +423,16 @@ const browser = browserExecutable
       stateDir: join(config.CREDS_ROOT, "browser"),
       maxContexts: config.BROWSER_MAX_CONTEXTS,
       maxTabsPerAgent: config.BROWSER_MAX_TABS_PER_AGENT,
+      // Read as each tab opens, as the terminals' limit is (`terminalLimits`).
+      tabLimit: async (projectId) => {
+        const [row] = await db
+          .select({ agent: workspaces.agentSettings })
+          .from(projects)
+          .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+          .where(eq(projects.id, projectId))
+          .limit(1);
+        return readAgentSettings(row?.agent).browser.maxTabsPerSession;
+      },
       idleMs: config.BROWSER_IDLE_MS,
       refuse: (url) => browserRefusal(url, { allowPrivate: config.BROWSER_ALLOW_PRIVATE, deniedLocalPorts: [config.PORT] }),
       onChange: browserNotifier((projectId, event) => bus.publish({ seq: null, projectId, threadId: null, event })),
@@ -3814,6 +3824,10 @@ registerBrowserRoutes(app, {
   unavailable: browserUnavailable,
   projectFor,
   principalFor: (cookies) => auth.resolveSession(cookies[SESSION_COOKIE]),
+  threadInProject: async (threadId, projectId) => {
+    const [row] = await db.select({ projectId: threads.projectId }).from(threads).where(eq(threads.id, threadId)).limit(1);
+    return row?.projectId === projectId;
+  },
   workspaceRoot: config.WORKSPACE_ROOT,
 });
 const browserLive = browser

@@ -207,7 +207,10 @@ type ComposerMenuState = { kind: "mention"; mention: Mention } | { kind: "slash"
  * is the deltas that have arrived so far. Reloading mid-turn therefore shows
  * the same thread, because there is no local state to lose.
  */
-export function ProjectChat({ project, session, gitRepair }: { project: Project; session?: ProjectSession; gitRepair?: { token: number; text: string } | null }) {
+/** A page marked up in the Browser view: what to add to the draft, and its picture. */
+export type BrowserReference = { token: number; text: string; file: File };
+
+export function ProjectChat({ project, session, gitRepair, browserRef }: { project: Project; session?: ProjectSession; gitRepair?: { token: number; text: string } | null; browserRef?: BrowserReference | null }) {
   const sessionId = session?.id ?? null;
   const sessionProvider = session?.provider ?? null;
   const transitionRouter = useTransitionRouter();
@@ -1474,6 +1477,18 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     },
     [stageOne],
   );
+
+  // Once per reference: a second run of the effect must not attach it again.
+  const addedReference = useRef<BrowserReference | null>(null);
+  useEffect(() => {
+    if (!browserRef || addedReference.current === browserRef) return;
+    addedReference.current = browserRef;
+    // The page is in the picture; fetching its address again would add nothing, and fails on localhost.
+    for (const url of findLinks(browserRef.text)) dismissedLinks.current.add(url);
+    setDraft((current) => (current.trim() ? `${current}\n\n${browserRef.text}` : browserRef.text));
+    void addFiles([browserRef.file]);
+    requestAnimationFrame(() => draftRef.current?.focus({ preventScroll: true }));
+  }, [addFiles, browserRef]);
 
   /**
    * Swaps a chip for an edited copy of its file, in the same place.

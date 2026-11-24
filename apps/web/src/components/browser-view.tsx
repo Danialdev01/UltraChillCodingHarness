@@ -14,17 +14,25 @@ import {
 } from "lucide-react"
 
 import { EmptyState } from "@/components/layout/empty-state"
+import { AnnotationLayer, annotatedFile } from "@/components/browser-annotate"
+import { BrowserToolbar, type BrowserTool } from "@/components/browser-toolbar"
+import { NewBrowserTabDialog } from "@/components/new-browser-tab-dialog"
 import { BrowserViewSkeleton } from "@/components/page-skeletons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
+  captureBrowserTab,
   closeBrowserTab,
   fetchProjectBrowser,
   openBrowserTab,
+  tabsOfSession,
+  type BrowserCapture,
   type BrowserSessionInfo,
   type BrowserTabInfo,
 } from "@/lib/browser-api"
+import { annotationPrompt } from "@/lib/browser-annotate"
 import { websocketOrigin } from "@/lib/client"
+import { EMPTY_HISTORY, PEN_COLORS, redo, undo, type History } from "@/lib/image-annotate"
 import { useProjectSessions } from "@/lib/project-sessions"
 import { qk } from "@/lib/query-keys"
 import { useProjectEvents, useToast } from "@/lib/realtime"
@@ -36,13 +44,25 @@ type Selection = { session: string; tab: string }
 /**
  * The agents' shared browser, live.
  *
+ * "+" opens a tab for this chat session (`threadId`), whose agent may use
+ * it at once. The bar over the page marks it up for the chat.
+ *
  * Every session of the project -- each agent's private one and the named
  * ones agents share -- with its tabs on the left; the chosen tab streams on
  * the right. Watching changes nothing. "Take control" makes the tab yours:
  * clicks, keys and the address bar reach the page, and agents may still
  * read it but not act on it until you hand it back (or leave).
  */
-export function BrowserView({ project }: { project: Project }) {
+export function BrowserView({
+  project,
+  threadId,
+  onReference,
+}: {
+  project: Project
+  threadId: string | null
+  /** A marked-up page for the composer. */
+  onReference: (text: string, file: File) => void
+}) {
   const queryClient = useQueryClient()
   const toast = useToast()
   const { data, isPending, error } = useQuery({
@@ -59,7 +79,12 @@ export function BrowserView({ project }: { project: Project }) {
   )
 
   const [selected, setSelected] = React.useState<Selection | null>(null)
-  const sessions = data?.sessions ?? []
+  const [adding, setAdding] = React.useState(false)
+  // This chat's own tabs first.
+  const sessions = React.useMemo(
+    () => [...(data?.sessions ?? [])].sort((a, b) => Number(b.owner !== null && b.owner === threadId) - Number(a.owner !== null && a.owner === threadId)),
+    [data?.sessions, threadId],
+  )
   const current = selected && findTab(sessions, selected)
   // Nothing chosen, or the chosen tab closed: the newest tab, preferring shared sessions.
   React.useEffect(() => {
@@ -77,13 +102,42 @@ export function BrowserView({ project }: { project: Project }) {
     return <EmptyState icon={GlobeIcon} title="No browser on this server" description={data.reason ?? undefined} />
   }
 
+  const open = tabsOfSession(sessions, threadId)
+  const full = open >= data.maxTabs
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <aside className="flex w-64 shrink-0 flex-col border-r">
+        <div className="flex h-10 shrink-0 items-center gap-2 border-b pr-1.5 pl-3 text-sm">
+          <span className="font-medium">Tabs</span>
+          <span className="text-muted-foreground text-xs tabular-nums" title="Open in this session, and the most it may have">
+            {open}/{data.maxTabs}
+          </span>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="ml-auto"
+            aria-label="New tab"
+            title={full ? `This session has all ${data.maxTabs} of its tabs open. Close one, or raise the limit in Settings.` : "New tab"}
+            disabled={full}
+            onClick={() => setAdding(true)}
+          >
+            <PlusIcon />
+          </Button>
+          <NewBrowserTabDialog
+            open={adding}
+            onOpenChange={setAdding}
+            onOpen={async (url, name) => {
+              const opened = await openBrowserTab(project.hash, threadId, url, name)
+              await queryClient.invalidateQueries({ queryKey: qk.browser.all })
+              setSelected(opened)
+            }}
+          />
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {sessions.length === 0 ? (
             <p className="px-2 py-3 text-sm text-muted-foreground">
-              No browser sessions yet. Agents open tabs with <code>browser_open</code>; you can open one below.
+              No browser sessions yet. Agents open tabs with <code>browser_open</code>; open one yourself with +.
             </p>
           ) : (
             sessions.map((session) => (
@@ -102,20 +156,9 @@ export function BrowserView({ project }: { project: Project }) {
             ))
           )}
         </div>
-        <NewTabForm
-          onOpen={async (session, url) => {
-            try {
-              const opened = await openBrowserTab(project.hash, session, url)
-              refresh()
-              setSelected(opened)
-            } catch (e) {
-              toast({ title: "Could not open a tab", description: (e as Error).message, tone: "error" })
-            }
-          }}
-        />
       </aside>
       {current ? (
-        <LiveTab key={`${selected!.session}/${selected!.tab}`} project={project} session={selected!.session} tab={current} agentName={agentName} />
+        <LiveTab key={`${selected!.session}/${selected!.tab}`} project={project} session={selected!.session} tab={current} agentName={agentName} onReference={onReference} />
       ) : (
         <EmptyState
           icon={GlobeIcon}
@@ -159,10 +202,10 @@ function SessionGroup({
             key={tab.id}
             className={cn("group flex items-start gap-1 rounded-md px-2 py-1.5", active ? "bg-accent text-accent-foreground" : "hover:bg-muted")}
           >
-            <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onSelect(tab.id)}>
+            <button type="button" className="min-w-0 flex-1 text-left" title={tab.url} onClick={() => onSelect(tab.id)}>
               <div className="flex items-center gap-1.5">
                 {tab.busy && !tab.controlledBy && <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-label="An agent is acting" />}
-                <span className="truncate text-sm">{tab.title || hostOf(tab.url) || "New tab"}</span>
+                <span className="truncate text-sm">{tab.name || tab.title || hostOf(tab.url) || "New tab"}</span>
               </div>
               <div className="truncate text-xs text-muted-foreground">
                 {tab.controlledBy ? "A person is in control" : `Opened by ${agentName(tab.openedBy)}`}
@@ -170,7 +213,7 @@ function SessionGroup({
             </button>
             <button
               type="button"
-              aria-label={`Close ${tab.title || tab.id}`}
+              aria-label={`Close ${tab.name || tab.title || tab.id}`}
               className="invisible mt-0.5 rounded p-0.5 text-muted-foreground group-hover:visible hover:text-foreground focus-visible:visible"
               onClick={() => onClose(tab.id)}
             >
@@ -191,41 +234,9 @@ function hostOf(url: string): string {
   }
 }
 
-function NewTabForm({ onOpen }: { onOpen: (session: string, url: string | null) => Promise<void> }) {
-  const [session, setSession] = React.useState("shared")
-  const [url, setUrl] = React.useState("")
-  const [busy, setBusy] = React.useState(false)
-  const valid = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(session) && !session.startsWith("private-")
-  return (
-    <form
-      className="flex flex-col gap-1.5 border-t p-2"
-      onSubmit={(event) => {
-        event.preventDefault()
-        if (!valid || busy) return
-        setBusy(true)
-        void onOpen(session, url.trim() || null).finally(() => {
-          setBusy(false)
-          setUrl("")
-        })
-      }}
-    >
-      <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="URL (optional)" aria-label="URL" className="h-7 text-xs" />
-      <div className="flex gap-1.5">
-        <Input
-          value={session}
-          onChange={(e) => setSession(e.target.value)}
-          aria-label="Shared session"
-          aria-invalid={!valid}
-          className="h-7 min-w-0 flex-1 text-xs"
-        />
-        <Button type="submit" size="sm" disabled={!valid || busy}>
-          <PlusIcon />
-          Open
-        </Button>
-      </div>
-    </form>
-  )
-}
+/** Marks not sent yet, per tab: looking at another tab or at the chat does not lose them. */
+type Annotation = { capture: BrowserCapture; history: History; tool: Exclude<BrowserTool, "live"> }
+const unsent = new Map<string, Annotation>()
 
 /** One tab's frames, and a person's input while they have control. */
 function LiveTab({
@@ -233,11 +244,13 @@ function LiveTab({
   session,
   tab,
   agentName,
+  onReference,
 }: {
   project: Project
   session: string
   tab: BrowserTabInfo
   agentName: (id: string) => string
+  onReference: (text: string, file: File) => void
 }) {
   const toast = useToast()
   const canvasRef = React.useRef<HTMLCanvasElement>(null)
@@ -318,10 +331,81 @@ function LiveTab({
   const lastMove = React.useRef(0)
   const button = (n: number) => (n === 1 ? "middle" : n === 2 ? "right" : "left")
 
+  const draftKey = `${project.id}/${session}/${tab.id}`
+  const [annotation, setAnnotation] = React.useState<Annotation | null>(() => unsent.get(draftKey) ?? null)
+  React.useEffect(() => {
+    // Only marks are worth keeping: an unmarked capture would just be stale.
+    if (annotation?.history.ops.length) unsent.set(draftKey, annotation)
+    else unsent.delete(draftKey)
+  }, [annotation, draftKey])
+  const [color, setColor] = React.useState<string>(PEN_COLORS[0].value)
+  const [widthIndex, setWidthIndex] = React.useState<"0" | "1" | "2">("0")
+  const [capturing, setCapturing] = React.useState(false)
+  const [sending, setSending] = React.useState(false)
+  const [discarding, setDiscarding] = React.useState<"live" | "retake" | null>(null)
+  const tool: BrowserTool = annotation?.tool ?? "live"
+  const marked = (annotation?.history.ops.length ?? 0) > 0
+  const setHistory = (update: (history: History) => History) =>
+    setAnnotation((a) => (a ? { ...a, history: update(a.history) } : a))
+
+  async function capture(next: Exclude<BrowserTool, "live">) {
+    setCapturing(true)
+    try {
+      const taken = await captureBrowserTab(project.hash, session, tab.id)
+      setAnnotation(() => ({ capture: taken, history: EMPTY_HISTORY, tool: next }))
+    } catch (e) {
+      toast({ title: "Could not capture the page", description: (e as Error).message, tone: "error" })
+    } finally {
+      setCapturing(false)
+    }
+  }
+  function chooseTool(next: BrowserTool) {
+    setDiscarding(null)
+    if (next === "live") {
+      if (marked) setDiscarding("live")
+      else setAnnotation(() => null)
+    } else if (annotation) setAnnotation((a) => (a ? { ...a, tool: next } : a))
+    else void capture(next)
+  }
+  function retake() {
+    if (!annotation) return
+    if (marked) setDiscarding("retake")
+    else void capture(annotation.tool)
+  }
+  function discard() {
+    const what = discarding
+    setDiscarding(null)
+    if (what === "retake" && annotation) void capture(annotation.tool)
+    else setAnnotation(() => null)
+  }
+  async function sendToChat() {
+    if (!annotation) return
+    setSending(true)
+    try {
+      const { capture: taken, history } = annotation
+      const file = await annotatedFile(taken, history.ops)
+      const text = annotationPrompt(taken, history.ops, { session, tab: tab.id, name: tab.name })
+      unsent.delete(draftKey)
+      setAnnotation(() => null)
+      onReference(text, file)
+    } catch (e) {
+      toast({ title: "Could not add it to the chat", description: (e as Error).message, tone: "error" })
+    } finally {
+      setSending(false)
+    }
+  }
+  function onHistoryKey(event: React.KeyboardEvent) {
+    if (!annotation || event.target instanceof HTMLInputElement || !(event.ctrlKey || event.metaKey)) return
+    const key = event.key.toLowerCase()
+    if (key !== "z" && key !== "y") return
+    event.preventDefault()
+    setHistory(key === "y" || event.shiftKey ? redo : undo)
+  }
+
   const someoneElse = tab.controlledBy !== null && !controlling
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onHistoryKey}>
       <div className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
         <Button variant="ghost" size="icon-sm" aria-label="Back" disabled={!controlling} onClick={() => input({ type: "history", action: "back" })}>
           <ArrowLeftIcon />
@@ -360,6 +444,8 @@ function LiveTab({
         <span className="truncate">
           {!connected
             ? "Connecting…"
+            : annotation
+              ? `Marking up a capture of this page. ${annotation.tool === "element" ? "Click an element to pin it." : annotation.tool === "text" ? "Click where the note goes." : "Drag to draw."}`
             : controlling
               ? "You are in control. Agents can read this tab but not act on it."
               : someoneElse
@@ -369,12 +455,54 @@ function LiveTab({
                   : `Watching ${session} · opened by ${agentName(tab.openedBy)}`}
         </span>
       </div>
+      <BrowserToolbar
+        tool={tool}
+        onTool={chooseTool}
+        color={color}
+        onColor={setColor}
+        widthIndex={widthIndex}
+        onWidthIndex={setWidthIndex}
+        canUndo={marked}
+        canRedo={(annotation?.history.undone.length ?? 0) > 0}
+        onUndo={() => setHistory(undo)}
+        onRedo={() => setHistory(redo)}
+        onClear={() => setHistory((h) => ({ ops: [], undone: [...h.undone, ...[...h.ops].reverse()] }))}
+        onRetake={retake}
+        viewport={annotation?.capture.viewport ?? tab.viewport}
+        onResize={(width, height) => send({ kind: "resize", width, height })}
+        connected={connected && !someoneElse}
+        busy={capturing}
+        onSend={() => void sendToChat()}
+        sending={sending}
+      />
+      {discarding && (
+        <div role="alert" className="flex h-10 shrink-0 items-center gap-2 border-b px-3 text-sm">
+          <span className="truncate">Discard the marks on this page?</span>
+          <Button size="sm" variant="destructive" className="ml-auto" onClick={discard}>
+            Discard
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setDiscarding(null)}>
+            Keep
+          </Button>
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-muted p-3">
+        {annotation && (
+          <AnnotationLayer
+            capture={annotation.capture}
+            tool={annotation.tool}
+            color={color}
+            widthIndex={widthIndex}
+            history={annotation.history}
+            onHistory={setHistory}
+          />
+        )}
         <canvas
           ref={canvasRef}
           tabIndex={0}
           aria-label={`Live view of ${tab.title || tab.url}`}
           className={cn(
+            annotation && "hidden",
             "max-h-full max-w-full rounded-md bg-background shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
             controlling ? "cursor-default" : "cursor-not-allowed",
           )}

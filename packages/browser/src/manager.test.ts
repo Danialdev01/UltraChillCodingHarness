@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { findChromium } from "./executable.js";
-import { BrowserManager, type BrowserScope } from "./manager.js";
+import { addressOf, BrowserManager, type BrowserScope } from "./manager.js";
 
 /**
  * Real Chromium against a local page. Skipped where no Chromium is
@@ -245,6 +245,68 @@ describe.skipIf(!executable)("BrowserManager", () => {
       await m.close();
     }
   }, 60_000);
+
+  it("opens named tabs the agent may use, within one limit for both", async () => {
+    const m = new BrowserManager({ executablePath: executable!, stateDir, tabLimit: async () => 3 });
+    try {
+      const opened = await m.humanTab(a(), null, base, "Shop front");
+      expect(m.ownsTabs(a().agentId)).toBe(true);
+      expect(m.list("p1")[0]).toMatchObject({ shared: false, owner: a().agentId, tabs: [{ id: opened.tab, name: "Shop front", controlledBy: null }] });
+      const reused = await m.call(a(), "browser_open", { session: null, url: null, new_tab: null, viewport: null });
+      expect(reused.text).toContain(`Opened tab ${opened.tab}`);
+      const acted = await m.call(a(), "browser_act", { session: null, tab: opened.tab, action: "click", ref: null, selector: "#go", text: null, key: null, values: null, target_ref: null, delta_y: null, timeout_ms: null });
+      expect(acted.isError).toBeFalsy();
+      const listed = await m.call(a(), "browser_tabs", { session: null, action: null, tab: null });
+      expect(listed.text).toContain('"Shop front"');
+
+      // A bad address or a dead one leaves no tab behind.
+      await expect(m.humanTab(a(), null, "file:///etc/passwd", null)).rejects.toThrow(/http/);
+      await expect(m.humanTab(a(), null, "http://127.0.0.1:9/", null)).rejects.toThrow(/Could not open/);
+      expect(m.tabsOf("p1", a().agentId)).toBe(1);
+
+      // One tab, limit three: of four opened at once, two fit, shared sessions counted too.
+      const results = await Promise.all([
+        m.call(a(), "browser_open", { session: null, url: base, new_tab: true, viewport: null }),
+        m.call(a(), "browser_open", { session: "limits", url: base, new_tab: true, viewport: null }),
+        m.humanTab(a(), null, base, null).then(() => ({ isError: false }), () => ({ isError: true })),
+        m.call(a(), "browser_open", { session: null, url: base, new_tab: true, viewport: null }),
+      ]);
+      expect(results.filter((r) => !r.isError)).toHaveLength(2);
+      expect(m.tabsOf("p1", a().agentId)).toBe(3);
+      // Another agent has its own allowance; a popup does not get past this one's.
+      expect((await m.call(b(), "browser_open", { session: null, url: base, new_tab: null, viewport: null })).isError).toBeFalsy();
+      await m.call(a(), "browser_eval", { session: null, tab: opened.tab, script: "window.open('/about')" });
+      await new Promise((r) => setTimeout(r, 1000));
+      expect(m.tabsOf("p1", a().agentId)).toBe(3);
+    } finally {
+      await m.close();
+    }
+  }, 60_000);
+
+  it("captures a tab for marking up, and resizes it", async () => {
+    const m = manager();
+    try {
+      const { session, tab } = await m.humanTab(a(), null, base, null);
+      await m.call(a(), "browser_act", { session: null, tab, action: "fill", ref: null, selector: "#email", text: "secret@x.test", key: null, values: null, target_ref: null, delta_y: null, timeout_ms: null });
+      await m.resize("p1", session, tab, "user-1", 390, 844);
+      const capture = await m.annotate("p1", session, tab);
+      expect(capture.viewport).toEqual({ width: 390, height: 844 });
+      expect(capture.title).toBe("Fixture");
+      const png = Buffer.from(capture.image, "base64");
+      expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([390, 844]);
+      const go = capture.elements.find((e) => e.selector === "#go");
+      expect(go).toMatchObject({ tag: "button", text: "Go" });
+      expect(go!.styles.position).toBe("static");
+      expect(JSON.stringify(capture.elements)).not.toContain("secret@x.test");
+      const header = capture.elements.find((e) => e.tag === "header")!;
+      expect(header.styles["background-color"]).toBe("rgb(51, 85, 255)");
+      m.control("p1", session, tab, "user-2", true);
+      await expect(m.resize("p1", session, tab, "user-1", 800, 600)).rejects.toThrow(/Someone else/);
+    } finally {
+      await m.close();
+    }
+  }, 60_000);
+
   const motionArgs = {
     session: null,
     tab: null,
@@ -303,4 +365,15 @@ describe.skipIf(!executable)("BrowserManager", () => {
       await m.close();
     }
   }, 60_000);
+});
+
+describe("addressOf", () => {
+  it("fills in the scheme: https, or http on this machine", () => {
+    expect(addressOf("example.com/a")).toBe("https://example.com/a");
+    expect(addressOf(" localhost:5173/x ")).toBe("http://localhost:5173/x");
+    expect(addressOf("127.0.0.1:3000")).toBe("http://127.0.0.1:3000/");
+    expect(addressOf("example.com:8080")).toBe("https://example.com:8080/");
+    expect(addressOf("http://example.com")).toBe("http://example.com/");
+    for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "http://", ""]) expect(() => addressOf(bad)).toThrow();
+  });
 });

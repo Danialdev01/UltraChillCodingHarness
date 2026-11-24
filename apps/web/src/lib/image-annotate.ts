@@ -25,6 +25,9 @@ export type Op =
   | { kind: "stroke"; points: Point[]; color: string; width: number }
   | { kind: "arrow"; from: Point; to: Point; color: string; width: number }
   | { kind: "rect"; from: Point; to: Point; color: string; width: number }
+  | { kind: "ellipse"; from: Point; to: Point; color: string; width: number }
+  /** A numbered frame around something, with an optional note about it. */
+  | { kind: "pin"; rect: Rect; n: number; note: string; element: number; color: string; width: number }
   | { kind: "text"; at: Point; text: string; color: string; size: number }
   | { kind: "crop"; rect: Rect };
 
@@ -203,6 +206,25 @@ export function drawOp(ctx: Ctx, op: Op): void {
   ctx.strokeStyle = op.color;
   ctx.lineWidth = op.width;
   ctx.beginPath();
+  if (op.kind === "pin") {
+    ctx.rect(op.rect.x, op.rect.y, op.rect.w, op.rect.h);
+    ctx.stroke();
+    // The number, in a disc on the corner, kept inside the picture.
+    const r = Math.max(10, op.width * 3);
+    const x = Math.max(r, op.rect.x);
+    const y = Math.max(r, op.rect.y);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = op.color;
+    ctx.fill();
+    ctx.fillStyle = isLight(op.color) ? "#111827" : "#ffffff";
+    ctx.font = `700 ${Math.round(r * 1.2)}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(op.n), x, y);
+    ctx.restore();
+    return;
+  }
   if (op.kind === "stroke") {
     const [first, ...rest] = op.points;
     if (first) {
@@ -214,6 +236,9 @@ export function drawOp(ctx: Ctx, op: Op): void {
   } else if (op.kind === "rect") {
     const r = normalizeRect(op.from, op.to);
     ctx.rect(r.x, r.y, r.w, r.h);
+  } else if (op.kind === "ellipse") {
+    const r = normalizeRect(op.from, op.to);
+    ctx.ellipse(r.x + r.w / 2, r.y + r.h / 2, r.w / 2, r.h / 2, 0, 0, Math.PI * 2);
   } else {
     const [a, b] = arrowHead(op.from, op.to, op.width);
     ctx.moveTo(op.from.x, op.from.y);

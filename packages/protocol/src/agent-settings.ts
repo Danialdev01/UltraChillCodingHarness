@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ProviderId } from "./events.js";
-import { MAX_TERMINALS_PER_PROJECT } from "./plain.js";
+import { MAX_BROWSER_TABS_PER_SESSION, MAX_TERMINALS_PER_PROJECT } from "./plain.js";
 
 /**
  * A workspace's choices for how its agents run, beyond whose subscription
@@ -79,8 +79,15 @@ export const WorkspaceAgentSettings = z.object({
    * Chromium, each in a private session or a named one it shares with the
    * project's other agents, and people watch and take over tabs in the
    * Browser view. On by default where the server has a Chromium.
+   * `maxTabsPerSession` bounds one chat session's open tabs, the agent's
+   * and the ones people opened for it together.
    */
-  browser: z.object({ enabled: z.boolean().default(true) }).default({}),
+  browser: z
+    .object({
+      enabled: z.boolean().default(true),
+      maxTabsPerSession: z.number().int().min(1).max(MAX_BROWSER_TABS_PER_SESSION).default(5),
+    })
+    .default({}),
   /**
    * Compact idle sessions while the prompt cache is warm (plan2 §3.3): a
    * Claude Code session that ended a turn holding 200k tokens or more is

@@ -1,5 +1,8 @@
 "use client"
 
+import { useQuery } from "@tanstack/react-query"
+import { fetchProjectBrowser, tabsOfSession } from "@/lib/browser-api"
+import { qk } from "@/lib/query-keys"
 import { bareModelId } from "@/lib/model-keys"
 import * as React from "react"
 import {
@@ -12,6 +15,7 @@ import {
   FolderIcon,
   GitBranchIcon,
   GitCommitHorizontalIcon,
+  AppWindowIcon,
   GlobeIcon,
   HistoryIcon,
   Loader2Icon,
@@ -136,6 +140,10 @@ function CardBody({
   onHide?: () => void
 }) {
   const { setMode } = useFilesPanel()
+  const { data: browser } = useQuery({
+    queryKey: qk.browser.list(project.hash),
+    queryFn: () => fetchProjectBrowser(project.hash),
+  })
   const ws = useWorkspaceHash()
   // Null until first opened: the sheet stays unmounted until then.
   const [tasksOpen, setTasksOpen] = React.useState<boolean | null>(null)
@@ -189,6 +197,14 @@ function CardBody({
             {project.previewPort ? `:${project.previewPort}` : "off"}
           </span>
         </Row>
+        {browser?.available && (
+          <Row icon={AppWindowIcon} onClick={() => setMode("browser")} title="Browser tabs open in this session, and the most it may have">
+            <span>Browser</span>
+            <span className="text-muted-foreground ml-auto shrink-0 text-2xs tabular-nums" data-testid="browser-tab-count">
+              {tabsOfSession(browser.sessions, session?.id ?? null)}/{browser.maxTabs} tabs
+            </span>
+          </Row>
+        )}
         {manageable && (
           <>
             <Row icon={SquareKanbanIcon} onClick={() => setTasksOpen(true)} title="Every task in this workspace">

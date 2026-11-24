@@ -71,7 +71,7 @@ export async function runOp(manager: BrowserManager, scope: BrowserScope, op: Br
 // ---- helpers -----------------------------------------------------------------
 
 /** Runs a page script with a `__name` shim: tsx and vitest compile with esbuild's keepNames, whose helper the page lacks. */
-async function inPage<A, R>(page: Page, fn: (args: A) => R, args: A): Promise<Awaited<R>> {
+export async function inPage<A, R>(page: Page, fn: (args: A) => R, args: A): Promise<Awaited<R>> {
   return page.evaluate(`(() => { const __name = (f) => f; return (${fn.toString()})(${JSON.stringify(args)}); })()`) as Promise<Awaited<R>>;
 }
 
@@ -189,7 +189,10 @@ async function applyViewport(tab: Tab, viewport: Viewport): Promise<string> {
 async function open(manager: BrowserManager, scope: BrowserScope, args: BrowserInput<"browser_open">): Promise<BrowserResult> {
   const session = await manager.open(scope, args.session);
   const currentId = session.current.get(scope.agentId);
-  const own = (currentId && session.tabs.get(currentId)) || [...session.tabs.values()].find((t) => t.openedBy === scope.agentId);
+  const own = (currentId && session.tabs.get(currentId)) ||
+    [...session.tabs.values()].find((t) => t.openedBy === scope.agentId) ||
+    // Asked for no page in particular: one a person opened for this agent will do.
+    (!args.url && session.owner === scope.agentId ? [...session.tabs.values()].at(-1) : undefined);
   const tab = own && !args.new_tab ? own : await manager.newTab(session, scope.agentId);
   return manager.withTab(session, tab, scope.agentId, Boolean(args.url), async () => {
     const sized = await applyViewport(tab, args.viewport);
@@ -197,7 +200,7 @@ async function open(manager: BrowserManager, scope: BrowserScope, args: BrowserI
     const others = [...session.tabs.values()].filter((t) => t !== tab);
     const note = session.shared
       ? `Shared session ${session.name}: ${others.length ? `${others.length} other tab(s) (browser_tabs lists them)` : "no other tabs yet"}.`
-      : "Your private session.";
+      : `Your private session${others.length ? `. Other tabs: ${others.map((t) => `${t.id}${t.name ? ` ${JSON.stringify(t.name)}` : ""} ${t.page.url()}`).join("; ")}` : ""}.`;
     return { text: `Opened tab ${tab.id}${status}${sized}. ${note}\n\n${await snapshot(session, tab)}` };
   });
 }
@@ -477,7 +480,7 @@ async function tabs(manager: BrowserManager, scope: BrowserScope, args: BrowserI
     for (const t of s.tabs) {
       const who = t.openedBy === scope.agentId ? "you" : t.openedBy === "human" ? "a person" : `agent ${t.openedBy.slice(0, 8)}`;
       const flags = [t.id === mine ? "current" : "", t.controlledBy ? "a person is controlling it" : "", t.busy && t.busy !== scope.agentId ? "busy" : ""].filter(Boolean);
-      lines.push(`  ${t.id}  ${t.title || "(untitled)"} — ${t.url}  [opened by ${who}${flags.length ? `; ${flags.join("; ")}` : ""}]`);
+      lines.push(`  ${t.id}  ${t.name ? `${JSON.stringify(t.name)} ` : ""}${t.title || "(untitled)"} — ${t.url}  [opened by ${who}${flags.length ? `; ${flags.join("; ")}` : ""}]`);
     }
   }
   return { text: lines.join("\n") };

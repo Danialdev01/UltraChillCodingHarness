@@ -543,6 +543,8 @@ export class AgentTurnReactor {
   async #browserToolset(settings: WorkspaceAgentSettings | undefined | null, threadId: string, history?: readonly { event: DomainEvent }[]): Promise<false | "entry" | "full"> {
     if (!this.#browserOn(settings)) return false;
     if (this.#browserUsed.has(threadId)) return "full";
+    // A person opened a tab for it: the tools to use that tab come with it.
+    if (this.options.browser?.ownsTabs(threadId)) return "full";
     const used = history
       ? history.some(({ event }) => event.type === "agent.tool_use" && /browser_/.test(event.name))
       : (

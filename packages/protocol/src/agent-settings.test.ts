@@ -11,7 +11,7 @@ describe("readAgentSettings", () => {
         ompVerify: { enabled: false },
         memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
         widgets: { enabled: true },
-      browser: { enabled: true },
+      browser: { enabled: true, maxTabsPerSession: 5 },
         idleCompaction: { enabled: true },
         terminals: { maxPerProject: 10 },
       });
@@ -26,7 +26,7 @@ describe("readAgentSettings", () => {
       ompVerify: { enabled: false },
       memory: { enabled: false, llmMode: "smol", retainCliTurns: false },
       widgets: { enabled: true },
-      browser: { enabled: true },
+      browser: { enabled: true, maxTabsPerSession: 5 },
       idleCompaction: { enabled: true },
       terminals: { maxPerProject: 10 },
     });
@@ -69,6 +69,16 @@ describe("terminals per project", () => {
     expect(readAgentSettings({ terminals: { maxPerProject: 50 } }).terminals).toEqual({ maxPerProject: 50 });
     for (const bad of [0, 51, 2.5, "4"]) {
       expect(readAgentSettings({ terminals: { maxPerProject: bad } }).terminals).toEqual({ maxPerProject: 10 });
+    }
+  });
+});
+
+describe("browser tabs per session", () => {
+  it("is five unless the workspace sets it, from 1 to 20", () => {
+    expect(readAgentSettings({ browser: { enabled: false } }).browser).toEqual({ enabled: false, maxTabsPerSession: 5 });
+    expect(readAgentSettings({ browser: { maxTabsPerSession: 20 } }).browser).toEqual({ enabled: true, maxTabsPerSession: 20 });
+    for (const bad of [0, 21, 2.5, "4"]) {
+      expect(readAgentSettings({ browser: { maxTabsPerSession: bad } }).browser.maxTabsPerSession).toBe(5);
     }
   });
 });

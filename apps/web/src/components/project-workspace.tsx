@@ -8,7 +8,7 @@ import { CodeEditor } from "@/components/code-editor"
 import { useCurrentProject, useFilesPanel, type ViewMode } from "@/components/files-panel"
 import { NotesWorkspace, type DocLocation } from "@/components/notes/notes-workspace"
 import { BrowserViewSkeleton } from "@/components/page-skeletons"
-import { ProjectChat } from "@/components/project-chat"
+import { ProjectChat, type BrowserReference } from "@/components/project-chat"
 import { SessionContextCard } from "@/components/session-context-card"
 import { useProject } from "@/lib/queries/project"
 import type { Project, ProjectSession } from "@/lib/session"
@@ -71,10 +71,12 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
   // back lands where you left it.
   const [doc, setDoc] = React.useState<DocLocation>({ noteId: null, view: "notes" })
   const [gitRepair, setGitRepair] = React.useState<{ token: number; text: string } | null>(null)
+  // A page marked up in the browser, on its way into the composer.
+  const [browserRef, setBrowserRef] = React.useState<BrowserReference | null>(null)
   return (
     <>
       <ChatPortal>
-        <ProjectChat project={project} session={session} gitRepair={gitRepair} />
+        <ProjectChat project={project} session={session} gitRepair={gitRepair} browserRef={browserRef} />
       </ChatPortal>
       {!docked && (
         // Relative, for the details card that floats at its top right.
@@ -104,7 +106,16 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
           no reason to run behind the chat. */}
       {/* Mounted only while shown: its live stream costs the server a
           screencast for as long as it is open. */}
-      {mode === "browser" && <BrowserView project={project} />}
+      {mode === "browser" && (
+        <BrowserView
+          project={project}
+          threadId={session?.id ?? null}
+          onReference={(text, file) => {
+            setBrowserRef((previous) => ({ token: (previous?.token ?? 0) + 1, text, file }))
+            setMode("chat")
+          }}
+        />
+      )}
 
       {mode === "git" && <GitView project={project} session={session ?? null} onFixWithAI={(text) => {
         setGitRepair((previous) => ({ token: (previous?.token ?? 0) + 1, text }))

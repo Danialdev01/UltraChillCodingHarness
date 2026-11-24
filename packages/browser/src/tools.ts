@@ -353,6 +353,8 @@ export interface BrowserProvider {
 /** The live-view state of one project, for the Browser panel. */
 export interface BrowserTabInfo {
   id: string;
+  /** What the person who opened it called it, if they did. */
+  name: string | null;
   title: string;
   url: string;
   /** The agent session (thread id) that opened it, or "human". */
@@ -371,4 +373,28 @@ export interface BrowserSessionInfo {
   owner: string | null;
   tabs: BrowserTabInfo[];
   lastUsedAt: string;
+}
+
+/** One element of a captured page, for a person to point at. */
+export interface AnnotatedElement {
+  /** Unique on the page; `>>` steps into an open shadow root, as Playwright reads it. */
+  selector: string;
+  tag: string;
+  role: string | null;
+  label: string | null;
+  text: string;
+  /** In viewport CSS pixels, which are the picture's pixels. */
+  rect: { x: number; y: number; w: number; h: number };
+  styles: Record<string, string>;
+}
+
+/** A tab frozen for marking up: what it showed and where everything was. */
+export interface BrowserCapture {
+  url: string;
+  title: string;
+  viewport: { width: number; height: number };
+  scroll: { x: number; y: number };
+  elements: AnnotatedElement[];
+  /** Base64 PNG of the viewport. */
+  image: string;
 }

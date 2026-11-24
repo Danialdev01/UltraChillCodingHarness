@@ -147,7 +147,7 @@ const Env = z.object({
   BROWSER_EXECUTABLE: z.string().optional(),
   /** Browser contexts open at once, across every project; the least recently used idle one makes room. */
   BROWSER_MAX_CONTEXTS: z.coerce.number().int().positive().default(8),
-  BROWSER_MAX_TABS_PER_AGENT: z.coerce.number().int().positive().default(6),
+  BROWSER_MAX_TABS_PER_AGENT: z.coerce.number().int().positive().default(20),
   /** A session idle (and unwatched) this long is saved and closed. */
   BROWSER_IDLE_MS: z.coerce.number().int().positive().default(15 * 60_000),
   /**

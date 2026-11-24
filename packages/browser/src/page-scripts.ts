@@ -8,6 +8,8 @@
  * computed styles and hand back plain JSON.
  */
 
+import type { BrowserCapture } from "./tools.js";
+
 export type ExtractFormat = "markdown" | "text" | "links" | "tables" | "meta" | "html";
 
 /** Scrapes the page (or `selector`) in one of the extract formats. */
@@ -910,4 +912,83 @@ export async function contactSheetInPage(args: {
   const png = canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
   const jpeg = png.length * 0.75 > args.inlineBytes ? canvas.toDataURL("image/jpeg", 0.8).replace(/^data:image\/jpeg;base64,/, "") : null;
   return { png, jpeg, width: canvas.width, height: canvas.height, cols };
+}
+
+/** The visible elements of the viewport, for a person to point at. Never reads what is typed into a field. */
+export function annotateInPage(_args: null): Omit<BrowserCapture, "image"> {
+  const MAX = 1500;
+  const PROPS = [
+    "position", "display", "margin", "padding", "width", "height", "color", "background-color", "font-family",
+    "font-size", "font-weight", "line-height", "text-align", "border", "border-radius", "gap", "box-shadow", "z-index",
+  ];
+  const step = (el: Element): string => {
+    const tag = CSS.escape(el.localName);
+    const same = el.parentNode ? Array.from(el.parentNode.children).filter((c) => c.localName === el.localName) : [el];
+    return same.length > 1 ? `${tag}:nth-of-type(${same.indexOf(el) + 1})` : tag;
+  };
+  const selectorOf = (el: Element): string => {
+    const root = el.getRootNode() as Document | ShadowRoot;
+    const unique = (s: string) => {
+      try {
+        return root.querySelectorAll(s).length === 1;
+      } catch {
+        return false;
+      }
+    };
+    let path = "";
+    let at: Element | null = el;
+    while (at) {
+      const head = at.id ? `#${CSS.escape(at.id)}` : at.getAttribute("data-testid") ? `[data-testid=${JSON.stringify(at.getAttribute("data-testid"))}]` : "";
+      if (head && unique(path ? `${head} > ${path}` : head)) {
+        path = path ? `${head} > ${path}` : head;
+        break;
+      }
+      path = path ? `${step(at)} > ${path}` : step(at);
+      if (unique(path)) break;
+      at = at.parentElement;
+    }
+    const host = root instanceof ShadowRoot ? root.host : null;
+    return host ? `${selectorOf(host)} >> ${path}` : path;
+  };
+  const elements: BrowserCapture["elements"] = [];
+  const visit = (parent: Document | ShadowRoot | Element): void => {
+    for (const el of Array.from(parent.children)) {
+      if (elements.length >= MAX) return;
+      if (["script", "style", "head", "meta", "link", "noscript", "template"].includes(el.localName)) continue;
+      const r = el.getBoundingClientRect();
+      const x = Math.max(0, r.left);
+      const y = Math.max(0, r.top);
+      const w = Math.min(innerWidth, r.right) - x;
+      const h = Math.min(innerHeight, r.bottom) - y;
+      const style = getComputedStyle(el);
+      if (style.display === "none") continue;
+      if (w >= 2 && h >= 2 && style.visibility === "visible" && style.opacity !== "0") {
+        // A field's own text is what was typed (a textarea's children), so it is left out.
+        const field = el.matches("input, textarea, select, [contenteditable]:not([contenteditable=false])") || (el as HTMLElement).isContentEditable;
+        // A container's text would only repeat its children's.
+        const text = field || el.childElementCount > 3 ? "" : (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+        const styles: Record<string, string> = {};
+        for (const prop of PROPS) styles[prop] = style.getPropertyValue(prop).slice(0, 120);
+        elements.push({
+          selector: selectorOf(el),
+          tag: el.localName,
+          role: el.getAttribute("role"),
+          label: (el.getAttribute("aria-label") ?? el.getAttribute("alt") ?? el.getAttribute("placeholder") ?? "").slice(0, 120) || null,
+          text,
+          rect: { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) },
+          styles,
+        });
+      }
+      if (el.shadowRoot) visit(el.shadowRoot);
+      visit(el);
+    }
+  };
+  visit(document);
+  return {
+    url: location.href,
+    title: document.title,
+    viewport: { width: innerWidth, height: innerHeight },
+    scroll: { x: Math.round(scrollX), y: Math.round(scrollY) },
+    elements,
+  };
 }

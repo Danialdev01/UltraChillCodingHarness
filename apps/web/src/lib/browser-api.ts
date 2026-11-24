@@ -6,6 +6,8 @@
 
 export interface BrowserTabInfo {
   id: string
+  /** What the person who opened it called it, if they did. */
+  name: string | null
   title: string
   url: string
   /** The agent session (thread id) that opened it, or "human". */
@@ -30,6 +32,8 @@ export interface ProjectBrowser {
   /** False when the server has no Chromium or has the browser turned off. */
   available: boolean
   reason: string | null
+  /** The most tabs one chat session may have open. */
+  maxTabs: number
   sessions: BrowserSessionInfo[]
 }
 
@@ -44,13 +48,70 @@ export async function fetchProjectBrowser(projectHash: string): Promise<ProjectB
   return (await response.json()) as ProjectBrowser
 }
 
-/** A person opens a tab, in control of it, in a shared session (created when new). */
-export async function openBrowserTab(projectHash: string, session: string, url: string | null): Promise<{ session: string; tab: string }> {
+/** One element of a captured page. */
+export interface AnnotatedElement {
+  selector: string
+  tag: string
+  role: string | null
+  label: string | null
+  text: string
+  rect: { x: number; y: number; w: number; h: number }
+  styles: Record<string, string>
+}
+
+/** A tab frozen for marking up. */
+export interface BrowserCapture {
+  url: string
+  title: string
+  viewport: { width: number; height: number }
+  scroll: { x: number; y: number }
+  elements: AnnotatedElement[]
+  /** Base64 PNG of the viewport. */
+  image: string
+}
+
+/** The browser session a chat session's agent has to itself, as the server names it. */
+export function privateSessionName(threadId: string): string {
+  return `private-${threadId.slice(0, 8)}`
+}
+
+/**
+ * The tabs that count against a chat session's limit: all of its private
+ * session's, and those its agent opened in shared ones. Without a chat
+ * session, the ones people opened in `shared`.
+ */
+export function tabsOfSession(sessions: readonly BrowserSessionInfo[], threadId: string | null): number {
+  let count = 0
+  for (const s of sessions) {
+    if (threadId && s.owner === threadId) count += s.tabs.length
+    else if (threadId) count += s.tabs.filter((t) => t.openedBy === threadId).length
+    else if (s.name === "shared") count += s.tabs.filter((t) => t.openedBy === "human").length
+  }
+  return count
+}
+
+/** Freezes a tab for marking up: its picture and where every element is. */
+export async function captureBrowserTab(projectHash: string, session: string, tab: string): Promise<BrowserCapture> {
+  const response = await fetch(
+    `/api/projects/${projectHash}/browser/tabs/${encodeURIComponent(session)}/${encodeURIComponent(tab)}/capture`,
+    { method: "POST", credentials: "include" },
+  )
+  if (!response.ok) throw await failure(response, "Could not capture the page.")
+  return (await response.json()) as BrowserCapture
+}
+
+/** A person opens a tab for a chat session's agent, or with none in the `shared` session. */
+export async function openBrowserTab(
+  projectHash: string,
+  thread: string | null,
+  url: string,
+  name: string | null,
+): Promise<{ session: string; tab: string }> {
   const response = await fetch(`/api/projects/${projectHash}/browser/tabs`, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session, url }),
+    body: JSON.stringify({ thread, url, name }),
   })
   if (!response.ok) throw await failure(response, "Could not open a tab.")
   return (await response.json()) as { session: string; tab: string }

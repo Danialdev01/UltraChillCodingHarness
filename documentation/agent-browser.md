@@ -67,7 +67,7 @@ A model that can see (`supportsImages`) gets each picture in a user message that
 - **Persistence.** On close and on idle, a session's cookies and storage are saved to `CREDS_ROOT/browser/<project>/<name>.json` and restored when the session is next opened. Logins survive restarts.
 - **Limits.**
   - `BROWSER_MAX_CONTEXTS` (default 8) caps open sessions across the server; the least recently used idle session makes room.
-  - `BROWSER_MAX_TABS_PER_AGENT` (default 6) caps each agent's tabs in a session.
+  - **Browser tabs per session** (workspace settings, default 5, 1–20) caps one chat session's open tabs: all of its private session's, whoever opened them, plus those its agent opened in shared sessions. A popup past the limit is closed. `BROWSER_MAX_TABS_PER_AGENT` (default 20) is the server's ceiling above it.
   - `BROWSER_IDLE_MS` (default 15 min) closes unwatched idle sessions. Chromium itself exits when no session is left.
 
 ## People in the loop
@@ -76,7 +76,11 @@ The Browser view lists every session of the project, private ones included, beca
 
 **Take control** gives the person the tab. Mouse, keys, paste and the address bar reach the page. Agents' actions on that tab are refused with "a person is controlling this tab" until the person hands it back or closes the view; agents can still read it. Typical uses are logging in for an agent, or showing it something.
 
-Driving needs the `exec` scope. Watching needs only access to the project.
+**+** opens a tab at a URL, with an optional name, in the chat session's private browser session. The person does not take control of it, so the agent can use it at once, and a thread with such a tab is offered every browser tool. The session card beside the chat shows how many tabs are open.
+
+**The bar over the page** marks it up for the chat. Picking a tool (element, draw, arrow, box, ellipse, note) freezes the tab: `POST …/tabs/:session/:tab/capture` returns the picture with every visible element's selector, box, text and key styles, never what is typed into a field. **Add to chat** puts the annotated screenshot in the composer with the URL, the tab, the elements and the notes; what came from the page is fenced as reference, not instructions. Nothing is sent until the person sends it. Unsent marks survive looking elsewhere, not a reload. The **aspect ratio** menu resizes the tab's real viewport (`{"kind":"resize"}` on the live socket), for the person and the agent alike.
+
+Driving needs the `exec` scope, as do opening, closing and resizing. Watching and marking up needs only access to the project.
 
 ## Network policy
 
