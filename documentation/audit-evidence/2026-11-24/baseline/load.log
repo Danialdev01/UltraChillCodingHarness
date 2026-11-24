@@ -1,0 +1,13 @@
+load: 50 users for 5 min (+30 s ramp) against http://127.0.0.1:3497
+  30 s: 1 turns, 1051 keystrokes, 0 errors
+  60 s: 4 turns, 3135 keystrokes, 0 errors
+  90 s: 10 turns, 5228 keystrokes, 0 errors
+  120 s: 12 turns, 7321 keystrokes, 0 errors
+  150 s: 15 turns, 9414 keystrokes, 0 errors
+  180 s: 20 turns, 11493 keystrokes, 0 errors
+  210 s: 23 turns, 13587 keystrokes, 0 errors
+  240 s: 27 turns, 15678 keystrokes, 0 errors
+  270 s: 32 turns, 17774 keystrokes, 0 errors
+  300 s: 35 turns, 19864 keystrokes, 0 errors
+  330 s: 40 turns, 21945 keystrokes, 0 errors
+wrote documentation/audit-evidence/2026-11-24/baseline/load.json and its .md summary

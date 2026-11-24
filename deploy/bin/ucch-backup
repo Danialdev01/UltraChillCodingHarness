@@ -11,17 +11,23 @@ set -euo pipefail
 data=${DATA_DIR:-/data}
 keep=${BACKUP_KEEP:-7}
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-out=$data/backups/$stamp
+dir=$data/backups
+out=$dir/$stamp
 umask 077
-mkdir -p "$out"
+mkdir -p "$dir"
+# Written under a hidden name and renamed once whole: a run that fails leaves
+# nothing that looks like a backup, or counts as one of those kept.
+part=$(mktemp -d "$dir/.partial-XXXXXX")
+trap 'rm -rf "$part"' EXIT
 
 if [ -n "${DATABASE_URL:-}" ]; then
-  pg_dump -Fc --dbname="$DATABASE_URL" -f "$out/ucch.dump"
+  pg_dump -Fc --dbname="$DATABASE_URL" -f "$part/ucch.dump"
 else
-  /command/s6-setuidgid postgres /usr/lib/postgresql/16/bin/pg_dump -Fc -h /run/postgresql -U postgres ucch > "$out/ucch.dump"
-  /command/s6-setuidgid postgres /usr/lib/postgresql/16/bin/pg_dump -Fc -h /run/postgresql -U postgres dev > "$out/dev.dump"
+  /command/s6-setuidgid postgres /usr/lib/postgresql/16/bin/pg_dump -Fc -h /run/postgresql -U postgres ucch > "$part/ucch.dump"
+  /command/s6-setuidgid postgres /usr/lib/postgresql/16/bin/pg_dump -Fc -h /run/postgresql -U postgres dev > "$part/dev.dump"
 fi
-cp "$data/secrets/secret_key" "$out/secret_key"
+cp "$data/secrets/secret_key" "$part/secret_key"
+mv -T "$part" "$out"
 
-ls -1dt "$data/backups"/*/ 2>/dev/null | tail -n +"$((keep + 1))" | xargs -r rm -rf
+ls -1dt "$dir"/*/ 2>/dev/null | tail -n +"$((keep + 1))" | xargs -r rm -rf
 echo "$out"

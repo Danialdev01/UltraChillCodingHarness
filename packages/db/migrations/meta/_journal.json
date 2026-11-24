@@ -351,6 +351,13 @@
       "when": 1795525601187,
       "tag": "0049_scheduled_resume",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1795534892907,
+      "tag": "0050_audit_indexes",
+      "breakpoints": true
     }
   ]
 }

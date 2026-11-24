@@ -459,7 +459,6 @@ export const threads = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index("threads_project_idx").on(t.projectId),
     // The sidebar's thread list: one project's, newest first.
     index("threads_project_created_idx").on(t.projectId, t.createdAt),
     // The sidebar's session list: newest activity first.
@@ -592,7 +591,6 @@ export const subagents = pgTable(
   },
   (t) => [
     uniqueIndex("subagents_project_name_idx").on(t.projectId, t.name),
-    index("subagents_project_idx").on(t.projectId),
   ],
 );
 
@@ -1270,7 +1268,11 @@ export const agentMessages = pgTable("agent_messages", {
   depth: integer("depth").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   deliveredAt: timestamp("delivered_at", { withTimezone: true }),
-}, (t) => [index("agent_messages_inbox_idx").on(t.threadId, t.createdAt, t.id)]);
+}, (t) => [
+  index("agent_messages_inbox_idx").on(t.threadId, t.createdAt, t.id),
+  // For the cascade: without it, deleting a thread reads every message.
+  index("agent_messages_from_idx").on(t.fromThreadId),
+]);
 
 /** Background ownership and terminal results survive parent turns and reconnects. */
 export const agentRuns = pgTable("agent_runs", {
@@ -1283,4 +1285,8 @@ export const agentRuns = pgTable("agent_runs", {
   model: text("model"),
   routing: text("routing"),
   result: text("result"),
-}, (t) => [index("agent_runs_parent_idx").on(t.parentThreadId)]);
+}, (t) => [
+  index("agent_runs_parent_idx").on(t.parentThreadId),
+  // For the cascade, as above.
+  index("agent_runs_child_idx").on(t.childThreadId),
+]);

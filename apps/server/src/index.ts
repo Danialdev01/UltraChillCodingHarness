@@ -1239,6 +1239,18 @@ setInterval(() => {
   );
 }, 60_000).unref();
 
+// The activity log grows with use. It is kept whole unless the operator set
+// how long to keep it.
+if (config.AUDIT_RETENTION_DAYS > 0) {
+  const sweepAudit = () =>
+    audit.sweep(config.AUDIT_RETENTION_DAYS).then(
+      (removed) => removed > 0 && app.log.info({ removed }, "removed old activity-log lines"),
+      (error) => app.log.error({ err: error }, "could not sweep the activity log"),
+    );
+  void sweepAudit();
+  setInterval(sweepAudit, 60 * 60_000).unref();
+}
+
 /**
  * Raw bytes for an upload.
  *

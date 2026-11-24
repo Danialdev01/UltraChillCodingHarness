@@ -1,9 +1,11 @@
-import { and, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { auditLog, users, type Database } from "@ucch/db";
 import type { AuditEntry, DomainEvent } from "@ucch/protocol";
 
 /** How long repeated saves of one thing by one person keep folding into one line. */
 export const COALESCE_WINDOW_MS = 5 * 60 * 1000;
+
+const SWEEP_BATCH = 5000;
 
 export interface AuditInput {
   /** Null for a change to the account rather than to a project. */
@@ -65,6 +67,23 @@ export class AuditLog {
     private readonly publish: (projectId: string | null, userId: string | null, event: DomainEvent) => void,
     private readonly onError: (error: unknown) => void = () => {},
   ) {}
+
+  /**
+   * Deletes lines last touched more than `days` ago, a batch at a time so no
+   * single delete holds locks for long. `days` of 0 keeps everything.
+   * Returns how many went.
+   */
+  async sweep(days: number, now = new Date()): Promise<number> {
+    if (!(days > 0)) return 0;
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    let total = 0;
+    for (;;) {
+      const old = this.db.select({ id: auditLog.id }).from(auditLog).where(lt(auditLog.updatedAt, cutoff)).limit(SWEEP_BATCH);
+      const gone = await this.db.delete(auditLog).where(inArray(auditLog.id, old)).returning({ id: auditLog.id });
+      total += gone.length;
+      if (gone.length < SWEEP_BATCH) return total;
+    }
+  }
 
   async record(input: AuditInput): Promise<AuditEntry | null> {
     try {

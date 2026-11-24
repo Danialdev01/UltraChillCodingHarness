@@ -1,0 +1,98 @@
+Timing is off.
+BEGIN
+SELECT 50
+INSERT 0 200000
+INSERT 0 200000
+ANALYZE
+ANALYZE
+== thread delete, no index on the far FK
+SAVEPOINT
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ Delete on threads (actual rows=0 loops=1)
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on t (actual rows=1 loops=1)
+           Filter: (rn = 45)
+           Rows Removed by Filter: 49
+   ->  Seq Scan on threads (actual rows=1 loops=1)
+         Filter: (id = $0)
+         Rows Removed by Filter: 49
+ Planning Time: 0.048 ms
+ Trigger for constraint events_thread_id_threads_id_fk: calls=1
+ Trigger for constraint turns_thread_id_threads_id_fk: calls=1
+ Trigger for constraint project_tasks_thread_id_threads_id_fk: calls=1
+ Trigger for constraint reviews_thread_id_threads_id_fk: calls=1
+ Trigger for constraint agent_messages_thread_id_threads_id_fk: calls=1
+ Trigger for constraint agent_messages_from_thread_id_threads_id_fk: calls=1
+ Trigger for constraint agent_runs_parent_thread_id_threads_id_fk: calls=1
+ Trigger for constraint agent_runs_child_thread_id_threads_id_fk: calls=1
+ Execution Time: 23.605 ms
+(18 rows)
+
+ROLLBACK
+            QUERY PLAN            
+----------------------------------
+ Seq Scan on agent_runs
+   Filter: (child_thread_id = $0)
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on t
+           Filter: (rn = 45)
+(5 rows)
+
+CREATE INDEX
+CREATE INDEX
+ANALYZE
+ANALYZE
+== with the indexes
+SAVEPOINT
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ Delete on threads (actual rows=0 loops=1)
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on t (actual rows=1 loops=1)
+           Filter: (rn = 45)
+           Rows Removed by Filter: 49
+   ->  Seq Scan on threads (actual rows=1 loops=1)
+         Filter: (id = $0)
+         Rows Removed by Filter: 49
+ Planning Time: 0.048 ms
+ Trigger for constraint events_thread_id_threads_id_fk: calls=1
+ Trigger for constraint turns_thread_id_threads_id_fk: calls=1
+ Trigger for constraint project_tasks_thread_id_threads_id_fk: calls=1
+ Trigger for constraint reviews_thread_id_threads_id_fk: calls=1
+ Trigger for constraint agent_messages_thread_id_threads_id_fk: calls=1
+ Trigger for constraint agent_messages_from_thread_id_threads_id_fk: calls=1
+ Trigger for constraint agent_runs_parent_thread_id_threads_id_fk: calls=1
+ Trigger for constraint agent_runs_child_thread_id_threads_id_fk: calls=1
+ Execution Time: 0.430 ms
+(18 rows)
+
+ROLLBACK
+unterminated quoted string
+                   QUERY PLAN                    
+-------------------------------------------------
+ Bitmap Heap Scan on agent_runs
+   Recheck Cond: (child_thread_id = $0)
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on t
+           Filter: (rn = 45)
+   ->  Bitmap Index Scan on agent_runs_child_idx
+         Index Cond: (child_thread_id = $0)
+(7 rows)
+
+== a
+SET
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Index Only Scan using threads_last_activity_idx on threads
+   Filter: (project_id = gen_random_uuid())
+(2 rows)
+
+DROP INDEX
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Index Only Scan using threads_last_activity_idx on threads
+   Index Cond: (project_id = '00000000-0000-0000-0000-000000000000'::uuid)
+(2 rows)
+
+ROLLBACK

@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { COALESCE_WINDOW_MS, mergeDetails, textDelta, withinWindow } from "./audit.js";
+import { AuditLog, COALESCE_WINDOW_MS, mergeDetails, textDelta, withinWindow } from "./audit.js";
 import { SELF_AUDITED, describeRoute } from "./route-audit.js";
+
+describe("AuditLog.sweep", () => {
+  it("never touches the log when nothing says how long to keep it", async () => {
+    const audit = new AuditLog(
+      new Proxy({}, { get: () => { throw new Error("the database was touched"); } }) as never,
+      () => {},
+    );
+    for (const days of [0, -1, NaN]) expect(await audit.sweep(days)).toBe(0);
+  });
+
+  it("goes batch by batch until one comes back short", async () => {
+    const sizes = [5000, 5000, 12];
+    const chain = { from: () => chain, where: () => chain, limit: () => ({ getSQL: () => ({}) }) };
+    const db = {
+      select: () => chain,
+      delete: () => ({ where: () => ({ returning: async () => Array.from({ length: sizes.shift()! }, () => ({ id: 1 })) }) }),
+    };
+    expect(await new AuditLog(db as never, () => {}).sweep(30)).toBe(10_012);
+    expect(sizes).toEqual([]);
+  });
+});
 
 describe("mergeDetails", () => {
   it("adds the running totals and keeps the first `from`", () => {

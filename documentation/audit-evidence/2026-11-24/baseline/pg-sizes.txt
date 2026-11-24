@@ -1,0 +1,24 @@
+       relname        |  heap   |  idx   |  total  
+----------------------+---------+--------+---------
+ events               | 1097728 | 417792 | 1851392
+ audit_log            |  311296 | 409600 |  761856
+ projects             |  270336 | 286720 |  598016
+ project_stats        |  163840 |  57344 |  253952
+ threads              |   24576 | 114688 |  180224
+ users                |   57344 |  49152 |  139264
+ sessions             |   16384 |  49152 |   98304
+ turns                |   24576 |  32768 |   90112
+ workspaces           |    8192 |  65536 |   81920
+ workspace_members    |    8192 |  32768 |   49152
+ agent_profiles       |       0 |  24576 |   32768
+ subagents            |       0 |  24576 |   32768
+ previews             |       0 |  24576 |   32768
+ workspace_invites    |       0 |  24576 |   32768
+ notes                |       0 |  24576 |   32768
+ reviews              |       0 |  16384 |   24576
+ database_connections |       0 |  16384 |   24576
+ timeline_tasks       |       0 |  16384 |   24576
+ secrets              |       0 |  16384 |   24576
+ project_tasks        |       0 |  16384 |   24576
+(20 rows)
+
