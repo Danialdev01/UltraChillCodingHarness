@@ -133,6 +133,19 @@ export class CollabLink {
     }
   }
 
+  /** Sessions that ended, or a person whose access changed: their editors reconnect or go. */
+  accessChanged(change: { sessionIds?: readonly string[]; userId?: string }): void {
+    void fetch(new URL("/internal/access/changed", this.#upstream), {
+      method: "POST",
+      headers: { "content-type": "application/json", [COLLAB_SECRET_HEADER]: this.#secret },
+      body: JSON.stringify(change),
+      signal: AbortSignal.timeout(10_000),
+    }).catch((error: unknown) => {
+      // Down: its connections are gone with it.
+      this.#log?.error({ err: error }, "could not tell the collab service access changed");
+    });
+  }
+
   async stats(): Promise<{ documents: number; connections: number } | null> {
     try {
       const response = await fetch(new URL("/internal/stats", this.#upstream), {

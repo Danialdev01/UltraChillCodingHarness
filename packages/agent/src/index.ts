@@ -22,4 +22,6 @@ export * from "./tool.js";
 export * from "./uploads.js";
 export * from "./schema.js";
 export * from "./tools/format.js";
-export { isBlocked, refuseUnsafe } from "./tools/web.js";
+export { isBlocked, isLoopbackAddress } from "./net/address.js";
+export { BlockedAddressError, decodedBody, publicRequest } from "./net/public-request.js";
+export { refuseUnsafe } from "./tools/web.js";

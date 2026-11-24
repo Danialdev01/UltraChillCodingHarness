@@ -14,7 +14,9 @@ import { bash } from "./shell.js";
 import { currentTime, ping } from "./system.js";
 import { attachUpload } from "./uploads.js";
 import { UnknownUploadError, UploadConflictError, type UploadStaging } from "../uploads.js";
-import { htmlToText, isBlocked, webFetch, webSearch } from "./web.js";
+import { isBlocked, isLoopbackAddress } from "../net/address.js";
+import { BlockedAddressError, publicRequest } from "../net/public-request.js";
+import { htmlToText, webFetch, webSearch, webTransport } from "./web.js";
 import { researchBrowse, researchRead, researchSearch } from "./research.js";
 import type { ResearchProvider } from "../research.js";
 
@@ -615,15 +617,49 @@ describe("web_fetch address rules", () => {
       "fd00::1",
       "fe80::1",
       "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+      "::ffff:a9fe:a9fe",
+      "::ffff:0:7f00:1",
+      "::7f00:1",
+      "0:0:0:0:0:0:0:1",
+      "64:ff9b::7f00:1",
+      "2002:7f00:1::",
+      "fe80::1%eth0",
+      "2001:db8::1",
     ]) {
       expect(isBlocked(address), address).toBe(true);
     }
   });
 
   it("allows ordinary public addresses", () => {
-    for (const address of ["8.8.8.8", "93.184.216.34", "172.32.0.1", "2606:4700::1111"]) {
+    for (const address of ["8.8.8.8", "93.184.216.34", "172.32.0.1", "2606:4700::1111", "64:ff9b::808:808", "::ffff:808:808"]) {
       expect(isBlocked(address), address).toBe(false);
     }
+  });
+});
+
+describe("publicRequest", () => {
+  it("refuses a name that resolves to a private address as it is dialled", async () => {
+    // What a rebinding name does: a check beforehand saw a public address.
+    const request = publicRequest(new URL("http://rebind.example/"), {
+      signal: AbortSignal.timeout(2000),
+      headers: {},
+      resolve: async () => ["93.184.216.34", "::ffff:7f00:1"],
+    });
+    await expect(request).rejects.toBeInstanceOf(BlockedAddressError);
+  });
+
+  it("refuses an address written literally", async () => {
+    await expect(
+      publicRequest(new URL("http://[::ffff:127.0.0.1]/"), { signal: AbortSignal.timeout(2000), headers: {} }),
+    ).rejects.toBeInstanceOf(BlockedAddressError);
+  });
+
+  it("knows this machine however it is written", () => {
+    for (const address of ["127.0.0.1", "127.9.9.9", "0.0.0.0", "::", "::1", "::ffff:7f00:1"]) {
+      expect(isLoopbackAddress(address), address).toBe(true);
+    }
+    for (const address of ["10.0.0.1", "::2", "::ffff:a9fe:a9fe", "8.8.8.8"]) expect(isLoopbackAddress(address), address).toBe(false);
   });
 });
 
@@ -649,9 +685,7 @@ describe("web_fetch", () => {
   });
 
   it("reads a page and returns its text", async () => {
-    vi.stubGlobal(
-      "fetch",
-      async () =>
+    vi.spyOn(webTransport, "get").mockImplementation(async () =>
         new Response(
           "<html><head><title>Docs</title></head><body><p>Hello</p><p>World</p></body></html>",
           { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
@@ -667,7 +701,7 @@ describe("web_fetch", () => {
 
   // Following redirects automatically would walk straight past the check.
   it("revalidates each redirect hop", async () => {
-    vi.stubGlobal("fetch", async (url: URL) =>
+    vi.spyOn(webTransport, "get").mockImplementation(async (url: URL) =>
       String(url).includes("/start")
         ? new Response(null, { status: 302, headers: { location: "http://169.254.169.254/" } })
         : new Response("secret", { status: 200, headers: { "content-type": "text/plain" } }),
@@ -680,9 +714,7 @@ describe("web_fetch", () => {
   });
 
   it("refuses content that is not text", async () => {
-    vi.stubGlobal(
-      "fetch",
-      async () => new Response(" ", { status: 200, headers: { "content-type": "image/png" } }),
+    vi.spyOn(webTransport, "get").mockImplementation(async () => new Response(" ", { status: 200, headers: { "content-type": "image/png" } }),
     );
 
     const result = await webFetch.run({ url: "http://93.184.216.34/logo.png" }, context());
@@ -691,7 +723,7 @@ describe("web_fetch", () => {
   });
 
   it("reports a non-200", async () => {
-    vi.stubGlobal("fetch", async () => new Response("nope", { status: 404 }));
+    vi.spyOn(webTransport, "get").mockImplementation(async () => new Response("nope", { status: 404 }));
     const result = await webFetch.run({ url: "http://93.184.216.34/missing" }, context());
     expect(result).toMatchObject({ isError: true });
     expect(result.content).toContain("404");

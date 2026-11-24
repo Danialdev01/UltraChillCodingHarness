@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { publicUrl, rewriteUploadUrls } from "./public-routes.js";
-import { isSecretPath, withoutSecrets } from "./files.js";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Fastify from "fastify";
+import { publicUrl, registerPublicRoutes, rewriteUploadUrls } from "./public-routes.js";
+import { isSecretPath, WorkspaceFiles, withoutSecrets } from "./files.js";
 
 const project = { id: "p", hash: "h4cxt545betr", name: "x", slug: "x-abcdef" };
 
@@ -24,7 +28,7 @@ describe("rewriteUploadUrls", () => {
 
 describe("secret files on the public site", () => {
   it("refuses credentials in any folder", () => {
-    for (const path of [".env", "apps/web/.env.local", "id_rsa", "certs/server.key", "tls.PEM", ".npmrc", ".agent/env.val"]) {
+    for (const path of [".env", "apps/web/.env.local", "id_rsa", "certs/server.key", "tls.PEM", ".npmrc", ".agent/env.val", ".env/.", ".env/", "a/../.env", "a\\..\\.env", ".ssh/config", "../../x/.env"]) {
       expect(isSecretPath(path), path).toBe(true);
     }
   });
@@ -38,5 +42,37 @@ describe("secret files on the public site", () => {
   it("prunes them from the tree but keeps folders", () => {
     const tree = [{ name: "app", children: [{ name: ".env" }, { name: "main.ts" }] }, { name: ".env" }, { name: ".env.example" }];
     expect(withoutSecrets(tree)).toEqual([{ name: "app", children: [{ name: "main.ts" }] }, { name: ".env.example" }]);
+  });
+});
+
+describe("the public file route", () => {
+  it("serves no secret under any spelling or link, and still serves the rest", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ucch-public-"));
+    const dir = join(root, "p");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await mkdir(join(dir, ".ssh"));
+    await writeFile(join(dir, ".env"), "DUMMY=1");
+    await writeFile(join(dir, ".ssh", "config"), "Host x");
+    await writeFile(join(dir, "src", "main.ts"), "export {}");
+    await symlink(".env", join(dir, "notes.txt"));
+    await symlink("src/main.ts", join(dir, "alias.ts"));
+    await symlink(".ssh", join(dir, "docs"));
+    const app = Fastify();
+    registerPublicRoutes(app, {
+      findPublic: async () => ({ ...project, id: "p" }),
+      files: new WorkspaceFiles(root),
+    } as never);
+    const status = async (path: string) =>
+      (await app.inject({ url: `/api/public/x-abcdef/file?path=${encodeURIComponent(path)}` })).statusCode;
+    try {
+      for (const path of [".env", ".env/.", "./.env", "src/../.env", "notes.txt", ".ssh/config", "docs/config"]) {
+        expect(await status(path), path).toBe(404);
+      }
+      for (const path of ["src/main.ts", "./src/./main.ts", "alias.ts"]) expect(await status(path), path).toBe(200);
+      expect([400, 404]).toContain(await status("../x"));
+    } finally {
+      await app.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

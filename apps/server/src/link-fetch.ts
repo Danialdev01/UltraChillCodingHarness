@@ -1,9 +1,5 @@
-import { lookup as dnsLookup } from "node:dns";
-import { request as httpRequest, type IncomingMessage } from "node:http";
-import { request as httpsRequest } from "node:https";
-import { isIP, type LookupFunction } from "node:net";
-import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
-import { isBlocked } from "@ucch/agent";
+import type { IncomingMessage } from "node:http";
+import { BlockedAddressError, decodedBody, publicRequest } from "@ucch/agent";
 
 /**
  * Fetches a link the person put in the chat, so it can be staged like any
@@ -72,7 +68,6 @@ export async function fetchLink(raw: string, options: FetchLinkOptions = {}): Pr
   const maxBytes = options.maxBytes ?? 20 * 1024 * 1024;
   const deadline = AbortSignal.timeout(options.timeoutMs ?? 20_000);
 
-  const blocked = options.blocked ?? isBlocked;
   let target: URL;
   try {
     target = rewriteLink(new URL(raw.trim()));
@@ -85,10 +80,7 @@ export async function fetchLink(raw: string, options: FetchLinkOptions = {}): Pr
       throw new LinkError(`${target.protocol} links cannot be fetched; only http and https`);
     }
     if (target.username || target.password) throw new LinkError("links with credentials in them are not fetched");
-    const host = target.hostname.replace(/^\[|\]$/g, "");
-    if (isIP(host) && blocked(host)) throw new LinkError(`${host} is a private or loopback address`);
-
-    const response = await get(target, deadline, guardedLookup(blocked, options.resolve));
+    const response = await get(target, deadline, options);
     const status = response.statusCode ?? 0;
     const location = response.headers.location;
     if (status >= 300 && status < 400 && location) {
@@ -114,62 +106,28 @@ export async function fetchLink(raw: string, options: FetchLinkOptions = {}): Pr
   throw new LinkError("too many redirects");
 }
 
-/** A lookup that refuses to hand the socket a private address. */
-function guardedLookup(blocked: (address: string) => boolean, resolve?: (host: string) => Promise<string[]>): LookupFunction {
-  return (hostname, options, callback) => {
-    const done = (error: Error | null, addresses: string[]) => {
-      if (error) return callback(error as NodeJS.ErrnoException, "", 4);
-      if (addresses.length === 0) return callback(new LinkError(`${hostname} did not resolve`) as NodeJS.ErrnoException, "", 4);
-      const refused = addresses.find((address) => blocked(address));
-      if (refused) return callback(new LinkError(`${hostname} resolves to ${refused}, a private or loopback address`) as NodeJS.ErrnoException, "", 4);
-      const entries = addresses.map((address) => ({ address, family: isIP(address) }));
-      if ((options as { all?: boolean }).all) return (callback as unknown as (e: null, a: typeof entries) => void)(null, entries);
-      callback(null, entries[0]!.address, entries[0]!.family);
-    };
-    if (resolve) {
-      resolve(hostname).then((addresses) => done(null, addresses), (error: Error) => done(error, []));
-      return;
-    }
-    dnsLookup(hostname, { all: true }, (error, results) => done(error, (results ?? []).map((r) => r.address)));
-  };
-}
-
-function get(url: URL, signal: AbortSignal, lookup: LookupFunction): Promise<IncomingMessage> {
-  return new Promise((done, fail) => {
-    const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(
-      url,
-      {
-        method: "GET",
-        signal,
-        lookup,
-        headers: {
-          "user-agent": USER_AGENT,
-          accept: "text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.9,*/*;q=0.8",
-          "accept-encoding": "gzip, deflate, br",
-          "accept-language": "en;q=0.9,*;q=0.5",
-        },
+async function get(url: URL, signal: AbortSignal, options: FetchLinkOptions): Promise<IncomingMessage> {
+  try {
+    return await publicRequest(url, {
+      signal,
+      resolve: options.resolve,
+      blocked: options.blocked,
+      headers: {
+        "user-agent": USER_AGENT,
+        accept: "text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.9,*/*;q=0.8",
+        "accept-encoding": "gzip, deflate, br",
+        "accept-language": "en;q=0.9,*;q=0.5",
       },
-      done,
-    );
-    request.on("error", (error) => {
-      if (error instanceof LinkError) return fail(error);
-      if (signal.aborted) return fail(new LinkError(`${url.host} took too long to answer`));
-      fail(new LinkError(`could not reach ${url.host}: ${error.message}`));
     });
-    request.end();
-  });
+  } catch (error) {
+    if (error instanceof BlockedAddressError) throw new LinkError(error.message);
+    if (signal.aborted) throw new LinkError(`${url.host} took too long to answer`);
+    throw new LinkError(`could not reach ${url.host}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function readBody(response: IncomingMessage, maxBytes: number): Promise<Buffer> {
-  const encoding = String(response.headers["content-encoding"] ?? "").toLowerCase();
-  const stream =
-    encoding === "gzip" || encoding === "x-gzip"
-      ? response.pipe(createGunzip())
-      : encoding === "deflate"
-        ? response.pipe(createInflate())
-        : encoding === "br"
-          ? response.pipe(createBrotliDecompress())
-          : response;
+  const stream = decodedBody(response);
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of stream as AsyncIterable<Buffer>) {

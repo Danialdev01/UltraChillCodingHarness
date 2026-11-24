@@ -11,6 +11,8 @@ import { COLLAB_SECRET_HEADER } from "./secret.js";
 /** Who is editing, as the API vouched for them. */
 export interface CollabAccess {
   userId: string;
+  /** The sign-in the editor's ticket came from. */
+  sessionId?: string;
   projectId: string;
   readOnly: boolean;
 }
@@ -349,6 +351,20 @@ export function createCollab(options: CollabOptions) {
         return;
       }
       await applyNote(note[1]!, body.content, body.expected);
+      response.writeHead(204).end();
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/internal/access/changed") {
+      const body = JSON.parse(await readBody(request)) as { sessionIds?: unknown; userId?: unknown };
+      const ended = new Set(Array.isArray(body.sessionIds) ? body.sessionIds : []);
+      // Closed, not refused: an editor that may still be here comes straight
+      // back with a new ticket, and the API answers for it afresh.
+      for (const document of instance.documents.values()) {
+        for (const connection of document.getConnections()) {
+          const access = (connection.context as { access?: CollabAccess } | undefined)?.access;
+          if (access && (ended.has(access.sessionId) || access.userId === body.userId)) connection.webSocket.close(4205, "access changed");
+        }
+      }
       response.writeHead(204).end();
       return;
     }

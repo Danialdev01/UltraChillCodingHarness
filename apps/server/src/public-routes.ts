@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { mediaTypeFor } from "@ucch/protocol";
-import { isSecretPath, PathError, withoutSecrets, type WorkspaceFiles } from "./files.js";
+import { PathError, withoutSecrets, type WorkspaceFiles } from "./files.js";
 import type { GitService } from "./git.js";
 import type { NotesService } from "./notes.js";
 import type { UploadStore } from "./uploads.js";
@@ -105,9 +105,8 @@ export function registerPublicRoutes(app: FastifyInstance, deps: PublicRouteDeps
     if (!path) return reply.code(400).send({ error: "a path is required" });
     // Answered as though it were not there, so a visitor cannot tell a
     // project with a `.env` from one without.
-    if (isSecretPath(path)) return reply.code(404).send(notFound);
     try {
-      const result = await files.read(project.id, path);
+      const result = await files.readPublic(project.id, path);
       switch (result.kind) {
         case "text":
           return { path, content: result.content };

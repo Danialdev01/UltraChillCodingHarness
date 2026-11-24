@@ -65,9 +65,14 @@ const memoryFiles = (): FileDocuments => ({
 });
 const providers: HocuspocusProvider[] = [];
 
+/** Tokens the API has stopped vouching for. */
+const revoked = new Set<string>();
+
 /** Tickets that redeem: "good" for an editor, "viewer" for read-only. */
 async function authorize(token: string): Promise<CollabAccess | null> {
-  if (token === "good") return { userId: USER, projectId: PROJECT, readOnly: false };
+  if (revoked.has(token)) return null;
+  if (token === "other") return { userId: PROJECT, sessionId: "s2", projectId: PROJECT, readOnly: false };
+  if (token === "good") return { userId: USER, sessionId: "s1", projectId: PROJECT, readOnly: false };
   if (token === "viewer") return { userId: USER, projectId: PROJECT, readOnly: true };
   return null;
 }
@@ -208,6 +213,31 @@ describe("the collab service", () => {
     expect(collab.instance.getDocumentsCount()).toBe(1);
     await until(() => collab.instance.getDocumentsCount() === 0, 3000);
     expect(memory.row.content).toEqual(paragraph("bye hello"));
+  });
+
+  it.each([{ sessionIds: ["s1"] }, { userId: USER }])("drops an editor whose access changed: %o", async (change) => {
+    const gone = client("good");
+    const stays = client("other");
+    await gone.synced();
+    await stays.synced();
+    revoked.add("good");
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/internal/access/changed`, {
+        method: "POST",
+        headers: { "x-ucch-collab": "s", "content-type": "application/json" },
+        body: JSON.stringify(change),
+      });
+      expect(response.status).toBe(204);
+      await until(() => gone.failed());
+      typeAt(gone.document, 0, "X");
+      typeAt(stays.document, 5, "!");
+      await until(() => memory.row.stores > 0);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(memory.row.content).toEqual(paragraph("hello!"));
+      expect(stays.provider.isSynced).toBe(true);
+    } finally {
+      revoked.clear();
+    }
   });
 
   it("answers the API's calls only with the secret", async () => {

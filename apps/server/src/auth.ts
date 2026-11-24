@@ -47,6 +47,10 @@ export class AuthService {
    */
   #sessionCache = new Map<string, { principal: Principal; expiresAt: number; cachedUntil: number }>();
 
+  /** Sessions ended a moment ago: a read of one still in flight must not bring it back. */
+  #ended = new Map<string, number>();
+  #onEnded: ((sessionIds: readonly string[]) => void)[] = [];
+
   constructor(
     private readonly db: Database,
     private readonly config: Config,
@@ -76,7 +80,23 @@ export class AuthService {
     const cached = this.#sessionCache.get(id);
     if (cached && cached.cachedUntil > now && cached.expiresAt > now) return cached.principal;
     this.#sessionCache.delete(id);
+    return this.#readSession(id, now);
+  }
 
+  /**
+   * Whether a session, by the id its principals carry, is still signed in.
+   * What outlives the request that checked the cookie -- a ticket, a preview
+   * cookie -- asks this instead.
+   */
+  async sessionActive(sessionId: string): Promise<boolean> {
+    if (this.config.DEV_AUTH_BYPASS) return true;
+    const now = Date.now();
+    const cached = this.#sessionCache.get(sessionId);
+    if (cached && cached.cachedUntil > now && cached.expiresAt > now) return true;
+    return (await this.#readSession(sessionId, now)) !== null;
+  }
+
+  async #readSession(id: string, now: number): Promise<Principal | null> {
     const [row] = await this.db
       .select()
       .from(sessions)
@@ -86,8 +106,10 @@ export class AuthService {
     if (!row) return null;
     if (row.expiresAt.getTime() < now) {
       await this.db.delete(sessions).where(eq(sessions.id, row.id));
+      this.#end([row.id]);
       return null;
     }
+    if (this.#ended.has(id)) return null;
     const principal = { userId: row.userId, sessionId: row.id, scopes: row.scopes as Scope[] };
     if (this.#sessionCache.size >= SESSION_CACHE_MAX) this.#sessionCache.clear();
     this.#sessionCache.set(id, { principal, expiresAt: row.expiresAt.getTime(), cachedUntil: now + SESSION_CACHE_MS });
@@ -100,14 +122,38 @@ export class AuthService {
       .delete(sessions)
       .where(lt(sessions.expiresAt, now))
       .returning({ id: sessions.id });
+    this.#end(removed.map((row) => row.id));
     return removed.length;
+  }
+
+  /**
+   * Called with the ids of sessions that just ended -- signed out, revoked
+   * by a password change, expired -- for whatever they still hold open.
+   */
+  onSessionsEnded(listener: (sessionIds: readonly string[]) => void): void {
+    this.#onEnded.push(listener);
+  }
+
+  /** Everything a session leaves behind: its cached principal, its tickets, its sockets. */
+  #end(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    const ended = new Set(ids);
+    const now = Date.now();
+    for (const id of ended) {
+      this.#sessionCache.delete(id);
+      this.#ended.set(id, now);
+    }
+    for (const [ticket, entry] of this.#tickets) {
+      if (ended.has(entry.principal.sessionId)) this.#tickets.delete(ticket);
+    }
+    for (const listener of this.#onEnded) listener(ids);
   }
 
   /** Ends a session; returns its id, which is what its sockets' principals carry. */
   async revokeSession(token: string): Promise<string> {
     const id = hashToken(token);
-    this.#sessionCache.delete(id);
     await this.db.delete(sessions).where(eq(sessions.id, id));
+    this.#end([id]);
     return id;
   }
 
@@ -117,8 +163,11 @@ export class AuthService {
     return { ticket, expiresInMs: TICKET_TTL_MS };
   }
 
-  /** Single-use: the ticket is consumed whether or not it turns out to be valid. */
-  redeemTicket(ticket: string | undefined): Principal | null {
+  /**
+   * Single-use: the ticket is consumed whether or not it turns out to be
+   * valid. Worth nothing once the session it was issued to has ended.
+   */
+  async redeemTicket(ticket: string | undefined): Promise<Principal | null> {
     if (this.config.DEV_AUTH_BYPASS) return this.#devPrincipal();
     if (!ticket) return null;
 
@@ -126,7 +175,7 @@ export class AuthService {
     this.#tickets.delete(ticket);
     if (!entry) return null;
     if (entry.expiresAt < Date.now()) return null;
-    return entry.principal;
+    return (await this.sessionActive(entry.principal.sessionId)) ? entry.principal : null;
   }
 
   /**
@@ -262,22 +311,25 @@ export class AuthService {
       if (!valid) return { error: "wrong_password" };
     }
 
-    await this.db
-      .update(users)
-      .set({
-        passwordHash: await hashPassword(newPassword),
-        // A first password needed nothing but this session to add; stored
-        // keys stay locked to it for an hour (see `passwordAddedAt`).
-        ...(row.passwordHash ? {} : { passwordAddedAt: new Date() }),
-      })
-      .where(eq(users.id, userId));
-
-    await this.db
-      .delete(sessions)
-      .where(and(eq(sessions.userId, userId), ne(sessions.id, keepSessionId)));
-    for (const [id, entry] of this.#sessionCache) {
-      if (entry.principal.userId === userId && id !== keepSessionId) this.#sessionCache.delete(id);
-    }
+    const passwordHash = await hashPassword(newPassword);
+    // Together, so a new password never stands beside the sessions it was
+    // meant to end.
+    const revoked = await this.db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({
+          passwordHash,
+          // A first password needed nothing but this session to add; stored
+          // keys stay locked to it for an hour (see `passwordAddedAt`).
+          ...(row.passwordHash ? {} : { passwordAddedAt: new Date() }),
+        })
+        .where(eq(users.id, userId));
+      return tx
+        .delete(sessions)
+        .where(and(eq(sessions.userId, userId), ne(sessions.id, keepSessionId)))
+        .returning({ id: sessions.id });
+    });
+    this.#end(revoked.map((session) => session.id));
 
     return { ok: true, hadPassword: row.passwordHash !== null };
   }
@@ -427,6 +479,9 @@ export class AuthService {
     }
     for (const [id, entry] of this.#sessionCache) {
       if (entry.cachedUntil < now) this.#sessionCache.delete(id);
+    }
+    for (const [id, at] of this.#ended) {
+      if (now - at > 60_000) this.#ended.delete(id);
     }
   }
 }

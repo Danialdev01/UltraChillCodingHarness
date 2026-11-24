@@ -1,0 +1,24 @@
+
+> ucch@ typecheck /srv/http/git/work/UltraChillCodingHarness
+> pnpm -r typecheck
+
+Scope: 8 of 9 workspace projects
+packages/protocol typecheck$ bash ../../scripts/typecheck.sh
+packages/browser typecheck$ bash ../../scripts/typecheck.sh
+packages/browser typecheck: Done
+packages/protocol typecheck: Done
+apps/web typecheck$ next typegen && bash ../../scripts/typecheck.sh
+packages/agent typecheck$ bash ../../scripts/typecheck.sh
+packages/providers typecheck$ bash ../../scripts/typecheck.sh
+packages/db typecheck$ bash ../../scripts/typecheck.sh
+packages/providers typecheck: Done
+packages/agent typecheck: Done
+packages/db typecheck: Done
+apps/web typecheck: Generating route types...
+apps/web typecheck: ✓ Types generated successfully
+apps/web typecheck: Done
+packages/omp-bridge typecheck$ bash ../../scripts/typecheck.sh
+apps/server typecheck$ bash ../../scripts/typecheck.sh
+packages/omp-bridge typecheck: Done
+apps/server typecheck: Done
+pnpm typecheck  10.69s user 1.16s system 522% cpu 2.265 total

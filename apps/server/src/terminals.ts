@@ -497,6 +497,19 @@ export class TerminalReactor {
   }
 
   /** Stop a deleted project's shells and command processes, and remove their bridge files. */
+  /**
+   * Ends a person's shells in projects `allowed` no longer lets them work
+   * in: a shell is the project's files and secrets, whatever the socket
+   * that opened it may still see.
+   */
+  async closeLost(userId: string, allowed: (projectId: string) => Promise<boolean>): Promise<void> {
+    const held = [...this.#sessions.values()].filter((session) => session.userId === userId && session.projectId !== null);
+    for (const projectId of new Set(held.map((session) => session.projectId!))) {
+      if (await allowed(projectId)) continue;
+      for (const session of held) if (session.projectId === projectId) this.close(session.id);
+    }
+  }
+
   async closeProject(projectId: string): Promise<void> {
     const sessions = [...this.#sessions.values()].filter((session) => session.projectId === projectId);
     for (const session of sessions) this.close(session.id);

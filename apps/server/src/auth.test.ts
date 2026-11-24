@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AuthService, DEV_USER_ID, type Principal } from "./auth.js";
 import { loadConfig, type Config } from "./config.js";
@@ -13,31 +14,80 @@ const config = loadConfig({
   GITHUB_CLIENT_SECRET: "secret",
 } as NodeJS.ProcessEnv);
 
-// Ticket issuance and redemption are in-memory, so the database is never
-// touched by these paths.
-const auth = new AuthService(null as never, config);
+/** A database holding `live` sessions, and nothing else. */
+const live = new Map<string, Date>();
+const sessionDb = {
+  select: () => ({
+    from: () => ({
+      where: () => ({
+        limit: async () => [...live].map(([id, expiresAt]) => ({ id, userId: principal.userId, scopes: principal.scopes, expiresAt })),
+      }),
+    }),
+  }),
+  delete: () => ({
+    where: () => {
+      const gone = [...live.keys()].map((id) => ({ id }));
+      live.clear();
+      return Object.assign(Promise.resolve(), { returning: async () => gone });
+    },
+  }),
+};
+const auth = new AuthService(sessionDb as never, config);
 
 const principal: Principal = {
   userId: "00000000-0000-4000-8000-000000000001",
   sessionId: "s1",
   scopes: ["read", "write"],
 };
+const later = () => new Date(Date.now() + 60_000);
 
 describe("websocket tickets", () => {
-  it("redeems a valid ticket once", () => {
+  it("redeems a valid ticket once", async () => {
+    live.set("s1", later());
     const { ticket } = auth.issueTicket(principal);
-    expect(auth.redeemTicket(ticket)).toEqual(principal);
+    expect(await auth.redeemTicket(ticket)).toEqual(principal);
     // Single-use: a replayed ticket from a proxy log is worthless.
-    expect(auth.redeemTicket(ticket)).toBeNull();
+    expect(await auth.redeemTicket(ticket)).toBeNull();
   });
 
-  it("rejects a forged or missing ticket", () => {
-    expect(auth.redeemTicket("forged")).toBeNull();
-    expect(auth.redeemTicket(undefined)).toBeNull();
+  it("rejects a forged or missing ticket", async () => {
+    expect(await auth.redeemTicket("forged")).toBeNull();
+    expect(await auth.redeemTicket(undefined)).toBeNull();
   });
 
   it("issues distinct tickets", () => {
     expect(auth.issueTicket(principal).ticket).not.toBe(auth.issueTicket(principal).ticket);
+  });
+
+  it("is worthless once its session is signed out, and says the session ended", async () => {
+    const ended: string[] = [];
+    auth.onSessionsEnded((ids) => ended.push(...ids));
+    const sessionId = createHash("sha256").update("token").digest("hex");
+    live.clear();
+    live.set(sessionId, later());
+    expect((await auth.resolveSession("token"))?.sessionId).toBe(sessionId);
+    const { ticket } = auth.issueTicket({ ...principal, sessionId });
+    await auth.revokeSession("token");
+    expect(await auth.redeemTicket(ticket)).toBeNull();
+    expect(await auth.sessionActive(sessionId)).toBe(false);
+    expect(ended).toEqual([sessionId]);
+  });
+
+  it("is worthless once its session has expired", async () => {
+    live.clear();
+    const { ticket } = auth.issueTicket({ ...principal, sessionId: "s9" });
+    live.set("s9", new Date(Date.now() - 1000));
+    expect(await auth.redeemTicket(ticket)).toBeNull();
+  });
+
+  it("does not bring back a session that ended while it was being read", async () => {
+    live.clear();
+    const id = createHash("sha256").update("racing").digest("hex");
+    live.set(id, later());
+    const reading = auth.resolveSession("racing");
+    await auth.revokeSession("racing");
+    await reading;
+    expect(await auth.sessionActive(id)).toBe(false);
   });
 });
 
@@ -79,9 +129,9 @@ describe("bypass mode", () => {
   } as NodeJS.ProcessEnv);
   const open = new AuthService(null as never, bypass);
 
-  it("authenticates any ticket as the dev user, by design", () => {
+  it("authenticates any ticket as the dev user, by design", async () => {
     // This is the point of the bypass, and why production refuses it.
-    expect(open.redeemTicket("anything")?.scopes).toContain("admin");
+    expect((await open.redeemTicket("anything"))?.scopes).toContain("admin");
   });
 });
 

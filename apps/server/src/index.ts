@@ -52,7 +52,6 @@ import {
   StaleWriteError,
   WorkspaceFiles,
   contentVersion,
-  isSecretPath,
 } from "./files.js";
 import { ProjectAccess } from "./access.js";
 import { AuditLog, textDelta, type AuditInput } from "./audit.js";
@@ -105,6 +104,7 @@ import { backfillSessionTitles } from "./session-titles.js";
 import { registerSessionRoutes } from "./session-routes.js";
 import { DbAccountKeys, KeyUsage, backfillAccountKeyMetadata, checkKeyLive } from "./account-keys.js";
 import { DbStepUpStore } from "./step-up.js";
+import { LoginThrottle } from "./login-throttle.js";
 import { LOG_REDACT, LOG_SCRUB } from "./log-redact.js";
 import { EnvVarService } from "./env-vars.js";
 import { TimelineService } from "./timeline.js";
@@ -1045,15 +1045,16 @@ const preview = new PreviewGateway({
   // Through the same path rules as the editor, so a static site reaches no
   // file the owner could not open -- and not the ones a share must not show.
   readStatic: async (project, path) => {
-    if (isSecretPath(path)) return { kind: "missing" };
     try {
-      const file = await workspaceFiles.readBytes(project.id, path);
+      const file = await workspaceFiles.readBytesPublic(project.id, path);
       return file.kind === "too_large" ? { kind: "missing" } : file;
     } catch (error) {
       if (error instanceof PathError) return { kind: "missing" };
       throw error;
     }
   },
+  authorize: async ({ projectId, userId, sessionId }) =>
+    (await auth.sessionActive(sessionId)) && (await access.canAccessProject(userId, projectId)),
   devBypass: config.DEV_AUTH_BYPASS,
   log: { error: (obj, msg) => app.log.error(obj, msg) },
 });
@@ -1091,7 +1092,7 @@ const app = Fastify({
   // One line per request drowned the log; the slow ones and the failures
   // are logged below, and /metrics counts every one.
   disableRequestLogging: true,
-  trustProxy: true,
+  trustProxy: config.TRUSTED_PROXIES,
   serverFactory: (handler) =>
     createServer((req, res) => {
       if (preview.handleRequest(req, res)) return;
@@ -1230,12 +1231,13 @@ uploads.startSweeper(15 * 60_000, (error) =>
 );
 
 // Expired sessions were only removed when someone presented one; a session
-// nobody uses again would otherwise sit in the table forever.
+// nobody uses again would otherwise sit in the table forever. Every minute,
+// because this is also what closes an expired session's open sockets.
 setInterval(() => {
   auth.sweepExpiredSessions().catch((error) =>
     app.log.error({ err: error }, "could not sweep expired sessions"),
   );
-}, 60 * 60_000).unref();
+}, 60_000).unref();
 
 /**
  * Raw bytes for an upload.
@@ -1972,6 +1974,7 @@ async function openPreview(
   const ticket = preview.issueTicket({
     projectId: project.id,
     userId: principal.userId,
+    sessionId: principal.sessionId,
     port: project.previewPort,
   });
   const raw = request.raw.url ?? "";
@@ -3196,7 +3199,7 @@ app.post("/api/internal/collab/authorize", async (request, reply) => {
   if (!fromCollab(request)) return reply.code(403).send({ error: "forbidden" });
   const parsed = CollabAuthorize.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: "bad request" });
-  const principal = auth.redeemTicket(parsed.data.token);
+  const principal = await auth.redeemTicket(parsed.data.token);
   if (!principal) return reply.code(401).send({ error: "unauthorized" });
   const { document } = parsed.data;
   const [row] =
@@ -3221,6 +3224,7 @@ app.post("/api/internal/collab/authorize", async (request, reply) => {
   const member = await workspaceService.membership(row.workspaceId, principal.userId);
   return {
     userId: principal.userId,
+    sessionId: principal.sessionId,
     projectId: row.projectId,
     // A viewer, or a token without write: sees the edits, makes none.
     readOnly: !principal.scopes.includes("write") || member?.role === "viewer",
@@ -3705,7 +3709,17 @@ registerWorkspaceMemberRoutes(app, {
   members: new WorkspaceMemberService(db, workspaceService, config.SECRET_KEY),
   credentialsChanged: (workspaceId) => providerService.invalidate(workspaceSubject(workspaceId)),
   accessChanged: (userId) => {
-    void gateway.revalidate({ userId }).catch((error) => app.log.error({ err: error }, "could not re-check access"));
+    const failed = (error: unknown) => app.log.error({ err: error }, "could not re-check access");
+    void gateway.revalidate({ userId }).catch(failed);
+    void preview.revalidate(userId).catch(failed);
+    void browserLive?.revalidate(userId).catch(failed);
+    collab?.accessChanged({ userId });
+    void terminals
+      .closeLost(userId, async (projectId) => {
+        const workspaceId = await access.workspaceOfProject(projectId);
+        return workspaceId !== null && (await workspaceService.allows(workspaceId, userId, "project.write"));
+      })
+      .catch(failed);
   },
 });
 
@@ -3837,6 +3851,14 @@ const browserLive = browser
       canAccessProject: (userId, projectId) => access.canAccessProject(userId, projectId),
     })
   : null;
+
+// Whatever a session still holds open goes with it.
+auth.onSessionsEnded((sessionIds) => {
+  gateway.closeSessions(sessionIds);
+  preview.closeSessions(sessionIds);
+  browserLive?.closeSessions(sessionIds);
+  collab?.accessChanged({ sessionIds });
+});
 
 registerGitRoutes(app, {
   projectFor,
@@ -5196,9 +5218,11 @@ app.delete<{ Params: { hash: string; sessionHash: string }; Querystring: { ifEmp
 // -- Password login ----------------------------------------------------------
 
 const Credentials = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+  email: z.string().max(320).email(),
+  // The bound a password can be set with; hashing is not free.
+  password: z.string().min(1).max(1024),
 });
+const loginThrottle = new LoginThrottle();
 
 app.post("/api/auth/login", {
   config: {
@@ -5213,13 +5237,20 @@ app.post("/api/auth/login", {
     return reply.code(400).send({ error: "email and password are required" });
   }
 
+  const wait = loginThrottle.retryAfter(parsed.data.email, request.ip);
+  if (wait > 0) {
+    return reply.code(429).header("retry-after", wait).send({ error: "too many attempts for this account; try again later" });
+  }
+
   const userId = await auth.verifyCredentials(parsed.data.email, parsed.data.password);
   if (!userId) {
+    loginThrottle.failed(parsed.data.email, request.ip);
     // One message for both "no such user" and "wrong password": distinguishing
     // them would let an unauthenticated caller enumerate registered addresses.
     return reply.code(401).send({ error: "invalid email or password" });
   }
 
+  loginThrottle.succeeded(parsed.data.email, request.ip);
   const session = await auth.createSession(userId, ["read", "write", "exec", "admin"]);
   reply.setCookie(SESSION_COOKIE, session, {
     httpOnly: true,
@@ -5362,7 +5393,7 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
 
 app.post("/api/auth/logout", async (request, reply) => {
   const token = request.cookies[SESSION_COOKIE];
-  if (token) gateway.closeSession(await auth.revokeSession(token));
+  if (token) await auth.revokeSession(token);
   reply.clearCookie(SESSION_COOKIE, { path: "/" });
   return { ok: true };
 });
@@ -5384,7 +5415,7 @@ app.server.on("upgrade", (request, socket, head) => {
     socket.destroy();
     return;
   }
-  gateway.handleUpgrade(request, socket, head);
+  void gateway.handleUpgrade(request, socket, head);
 });
 
 function publicOrigin(): string {

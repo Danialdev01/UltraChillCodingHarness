@@ -68,6 +68,8 @@ describe("PreviewGateway", () => {
   let now = 1_000_000;
   const projects = new Map<string, PreviewProject>();
   let resolves = 0;
+  /** Session and user ids that no longer hold. */
+  const denied = new Set<string>();
 
   const previewHost = () => `p${dev.port}-${HASH}.${ROOT}`;
   const fallthrough: string[] = [];
@@ -108,6 +110,7 @@ describe("PreviewGateway", () => {
           throw error;
         }
       },
+      authorize: async (grant) => !denied.has(grant.sessionId) && !denied.has(grant.userId),
       log: { error: () => {} },
       now: () => now,
     });
@@ -134,7 +137,7 @@ describe("PreviewGateway", () => {
 
   /** Runs the ticket handoff and returns the cookie value the preview host set. */
   async function login(): Promise<string> {
-    const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", port: dev.port });
+    const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", sessionId: "s1", port: dev.port });
     const res = await send(gwPort, { host: previewHost(), path: `/__ucch/auth?t=${ticket}&next=%2Fdashboard` });
     expect(res.status).toBe(302);
     expect(res.headers.location).toBe("/dashboard");
@@ -173,7 +176,7 @@ describe("PreviewGateway", () => {
   });
 
   it("swaps a ticket for a cookie exactly once", async () => {
-    const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", port: dev.port });
+    const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", sessionId: "s1", port: dev.port });
     const first = await send(gwPort, { host: previewHost(), path: `/__ucch/auth?t=${ticket}` });
     expect(first.status).toBe(302);
     expect(first.headers.location).toBe("/");
@@ -182,16 +185,16 @@ describe("PreviewGateway", () => {
   });
 
   it("refuses an expired ticket", async () => {
-    const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", port: dev.port });
+    const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", sessionId: "s1", port: dev.port });
     now += 61_000;
     const res = await send(gwPort, { host: previewHost(), path: `/__ucch/auth?t=${ticket}` });
     expect(res.status).toBe(403);
   });
 
   it("refuses a ticket issued for another project or port", async () => {
-    const wrongProject = gateway.issueTicket({ projectId: "proj-2", userId: "user-2", port: dev.port });
+    const wrongProject = gateway.issueTicket({ projectId: "proj-2", userId: "user-2", sessionId: "s1", port: dev.port });
     expect((await send(gwPort, { host: previewHost(), path: `/__ucch/auth?t=${wrongProject}` })).status).toBe(403);
-    const wrongPort = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", port: dev.port + 1 });
+    const wrongPort = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", sessionId: "s1", port: dev.port + 1 });
     expect((await send(gwPort, { host: previewHost(), path: `/__ucch/auth?t=${wrongPort}` })).status).toBe(403);
   });
 
@@ -243,7 +246,7 @@ describe("PreviewGateway", () => {
     gateway.invalidate(HASH);
     try {
       const cookie = (await (async () => {
-        const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", port });
+        const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", sessionId: "s1", port });
         const res = await send(gwPort, { host: `p${port}-${HASH}.${ROOT}`, path: `/__ucch/auth?t=${ticket}` });
         return res.headers["set-cookie"]![0]!.split(";")[0]!;
       })());
@@ -281,6 +284,7 @@ describe("PreviewGateway", () => {
       target: (_p, port) => ({ hosts: ["127.0.0.1"], port }),
       log: { error: () => {} },
       now: () => now,
+      authorize: async () => true,
       resolveCacheMax: 2,
     });
     const server = createServer((req, res) => {
@@ -317,6 +321,29 @@ describe("PreviewGateway", () => {
     ws.close();
   });
 
+  it.each([["its session ends", "s1"], ["its user is removed", "user-1"]])("ends a grant when %s", async (_what, id) => {
+    const cookie = await login();
+    const ws = new WebSocket(`ws://127.0.0.1:${gwPort}/hmr`, { headers: { host: previewHost(), cookie } });
+    await new Promise((resolve, reject) => ws.once("open", resolve).once("error", reject));
+    const closed = new Promise((resolve) => ws.once("close", resolve));
+    denied.add(id);
+    try {
+      if (id === "s1") gateway.closeSessions(["s1"]);
+      else await gateway.revalidate("user-1");
+      await closed;
+      expect((await send(gwPort, { host: previewHost(), headers: { cookie } })).status).toBe(302);
+      const again = new WebSocket(`ws://127.0.0.1:${gwPort}/hmr`, { headers: { host: previewHost(), cookie } });
+      const status = await new Promise((resolve) => {
+        again.on("error", () => {});
+        again.once("unexpected-response", (_req, res) => resolve(res.statusCode));
+      });
+      expect(status).toBe(401);
+    } finally {
+      denied.clear();
+      now += 10_000;
+    }
+  });
+
   it("refuses a WebSocket upgrade without a cookie", async () => {
     const ws = new WebSocket(`ws://127.0.0.1:${gwPort}/hmr`, { headers: { host: previewHost() } });
     const err = await new Promise<Error>((resolve) => ws.on("error", resolve));
@@ -340,7 +367,7 @@ describe("PreviewGateway", () => {
     projects.set(HASH, { id: "proj-1", userId: "user-1", previewPort: port });
     gateway.invalidate(HASH);
     try {
-      const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", port });
+      const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", sessionId: "s1", port });
       const auth = await send(gwPort, { host: `p${port}-${HASH}.${ROOT}`, path: `/__ucch/auth?t=${ticket}` });
       const cookie = auth.headers["set-cookie"]![0]!.split(";")[0]!;
       const res = await send(gwPort, { host: `p${port}-${HASH}.${ROOT}`, headers: { cookie } });
@@ -362,7 +389,7 @@ describe("PreviewGateway", () => {
     beforeAll(async () => {
       projects.set(HASH, { id: "proj-1", userId: "user-1", previewPort: STATIC_PORT, previewStaticDir: "dist" });
       gateway.invalidate(HASH);
-      const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", port: STATIC_PORT });
+      const ticket = gateway.issueTicket({ projectId: "proj-1", userId: "user-1", sessionId: "s1", port: STATIC_PORT });
       const auth = await send(gwPort, { host: staticHost, path: `/__ucch/auth?t=${ticket}` });
       cookie = auth.headers["set-cookie"]![0]!.split(";")[0]!;
     });

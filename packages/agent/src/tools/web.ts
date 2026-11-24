@@ -1,6 +1,9 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { Readable } from "node:stream";
 import { z } from "zod/v4";
+import { isBlocked } from "../net/address.js";
+import { decodedBody, publicRequest } from "../net/public-request.js";
 import { defineTool, type ToolResult } from "../tool.js";
 import { clamp, describe } from "./format.js";
 
@@ -93,11 +96,9 @@ export const webFetch = defineTool({
         // Manual redirects, because following them automatically would let a
         // public URL hand back a Location pointing at 169.254.169.254 and
         // walk straight past the check above.
-        const hopResponse = await fetch(target, {
-          signal,
-          redirect: "manual",
-          headers: { accept: "text/html,text/plain,application/json;q=0.9", "user-agent": USER_AGENT },
-        });
+        // The socket's own lookup checks the address again, so a name cannot
+        // resolve to something else between the check above and this.
+        const hopResponse = await webTransport.get(target, signal);
 
         const location = hopResponse.headers.get("location");
         if (hopResponse.status >= 300 && hopResponse.status < 400 && location) {
@@ -145,6 +146,33 @@ export const webFetch = defineTool({
   },
 });
 
+/** Replaced by the tests, which must not reach the network. */
+export const webTransport = {
+  async get(url: URL, signal: AbortSignal): Promise<Response> {
+    const message = await publicRequest(url, {
+      signal,
+      headers: {
+        accept: "text/html,text/plain,application/json;q=0.9",
+        "accept-encoding": "gzip, deflate, br",
+        "user-agent": USER_AGENT,
+      },
+    });
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(message.headers)) {
+      if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+    }
+    const status = message.statusCode ?? 502;
+    // A Response may not carry a body with these.
+    const bodiless = status === 204 || status === 205 || status === 304 || status < 200;
+    if (bodiless) message.resume();
+    return new Response(bodiless ? null : (Readable.toWeb(decodedBody(message)) as never), {
+      status: status < 200 ? 502 : status,
+      statusText: message.statusMessage ?? "",
+      headers,
+    });
+  },
+};
+
 const USER_AGENT = "UCCH-agent/0.1 (+https://github.com/ucch)";
 
 /**
@@ -154,8 +182,9 @@ const USER_AGENT = "UCCH-agent/0.1 (+https://github.com/ucch)";
  * The scheme check rules out `file:`, `gopher:` and the rest. The address
  * check is the one that matters: a public hostname is free to resolve to
  * 127.0.0.1, so the name is not evidence and every resolved address has to
- * be looked at. A rebind between this check and the fetch remains possible,
- * which is why the container is still the real boundary.
+ * be looked at. `web_fetch` connects through `publicRequest`, which checks
+ * again as it dials; this one is for a clear answer before that, and for
+ * URLs handed to another service to open.
  */
 export async function refuseUnsafe(url: URL): Promise<string | null> {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -181,44 +210,6 @@ export async function refuseUnsafe(url: URL): Promise<string | null> {
     if (isBlocked(address)) return `${host} resolves to ${address}, a private or loopback address.`;
   }
   return null;
-}
-
-/** Loopback, link-local, private, carrier-grade NAT, multicast and reserved. */
-export function isBlocked(address: string): boolean {
-  const version = isIP(address);
-  if (version === 4) return isBlockedV4(address);
-  if (version === 6) return isBlockedV6(address.toLowerCase());
-  return true;
-}
-
-function isBlockedV4(address: string): boolean {
-  const octets = address.split(".").map(Number);
-  const [a = 0, b = 0] = octets;
-  if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
-    return true;
-  }
-  if (a === 0) return true; // "this network"
-  if (a === 10) return true;
-  if (a === 127) return true; // loopback
-  if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
-  if (a === 169 && b === 254) return true; // link-local, and the cloud metadata address
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0) return true; // IETF protocol assignments
-  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
-  if (a >= 224) return true; // multicast and reserved
-  return false;
-}
-
-function isBlockedV6(address: string): boolean {
-  if (address === "::" || address === "::1") return true;
-  // An IPv4-mapped address is an IPv4 address wearing a hat.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(address);
-  if (mapped?.[1]) return isBlockedV4(mapped[1]);
-  if (/^f[cd]/.test(address)) return true; // unique local, fc00::/7
-  if (/^fe[89ab]/.test(address)) return true; // link-local, fe80::/10
-  if (/^ff/.test(address)) return true; // multicast
-  return false;
 }
 
 function isTextual(contentType: string): boolean {

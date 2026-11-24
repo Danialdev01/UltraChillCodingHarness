@@ -623,6 +623,19 @@ describe("how many terminals may be open", () => {
     await terminals.closeAll();
   });
 
+  it("closes a person's terminals only in projects they have lost", async () => {
+    const { terminals, open, killed } = capped({});
+    const lost = open(PROJECTS[0]!, USER);
+    const colleague = open(PROJECTS[0]!, OTHER);
+    const kept = open(PROJECTS[1]!, USER);
+    await terminals.closeLost(USER, async (projectId) => projectId !== PROJECTS[0]);
+    expect(killed()).toBe(1);
+    expect(terminals.input(lost, USER, "x")).toBe(false);
+    expect(terminals.input(colleague, OTHER, "x")).toBe(true);
+    expect(terminals.input(kept, USER, "x")).toBe(true);
+    await terminals.closeAll();
+  });
+
   it("refuses one more for a person who has their limit, in any project", () => {
     const { open, said, spawned } = capped({ maxPerUser: 2 });
     open(PROJECTS[0]!, USER);

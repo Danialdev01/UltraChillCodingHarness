@@ -4,7 +4,7 @@ import { isIP } from "node:net";
 import type { FastifyInstance } from "fastify";
 import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
-import { isBlocked } from "@ucch/agent";
+import { isBlocked, isLoopbackAddress } from "@ucch/agent";
 import { BrowserError, type BrowserInputEvent, type BrowserManager } from "@ucch/browser";
 import type { DomainEvent } from "@ucch/protocol";
 import type { Principal } from "./auth.js";
@@ -23,10 +23,6 @@ export interface BrowserPolicy {
   allowPrivate: boolean;
   /** Loopback ports no page may reach: the harness's own API. */
   deniedLocalPorts: readonly number[];
-}
-
-function isLoopback(address: string): boolean {
-  return address === "::1" || address.startsWith("127.") || address === "::ffff:127.0.0.1" || /^::ffff:127\./.test(address);
 }
 
 /**
@@ -56,7 +52,7 @@ export async function browserRefusal(url: URL, policy: BrowserPolicy): Promise<s
   }
   const port = Number(url.port || (url.protocol === "https:" || url.protocol === "wss:" ? 443 : 80));
   for (const address of addresses) {
-    if (isLoopback(address)) {
+    if (isLoopbackAddress(address)) {
       if (policy.deniedLocalPorts.includes(port)) return `port ${port} on this server is the harness itself`;
       continue;
     }
@@ -191,7 +187,7 @@ const MAX_BUFFERED = 2 * 1024 * 1024;
 
 export interface BrowserLiveDeps {
   browser: BrowserManager;
-  redeemTicket(ticket: string | undefined): Principal | null;
+  redeemTicket(ticket: string | undefined): Promise<Principal | null>;
   canAccessProject(userId: string, projectId: string): Promise<boolean>;
 }
 
@@ -215,7 +211,6 @@ export class BrowserLive {
 
   handleUpgrade(request: IncomingMessage, socket: NodeJS.Socket & { destroy(): void }, head: Buffer): void {
     const url = new URL(request.url ?? "/", "http://localhost");
-    const principal = this.deps.redeemTicket(url.searchParams.get("ticket") ?? undefined);
     const projectId = url.searchParams.get("project") ?? "";
     const session = url.searchParams.get("session") ?? "";
     const tab = url.searchParams.get("tab") ?? "";
@@ -223,15 +218,34 @@ export class BrowserLive {
       socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
     };
-    if (!principal) return deny("401 Unauthorized");
     if (!z.string().uuid().safeParse(projectId).success || !session || !tab) return deny("400 Bad Request");
-    void this.deps.canAccessProject(principal.userId, projectId).then(
-      (allowed) => {
-        if (!allowed) return deny("404 Not Found");
-        this.#wss.handleUpgrade(request, socket as never, head, (ws) => void this.#accept(ws, principal, projectId, session, tab));
-      },
-      () => deny("500 Internal Server Error"),
-    );
+    const dropped = () => socket.destroy();
+    socket.on("error", dropped);
+    void (async () => {
+      const principal = await this.deps.redeemTicket(url.searchParams.get("ticket") ?? undefined);
+      if (!principal) return deny("401 Unauthorized");
+      if (!(await this.deps.canAccessProject(principal.userId, projectId))) return deny("404 Not Found");
+      socket.off("error", dropped);
+      this.#wss.handleUpgrade(request, socket as never, head, (ws) => {
+        this.#open.set(ws, { principal, projectId });
+        ws.on("close", () => this.#open.delete(ws));
+        void this.#accept(ws, principal, projectId, session, tab);
+      });
+    })().catch(() => deny("500 Internal Server Error"));
+  }
+
+  readonly #open = new Map<WebSocket, { principal: Principal; projectId: string }>();
+
+  /** Closes every view a session opened, once it has ended. */
+  closeSessions(sessionIds: readonly string[]): void {
+    for (const [ws, { principal }] of this.#open) if (sessionIds.includes(principal.sessionId)) ws.terminate();
+  }
+
+  /** Closes a person's views of projects they may no longer open. */
+  async revalidate(userId: string): Promise<void> {
+    for (const [ws, { principal, projectId }] of [...this.#open]) {
+      if (principal.userId === userId && !(await this.deps.canAccessProject(userId, projectId))) ws.terminate();
+    }
   }
 
   async #accept(ws: WebSocket, principal: Principal, projectId: string, session: string, tab: string): Promise<void> {

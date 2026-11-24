@@ -77,6 +77,8 @@ interface Connection {
   /** Project subscriptions with `files: true` only, for `onProjectWatch`: the project and the tree. */
   watching: Map<string, { projectId: string; tree: string | null }>;
   alive: boolean;
+  /** Its session has ended: nothing more is taken from it while it closes. */
+  ended: boolean;
   /**
    * What this socket has already been allowed to open, so the prompt box,
    * sent on every pause in typing, is not a database round trip each time.
@@ -184,9 +186,13 @@ export class WebSocketGateway {
   }
 
   /** Handles the HTTP upgrade, redeeming the single-use ticket from the query. */
-  handleUpgrade(request: IncomingMessage, socket: NodeJS.Socket & { destroy(): void }, head: Buffer): void {
+  async handleUpgrade(request: IncomingMessage, socket: NodeJS.Socket & { destroy(): void }, head: Buffer): Promise<void> {
+    // Nothing else listens while the ticket is checked.
+    const dropped = () => socket.destroy();
+    socket.on("error", dropped);
     const url = new URL(request.url ?? "/", "http://localhost");
-    const principal = this.auth.redeemTicket(url.searchParams.get("ticket") ?? undefined);
+    const principal = await Promise.resolve(this.auth.redeemTicket(url.searchParams.get("ticket") ?? undefined)).catch(() => null);
+    socket.off("error", dropped);
 
     if (!principal) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
@@ -214,6 +220,7 @@ export class WebSocketGateway {
       subscriptionWorkspaces: new Map(),
       watching: new Map(),
       alive: true,
+      ended: false,
       threads: new Map(),
       projects: new Set(),
       terminalRefusedAt: 0,
@@ -251,6 +258,7 @@ export class WebSocketGateway {
   }
 
   async #onMessage(conn: Connection, raw: string): Promise<void> {
+    if (conn.ended) return;
     // Keystrokes first, and without the schema: they are most of what a
     // socket sends while someone types, and each one is two fields.
     if (raw.startsWith(TERMINAL_FRAME_PREFIX)) {
@@ -751,10 +759,14 @@ export class WebSocketGateway {
     }
   }
 
-  /** Closes every socket a signed-out session opened. */
-  closeSession(sessionId: string): void {
+  /** Closes every socket a session opened, once it has ended. */
+  closeSessions(sessionIds: readonly string[]): void {
+    const ended = new Set(sessionIds);
     for (const conn of this.#connections) {
-      if (conn.principal.sessionId === sessionId) conn.socket.close(4001, "signed out");
+      if (!ended.has(conn.principal.sessionId)) continue;
+      conn.ended = true;
+      for (const id of [...conn.subscriptions.keys()]) this.#end(conn, id);
+      conn.socket.close(4001, "signed out");
     }
   }
 

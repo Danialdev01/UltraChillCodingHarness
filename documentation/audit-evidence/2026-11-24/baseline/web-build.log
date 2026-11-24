@@ -1,0 +1,74 @@
+▲ Next.js 16.4.6 (webpack)
+✓ Running next.config.ts took 171ms
+- Experiments (use with caution):
+  · optimizePackageImports
+  · proxyClientMaxBodySize: 26214400
+  · staleTimes
+
+  Creating an optimized production build ...
+○ (serwist) Serwist is disabled.
+○ (serwist) Serwist is disabled.
+✓ Compiled successfully in 28.6s
+  Running TypeScript ...
+  Finished TypeScript in 2.1s ...
+  Collecting page data using 15 workers ...
+  Generating static pages using 15 workers (0/13) ...
+  Generating static pages using 15 workers (3/13) 
+  Generating static pages using 15 workers (6/13) 
+  Generating static pages using 15 workers (9/13) 
+✓ Generating static pages using 15 workers (13/13) in 2.6s
+  Finalizing page optimization ...
+  Collecting build traces ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ƒ /[workspaceHash]
+├ ƒ /[workspaceHash]/[...legacy]
+├ ƒ /[workspaceHash]/code
+├ ƒ /[workspaceHash]/database
+├ ƒ /[workspaceHash]/database/[connectionId]
+├ ƒ /[workspaceHash]/database/[connectionId]/[db]
+├ ƒ /[workspaceHash]/database/[connectionId]/[db]/[table]
+├ ƒ /[workspaceHash]/knowledge
+├ ƒ /[workspaceHash]/knowledge/[baseId]
+├ ƒ /[workspaceHash]/p/[projectHash]
+├ ƒ /[workspaceHash]/p/[projectHash]/[sessionHash]
+├ ƒ /[workspaceHash]/p/[projectHash]/activity
+├ ƒ /[workspaceHash]/p/[projectHash]/documentation
+├ ƒ /[workspaceHash]/p/[projectHash]/documentation/[noteId]
+├ ƒ /[workspaceHash]/p/[projectHash]/keys
+├ ƒ /[workspaceHash]/p/[projectHash]/manage
+├ ƒ /[workspaceHash]/p/[projectHash]/tasks
+├ ƒ /[workspaceHash]/p/[projectHash]/timeline
+├ ƒ /[workspaceHash]/publish
+├ ƒ /[workspaceHash]/s/[sessionHash]
+├ ƒ /[workspaceHash]/terminal
+├ ƒ /[workspaceHash]/todo
+├ ƒ /[workspaceHash]/workspace-settings
+├ ƒ /[workspaceHash]/workspace-settings/[page]
+├ ○ /apple-icon.png
+├ ○ /dev/themes
+├ ƒ /file-icons
+├ ƒ /file-icons/resolve
+├ ƒ /file-icons/svg/[id]
+├ ○ /healthz
+├ ○ /icon.svg
+├ ƒ /invite/[token]
+├ ○ /login
+├ ○ /manifest.webmanifest
+├ ○ /offline
+├ ƒ /setting
+├ ƒ /setting/[page]
+├ ƒ /shared/[slug]
+├ ƒ /shared/[slug]/documents
+├ ƒ /shared/[slug]/notes/[[...noteId]]
+└ ƒ /shared/[slug]/timeline
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+NEXT_DIST_DIR=.next-audit SERVER_ORIGIN=http://127.0.0.1:3000 = =1 pnpm exec   100.82s user 7.52s system 207% cpu 52.207 total

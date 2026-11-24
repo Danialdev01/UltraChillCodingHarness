@@ -7,12 +7,13 @@ import {
   open,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { assertRealpathInside, isGitInternalPath } from "@ucch/agent";
 import { normalizeWorkspacePath } from "@ucch/protocol";
 import type { TreeTarget } from "./trees.js";
@@ -180,6 +181,29 @@ export class WorkspaceFiles {
     return { kind: "file", stream: handle.createReadStream(), size: info.size };
   }
 
+  /** `read`, for someone a secret must not be shown to: one is `missing`. */
+  async readPublic(projectId: TreeTarget, path: string): Promise<ReadResult> {
+    return (await this.#isSecret(projectId, path)) ? { kind: "missing" } : this.read(projectId, path);
+  }
+
+  /** `readBytes`, likewise. */
+  async readBytesPublic(projectId: TreeTarget, path: string): Promise<RawReadResult> {
+    return (await this.#isSecret(projectId, path)) ? { kind: "missing" } : this.readBytes(projectId, path);
+  }
+
+  /** Whether a path names a secret, by its own name or as a link to one. */
+  async #isSecret(projectId: TreeTarget, path: string): Promise<boolean> {
+    if (isSecretPath(path)) return true;
+    const absolute = this.resolve(projectId, path);
+    try {
+      const [root, real] = await Promise.all([realpath(this.root(projectId)), realpath(absolute)]);
+      return real !== root && isSecretPath(relative(root, real));
+    } catch {
+      // Not there: the read says so.
+      return false;
+    }
+  }
+
   /**
    * Creates or overwrites a file. Returns what happened, for the event.
    *
@@ -337,12 +361,26 @@ export class PathError extends Error {}
  * The owner's own editor shows these -- they are the project's, and the
  * server writes `.env` there itself -- but a public site must not: the slug
  * is the only grant, and a database password is not part of what was shared.
- * Matched on the last segment, so it holds in any folder.
+ * Matched on every segment, so it holds in any folder and under any spelling
+ * of the path.
  */
 const SECRET_FILE = /^(\.env(\..*)?|env\.val|\.npmrc|\.pypirc|\.netrc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx))$/i;
 
 export function isSecretPath(path: string): boolean {
-  const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+  // As the filesystem will read it: `.env/.` and `x/../.env` are `.env`. A
+  // path that climbs out is refused elsewhere, and secret here.
+  const normalized = normalizeWorkspacePath(path.replaceAll("\\", "/"));
+  if (normalized === null) return !/^[./\\]*$/.test(path);
+  const segments = normalized.split("/");
+  if (segments.slice(0, -1).some((segment) => SECRET_DIRECTORY.test(segment) || isSecretName(segment))) return true;
+  const name = segments.at(-1)!;
+  return SECRET_DIRECTORY.test(name) || isSecretName(name);
+}
+
+/** Folders that hold credentials whatever the files in them are called. */
+const SECRET_DIRECTORY = /^(\.ssh|\.aws|\.gnupg)$/i;
+
+function isSecretName(name: string): boolean {
   // `.env.example` is meant to be read; it is the template, not the secret.
   if (/^\.env\.(example|sample|template)$/i.test(name)) return false;
   return SECRET_FILE.test(name);
@@ -351,7 +389,7 @@ export function isSecretPath(path: string): boolean {
 /** The tree without any file `isSecretPath` refuses, for a public reader. */
 export function withoutSecrets(nodes: FileNode[]): FileNode[] {
   return nodes
-    .filter((node) => node.children !== undefined || !isSecretPath(node.name))
+    .filter((node) => !isSecretPath(node.name))
     .map((node) => (node.children ? { ...node, children: withoutSecrets(node.children) } : node));
 }
 

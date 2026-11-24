@@ -196,7 +196,7 @@ describe("realtime access", () => {
   it("closes a signed-out session's sockets, and only those", async () => {
     const phone = await connect(`${ALICE}:phone`);
     const laptop = await connect(`${ALICE}:laptop`);
-    gateway.closeSession("phone");
+    gateway.closeSessions(["phone"]);
     expect(await phone.closed).toBe(4001);
     await new Promise((r) => setTimeout(r, 50));
     expect(laptop.frames.length).toBeGreaterThan(0);

@@ -31,6 +31,8 @@ import { parseHost } from "@ucch/protocol";
 export interface PreviewGrant {
   projectId: string;
   userId: string;
+  /** The sign-in it was opened from; the grant ends with it. */
+  sessionId: string;
   port: number;
 }
 
@@ -72,6 +74,11 @@ export interface PreviewGatewayOptions {
    * `.git` and secrets), so a path it refuses comes back as `missing`.
    */
   readStatic?: (project: PreviewProject, path: string) => Promise<StaticFile>;
+  /**
+   * Whether a grant still holds: its session signed in, its user still let
+   * into the project. Asked again every few seconds a visitor is browsing.
+   */
+  authorize: (grant: Pick<PreviewGrant, "projectId" | "userId" | "sessionId">) => Promise<boolean>;
   /** Accept any visitor -- for the same development setup as DEV_AUTH_BYPASS. */
   devBypass?: boolean;
   log: { error(obj: object, msg: string): void };
@@ -198,34 +205,75 @@ export class PreviewGateway {
 
   #mintCookie(grant: PreviewGrant): string {
     const payload = Buffer.from(
-      JSON.stringify({ p: grant.projectId, u: grant.userId, n: grant.port, exp: this.#now() + COOKIE_TTL_MS }),
+      JSON.stringify({ p: grant.projectId, u: grant.userId, s: grant.sessionId, n: grant.port, exp: this.#now() + COOKIE_TTL_MS }),
     ).toString("base64url");
     return `${payload}.${this.#sign(payload)}`;
   }
 
-  #verifyCookie(value: string | undefined, project: PreviewProject, port: number): boolean {
-    if (!value) return false;
+  /** The grant a cookie carries, if it is ours, for this project and port, and still holds. */
+  async #grantOf(value: string | undefined, project: PreviewProject, port: number): Promise<PreviewGrant | null> {
+    const grant = this.#readCookie(value, project, port);
+    return grant && (await this.#authorized(grant)) ? grant : null;
+  }
+
+  #verdicts = new Map<string, { allowed: Promise<boolean>; expiresAt: number }>();
+
+  #authorized(grant: PreviewGrant): Promise<boolean> {
+    const key = `${grant.sessionId} ${grant.userId} ${grant.projectId}`;
+    const now = this.#now();
+    const cached = this.#verdicts.get(key);
+    if (cached && cached.expiresAt > now) return cached.allowed;
+    if (this.#verdicts.size >= RESOLVE_CACHE_MAX) this.#verdicts.clear();
+    const allowed = this.options.authorize(grant);
+    this.#verdicts.set(key, { allowed, expiresAt: now + RESOLVE_TTL_MS });
+    // A failed check is not remembered.
+    allowed.catch(() => this.#verdicts.delete(key));
+    return allowed;
+  }
+
+  /** Open upgraded sockets, by the grant they were let in on. */
+  readonly #sockets = new Map<Duplex, PreviewGrant>();
+
+  /** Ends what ended sessions hold: their sockets, and the remembered answers. */
+  closeSessions(sessionIds: readonly string[]): void {
+    this.#verdicts.clear();
+    for (const [ticket, { grant }] of this.#tickets) if (sessionIds.includes(grant.sessionId)) this.#tickets.delete(ticket);
+    for (const [socket, grant] of this.#sockets) if (sessionIds.includes(grant.sessionId)) socket.destroy();
+  }
+
+  /** Asks again about a person's open sockets, after what they may open changed. */
+  async revalidate(userId: string): Promise<void> {
+    this.#verdicts.clear();
+    for (const [socket, grant] of [...this.#sockets]) {
+      if (grant.userId === userId && !(await this.#authorized(grant))) socket.destroy();
+    }
+  }
+
+  #readCookie(value: string | undefined, project: PreviewProject, port: number): PreviewGrant | null {
+    if (!value) return null;
     const dot = value.lastIndexOf(".");
-    if (dot < 0) return false;
+    if (dot < 0) return null;
     const payload = value.slice(0, dot);
     const given = Buffer.from(value.slice(dot + 1));
     const expected = Buffer.from(this.#sign(payload));
-    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return false;
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
 
     try {
       const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
         p?: unknown;
+        u?: unknown;
+        s?: unknown;
         n?: unknown;
         exp?: unknown;
       };
-      return (
-        claims.p === project.id &&
-        claims.n === port &&
-        typeof claims.exp === "number" &&
-        claims.exp > this.#now()
-      );
+      // A cookie from before grants named their session is refused, and the
+      // redirect through the alias hands out a new one.
+      if (typeof claims.u !== "string" || typeof claims.s !== "string") return null;
+      if (claims.p !== project.id || claims.n !== port) return null;
+      if (typeof claims.exp !== "number" || claims.exp <= this.#now()) return null;
+      return { projectId: project.id, userId: claims.u, sessionId: claims.s, port };
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -329,7 +377,7 @@ export class PreviewGateway {
     }
 
     const cookies = parseCookies(req.headers.cookie);
-    if (!this.options.devBypass && !this.#verifyCookie(cookies.get(PREVIEW_COOKIE), project, port)) {
+    if (!this.options.devBypass && !(await this.#grantOf(cookies.get(PREVIEW_COOKIE), project, port))) {
       res.writeHead(302, { location: this.#aliasUrl(hash, req.url ?? "/"), "cache-control": "no-store" });
       res.end();
       return;
@@ -478,7 +526,8 @@ export class PreviewGateway {
       return;
     }
     const cookies = parseCookies(req.headers.cookie);
-    if (!this.options.devBypass && !this.#verifyCookie(cookies.get(PREVIEW_COOKIE), project, port)) {
+    const grant = this.options.devBypass ? null : await this.#grantOf(cookies.get(PREVIEW_COOKIE), project, port);
+    if (!this.options.devBypass && !grant) {
       rejectSocket(socket, "401 Unauthorized");
       return;
     }
@@ -489,6 +538,11 @@ export class PreviewGateway {
       return;
     }
 
+    if (grant) {
+      this.#sockets.set(socket, grant);
+      socket.once("close", () => this.#sockets.delete(socket));
+      if (socket.destroyed) this.#sockets.delete(socket);
+    }
     const target = await this.#connectTarget(project, port);
     const upstream = httpRequest({
       host: target.host,
@@ -509,6 +563,10 @@ export class PreviewGateway {
       proxiedSocket.pipe(socket).pipe(proxiedSocket);
       proxiedSocket.on("error", () => socket.destroy());
       socket.on("error", () => proxiedSocket.destroy());
+      // A destroyed end does not end what it is piped to.
+      proxiedSocket.on("close", () => socket.destroy());
+      socket.on("close", () => proxiedSocket.destroy());
+      if (socket.destroyed) proxiedSocket.destroy();
     });
     // A dev server that answers an upgrade with a plain response (a 4xx,
     // say) is relayed as that status and then closed -- there is no socket

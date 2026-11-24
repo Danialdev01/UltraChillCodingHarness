@@ -16,6 +16,24 @@ const Env = z.object({
   DATABASE_URL: z.string().url(),
 
   /**
+   * Whose `X-Forwarded-*` headers are believed: addresses, CIDRs, or the
+   * names `loopback`, `linklocal` and `uniquelocal`, comma-separated; `none`
+   * for nobody. The client's address, which sign-in and the public pages are
+   * throttled by, is the nearest one no trusted proxy accounts for -- so a
+   * client cannot pick its own. Behind a CDN, add the CDN's ranges, or every
+   * visitor shares its edge's address.
+   */
+  TRUSTED_PROXIES: z
+    .preprocess((v) => (v === "" ? undefined : v), z.string().default("loopback, linklocal, uniquelocal"))
+    .transform((v) => (v.trim() === "none" ? false : v)),
+
+  /**
+   * Days an activity-log row is kept. 0, the default, keeps every one:
+   * nothing is deleted unless this is set.
+   */
+  AUDIT_RETENTION_DAYS: z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().int().min(0).default(0)),
+
+  /**
    * The shared servers projects' development databases are created on, as an
    * account that may create databases and nothing more privileged. Either one
    * unset makes that engine unavailable to new projects; empty counts as

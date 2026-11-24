@@ -1,0 +1,16 @@
+F1 .env 404
+F1 .env/. 200
+F1 ./.env 404
+F1 a/../.env 404
+F1 notes.txt 200
+F2 blocked? ::ffff:7f00:1 false
+F2 blocked? ::ffff:a9fe:a9fe false
+F2 blocked? 64:ff9b::7f00:1 false
+F2 blocked? 2002:7f00:1:: false
+F2 blocked? ::7f00:1 false
+F2 blocked? 0:0:0:0:0:0:0:1 false
+F2 browser http://[::ffff:127.0.0.1]:3001/ null
+F2 browser http://[::ffff:169.254.169.254]/ null
+F2 browser http://127.0.0.1:3001/ port 3001 on this server is the harness itself
+F3 ticket after logout accepted: true
+F7 ip with forged XFF: 9.9.9.9
