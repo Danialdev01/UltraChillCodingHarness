@@ -5,7 +5,6 @@ import {
   listBranches,
   listRepos,
   redactToken,
-  tokenAppliesTo,
 } from "./github.js";
 
 /** One repository as GitHub sends it, trimmed to the fields that are read. */
@@ -201,36 +200,6 @@ describe("identify", () => {
   it("accepts an account with no display name", async () => {
     const { fetch } = stub(() => ({ body: { login: "ada" } }));
     expect(await identify("t", { fetch })).toEqual({ login: "ada", name: null });
-  });
-});
-
-describe("tokenAppliesTo", () => {
-  it("is the credential for a github.com HTTPS repository", () => {
-    expect(tokenAppliesTo("https://github.com/ada/engine.git")).toBe(true);
-  });
-
-  it("is not offered to a host it does not belong to", () => {
-    // git asks its credential helper about whatever host the URL names, so
-    // this check is the only thing standing between the token and GitLab.
-    for (const url of [
-      "https://gitlab.com/ada/engine.git",
-      "https://github.com.evil.example/ada/engine.git",
-      "https://notgithub.com/ada/engine.git",
-      "file:///srv/repos/engine",
-      "not a url at all",
-    ]) {
-      expect(tokenAppliesTo(url)).toBe(false);
-    }
-  });
-
-  it("is not a password for a transport that does not take one", () => {
-    // ssh wants a key, and plain http would put it on the wire in the clear.
-    expect(tokenAppliesTo("ssh://git@github.com/ada/engine.git")).toBe(false);
-    expect(tokenAppliesTo("http://github.com/ada/engine.git")).toBe(false);
-  });
-
-  it("defers to credentials somebody already put in the URL", () => {
-    expect(tokenAppliesTo("https://someone:else@github.com/ada/engine.git")).toBe(false);
   });
 });
 

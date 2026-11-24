@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { BaseUrlError, checkedAddresses } from "./git-base-url.js";
+import type { GitAuth } from "./git-auth.js";
 import { registry } from "./metrics.js";
 
 /**
@@ -9,6 +11,8 @@ import { registry } from "./metrics.js";
  * user on the host for as long as the command ran.
  */
 const TOKEN_ENV = "UCCH_GIT_TOKEN";
+/** The name that goes with it. Also from the environment: a login is the host's to choose, and this is a shell. */
+const USERNAME_ENV = "UCCH_GIT_USERNAME";
 
 /**
  * A credential helper that answers from the environment, and writes nothing.
@@ -25,8 +29,8 @@ const TOKEN_ENV = "UCCH_GIT_TOKEN";
  * helper with `store` and `erase`, and this one declines to do either.
  */
 export const CREDENTIAL_HELPER =
-  `!f() { test "$1" = get && printf 'username=x-access-token\\npassword=%s\\n' ` +
-  `"$${TOKEN_ENV}"; }; f`;
+  `!f() { test "$1" = get && printf 'username=%s\\npassword=%s\\n' ` +
+  `"$${USERNAME_ENV}" "$${TOKEN_ENV}"; }; f`;
 
 /**
  * A git command that exited with a code the caller did not accept.
@@ -48,8 +52,8 @@ export class GitError extends Error {
 }
 
 export interface GitRunOptions {
-  /** Attaches the credential helper for this one command. */
-  token?: string | null;
+  /** Attaches the credential helper for this one command and this one host. */
+  auth?: GitAuth | null;
   /**
    * Exit codes that are answers rather than failures: `diff` exits 1 when
    * there are differences, `merge` exits 1 on a conflict.
@@ -75,9 +79,11 @@ export interface GitRunOptions {
  * worker until the timeout. The config files are pinned to /dev/null so the
  * host's `insteadOf` rules and hooks cannot rewrite what gets fetched.
  *
- * A `token` attaches the credential helper above for this one command. It is
- * the caller's job to have checked that the token belongs to the host being
- * contacted -- `tokenAppliesTo` is that check.
+ * An `auth` attaches the credential helper above for this one command, scoped
+ * to the origin it is for: another host -- a submodule, a remote that moved --
+ * gets nothing. git follows a
+ * redirect on its first request, before it has asked for a credential, so a
+ * renamed repository still works and a redirect elsewhere is asked for again.
  */
 // Every git the server starts comes through here, so this is the count of
 // them: what a burst of file changes costs in processes, by subcommand.
@@ -105,7 +111,8 @@ export async function runGit(
   timeoutMs: number,
   options: GitRunOptions = {},
 ): Promise<string> {
-  const token = options.token ?? null;
+  const auth = options.auth ?? null;
+  const authArgs = auth ? await authConfig(auth) : [];
   const ok = options.okExitCodes ?? [0];
   gitProcesses.inc({ command: gitSubcommand(argv) });
   return new Promise<string>((settle, fail) => {
@@ -117,7 +124,7 @@ export async function runGit(
       [
         "-c",
         "core.fsmonitor=false",
-        ...(token ? ["-c", `credential.helper=${CREDENTIAL_HELPER}`] : []),
+        ...authArgs,
         ...argv,
       ],
       {
@@ -132,7 +139,7 @@ export async function runGit(
           // Left unset with a token: an empty `GIT_ASKPASS` is still a
           // configured askpass as far as git is concerned, and it takes
           // precedence over the credential helper.
-          ...(token ? { [TOKEN_ENV]: token } : { GIT_ASKPASS: "" }),
+          ...(auth ? { [TOKEN_ENV]: auth.token, [USERNAME_ENV]: auth.username } : { GIT_ASKPASS: "" }),
           GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new",
           GIT_CONFIG_GLOBAL: "/dev/null",
           GIT_CONFIG_SYSTEM: "/dev/null",
@@ -156,6 +163,32 @@ export async function runGit(
       },
     );
   });
+}
+
+/**
+ * The `-c` settings an authenticated command runs with.
+ *
+ * A plain-http host has to be private, as it was when the account was saved,
+ * and curl is pinned to the address that was checked so git's own lookup
+ * cannot answer differently.
+ */
+async function authConfig(auth: GitAuth): Promise<string[]> {
+  const args = ["-c", `credential.${auth.origin}.helper=${CREDENTIAL_HELPER}`];
+  const url = new URL(auth.origin);
+  if (url.protocol === "http:") {
+    args.push("-c", "http.followRedirects=false");
+    let addresses: string[];
+    try {
+      addresses = await checkedAddresses(url);
+    } catch (error) {
+      throw new RepoUrlError(error instanceof BaseUrlError ? error.message : "the git server could not be checked");
+    }
+    if (!url.hostname.startsWith("[")) {
+      const pinned = addresses.map((a) => (a.includes(":") ? `[${a}]` : a)).join(",");
+      args.push("-c", `http.curloptResolve=${url.hostname}:${url.port || "80"}:${pinned}`);
+    }
+  }
+  return args;
 }
 
 /**

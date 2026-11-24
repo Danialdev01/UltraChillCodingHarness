@@ -1,5 +1,5 @@
 /**
- * Provider marks for the API keys page, shaped like Lucide icons (a
+ * Provider marks for the settings pages, shaped like Lucide icons (a
  * `className` and nothing else) so they sit in the same `icon` slot as
  * {@link GithubMark}. Single-colour, drawn in `currentColor`.
  */
@@ -21,6 +21,30 @@ export function ResendMark({ className }: { className?: string }) {
       <path
         fill="currentColor"
         d="M14.679 0c4.648 0 7.413 2.765 7.413 6.434s-2.765 6.434-7.413 6.434H12.33L24 24h-8.245l-8.88-8.44c-.636-.588-.93-1.273-.93-1.86 0-.831.587-1.565 1.713-1.883l4.574-1.224c1.737-.465 2.936-1.81 2.936-3.572 0-2.153-1.761-3.4-3.939-3.4H0V0z"
+      />
+    </svg>
+  )
+}
+
+export function GitlabMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+      <path
+        fill="currentColor"
+        d="m23.6 9.59-.03-.09L20.3.98a.85.85 0 0 0-1.63.1l-2.2 6.75H7.53L5.33 1.07A.85.85 0 0 0 3.7.98L.43 9.5l-.03.09a6.07 6.07 0 0 0 2.01 7.01l5 3.74 2.46 1.87 1.5 1.13a1.01 1.01 0 0 0 1.22 0l1.5-1.13 2.46-1.87 5.03-3.76a6.07 6.07 0 0 0 2.02-6.99z"
+      />
+    </svg>
+  )
+}
+
+/** A teacup: Gitea's subject, drawn plainly. */
+export function GiteaMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+      <path
+        fill="currentColor"
+        fillRule="evenodd"
+        d="M2 5h16v2h1.5a3.5 3.5 0 0 1 0 7h-1.9A7 7 0 0 1 11 19H9a7 7 0 0 1-7-7V5zm16 4v3h1.5a1.5 1.5 0 0 0 0-3H18zM3 20.5h14V22H3z"
       />
     </svg>
   )

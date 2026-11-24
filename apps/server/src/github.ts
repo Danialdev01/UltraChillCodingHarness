@@ -12,6 +12,8 @@
  * URL this builds is handed to git and never written anywhere.
  */
 
+import { GitHostError } from "./git-hosts/types.js";
+
 const BASE = "https://api.github.com";
 
 /** Per page, which is also GitHub's maximum. */
@@ -56,12 +58,9 @@ export interface GithubIdentity {
  * repository is something they fix in the dialog, and a rate limit is
  * something they fix by waiting.
  */
-export class GithubError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
+export class GithubError extends GitHostError {
+  constructor(message: string, status: number) {
+    super(message, status);
     this.name = "GithubError";
   }
 }
@@ -121,7 +120,7 @@ async function send(
   if (response.ok) return response.json();
 
   if (response.status === 401) {
-    throw new GithubError("GitHub rejected that token. Check it in Settings → API.", 401);
+    throw new GithubError("GitHub rejected that token. Check it in Settings → Providers.", 401);
   }
   if (response.status === 404) {
     throw new GithubError("GitHub has no such repository, or the token cannot see it.", 404);
@@ -325,33 +324,6 @@ function toRepo(value: unknown): GithubRepo | null {
     description: typeof r.description === "string" ? r.description : null,
     pushedAt: typeof r.pushed_at === "string" ? r.pushed_at : null,
   };
-}
-
-/** Hosts whose HTTPS clone accepts a GitHub token as a password. */
-const GITHUB_HOSTS: ReadonlySet<string> = new Set(["github.com", "www.github.com"]);
-
-/**
- * Whether the account's GitHub token is the right credential for this URL.
- *
- * The check is what keeps the token from being offered to a host it has no
- * business authenticating to: git asks its credential helper about whatever
- * host the URL names, so attaching the helper to a `gitlab.com` clone would
- * hand a GitHub token to GitLab. HTTPS only, because that is the transport a
- * token is a password for -- an `ssh:` URL wants a key, and `http:` would put
- * the credential on the wire in the clear.
- *
- * A URL that already carries credentials is left to them: somebody who wrote
- * a username into it meant that one.
- */
-export function tokenAppliesTo(repoUrl: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(repoUrl);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== "https:" || !GITHUB_HOSTS.has(url.hostname.toLowerCase())) return false;
-  return !url.username && !url.password;
 }
 
 /**

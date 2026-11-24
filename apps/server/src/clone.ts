@@ -13,7 +13,8 @@ import {
   type DevDatabaseServers,
 } from "./dev-database.js";
 import { CREDENTIAL_HELPER, runGit, safeRepoUrl } from "./git-exec.js";
-import { redactToken, tokenAppliesTo } from "./github.js";
+import type { GitAuth, GitAuthFor } from "./git-auth.js";
+import { redactToken } from "./github.js";
 
 export { CREDENTIAL_HELPER };
 import { DrainableWorker } from "./worker.js";
@@ -32,8 +33,8 @@ const DEFAULT_TIMEOUT_MS = 5 * 60_000;
  * clone that needs it and the reactor keeps no credential of its own.
  */
 export interface CloneCredentials {
-  /** A GitHub token, for a private repository over HTTPS. */
-  token?: string | null;
+  /** The owner's credential for a URL, for a private repository. */
+  authFor?: GitAuthFor;
   /** The identity the first commit of an empty project is made under. */
   author?: { name: string; email: string };
 }
@@ -231,8 +232,8 @@ export class CloneReactor {
     // the URL instead would write it into the clone's own `.git/config`, where
     // it would outlive the clone and be readable by the agent and by every
     // terminal opened in the project.
-    const token = tokenAppliesTo(url) ? credentials.token ?? null : null;
-    const clean = (error: unknown) => redactToken(describe(error), token);
+    const auth = credentials.authFor?.(url) ?? null;
+    const clean = (error: unknown) => redactToken(describe(error), auth?.token ?? null);
 
     await mkdir(dest, { recursive: true });
     try {
@@ -240,7 +241,7 @@ export class CloneReactor {
         ["clone", "--depth", "1", "--branch", event.defaultBranch, "--", url, dest],
         this.options.workspaceRoot,
         timeoutMs,
-        { token },
+        { auth },
       );
     } catch (error) {
       // `defaultBranch` defaults to "main" when the creating command did
@@ -259,7 +260,7 @@ export class CloneReactor {
           ["clone", "--depth", "1", "--", url, dest],
           this.options.workspaceRoot,
           timeoutMs,
-          { token },
+          { auth },
         );
       } catch (fallback) {
         throw new Error(
@@ -335,17 +336,17 @@ export class CloneReactor {
  * environment -- so a private repository fails fast on a refused prompt
  * rather than hanging, and `ext::` never reaches git.
  *
- * A token, when the account has one, is what makes a private GitHub
+ * A credential, when the account has one for the host, is what makes a private
  * repository readable here rather than a refusal the person cannot act on --
  * and it is redacted out of any failure, because git quotes the URL it was
  * handed back at whoever asked.
  */
 export async function listRemoteBranches(
   repoUrl: string,
-  options: { token?: string | null; timeoutMs?: number } = {},
+  options: { auth?: GitAuth | null; timeoutMs?: number } = {},
 ): Promise<{ branches: string[]; defaultBranch: string | null }> {
   const url = safeRepoUrl(repoUrl);
-  const token = tokenAppliesTo(url) ? options.token ?? null : null;
+  const auth = options.auth ?? null;
   // No `--heads`: it filters the reply down to `refs/heads/*` and drops the
   // `ref: refs/heads/... HEAD` line with it, which is the only thing that
   // says which branch the remote considers default. Tags and pull refs come
@@ -355,11 +356,11 @@ export async function listRemoteBranches(
       ["ls-remote", "--symref", "--", url],
       process.cwd(),
       options.timeoutMs ?? 20_000,
-      { token },
+      { auth },
     );
     return parseRemoteRefs(stdout);
   } catch (error) {
-    throw new Error(redactToken(describe(error), token));
+    throw new Error(redactToken(describe(error), auth?.token ?? null));
   }
 }
 

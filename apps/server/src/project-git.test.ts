@@ -59,7 +59,7 @@ function settleInput(projectId: string, hash: string, baseBranch: string, overri
     baseBranch,
     title: `Session ${hash}`,
     author: AUTHOR,
-    token: null,
+    auth: null,
     deleteBranch: true,
     autoPush: false,
     ...overrides,

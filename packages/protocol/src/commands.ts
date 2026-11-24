@@ -38,6 +38,8 @@ const ProjectCreate = z.object({
    * to the base branch. True when absent.
    */
   sessionBranches: z.boolean().optional(),
+  /** The connected git account the repository was picked from; git uses it first. */
+  gitAccountId: z.string().uuid().optional(),
 });
 
 const ProjectStart = z.object({

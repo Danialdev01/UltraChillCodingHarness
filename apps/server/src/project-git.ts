@@ -1,6 +1,7 @@
 import { mkdir, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { SHARED_AGENT_PATHS, WITHOUT_SHARED_AGENT_FILES, withSharedAgentFilesAside } from "./agent-shared-files.js";
+import type { GitAuth } from "./git-auth.js";
 import { GitError, runGit, type GitRunOptions } from "./git-exec.js";
 import type { GitAuthor } from "./git.js";
 import { projectRoot, sessionTree, sessionTreesOf } from "./trees.js";
@@ -26,7 +27,7 @@ export interface SettleInput {
   title: string;
   author: GitAuthor;
   /** For origin, when it applies. */
-  token: string | null;
+  auth: GitAuth | null;
   deleteBranch: boolean;
   autoPush: boolean;
   strategy?: MergeStrategy;
@@ -307,7 +308,7 @@ export class ProjectGit {
           "origin",
           // Explicit: a single-branch clone's refspec would not map another base.
           `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
-        ], { token: input.token, okExitCodes: [0] });
+        ], { auth: input.auth, okExitCodes: [0] });
       } catch (error) {
         // A base that origin does not have is a local-only branch; anything
         // else (offline, auth) means we cannot know whether we are current.
@@ -457,7 +458,7 @@ export class ProjectGit {
       try {
         // A plain push of the one branch: never forced.
         await this.git(projectId, ["push", "--quiet", "origin", `refs/heads/${baseBranch}:refs/heads/${baseBranch}`], {
-          token: input.token,
+          auth: input.auth,
         });
         outcome.pushed = true;
       } catch (error) {

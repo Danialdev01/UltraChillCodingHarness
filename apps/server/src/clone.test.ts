@@ -432,7 +432,7 @@ describe("how a private clone is authenticated", () => {
         GIT_TERMINAL_PROMPT: "0",
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_SYSTEM: "/dev/null",
-        ...(token === undefined ? {} : { UCCH_GIT_TOKEN: token }),
+        ...(token === undefined ? {} : { UCCH_GIT_TOKEN: token, UCCH_GIT_USERNAME: "x-access-token" }),
       },
     });
   }
@@ -462,7 +462,7 @@ describe("how a private clone is authenticated", () => {
     // readable by the agent and by every terminal opened in the project.
     const root = join(scratch, "creds-1");
     const { clones, errors } = reactor(root, created(), {
-      credentials: async () => ({ token: "ghp_secret" }),
+      credentials: async () => ({ authFor: () => ({ origin: "https://github.com", username: "x-access-token", token: "ghp_secret" }) }),
     });
     await clones.drain();
 

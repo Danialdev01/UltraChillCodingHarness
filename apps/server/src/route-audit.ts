@@ -76,7 +76,11 @@ export const SELF_AUDITED = new Set([
   "POST /api/account/keys/:provider/reveal",
   "PUT /api/settings/openrouter",
   "PUT /api/settings/resend",
+  // Git accounts: `git_account.*`, exactly one each (git-accounts-routes.ts).
   "PUT /api/settings/github",
+  "POST /api/account/git-accounts",
+  "PATCH /api/account/git-accounts/:id",
+  "DELETE /api/account/git-accounts/:id",
 ]);
 
 /** Writes that change nothing anyone would call a change. */

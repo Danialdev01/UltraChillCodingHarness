@@ -81,16 +81,9 @@ export const users = pgTable("users", {
    */
   resendKeyEncrypted: text("resend_key_encrypted"),
   /**
-   * GitHub personal access token, encrypted at rest. Read when the new-project
-   * dialog lists the repositories you can see, and when a clone needs
-   * credentials for a private one.
-   *
-   * Separate from `accessTokenEncrypted` above, which is the OAuth token the
-   * login flow minted: that one proves who you are and is replaced on every
-   * sign-in, while this one is a capability you chose to grant and must
-   * survive signing in again. A token is resolved from this column first and
-   * falls back to the OAuth one, so signing in with GitHub already works for
-   * public repositories without setting anything.
+   * Unused since `git_accounts`, which a GitHub token is kept in now. The
+   * migration that moved it left this null; it stays so an older server can
+   * still read the row.
    */
   githubTokenEncrypted: text("github_token_encrypted"),
   /**
@@ -282,6 +275,12 @@ export const projects = pgTable(
      * sessions share the project's checkout and commit to the base branch.
      */
     sessionBranches: boolean("session_branches").notNull().default(true),
+    /**
+     * The owner's `git_accounts` row to authenticate with, when it matches the
+     * remote. No foreign key: events replay after an account is removed, and
+     * an id that is not among the owner's accounts is simply ignored.
+     */
+    gitAccountId: uuid("git_account_id"),
     /**
      * Detected stack, as `detectStack` in apps/server/src/clone.ts names it:
      * a framework (laravel, nextjs, nuxt, react, django, rails, …), else a
@@ -993,7 +992,7 @@ export const accountKeys = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    /** `openrouter`, `resend` or `github`. */
+    /** `openrouter` or `resend`. Git tokens are in `git_accounts`. */
     provider: text("provider").notNull(),
     /** `sk-or-v1-`, `re_`, `ghp_`, `github_pat_`, or "" when there is none. */
     prefix: text("prefix").notNull(),
@@ -1047,6 +1046,41 @@ export const modelKeys = pgTable(
 );
 
 export type ModelKey = typeof modelKeys.$inferSelect;
+
+/**
+ * Git accounts a person connects: GitHub, GitLab or Gitea, several of each,
+ * every one named by its owner. Lists and creates repositories for the new
+ * project dialog, and authenticates clones, pulls and pushes.
+ *
+ * `base_url` never changes after the row is made: a stored token must not be
+ * sent to a server it was not given for.
+ */
+export const gitAccounts = pgTable(
+  "git_accounts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** `github`, `gitlab` or `gitea`. */
+    provider: text("provider").notNull(),
+    name: text("name").notNull(),
+    /** `https://host[:port][/path]`, normalised, without a trailing slash. */
+    baseUrl: text("base_url").notNull(),
+    /** The account's login there; null until first read, for a migrated token. */
+    login: text("login"),
+    tokenEncrypted: text("token_encrypted").notNull(),
+    prefix: text("prefix").notNull(),
+    last4: text("last4").notNull(),
+    scopes: text("scopes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("git_accounts_name_idx").on(t.userId, t.name)],
+);
+
+export type GitAccountRow = typeof gitAccounts.$inferSelect;
 
 /**
  * A named Claude Code or Codex subscription login: several per subject (a

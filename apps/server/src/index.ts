@@ -12,6 +12,7 @@ import { and, desc, eq, inArray, isNull, lt, ne, notLike, or, sql } from "drizzl
 import { accountKeys, createDatabase, events as dbEvents, notes, projects, runMigrations, threads, turns, users, workspaces } from "@ucch/db";
 import { HeavyJobGate } from "@ucch/agent";
 import {
+  GITHUB_LOGIN_ACCOUNT,
   AgentPermissionMode,
   can,
   DEFAULT_AGENT_PERMISSION_MODE,
@@ -28,8 +29,6 @@ import {
   type ChangeOrigin,
   type Command,
   type DomainEvent,
-  type GitAccount,
-  type GitProvider,
   type ProjectTask,
 } from "@ucch/protocol";
 import { HostProcessHost, createProviders } from "@ucch/providers";
@@ -94,6 +93,10 @@ import { registerNoteRoutes } from "./notes-routes.js";
 import { registerTimelineRoutes } from "./timeline-routes.js";
 import { registerEnvRoutes } from "./env-routes.js";
 import { registerAccountKeyRoutes } from "./account-keys-routes.js";
+import { gitAuthFor, type GitAuthFor, type GitAuthSource } from "./git-auth.js";
+import { DbGitAccounts, GITHUB_URL, checkTokenLive } from "./git-accounts.js";
+import { registerGitAccountRoutes } from "./git-accounts-routes.js";
+import { hostFetch } from "./git-base-url.js";
 import { registerModelKeyRoutes } from "./model-keys-routes.js";
 import { DbModelKeys, accountOpenRouterKey, anonCatalogue, checkModelKeyLive, setModelKeyBase } from "./model-keys.js";
 import { AgentProfiles, toRef } from "./agent-profiles.js";
@@ -142,16 +145,6 @@ import { registerPublicRoutes } from "./public-routes.js";
 import { CollabLink } from "./collab-link.js";
 import { COLLAB_SECRET_HEADER, collabSecret } from "./collab/secret.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
-import {
-  GithubError,
-  createRepo,
-  identify,
-  listBranches,
-  listOwners,
-  listRepos,
-  tokenAppliesTo,
-  type GithubRepo,
-} from "./github.js";
 import {
   SessionBusyError,
   SessionLifecycle,
@@ -262,6 +255,7 @@ const audit = new AuditLog(
 );
 /** "Last used" on the API keys page: touched when a stored key is decrypted for a call. */
 const modelKeyStore = new DbModelKeys(db, config.SECRET_KEY ?? "");
+const gitAccountStore = new DbGitAccounts(db, config.SECRET_KEY ?? "");
 const keyUsage = new KeyUsage(db, (error) => app.log.warn({ err: error }, "could not record key use"));
 const workspaceFiles = new WorkspaceFiles(config.WORKSPACE_ROOT);
 const storageService = new StorageService(db, workspaceService, config.WORKSPACE_ROOT);
@@ -524,31 +518,29 @@ bus.tap(({ event }) => {
  *
  * Resolved per operation rather than held: a private repository needs the
  * account's token for the one clone or push that is about to run, and a
- * commit needs a name to be made under. The token comes back ungated; the
- * caller checks it belongs to the host being contacted (`tokenAppliesTo`).
+ * commit needs a name to be made under. `authFor` answers only for a URL one
+ * of the owner's git accounts covers, and decrypts only that one.
  */
 async function ownerCredentials(
   projectId: string,
-): Promise<{ token: string | null; author: { name: string; email: string } }> {
+): Promise<{ authFor: GitAuthFor; author: { name: string; email: string } }> {
   const [owner] = await db
     .select({
       id: users.id,
       login: users.login,
       name: users.name,
       email: users.email,
-      github: users.githubTokenEncrypted,
-      oauth: users.accessTokenEncrypted,
+      gitAccountId: projects.gitAccountId,
     })
     .from(projects)
     .innerJoin(users, eq(users.id, projects.userId))
     .where(eq(projects.id, projectId))
     .limit(1);
-  if (!owner) return { token: null, author: { name: "UltraChillCodingHarness", email: "harness@localhost" } };
+  if (!owner) return { authFor: () => null, author: { name: "UltraChillCodingHarness", email: "harness@localhost" } };
 
-  const pat = decryptOrNull(owner.github);
-  if (pat) keyUsage.touch(owner.id, "github");
+  const sources = await gitAuthSources(owner.id);
   return {
-    token: pat ?? decryptOrNull(owner.oauth),
+    authFor: (url) => gitAuthFor(url, sources, owner.gitAccountId),
     author: {
       name: owner.name || owner.login,
       // A commit needs an address and an account may have none. The
@@ -2311,10 +2303,10 @@ app.get<{ Querystring: { url?: string } }>("/api/git/refs", async (request, repl
   if (!url) return reply.code(400).send({ error: "a repository url is required" });
 
   try {
-    // The token is only ever put on a github.com HTTPS URL, and only to read
-    // refs the account can already read. A custom URL pointing anywhere else
-    // is read anonymously, exactly as before.
-    return await listRemoteBranches(url, { token: await githubTokenFor(principal.userId) });
+    // A token is only ever offered to the host of the account it belongs to,
+    // and only to read refs that account can already read. A URL pointing
+    // anywhere else is read anonymously.
+    return await listRemoteBranches(url, { auth: gitAuthFor(url, await gitAuthSources(principal.userId)) });
   } catch (error) {
     // A bad URL, a private repository, a host that is not there: all of them
     // are the caller's problem to fix, and git's own message says which.
@@ -2822,7 +2814,7 @@ const sessionLifecycle = new SessionLifecycle({
   // belongs to.
   credentials: async (projectId) => {
     const [credentials, url] = await Promise.all([ownerCredentials(projectId), gitService.remoteUrl(projectId)]);
-    return { token: url && tokenAppliesTo(url) ? credentials.token : null, author: credentials.author };
+    return { auth: url ? credentials.authFor(url) : null, author: credentials.author };
   },
   announce: async (projectId, event) => {
     await store
@@ -3551,6 +3543,36 @@ registerModelKeyRoutes(app, {
   },
 });
 
+registerGitAccountRoutes(app, {
+  principal: (request) => auth.resolveSession(request.cookies[SESSION_COOKIE]),
+  accounts: gitAccountStore,
+  encryptionAvailable: Boolean(config.SECRET_KEY),
+  check: (provider, baseUrl, token) => checkTokenLive(provider, baseUrl, token, hostFetch),
+  // The sign-in stands in for a GitHub account only where none was saved.
+  sources: async (userId) => {
+    const all = await gitAuthSources(userId);
+    const saved = all.some((s) => s.provider === "github" && s.id !== GITHUB_LOGIN_ACCOUNT);
+    return all.filter((s) => s.id !== GITHUB_LOGIN_ACCOUNT || !saved);
+  },
+  learnLogin: (id, login) => gitAccountStore.learnLogin(id, login),
+  fetch: hostFetch,
+  audit: async (entry) => {
+    await audit.record({
+      projectId: null,
+      userId: entry.userId,
+      clientId: null,
+      action: entry.action,
+      targetType: "git_account",
+      targetId: entry.accountId,
+      summary: entry.summary,
+      details: entry.details,
+    });
+  },
+  changed: (userId) =>
+    bus.publishToUser(userId, { type: "resource.changed", projectId: null, resource: "account_settings" }),
+  onError: (error) => app.log.error({ err: error }, "git host call failed"),
+});
+
 registerAccountKeyRoutes(app, {
   principal: (request) => auth.resolveSession(request.cookies[SESSION_COOKIE]),
   // Listing and removing need no SECRET_KEY; storing and revealing are
@@ -3569,15 +3591,6 @@ registerAccountKeyRoutes(app, {
     },
   },
   stepUp: new DbStepUpStore(db),
-  // Present or not; never decrypted here.
-  githubFromLogin: async (userId) => {
-    const [row] = await db
-      .select({ has: sql<boolean>`${users.accessTokenEncrypted} is not null` })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-    return Boolean(row?.has);
-  },
   audit: async (entry) => {
     await audit.record({
       projectId: null,
@@ -4211,28 +4224,39 @@ function decryptOrNull(encrypted: string | null): string | null {
   }
 }
 
-/**
- * The GitHub token to act as this account with, or null.
- *
- * The personal access token first, the OAuth token from signing in second.
- * That order is the whole policy: a token the person deliberately pasted is
- * the one they meant to grant, and the login token is a fallback that makes
- * the repository list work out of the box for a GitHub sign-in without
- * anybody configuring anything.
- */
-async function githubTokenFor(userId: string): Promise<string | null> {
+/** The token signing in with GitHub left, or null. */
+async function githubLoginToken(userId: string): Promise<{ token: string } | null> {
   const [row] = await db
-    .select({ token: users.githubTokenEncrypted, oauth: users.accessTokenEncrypted })
+    .select({ oauth: users.accessTokenEncrypted })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
-  if (!row) return null;
-  const token = decryptOrNull(row.token);
-  if (token) {
-    keyUsage.touch(userId, "github");
-    return token;
-  }
-  return decryptOrNull(row.oauth);
+  const token = decryptOrNull(row?.oauth ?? null);
+  return token ? { token } : null;
+}
+
+/**
+ * The git accounts to act as this person with, oldest first, and last the
+ * token their GitHub sign-in left.
+ *
+ * That order is the whole policy: a token the person deliberately saved is
+ * the one they meant to grant, and the login token is a fallback that makes
+ * GitHub work out of the box without anybody configuring anything.
+ */
+async function gitAuthSources(userId: string): Promise<(GitAuthSource & { name: string })[]> {
+  const [saved, signIn] = await Promise.all([gitAccountStore.sources(userId), githubLoginToken(userId)]);
+  if (!signIn) return saved;
+  return [
+    ...saved,
+    {
+      id: GITHUB_LOGIN_ACCOUNT,
+      provider: "github",
+      name: "GitHub sign-in",
+      baseUrl: GITHUB_URL,
+      login: null,
+      token: () => signIn.token,
+    },
+  ];
 }
 
 /**
@@ -4717,7 +4741,6 @@ app.get("/api/settings", async (request, reply) => {
     .select({
       openrouter: users.openrouterKeyEncrypted,
       resend: users.resendKeyEncrypted,
-      github: users.githubTokenEncrypted,
       oauth: users.accessTokenEncrypted,
       defaultModel: users.defaultModel,
       defaultProvider: users.defaultProvider,
@@ -4730,6 +4753,7 @@ app.get("/api/settings", async (request, reply) => {
     .select({ provider: accountKeys.provider, last4: accountKeys.last4 })
     .from(accountKeys)
     .where(eq(accountKeys.userId, principal.userId));
+  const github = (await gitAccountStore.list(principal.userId)).find((a) => a.provider === "github");
   const last4 = (provider: string) => metas.find((m) => m.provider === provider)?.last4;
 
   // Only ever whether a key is set and its last four characters. The values
@@ -4738,7 +4762,7 @@ app.get("/api/settings", async (request, reply) => {
     openrouter: describeKey(row?.openrouter ?? null, last4("openrouter")),
     resend: describeKey(row?.resend ?? null, last4("resend")),
     github: {
-      ...describeKey(row?.github ?? null, last4("github")),
+      ...describeKey(github ? "set" : null, github?.last4),
       // Whether the repository list will work without a token of its own,
       // which is the difference between "set one up" and "you already can".
       inheritedFromLogin: Boolean(decryptOrNull(row?.oauth ?? null)),
@@ -4914,189 +4938,6 @@ app.put("/api/settings/default-provider", async (request, reply) => {
     .where(eq(users.id, principal.userId));
 
   return { defaultProvider: parsed.data.provider ?? "native" };
-});
-
-// -- GitHub ------------------------------------------------------------------
-
-/**
- * A GitHub failure as a reply.
- *
- * `GithubError` already carries the status the caller should see -- a rejected
- * token is 401, an unreadable repository 404, a rate limit 429 -- so this is
- * only the translation. Anything else is ours and is logged as such rather
- * than blamed on GitHub.
- */
-function githubFailure(
-  error: unknown,
-  reply: { code(status: number): { send(body: unknown): unknown } },
-) {
-  if (error instanceof GithubError) return reply.code(error.status).send({ error: error.message });
-  app.log.error({ err: error }, "github call failed");
-  return reply.code(502).send({ error: "GitHub could not be reached." });
-}
-
-/**
- * The account that a token belongs to, and the repositories it can see.
- *
- * One route for both, because the dialog wants both at once and the login is
- * what tells the reader *whose* repositories they are looking at -- a stale
- * token for an account they have stopped using otherwise looks like a
- * repository list that is simply missing things.
- *
- * The 412 is the interesting reply: no token at all is not an error, it is the
- * state the GitHub tab renders as "connect one in Settings".
- */
-app.get("/api/github/repos", async (request, reply) => {
-  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
-  if (!principal) return reply.code(401).send({ error: "unauthorized" });
-
-  const token = await githubTokenFor(principal.userId);
-  if (!token) {
-    return reply
-      .code(412)
-      .send({ error: "No GitHub token is configured.", needsToken: true });
-  }
-
-  try {
-    const [account, repos] = await Promise.all([identify(token), listRepos(token)]);
-    return { account, repos };
-  } catch (error) {
-    return githubFailure(error, reply);
-  }
-});
-
-/**
- * One repository's branches, through the API rather than `ls-remote`.
- *
- * The GitHub tab has a token and a repository it was told about by GitHub, so
- * the API is both cheaper than spawning git and the only thing that works for
- * a private repository without putting credentials on a command line.
- */
-app.get<{ Params: { owner: string; repo: string } }>(
-  "/api/github/repos/:owner/:repo/branches",
-  async (request, reply) => {
-    const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
-    if (!principal) return reply.code(401).send({ error: "unauthorized" });
-
-    const token = await githubTokenFor(principal.userId);
-    if (!token) {
-      return reply.code(412).send({ error: "No GitHub token is configured.", needsToken: true });
-    }
-
-    try {
-      return await listBranches(token, request.params.owner, request.params.repo);
-    } catch (error) {
-      return githubFailure(error, reply);
-    }
-  },
-);
-
-/**
- * Every git host an account can be connected to, and which are.
- *
- * GitHub is the only integration so far: GitLab and Gitea come back
- * `available: false`, which the new-project dialog shows as "Coming soon".
- * A GitHub token that no longer works reads as not connected rather than an
- * error -- the dialog's answer is the same, go and fix it in Settings.
- */
-app.get("/api/git/accounts", async (request, reply) => {
-  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
-  if (!principal) return reply.code(401).send({ error: "unauthorized" });
-
-  const token = await githubTokenFor(principal.userId);
-  const who = token ? await identify(token).catch(() => null) : null;
-  const accounts: GitAccount[] = [
-    { provider: "github", available: true, connected: Boolean(who), login: who?.login ?? null, name: who?.name ?? null },
-    { provider: "gitlab", available: false, connected: false, login: null, name: null },
-    { provider: "gitea", available: false, connected: false, login: null, name: null },
-  ];
-  return { accounts };
-});
-
-/**
- * The repositories of every connected account, in one list.
- *
- * Each is tagged with the provider and account it came from. One account
- * failing does not empty the list: its error is reported beside the rest.
- * No account at all is an empty list, not a 412 -- the dialog's Git tab still
- * takes a pasted URL without one.
- */
-app.get("/api/git/repos", async (request, reply) => {
-  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
-  if (!principal) return reply.code(401).send({ error: "unauthorized" });
-
-  const accounts: { provider: GitProvider; login: string; name: string | null }[] = [];
-  const repos: (GithubRepo & { provider: GitProvider; accountLogin: string })[] = [];
-  const errors: { provider: GitProvider; error: string }[] = [];
-
-  const token = await githubTokenFor(principal.userId);
-  if (token) {
-    try {
-      const [who, list] = await Promise.all([identify(token), listRepos(token)]);
-      accounts.push({ provider: "github", login: who.login, name: who.name });
-      for (const repo of list) repos.push({ ...repo, provider: "github", accountLogin: who.login });
-    } catch (error) {
-      if (!(error instanceof GithubError)) app.log.error({ err: error }, "github call failed");
-      errors.push({
-        provider: "github",
-        error: error instanceof GithubError ? error.message : "GitHub could not be reached.",
-      });
-    }
-  }
-
-  return { accounts, repos, errors };
-});
-
-/** Where the token can create a repository: its own account, then its organisations. */
-app.get("/api/github/owners", async (request, reply) => {
-  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
-  if (!principal) return reply.code(401).send({ error: "unauthorized" });
-
-  const token = await githubTokenFor(principal.userId);
-  if (!token) return reply.code(412).send({ error: "No GitHub token is configured.", needsToken: true });
-
-  try {
-    return { owners: await listOwners(token) };
-  } catch (error) {
-    return githubFailure(error, reply);
-  }
-});
-
-const CreateGithubRepo = z.object({
-  owner: z.string().trim().min(1).max(100),
-  name: z
-    .string()
-    .trim()
-    .min(1)
-    .max(100)
-    .regex(/^[A-Za-z0-9._-]+$/)
-    .refine((v) => v !== "." && v !== ".."),
-  private: z.boolean().default(true),
-  description: z.string().max(350).optional(),
-  autoInit: z.boolean().default(true),
-});
-
-/**
- * Creates a repository on GitHub for the New Repo tab, which then clones it
- * through `project.create` like any other.
- */
-app.post("/api/github/repos", async (request, reply) => {
-  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
-  if (!principal) return reply.code(401).send({ error: "unauthorized" });
-
-  const parsed = CreateGithubRepo.safeParse(request.body);
-  if (!parsed.success) {
-    return reply.code(400).send({ error: "an owner and a repository name (letters, digits, . - _) are required" });
-  }
-
-  const token = await githubTokenFor(principal.userId);
-  if (!token) return reply.code(412).send({ error: "No GitHub token is configured.", needsToken: true });
-
-  try {
-    return { repo: await createRepo(token, parsed.data) };
-  } catch (error) {
-    return githubFailure(error, reply);
-  }
 });
 
 /**

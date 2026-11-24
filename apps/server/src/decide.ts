@@ -175,6 +175,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           mode,
           database: command.database ?? null,
           sessionBranches: command.sessionBranches ?? true,
+          ...(command.gitAccountId ? { gitAccountId: command.gitAccountId } : {}),
         },
       ]);
     }

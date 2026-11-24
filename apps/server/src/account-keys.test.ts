@@ -6,8 +6,6 @@ describe("prefix and last four", () => {
   it("keeps only the non-secret leading part", () => {
     expect(keyPrefix("openrouter", "sk-or-v1-abcdef")).toBe("sk-or-v1-");
     expect(keyPrefix("resend", "re_abc123")).toBe("re_");
-    expect(keyPrefix("github", "ghp_abc")).toBe("ghp_");
-    expect(keyPrefix("github", "github_pat_11ABC")).toBe("github_pat_");
     expect(keyPrefix("openrouter", "weird-legacy-key")).toBe("");
     expect(keyLast4("sk-or-v1-0000bf58")).toBe("bf58");
   });
@@ -18,9 +16,6 @@ describe("format", () => {
     expect(checkKeyFormat("openrouter", `sk-or-v1-${"a".repeat(64)}`)).toBeNull();
     expect(checkKeyFormat("openrouter", "re_123456789")).toMatch(/sk-or-v1-/);
     expect(checkKeyFormat("resend", "re_123456789abc")).toBeNull();
-    expect(checkKeyFormat("github", `ghp_${"A".repeat(36)}`)).toBeNull();
-    expect(checkKeyFormat("github", `github_pat_${"A1_".repeat(25)}`)).toBeNull();
-    expect(checkKeyFormat("github", "gho_notapat")).toMatch(/ghp_/);
     expect(checkKeyFormat("resend", "re_ 123")).toMatch(/spaces/);
   });
 });
@@ -40,21 +35,12 @@ describe("live check", () => {
     for (const [provider, url] of [
       ["openrouter", "https://openrouter.ai/api/v1/key"],
       ["resend", "https://api.resend.com/domains"],
-      ["github", "https://api.github.com/user"],
     ] as const) {
       const { fetchImpl, calls } = stub(200, { "x-oauth-scopes": "repo" });
       expect((await checkKeyLive(provider, "the-key", fetchImpl)).ok).toBe(true);
       expect(calls[0]!.url).toBe(url);
       expect((calls[0]!.init!.headers as Record<string, string>).authorization).toBe("Bearer the-key");
     }
-  });
-
-  it("reads GitHub scopes, and calls a token without the header fine-grained", async () => {
-    expect(await checkKeyLive("github", "ghp_x", stub(200, { "x-oauth-scopes": "repo, read:org" }).fetchImpl)).toEqual({
-      ok: true,
-      scopes: "repo, read:org",
-    });
-    expect(await checkKeyLive("github", "github_pat_x", stub(200).fetchImpl)).toEqual({ ok: true, scopes: "fine-grained" });
   });
 
   it("explains a rejection without quoting the provider's body", async () => {
@@ -69,10 +55,10 @@ describe("live check", () => {
   });
 
   it("does not save when the provider cannot be reached", async () => {
-    const result = await checkKeyLive("github", "ghp_x", async () => {
+    const result = await checkKeyLive("resend", "re_x", async () => {
       throw new Error("ECONNREFUSED");
     });
-    expect(result).toEqual({ ok: false, error: expect.stringContaining("Couldn't reach GitHub") });
+    expect(result).toEqual({ ok: false, error: expect.stringContaining("Couldn't reach Resend") });
   });
 });
 

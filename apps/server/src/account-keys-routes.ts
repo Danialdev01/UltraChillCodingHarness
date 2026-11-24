@@ -61,8 +61,6 @@ export interface AccountKeyRouteDeps {
   };
   stepUp: StepUpStore;
   audit(entry: KeyAuditEntry): Promise<void>;
-  /** Whether signing in with GitHub left a token the repository list can fall back to. */
-  githubFromLogin?(userId: string): Promise<boolean>;
   /** A key was stored or removed: refresh caches, tell other tabs. */
   changed?(userId: string, provider: AccountKeyProvider): void;
   now?: () => number;
@@ -111,11 +109,10 @@ export function registerAccountKeyRoutes(app: FastifyInstance, deps: AccountKeyR
   app.get("/api/account/keys", async (request, reply) => {
     const principal = await deps.principal(request);
     if (!principal) return reply.code(401).send({ error: "unauthorized" });
-    const [keys, gate, stepUpAt, githubFromLogin] = await Promise.all([
+    const [keys, gate, stepUpAt] = await Promise.all([
       deps.keys.list(principal.userId),
       passwordGate(principal.userId),
       deps.stepUp.get(principal.sessionId),
-      deps.githubFromLogin?.(principal.userId) ?? false,
     ]);
     const stepUpLeft = stepUpAt ? stepUpAt.getTime() + STEP_UP_TTL_MS - now() : 0;
     return {
@@ -124,7 +121,6 @@ export function registerAccountKeyRoutes(app: FastifyInstance, deps: AccountKeyR
       // Why Reveal would be refused before a password is even asked for.
       reveal: gate ? { available: false, code: gate.code, reason: gate.error } : { available: true },
       stepUpExpiresInSeconds: stepUpLeft > 0 ? Math.floor(stepUpLeft / 1000) : 0,
-      githubFromLogin,
     };
   });
 
@@ -249,7 +245,7 @@ export function registerAccountKeyRoutes(app: FastifyInstance, deps: AccountKeyR
    * script's key need not be real -- but nothing else: the same storage,
    * metadata and Activity entry.
    */
-  for (const provider of ["openrouter", "resend", "github"] as const) {
+  for (const provider of ["openrouter", "resend"] as const) {
     app.put(`/api/settings/${provider}`, async (request, reply) => {
       const principal = await deps.principal(request);
       if (!principal) return reply.code(401).send({ error: "unauthorized" });

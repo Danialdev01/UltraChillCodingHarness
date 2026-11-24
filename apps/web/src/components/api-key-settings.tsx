@@ -13,7 +13,6 @@ import {
 } from "lucide-react"
 
 import { ResendMark } from "@/components/brand-marks"
-import { GithubMark } from "@/components/github-mark"
 import { InlineError } from "@/components/layout/inline-error"
 import { SettingsSection } from "@/components/layout/settings-section"
 import { ApiKeysSkeleton } from "@/components/page-skeletons"
@@ -81,25 +80,6 @@ const PROVIDERS: Provider[] = [
     ),
     consequence: "Email sending will stop.",
   },
-  {
-    id: "github",
-    name: "GitHub",
-    icon: GithubMark,
-    description: "Lists repos and branches when you create a project, and authenticates private clones.",
-    placeholder: "ghp_… or github_pat_…",
-    help: (
-      <>
-        Classic tokens need the <code className="font-mono">repo</code> scope; fine-grained tokens need read access to
-        contents and metadata. Create one at{" "}
-        <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" className={linkClass}>
-          github.com/settings/tokens
-        </a>
-        .
-      </>
-    ),
-    consequence: "Repo listing and private clones will stop.",
-    extra: (meta) => ({ label: "Scopes", value: meta.scopes ?? "Unknown" }),
-  },
 ]
 
 type Purpose = "reveal" | "copy"
@@ -121,8 +101,8 @@ interface StepUp {
   request(request: StepUpRequest): void
 }
 
-/** What Settings -> API keys lists. Model-provider keys (OpenRouter, AnonRouter) are under Providers -> Custom. */
-export const ACCOUNT_PAGE_PROVIDERS: ApiKeyProvider[] = ["resend", "github"]
+/** What Settings -> API keys lists. Model-provider keys and git tokens are under Providers. */
+export const ACCOUNT_PAGE_PROVIDERS: ApiKeyProvider[] = ["resend"]
 
 /**
  * Account Setting -> API keys.
@@ -195,7 +175,6 @@ export function ApiKeySettings({
               provider={provider}
               meta={data.keys.find((k) => k.provider === provider.id)!}
               encryptionAvailable={data.encryptionAvailable}
-              githubFromLogin={data.githubFromLogin}
               stepUp={stepUp}
               onChanged={() => void load()}
             />
@@ -217,7 +196,7 @@ export function ApiKeySettings({
       plain
       icon={KeyRoundIcon}
       title="API keys"
-      description="Credentials the harness uses on your behalf. Keys are encrypted at rest and decrypted only when a request needs them. The Custom provider's keys are under Providers → Custom."
+      description="Credentials the harness uses on your behalf. Keys are encrypted at rest and decrypted only when a request needs them. Model-provider keys and git tokens are under Providers."
     >
       {body}
     </SettingsSection>
@@ -228,14 +207,12 @@ function ProviderCard({
   provider,
   meta,
   encryptionAvailable,
-  githubFromLogin,
   stepUp,
   onChanged,
 }: {
   provider: Provider
   meta: ApiKeyMeta
   encryptionAvailable: boolean
-  githubFromLogin: boolean
   stepUp: StepUp
   onChanged: () => void
 }) {
@@ -269,11 +246,6 @@ function ProviderCard({
             provider={provider}
             replacing={configured}
             encryptionAvailable={encryptionAvailable}
-            note={
-              provider.id === "github" && !configured && githubFromLogin
-                ? "Until you add one, the token from signing in with GitHub is used, which covers the repos that sign-in can see."
-                : null
-            }
             onCancel={configured ? () => setReplacing(false) : undefined}
             onSaved={() => {
               setReplacing(false)
@@ -562,14 +534,12 @@ function KeyForm({
   provider,
   replacing,
   encryptionAvailable,
-  note,
   onCancel,
   onSaved,
 }: {
   provider: Provider
   replacing: boolean
   encryptionAvailable: boolean
-  note: string | null
   onCancel?: () => void
   onSaved: () => void
 }) {
@@ -652,7 +622,6 @@ function KeyForm({
         </p>
       )}
       <p id={`${id}-help`} className="text-muted-foreground text-sm">
-        {note && <span className="mb-1 block">{note}</span>}
         {provider.help}
       </p>
     </form>

@@ -7,7 +7,7 @@
  * not a URL, not the console.
  */
 
-export type ApiKeyProvider = "openrouter" | "resend" | "github"
+export type ApiKeyProvider = "openrouter" | "resend"
 
 export interface ApiKeyMeta {
   provider: ApiKeyProvider
@@ -27,8 +27,6 @@ export interface ApiKeysResponse {
   /** Whether Reveal can work at all for this account, and if not why. */
   reveal: { available: true } | { available: false; code: string; reason: string }
   stepUpExpiresInSeconds: number
-  /** A GitHub sign-in token exists, which the repository list falls back to. */
-  githubFromLogin: boolean
 }
 
 /** What a masked key looks like: its prefix, a run of dots, its last four. */

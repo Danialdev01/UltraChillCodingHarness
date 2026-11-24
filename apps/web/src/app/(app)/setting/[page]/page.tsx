@@ -14,7 +14,13 @@ import {
 import { WORKSPACE_COOKIE_NAME } from "@/lib/workspace-cookie";
 
 /** One page of Settings, at /setting/{page}. */
-export default async function Page({ params }: { params: Promise<{ page: string }> }) {
+export default async function Page({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ page: string }>;
+  searchParams: Promise<{ type?: string | string[] }>;
+}) {
   const { page } = await params;
   if (page !== "default" && !isSettingsPageId(page)) notFound();
 
@@ -45,7 +51,13 @@ export default async function Page({ params }: { params: Promise<{ page: string 
     return (
       <div className="flex flex-1 flex-col">
         <div className="mx-auto flex w-full max-w-[960px] flex-col gap-7 px-4 pt-6 pb-16 sm:px-8 sm:pt-7">
-          <SettingsPage page={page} usage={usage} storage={storage} projects={projects.map((p) => ({ id: p.id, name: p.name }))} />
+          <SettingsPage
+            page={page}
+            usage={usage}
+            storage={storage}
+            projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+            providerType={(await searchParams).type === "git" ? "git" : "ai"}
+          />
         </div>
       </div>
     );

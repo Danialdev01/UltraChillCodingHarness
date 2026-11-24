@@ -337,6 +337,13 @@
       "when": 1795258030370,
       "tag": "0047_thread_context_reading",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1795524171954,
+      "tag": "0048_git_accounts",
+      "breakpoints": true
     }
   ]
 }

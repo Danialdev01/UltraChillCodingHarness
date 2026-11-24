@@ -3,7 +3,7 @@ import { accountKeys, users, type Database } from "@ucch/db";
 import { decryptSecret, encryptSecret } from "./crypto.js";
 
 /**
- * The account's three third-party keys: what can be said about them without
+ * The account's OpenRouter and Resend keys (git tokens are `git-accounts.ts`): what can be said about them without
  * decrypting them, the checks a new one must pass, and the one place one is
  * decrypted to be shown to its owner.
  *
@@ -13,7 +13,7 @@ import { decryptSecret, encryptSecret } from "./crypto.js";
  * the code that calls the provider with the key.
  */
 
-export const ACCOUNT_KEY_PROVIDERS = ["openrouter", "resend", "github"] as const;
+export const ACCOUNT_KEY_PROVIDERS = ["openrouter", "resend"] as const;
 export type AccountKeyProvider = (typeof ACCOUNT_KEY_PROVIDERS)[number];
 
 export function isAccountKeyProvider(value: string): value is AccountKeyProvider {
@@ -23,27 +23,23 @@ export function isAccountKeyProvider(value: string): value is AccountKeyProvider
 export const PROVIDER_NAMES: Record<AccountKeyProvider, string> = {
   openrouter: "OpenRouter",
   resend: "Resend",
-  github: "GitHub",
 };
 
 /** Where each provider's ciphertext lives. */
 const COLUMN = {
   openrouter: users.openrouterKeyEncrypted,
   resend: users.resendKeyEncrypted,
-  github: users.githubTokenEncrypted,
 } as const;
 
 const SET = {
   openrouter: (value: string | null) => ({ openrouterKeyEncrypted: value }),
   resend: (value: string | null) => ({ resendKeyEncrypted: value }),
-  github: (value: string | null) => ({ githubTokenEncrypted: value }),
 } as const;
 
 /** The non-secret leading part every key of a kind shares. */
 const PREFIXES: Record<AccountKeyProvider, RegExp> = {
   openrouter: /^sk-or-(?:v\d+-)?/,
   resend: /^re_/,
-  github: /^(?:github_pat_|ghp_|gho_|ghu_|ghs_)/,
 };
 
 export function keyPrefix(provider: AccountKeyProvider, key: string): string {
@@ -69,10 +65,6 @@ export function checkKeyFormat(provider: AccountKeyProvider, key: string): strin
       return /^re_[A-Za-z0-9_-]{8,}$/.test(key)
         ? null
         : "That doesn't look like a Resend key. They start with re_.";
-    case "github":
-      return /^(?:ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})$/.test(key)
-        ? null
-        : "That doesn't look like a GitHub token. Classic tokens start with ghp_, fine-grained ones with github_pat_.";
   }
 }
 
@@ -95,17 +87,7 @@ export async function checkKeyLive(
   const request: { url: string; headers: Record<string, string> } =
     provider === "openrouter"
       ? { url: "https://openrouter.ai/api/v1/key", headers: { authorization: `Bearer ${key}` } }
-      : provider === "resend"
-        ? { url: "https://api.resend.com/domains", headers: { authorization: `Bearer ${key}` } }
-        : {
-            url: "https://api.github.com/user",
-            headers: {
-              authorization: `Bearer ${key}`,
-              accept: "application/vnd.github+json",
-              "user-agent": "ucch",
-              "x-github-api-version": "2022-11-28",
-            },
-          };
+      : { url: "https://api.resend.com/domains", headers: { authorization: `Bearer ${key}` } };
 
   let response: Response;
   try {
@@ -131,11 +113,7 @@ export async function checkKeyLive(
     return { ok: false, error: `${name} couldn't check the key (HTTP ${response.status}). Nothing was saved; try again later.` };
   }
 
-  if (provider !== "github") return { ok: true, scopes: null };
-  const header = response.headers.get("x-oauth-scopes");
-  // Fine-grained tokens carry no scopes header: their permissions are per repository.
-  const scopes = key.startsWith("github_pat_") || header === null ? "fine-grained" : header.trim() || "none";
-  return { ok: true, scopes };
+  return { ok: true, scopes: null };
 }
 
 /** A Resend 401 for a sending-only key, which is a working key. */
@@ -204,7 +182,6 @@ export class DbAccountKeys implements AccountKeyStore {
       .select({
         openrouter: sql<boolean>`${users.openrouterKeyEncrypted} is not null`,
         resend: sql<boolean>`${users.resendKeyEncrypted} is not null`,
-        github: sql<boolean>`${users.githubTokenEncrypted} is not null`,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -395,7 +372,7 @@ export async function backfillAccountKeyMetadata(
           provider,
           prefix: keyPrefix(provider, key),
           last4: keyLast4(key),
-          scopes: provider === "github" && key.startsWith("github_pat_") ? "fine-grained" : null,
+          scopes: null,
           createdAt: null,
         })
         .onConflictDoNothing();

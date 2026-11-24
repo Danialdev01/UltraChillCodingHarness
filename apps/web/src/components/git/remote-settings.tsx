@@ -78,7 +78,7 @@ export function GitRemoteSettings({ hash }: { hash: string }) {
   }
 
   return (
-    <SettingsSection icon={GitBranchIcon} title="Git remote" description={<>Where pull and push go. The account&apos;s GitHub token is used for github.com remotes.</>} bare>
+    <SettingsSection icon={GitBranchIcon} title="Git remote" description={<>Where pull and push go. The project owner&apos;s git accounts (Settings → Providers) sign in to them.</>} bare>
 
       <div className="mt-4 max-w-xl">
         {load.state === "loading" && <Skeleton className="h-9 w-full" />}

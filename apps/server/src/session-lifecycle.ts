@@ -1,4 +1,5 @@
 import type { DomainEvent } from "@ucch/protocol";
+import type { GitAuth } from "./git-auth.js";
 import type { GitAuthor, GitService } from "./git.js";
 import { ProjectGit, type SettleOutcome } from "./project-git.js";
 import { sessionTree, treeHashOf } from "./trees.js";
@@ -69,7 +70,7 @@ export interface SessionLifecycleDeps {
   /** Deletes the thread row; its events and turns go with it. */
   deleteThread(threadId: string, onlyIfEmpty?: boolean): Promise<void | boolean>;
   /** The token for origin (null when it does not apply) and whose name commits carry. */
-  credentials(projectId: string): Promise<{ token: string | null; author: GitAuthor }>;
+  credentials(projectId: string): Promise<{ auth: GitAuth | null; author: GitAuthor }>;
   /** Tells the project's open views. Never throws. */
   announce(projectId: string, event: DomainEvent): Promise<void>;
   onCleanupError?(error: unknown, session: SessionRecord): void;
@@ -182,7 +183,7 @@ export class SessionLifecycle {
     if (!(await this.#projectGit.branchExists(session.projectId, baseBranch)) && session.baseBranch) {
       baseBranch = session.baseBranch;
     }
-    const { token, author } = await this.deps.credentials(session.projectId);
+    const { auth, author } = await this.deps.credentials(session.projectId);
     const outcome = await this.#projectGit.settle({
       projectId: session.projectId,
       hash: session.hash,
@@ -191,7 +192,7 @@ export class SessionLifecycle {
       baseBranch,
       title: session.title,
       author,
-      token,
+      auth,
       deleteBranch: settings.deleteBranchOnSettle,
       autoPush: settings.autoPushBase,
     });

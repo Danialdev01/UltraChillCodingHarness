@@ -60,9 +60,9 @@ Per member, an owner or admin can allow or refuse **creating projects** and **st
 ## 3. Projects
 
 **Create** ("New project", quick actions or the palette). There are three sources:
-- **GitHub**: pick from the repositories the account's token can see (`/api/github/repos`) and a branch (`/api/github/repos/:owner/:repo/branches`).
-- **Custom URL**: any git URL, with an optional branch.
-- **New**: an empty repository, named for you.
+- **Git**: pick from the repositories of every connected GitHub, GitLab and Gitea account (`/api/git/repos`) and a branch (`/api/git/accounts/:id/branches`), or paste any git URL. The account picked from travels as `gitAccountId` and is the one later pulls and pushes use.
+- **New Repo**: create a repository on a connected account (`/api/git/accounts/:id/{owners,repos}`), then clone it.
+- **Empty**: a local repository with no remote.
 
 A **mode** (`research`, `development`, `creative_design`) is chosen too. A `development` project can also get a **dev database**: an engine and a name, created on the embedded Postgres or MariaDB as the `dev` user.
 
@@ -152,7 +152,7 @@ Prompt history is available with ↑/↓, and chat-block navigation with the fad
 | **Claude Code** | `claude` on the server's `PATH`, then a login (a terminal dialog runs the CLI's login with the account's own `CLAUDE_CONFIG_DIR`) or a pasted OAuth token | runs on the Claude subscription; `AGENT_ALLOW_HOST_SHELL` in production |
 | **Codex** | `codex` on `PATH`, then a device login | runs on the ChatGPT subscription; the UI shows a terms warning that must be acknowledged |
 
-**Settings → Agent Providers** (`/setting/providers`, `GET /api/providers`):
+**Settings → Providers → AI Provider** (`/setting/providers`, `GET /api/providers`):
 - each card shows installed, signed in, version and the last probe;
 - a CLI can be signed out with `DELETE /api/providers/:id/credentials`;
 - the **default provider** and **default model** are set under Workspace Settings → General (`PUT /api/settings/default-provider`, `/default-model`).
@@ -279,9 +279,11 @@ All of these need `OMP_ENABLED`, the pinned `omp` binary (in the image) and an O
 - reads: `status`, `diff`, `log`, `branches`, `commits/:sha`, `commits/:sha/diff`, `remote`;
 - writes: `stage`, `unstage`, `discard`, `commit`, `checkout`, `branches`, `fetch`, `pull`, `push`, `remote` (POST/PUT/DELETE), `resolve`, `merge/abort`.
 
-The server caches reads per working tree (`git-cache.ts`) and invalidates them on `file.changed` and git actions. Every git write is announced so all tabs refresh, and is written to the activity log. Pushing and pulling authenticate with the account's GitHub token through a credential helper, and the token never goes on a command line. Commits use the account's name and email.
+The server caches reads per working tree (`git-cache.ts`) and invalidates them on `file.changed` and git actions. Every git write is announced so all tabs refresh, and is written to the activity log. Pushing and pulling authenticate with the project owner's git account for that server (the project's own one first, else the oldest that matches, else the GitHub sign-in) through a credential helper scoped to that origin, and the token never goes on a command line. Commits use the account's name and email.
 
-**Settings → API keys** (`/setting/api`): a GitHub personal token (when not signed in with GitHub), an OpenRouter key and a Resend key, each encrypted and checked live against the provider before saving (`PUT /api/account/keys/:provider`). A stored key can be revealed or copied for 30 seconds after a password step-up (`POST /api/account/reauth`, then `POST /api/account/keys/:provider/reveal`); every reveal and copy is recorded in Activity.
+**Settings → Providers → Git Provider** (`/setting/providers?type=git`): any number of named GitHub, GitLab and Gitea accounts (`git_accounts`, `/api/account/git-accounts`). GitLab and Gitea take a server URL: https anywhere, http only where every address is loopback or private, checked on each connection. A token is checked live before saving, encrypted, never shown again, and tied to its server; only the name and the token can change.
+
+**Settings → API keys** (`/setting/api`): a Resend key (and the older OpenRouter one), each encrypted and checked live against the provider before saving (`PUT /api/account/keys/:provider`). A stored key can be revealed or copied for 30 seconds after a password step-up (`POST /api/account/reauth`, then `POST /api/account/keys/:provider/reveal`); every reveal and copy is recorded in Activity.
 
 ---
 
@@ -413,8 +415,8 @@ The dialog shows "Listening" / "Nothing on port" live.
 | Page | Holds |
 |---|---|
 | `account` | name, email, password, avatar (§1) |
-| `api` (API keys) | GitHub token, OpenRouter key, Resend key (§12) |
-| `providers` (Agent Providers) | Claude Code, Codex and Custom cards: install state, sign-in, token, sign-out (§5) |
+| `api` (API keys) | Resend key (§12) |
+| `providers` (Providers) | **AI Provider**: Claude Code, Codex and Custom cards: install state, sign-in, token, sign-out (§5). **Git Provider**: GitHub, GitLab and Gitea accounts (§12) |
 | `usage` | the person's tokens and cost, and storage per project |
 | `activity` | the account's own activity feed (§20) |
 | `theme` | light/dark/system, accent hue and palette, syntax colours with a live preview, saved presets |

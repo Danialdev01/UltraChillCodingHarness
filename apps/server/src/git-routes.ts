@@ -13,11 +13,11 @@ import {
   type GitRemoteInfo,
   type GitStatus,
 } from "@ucch/protocol";
+import type { GitAuth, GitAuthFor } from "./git-auth.js";
 import { PathError } from "./files.js";
 import type { GitCache, GitRead } from "./git-cache.js";
 import { GitError, RepoUrlError } from "./git-exec.js";
 import { GitRefError, type GitAuthor, type GitChangedPath, type GitService, type GitTarget } from "./git.js";
-import { tokenAppliesTo } from "./github.js";
 import type { ProjectSummary } from "./workspaces.js";
 
 type ProjectRequest = { cookies: Record<string, string | undefined>; params: { hash: string }; query?: unknown };
@@ -25,7 +25,8 @@ type Headers = Record<string, string | string[] | undefined>;
 
 /** Who the owner commits as, and what they authenticate to the remote with. */
 export interface GitCredentials {
-  token: string | null;
+  /** The owner's credential for a URL; null when no account of theirs covers it. */
+  authFor: GitAuthFor;
   author: GitAuthor;
 }
 
@@ -100,11 +101,10 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     );
   }
 
-  /** The owner's token, but only for the host the repository actually lives on. */
-  async function remoteCredentials(project: ProjectSummary): Promise<GitCredentials> {
+  /** The owner's credential, but only for the host the repository actually lives on. */
+  async function remoteCredentials(project: ProjectSummary): Promise<{ auth: GitAuth | null; author: GitAuthor }> {
     const [credentials, url] = await Promise.all([credentialsFor(project.id), git.remoteUrl(project.id)]);
-    const token = url && tokenAppliesTo(url) ? credentials.token : null;
-    return { token, author: credentials.author };
+    return { auth: url ? credentials.authFor(url) : null, author: credentials.author };
   }
 
   /**
@@ -316,8 +316,8 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     const body = GitFetchBody.safeParse(request.body ?? {});
     if (!body.success) return reply.code(400).send({ error: "bad request" });
     return attempt(reply, async (): Promise<GitStatus> => {
-      const { token } = await remoteCredentials(project);
-      await git.fetch(tree, token, body.data);
+      const { auth } = await remoteCredentials(project);
+      await git.fetch(tree, auth, body.data);
       return fresh(project.id, tree);
     });
   });
@@ -328,9 +328,9 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     const tree = await treeFor(request, project);
     if (!tree) return reply.code(404).send({ error: "session not found" });
     return attempt(reply, async () => {
-      const { token, author } = await remoteCredentials(project);
+      const { auth, author } = await remoteCredentials(project);
       // Even a refused merge may have fetched new remote refs.
-      const { conflicts, changed } = await git.pull(tree, token, author).finally(() => cache.invalidate(project.id));
+      const { conflicts, changed } = await git.pull(tree, auth, author).finally(() => cache.invalidate(project.id));
       await fileEvents(project.id, tree, changed);
       return { conflicts, status: await fresh(project.id, tree) };
     });
@@ -342,8 +342,8 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     const tree = await treeFor(request, project);
     if (!tree) return reply.code(404).send({ error: "session not found" });
     return attempt(reply, async (): Promise<GitStatus> => {
-      const { token } = await remoteCredentials(project);
-      const { branch, remoteSha } = await git.push(tree, token);
+      const { auth } = await remoteCredentials(project);
+      const { branch, remoteSha } = await git.push(tree, auth);
       await announce(project.id, [{ type: "git.pushed", projectId: project.id, branch, remoteSha }]);
       return fresh(project.id, tree);
     });
@@ -358,11 +358,11 @@ export function registerGitRoutes(app: FastifyInstance, deps: GitRouteDeps): voi
     if (!body.success) return reply.code(400).send({ error: "a repository url is required" });
     return attempt(reply, async () => {
       const url = body.data.url;
-      // The token is judged against the URL being added, not the one on the
+      // The credential is judged against the URL being added, not the one on the
       // repository -- there is none yet.
       const credentials = await credentialsFor(project.id);
-      const token = tokenAppliesTo(url) ? credentials.token : null;
-      const { mergedFrom, conflicts, changed } = await git.connectRemote(tree, url, token, credentials.author);
+      const auth = credentials.authFor(url);
+      const { mergedFrom, conflicts, changed } = await git.connectRemote(tree, url, auth, credentials.author);
       await remoteChanged(project.id, url);
       await fileEvents(project.id, tree, changed);
       return { mergedFrom, conflicts, status: await fresh(project.id, tree) };

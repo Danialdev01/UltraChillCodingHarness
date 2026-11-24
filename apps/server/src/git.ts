@@ -20,6 +20,7 @@ import {
 } from "@ucch/protocol";
 import { withSharedAgentFilesAside } from "./agent-shared-files.js";
 import { PathError } from "./files.js";
+import type { GitAuth } from "./git-auth.js";
 import { GitError, runGit, safeRepoUrl } from "./git-exec.js";
 import type { TreeTarget } from "./trees.js";
 
@@ -362,7 +363,7 @@ export class GitService {
 
   // ---- the remote -------------------------------------------------------
 
-  fetch(projectId: GitTarget, token: string | null, options: { unshallow?: boolean } = {}): Promise<void> {
+  fetch(projectId: GitTarget, auth: GitAuth | null, options: { unshallow?: boolean } = {}): Promise<void> {
     return this.#serial(projectId, async (cwd) => {
       await this.#widenRefspec(cwd);
       const args = ["fetch", "--prune", "origin"];
@@ -370,7 +371,7 @@ export class GitService {
         const shallow = (await this.#git(cwd, ["rev-parse", "--is-shallow-repository"])).trim() === "true";
         if (shallow) args.push("--unshallow");
       }
-      await this.#git(cwd, args, { token, timeoutMs: REMOTE_TIMEOUT_MS });
+      await this.#git(cwd, args, { auth, timeoutMs: REMOTE_TIMEOUT_MS });
     });
   }
 
@@ -380,7 +381,7 @@ export class GitService {
    */
   pull(
     projectId: GitTarget,
-    token: string | null,
+    auth: GitAuth | null,
     author: GitAuthor,
   ): Promise<{ conflicts: boolean; changed: GitChangedPath[] }> {
     return this.#serial(projectId, (cwd) => withSharedAgentFilesAside(cwd, this.#runner(cwd), async () => {
@@ -389,7 +390,7 @@ export class GitService {
       // A pull that has to merge writes a commit, and a commit needs a name.
       try {
         await this.#git(cwd, [...identity(author), "pull", "--no-rebase", "--ff", "--no-edit", "origin"], {
-          token,
+          auth,
           timeoutMs: REMOTE_TIMEOUT_MS,
         });
       } catch (error) {
@@ -412,7 +413,7 @@ export class GitService {
   // TODO: decide whether Publish should push a session's own `ucch/*`
   // branch at all. It is how `origin/ucch/*` refs reach the remote (and every
   // other clone); branch lists hide them, but they still pile up on origin.
-  push(projectId: GitTarget, token: string | null): Promise<{ branch: string; remoteSha: string }> {
+  push(projectId: GitTarget, auth: GitAuth | null): Promise<{ branch: string; remoteSha: string }> {
     return this.#serial(projectId, async (cwd) => {
       await this.#widenRefspec(cwd);
       const branch = (await this.#git(cwd, ["branch", "--show-current"])).trim();
@@ -421,7 +422,7 @@ export class GitService {
         okExitCodes: [0, 128],
       });
       const args = upstream.trim() ? ["push", "origin", `HEAD:refs/heads/${branch}`] : ["push", "-u", "origin", branch];
-      await this.#git(cwd, args, { token, timeoutMs: REMOTE_TIMEOUT_MS });
+      await this.#git(cwd, args, { auth, timeoutMs: REMOTE_TIMEOUT_MS });
       const remoteSha = (await this.#git(cwd, ["rev-parse", `refs/remotes/origin/${branch}`])).trim();
       return { branch, remoteSha };
     });
@@ -443,17 +444,17 @@ export class GitService {
   connectRemote(
     projectId: GitTarget,
     url: string,
-    token: string | null,
+    auth: GitAuth | null,
     author: GitAuthor,
   ): Promise<{ mergedFrom: string | null; conflicts: boolean; changed: GitChangedPath[] }> {
     return this.#serial(projectId, async (cwd) => {
       const safe = safeRepoUrl(url);
       await this.#git(cwd, ["remote", "add", "origin", "--", safe]);
       try {
-        await this.#git(cwd, ["fetch", "--prune", "origin"], { token, timeoutMs: REMOTE_TIMEOUT_MS });
+        await this.#git(cwd, ["fetch", "--prune", "origin"], { auth, timeoutMs: REMOTE_TIMEOUT_MS });
         // `origin/HEAD` is only written by a clone; asked for here so a
         // remote whose default branch is not ours can still be merged.
-        await this.#git(cwd, ["remote", "set-head", "origin", "--auto"], { token, timeoutMs: REMOTE_TIMEOUT_MS, okExitCodes: [0, 1, 128] });
+        await this.#git(cwd, ["remote", "set-head", "origin", "--auto"], { auth, timeoutMs: REMOTE_TIMEOUT_MS, okExitCodes: [0, 1, 128] });
       } catch (error) {
         await this.#git(cwd, ["remote", "remove", "origin"]).catch(() => {});
         throw error;
@@ -535,10 +536,10 @@ export class GitService {
   #git(
     cwd: string,
     argv: string[],
-    options: { token?: string | null; okExitCodes?: readonly number[]; timeoutMs?: number; read?: boolean } = {},
+    options: { auth?: GitAuth | null; okExitCodes?: readonly number[]; timeoutMs?: number; read?: boolean } = {},
   ): Promise<string> {
     return runGit(argv, cwd, options.timeoutMs ?? this.timeoutMs, {
-      token: options.token,
+      auth: options.auth,
       okExitCodes: options.okExitCodes,
       read: options.read,
     });

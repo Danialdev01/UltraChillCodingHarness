@@ -423,6 +423,7 @@ export async function applyProjection(
           repoUrl: event.repoUrl,
           defaultBranch: event.defaultBranch,
           sessionBranches: event.sessionBranches ?? true,
+          gitAccountId: event.gitAccountId ?? null,
         });
         await tx.insert(projectStats).values({ projectId: event.projectId });
         break;

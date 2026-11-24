@@ -84,7 +84,7 @@ beforeEach(async () => {
       if (onlyIfEmpty && refuseDelete) return false;
       deleted.push(id);
     },
-    credentials: async () => ({ token: null, author: AUTHOR }),
+    credentials: async () => ({ auth: null, author: AUTHOR }),
     announce: async (_projectId, event) => void announced.push(event),
   });
 });

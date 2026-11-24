@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isValidRepoName, suggestRepoName } from "./github-api.js";
+import { isValidRepoName, suggestRepoName } from "./git-hosts-api.js";
 
 describe("isValidRepoName", () => {
   it("accepts the names a repository is actually called", () => {

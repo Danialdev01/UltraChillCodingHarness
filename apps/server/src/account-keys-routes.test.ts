@@ -300,9 +300,9 @@ describe("saving", () => {
   it("refuses a malformed key without asking the provider", async () => {
     let asked = 0;
     const { api, store } = setup({ check: async () => (asked++, { ok: true, scopes: null }) });
-    const res = await api.save("alice", "github", "not-a-token");
+    const res = await api.save("alice", "resend", "not-a-token");
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toMatch(/ghp_/);
+    expect(res.json().error).toMatch(/re_/);
     expect(asked).toBe(0);
     expect(store.values.size).toBe(0);
   });
@@ -323,11 +323,9 @@ describe("saving", () => {
     expect(audits.map((a) => a.action)).toEqual(["api_key.created"]);
   });
 
-  it("stores GitHub scopes from the check", async () => {
-    const { api } = setup({ check: async () => ({ ok: true, scopes: "repo, read:org" }) });
-    const token = `ghp_${"A".repeat(36)}`;
-    const res = await api.save("alice", "github", token);
-    expect(res.json().key).toMatchObject({ prefix: "ghp_", scopes: "repo, read:org", last4: "AAAA" });
+  it("no longer keeps GitHub tokens, which are git accounts", async () => {
+    const { api } = setup();
+    expect((await api.save("alice", "github", `ghp_${"A".repeat(36)}`)).statusCode).toBe(404);
   });
 
   it("keeps the older settings route working for scripts, without a live check", async () => {

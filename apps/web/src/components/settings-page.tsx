@@ -1,7 +1,7 @@
 import { AccountSettings } from "@/components/account-settings"
 import { ActivityFeed } from "@/components/activity/activity-feed"
 import { ApiKeySettings } from "@/components/api-key-settings"
-import { ProviderSettings } from "@/components/provider-settings"
+import { ProvidersPage, type ProviderType } from "@/components/providers-page"
 import { SyntaxSettings } from "@/components/syntax-settings"
 import { ThemePresets } from "@/components/theme-presets"
 import { ThemeSettings } from "@/components/theme-settings"
@@ -14,14 +14,15 @@ import type { SettingsPageId } from "@/lib/sections"
  * Which page is a matter of the URL: the sidebar's Settings panel lists them
  * as rows, and the lit one is read off the address bar the same way the rail
  * reads its section -- so there is no tab state to remember, and a link to
- * `/setting/api` lands on API keys (Resend, GitHub) by itself; model-provider
- * keys are under `/setting/providers`, in the Custom provider's panel.
+ * `/setting/api` lands on API keys (Resend) by itself; model-provider keys
+ * and git tokens are under `/setting/providers`.
  */
 export function SettingsPage({
   page,
   usage,
   storage,
   projects,
+  providerType = "ai",
 }: {
   page: SettingsPageId
   usage: WorkspaceUsage | null
@@ -29,6 +30,8 @@ export function SettingsPage({
   storage: WorkspaceStorage | null
   /** The active workspace's projects: a sign-in terminal needs one to publish on. */
   projects: { id: string; name: string }[]
+  /** Which of the Providers page's tabs its URL names. */
+  providerType?: ProviderType
 }) {
   switch (page) {
     case "account":
@@ -36,7 +39,7 @@ export function SettingsPage({
     case "api":
       return <ApiKeySettings />
     case "providers":
-      return <ProviderSettings projects={projects} />
+      return <ProvidersPage projects={projects} initialType={providerType} />
     case "usage":
       return <UsageSettings usage={usage} storage={storage} />
     case "activity":

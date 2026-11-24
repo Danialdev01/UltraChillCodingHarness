@@ -12,12 +12,15 @@ import {
   Loader2Icon,
   PlusIcon,
   SearchIcon,
+  UserRoundIcon,
   UsersIcon,
 } from "lucide-react";
 import {
   DATABASE_ENGINE_LABELS,
   DEV_DATABASE_NAME,
+  GIT_PROVIDERS,
   GIT_PROVIDER_LABELS,
+  GITHUB_LOGIN_ACCOUNT,
   PROJECT_MODE_LABELS,
   PROJECT_MODES,
   suggestDevDatabaseName,
@@ -33,7 +36,7 @@ import type {
   ProjectDatabase,
 } from "@ucch/protocol";
 
-import { GithubMark } from "@/components/github-mark";
+import { GitProviderMark as ProviderMark } from "@/components/git-provider-mark";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -65,20 +68,21 @@ import { createProject } from "@/lib/create-project";
 import { setupProjectKey } from "@/lib/env-api";
 import { unlockProject } from "@/lib/project-key-store";
 import { newKeyProblem } from "@/lib/project-key";
+import { GIT_PROVIDER_HREF } from "@/lib/git-accounts";
 import {
-  NoGithubToken,
-  createGithubRepo,
+  createRepo,
   fetchBranches,
   fetchGitAccounts,
   fetchGitRepos,
-  fetchGithubOwners,
+  fetchOwners,
   isValidRepoName,
   suggestRepoName,
+  type GitOwner,
   type GitRepo,
+  type GitRepoAccount,
   type GitReposError,
-  type GithubOwner,
-  type GithubRepo,
-} from "@/lib/github-api";
+  type HostRepo,
+} from "@/lib/git-hosts-api";
 import { useToast } from "@/lib/realtime";
 import { deriveProjectName, looksLikeRepoUrl } from "@/lib/repo-url";
 import { cn } from "@/lib/utils";
@@ -119,7 +123,7 @@ const VISIBILITY_OPTIONS = [
 ] as const;
 
 /** The combined list's identity for a repository: two accounts can share a full name. */
-const repoKey = (repo: GitRepo) => `${repo.provider}:${repo.fullName}`;
+const repoKey = (repo: GitRepo) => `${repo.accountId}:${repo.fullName}`;
 
 /**
  * Starting a project, from one of three places.
@@ -177,9 +181,7 @@ export function NewProjectDialog({
   const [sessionBranches, setSessionBranches] = React.useState(true);
 
   // -- The Git tab: every connected account's repositories ---------------------
-  const [gitAccounts, setGitAccounts] = React.useState<
-    { provider: GitProvider; login: string; name: string | null }[]
-  >([]);
+  const [gitAccounts, setGitAccounts] = React.useState<GitRepoAccount[]>([]);
   /** Null until the list arrives. */
   const [repos, setRepos] = React.useState<GitRepo[] | null>(null);
   /** The whole request failing; one account failing is in `accountErrors`. */
@@ -200,11 +202,13 @@ export function NewProjectDialog({
   const [refsError, setRefsError] = React.useState<string | null>(null);
 
   // -- The New Repo tab --------------------------------------------------------
-  /** Every host, integrated or not, connected or not. Null until read. */
+  /** Every connected account. Null until read. */
   const [hosts, setHosts] = React.useState<GitAccount[] | null>(null);
   const [hostsError, setHostsError] = React.useState<string | null>(null);
   const [host, setHost] = React.useState<GitProvider>("github");
-  const [owners, setOwners] = React.useState<GithubOwner[] | null>(null);
+  /** The account chosen for each host; its first reachable one until then. */
+  const [chosenAccounts, setChosenAccounts] = React.useState<Partial<Record<GitProvider, string>>>({});
+  const [owners, setOwners] = React.useState<GitOwner[] | null>(null);
   const [ownersError, setOwnersError] = React.useState<string | null>(null);
   const [owner, setOwner] = React.useState("");
   const [visibility, setVisibility] = React.useState<Visibility>("private");
@@ -213,7 +217,7 @@ export function NewProjectDialog({
    * The repository this dialog already created, so a retry after the clone
    * failed reuses it instead of being refused for a name that is now taken.
    */
-  const createdRepo = React.useRef<GithubRepo | null>(null);
+  const createdRepo = React.useRef<(HostRepo & { accountId: string }) | null>(null);
 
   // A fresh dialog every time: a half-filled form from last week is not a
   // head start. The repository lists are dropped with it, so a repository
@@ -247,6 +251,7 @@ export function NewProjectDialog({
     setHosts(null);
     setHostsError(null);
     setHost("github");
+    setChosenAccounts({});
     setOwners(null);
     setOwnersError(null);
     setOwner("");
@@ -292,7 +297,7 @@ export function NewProjectDialog({
         if (cancelled) return;
         setHosts(list);
         // The first host that can actually take a repository.
-        const usable = list.find((h) => h.available && h.connected);
+        const usable = list.find((h) => h.connected);
         if (usable) setHost(usable.provider);
       })
       .catch((e: unknown) => {
@@ -304,31 +309,38 @@ export function NewProjectDialog({
     };
   }, [open, source, hosts, hostsError]);
 
-  const hostAccount = hosts?.find((h) => h.provider === host) ?? null;
-  const hostUsable = Boolean(hostAccount?.available && hostAccount.connected);
+  const hostAccounts = hosts?.filter((h) => h.provider === host) ?? [];
+  const hostAccount =
+    hostAccounts.find((h) => h.id === chosenAccounts[host]) ??
+    hostAccounts.find((h) => h.connected) ??
+    hostAccounts[0] ??
+    null;
+  const hostUsable = Boolean(hostAccount?.connected);
+  const hostAccountId = hostUsable ? hostAccount!.id : null;
 
-  /** Reads where the chosen host can create a repository: the account, then its organisations. */
+  /** Reads where the chosen account can create a repository: itself, then its organisations. */
   React.useEffect(() => {
-    if (!open || source !== "create" || !hostUsable || host !== "github" || owners !== null || ownersError) return;
+    if (!open || source !== "create" || !hostAccountId) return;
 
     let cancelled = false;
-    void fetchGithubOwners()
+    // One account's owners are not another's.
+    setOwners(null);
+    setOwnersError(null);
+    setOwner("");
+    void fetchOwners(hostAccountId)
       .then((list) => {
         if (cancelled) return;
         setOwners(list);
-        setOwner((current) => current || list[0]?.login || "");
+        setOwner(list[0]?.login ?? "");
       })
       .catch((e: unknown) => {
-        if (cancelled) return;
-        setOwnersError(
-          e instanceof NoGithubToken ? "No GitHub token is configured." : e instanceof Error ? e.message : String(e),
-        );
+        if (!cancelled) setOwnersError(e instanceof Error ? e.message : String(e));
       });
 
     return () => {
       cancelled = true;
     };
-  }, [open, source, hostUsable, host, owners, ownersError]);
+  }, [open, source, hostAccountId]);
 
   /**
    * Reads the chosen repository's branches.
@@ -346,12 +358,10 @@ export function NewProjectDialog({
 
     setPickedBranch(picked.defaultBranch);
     setPickedBranches([picked.defaultBranch]);
-    // GitHub's API is the only branch reader with a token behind it so far.
-    if (picked.provider !== "github") return;
     setPickedBranchesLoading(true);
 
     let cancelled = false;
-    void fetchBranches(picked.owner, picked.name)
+    void fetchBranches(picked.accountId, picked.fullName)
       .then(({ branches: list, defaultBranch }) => {
         if (cancelled) return;
         setPickedBranches(list);
@@ -450,6 +460,7 @@ export function NewProjectDialog({
   const command = React.useMemo(():
     | {
         repoUrl?: string;
+        gitAccountId?: string;
         name: string;
         branch?: string;
         mode: ProjectMode;
@@ -461,7 +472,7 @@ export function NewProjectDialog({
     const what = { mode, sessionBranches, ...(database ? { database } : {}) };
     if (source === "git" && gitMode === "list") {
       if (!picked || !name.trim()) return null;
-      return { repoUrl: picked.cloneUrl, name: name.trim(), branch: pickedBranch || picked.defaultBranch, ...what };
+      return { repoUrl: picked.cloneUrl, ...accountOf(picked.accountId), name: name.trim(), branch: pickedBranch || picked.defaultBranch, ...what };
     }
     if (source === "git") {
       const url = repoUrl.trim();
@@ -492,17 +503,17 @@ export function NewProjectDialog({
         // Created with a README so it has a default branch to clone.
         const previous = createdRepo.current;
         const repo =
-          previous && previous.owner.toLowerCase() === owner.toLowerCase() && previous.name === command.name
+          previous && previous.accountId === hostAccountId && previous.owner.toLowerCase() === owner.toLowerCase() && previous.name === command.name
             ? previous
-            : await createGithubRepo({
+            : await createRepo(hostAccountId!, {
                 owner,
                 name: command.name,
                 private: visibility === "private",
                 ...(description.trim() ? { description: description.trim() } : {}),
                 autoInit: true,
               });
-        createdRepo.current = repo;
-        toSend = { ...command, repoUrl: repo.cloneUrl, branch: repo.defaultBranch };
+        createdRepo.current = { ...repo, accountId: hostAccountId! };
+        toSend = { ...command, repoUrl: repo.cloneUrl, ...accountOf(hostAccountId!), branch: repo.defaultBranch };
       }
 
       const created = await createProject({ workspaceId, ...toSend }, setStage);
@@ -531,13 +542,7 @@ export function NewProjectDialog({
       // The sidebar hears of the new project as `resource.changed{projects}`.
       router.push(hrefOf(created.hash));
     } catch (e) {
-      setError(
-        e instanceof NoGithubToken
-          ? "No GitHub token is configured. Add one in Settings → API."
-          : e instanceof Error
-            ? e.message
-            : String(e),
-      );
+      setError(e instanceof Error ? e.message : String(e));
       setStage("idle");
     }
   }
@@ -595,7 +600,7 @@ export function NewProjectDialog({
                         {gitAccounts.length > 0 && (
                           <span className="flex min-w-0 items-center gap-2 text-[11px] text-(--fd-text-muted)">
                             {gitAccounts.map((a) => (
-                              <span key={`${a.provider}:${a.login}`} className="flex min-w-0 items-center gap-1">
+                              <span key={a.id} title={a.name} className="flex min-w-0 items-center gap-1">
                                 <ProviderMark provider={a.provider} className="size-3 shrink-0" />
                                 <span className="truncate">{a.login}</span>
                               </span>
@@ -618,8 +623,8 @@ export function NewProjectDialog({
                         </p>
                       )}
                       {accountErrors.map((e) => (
-                        <p key={e.provider} role="alert" className="text-destructive text-[11.5px]">
-                          {GIT_PROVIDER_LABELS[e.provider]}: {e.error}
+                        <p key={e.accountId} role="alert" className="text-destructive text-[11.5px]">
+                          {GIT_PROVIDER_LABELS[e.provider]} ({e.name}): {e.error}
                         </p>
                       ))}
                     </div>
@@ -646,8 +651,7 @@ export function NewProjectDialog({
                   <>
                     {repos !== null && gitAccounts.length === 0 && accountErrors.length === 0 && (
                       <NoGitAccount>
-                        Connect GitHub to pick from your repositories (GitLab and Gitea are
-                        coming). A URL from any host the server can reach works without one.
+                        Connect GitHub, GitLab or Gitea to pick from your repositories. A URL from any host the server can reach works without one.
                       </NoGitAccount>
                     )}
                     <div className="flex flex-col gap-1.5">
@@ -746,10 +750,31 @@ export function NewProjectDialog({
                   )}
                 </div>
 
+                {hostAccounts.length > 1 && (
+                  <div className="flex flex-col gap-1.5">
+                    <span id="new-project-account-label" className={LABEL}>
+                      Account
+                    </span>
+                    <PopoverSelect
+                      value={hostAccount?.id ?? ""}
+                      options={hostAccounts.map((a) => ({
+                        value: a.id,
+                        label: a.name,
+                        hint: a.connected ? a.login ?? "" : "Not connected",
+                      }))}
+                      onChange={(id) => setChosenAccounts((was) => ({ ...was, [host]: id }))}
+                      heading={`Your ${GIT_PROVIDER_LABELS[host]} accounts`}
+                      icon={UserRoundIcon}
+                      disabled={busy}
+                      labelledBy="new-project-account-label"
+                    />
+                  </div>
+                )}
+
                 {hosts !== null && !hostUsable ? (
                   <NoGitAccount>
-                    {hostAccount?.available === false
-                      ? `${GIT_PROVIDER_LABELS[host]} is not integrated yet.`
+                    {hostAccount
+                      ? `${GIT_PROVIDER_LABELS[host]} could not be reached as "${hostAccount.name}". Check its token in Settings.`
                       : `Connect ${GIT_PROVIDER_LABELS[host]} in Settings to create repositories on it.`}{" "}
                     The Empty tab starts a project without a remote.
                   </NoGitAccount>
@@ -1021,17 +1046,14 @@ export function NewProjectDialog({
   );
 }
 
-/** A git host's mark. GitHub has its own glyph; the others a generic one until they are integrated. */
-function ProviderMark({ provider, className }: { provider: GitProvider; className?: string }) {
-  if (provider === "github") return <GithubMark className={className} />;
-  return <GitBranchIcon className={className} />;
-}
+/** Sent with the project; the sign-in account is the server's own fallback and has no id to send. */
+const accountOf = (id: string) => (id === GITHUB_LOGIN_ACCOUNT ? {} : { gitAccountId: id });
 
 /**
  * The hosts a repository can be created on, side by side.
  *
- * Every host is shown, so it is clear what is coming: one not integrated yet
- * says so, and one not connected says where to connect it.
+ * Every host is shown; choosing one that is not connected says where to
+ * connect it.
  */
 function HostChoice({
   hosts,
@@ -1059,19 +1081,21 @@ function HostChoice({
 
   return (
     <div role="radiogroup" aria-labelledby={labelledBy} className="grid grid-cols-3 gap-1.5">
-      {hosts.map((h) => {
-        const checked = h.provider === value;
-        const status = !h.available ? "Coming soon" : h.connected ? h.login ?? "Connected" : "Not connected";
+      {GIT_PROVIDERS.map((provider) => {
+        const checked = provider === value;
+        const connected = hosts.filter((h) => h.provider === provider && h.connected);
+        const status =
+          connected.length > 1 ? `${connected.length} accounts` : connected[0] ? connected[0].login ?? "Connected" : "Not connected";
         return (
           <button
-            key={h.provider}
+            key={provider}
             type="button"
             role="radio"
             aria-checked={checked}
-            disabled={disabled || !h.available}
-            onClick={() => onChange(h.provider)}
+            disabled={disabled}
+            onClick={() => onChange(provider)}
             className={cn(
-              "flex min-w-0 flex-col items-start gap-[3px] rounded-[8px] border border-(--fd-border) bg-(--fd-field) px-2.5 py-2 text-left transition-[border-color,box-shadow,background-color] disabled:cursor-not-allowed disabled:border-dashed disabled:opacity-60",
+              "flex min-w-0 flex-col items-start gap-[3px] rounded-[8px] border border-(--fd-border) bg-(--fd-field) px-2.5 py-2 text-left transition-[border-color,box-shadow,background-color] disabled:cursor-not-allowed disabled:opacity-60",
               FOCUS,
               checked
                 ? "border-(--fd-accent) bg-(--fd-accent-tint) ring-[3px] ring-(--fd-ring-soft)"
@@ -1079,8 +1103,8 @@ function HostChoice({
             )}
           >
             <span className="flex items-center gap-1.5 text-[12px] font-medium text-(--fd-text)">
-              <ProviderMark provider={h.provider} className="size-3.5 shrink-0" />
-              {GIT_PROVIDER_LABELS[h.provider]}
+              <ProviderMark provider={provider} className="size-3.5 shrink-0" />
+              {GIT_PROVIDER_LABELS[provider]}
             </span>
             <span className="max-w-full truncate text-[11px] text-(--fd-text-muted)">{status}</span>
           </button>
@@ -1106,7 +1130,7 @@ function NoGitAccount({ children }: { children: React.ReactNode }) {
         variant="outline"
         size="sm"
         nativeButton={false}
-        render={<TransitionLink href="/setting/api" />}
+        render={<TransitionLink href={GIT_PROVIDER_HREF} />}
         className="shrink-0"
       >
         Settings
@@ -1146,7 +1170,7 @@ function RepoPicker({
     const list = repos ?? [];
     const needle = query.trim().toLowerCase();
     const hit = needle
-      ? list.filter((repo) => `${repo.fullName} ${repo.provider}`.toLowerCase().includes(needle))
+      ? list.filter((repo) => `${repo.fullName} ${repo.provider} ${repo.accountName}`.toLowerCase().includes(needle))
       : list;
     // Capped for the DOM's sake, not the search's: the filter runs over every
     // repository, and only the rendering is limited.
@@ -1154,6 +1178,12 @@ function RepoPicker({
   }, [repos, query]);
 
   const loading = repos === null && !error;
+  /** Providers with several accounts, whose rows say which one. */
+  const shared = React.useMemo(() => {
+    const ids = new Map<GitProvider, Set<string>>();
+    for (const r of repos ?? []) ids.set(r.provider, (ids.get(r.provider) ?? new Set()).add(r.accountId));
+    return new Set([...ids].filter(([, set]) => set.size > 1).map(([provider]) => provider));
+  }, [repos]);
 
   return (
     <Popover
@@ -1219,6 +1249,9 @@ function RepoPicker({
                 >
                   <ProviderMark provider={repo.provider} className="text-muted-foreground size-3 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{repo.fullName}</span>
+                  {shared.has(repo.provider) && (
+                    <span className="text-muted-foreground max-w-[40%] shrink-0 truncate text-xs">{repo.accountName}</span>
+                  )}
                   {repo.private && <LockIcon className="text-muted-foreground size-3 shrink-0" />}
                 </CommandItem>
               ))}

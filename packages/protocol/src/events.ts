@@ -61,6 +61,8 @@ const ProjectCreated = z.object({
   database: ProjectDatabase.nullable().optional(),
   /** Each session on a branch of its own; absent (older events) reads as true. */
   sessionBranches: z.boolean().optional(),
+  /** The owner's git account to authenticate with. Absent: whichever matches the URL. */
+  gitAccountId: z.string().uuid().optional(),
 });
 
 const ProjectCloned = z.object({

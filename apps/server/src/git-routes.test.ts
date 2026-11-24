@@ -30,7 +30,7 @@ beforeEach(async () => {
     treeFor: async () => PROJECT,
     git,
     cache,
-    credentialsFor: async () => ({ token: null, author: { name: "Test", email: "test@example.com" } }),
+    credentialsFor: async () => ({ authFor: () => null, author: { name: "Test", email: "test@example.com" } }),
     announce: async () => {},
     remoteChanged: async () => {},
   });
