@@ -250,6 +250,8 @@ export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   "thread.switch_harness": "exec",
   // Answers a card; what it picks may start a turn.
   "thread.choice_reply": "exec",
+  // Moving it to now starts a turn.
+  "thread.resume_update": "exec",
   "terminal.create": "exec",
   "terminal.input": "exec",
   "terminal.resize": "exec",

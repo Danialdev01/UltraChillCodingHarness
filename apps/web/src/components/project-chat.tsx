@@ -131,6 +131,7 @@ import {
 } from "@/lib/model-preference";
 import { ProviderSelect, useAccounts, useProviders } from "@/components/provider-picker";
 import { ChoicePromptCard } from "@/components/choice-prompt";
+import { ResumeCard } from "@/components/resume-card";
 import { useProjectSessions } from "@/lib/project-sessions";
 import {
   billingLabel,
@@ -944,6 +945,7 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
     continuedFrom,
     switching,
     choices,
+    scheduledResume,
   } = useMemo(() => overlayLive(settled, liveTurns), [settled, liveTurns]);
   // A subagent's session links back to the one that started it.
   const { sessions: projectSessions } = useProjectSessions(session?.parentThreadId ? project : null);
@@ -1764,10 +1766,33 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
 
   /** Answers a choice card (`thread.choice_reply`); the card goes when `agent.choice_resolved` lands. */
   const replyChoice = useCallback(
-    async (requestId: string, optionId: string, model?: string) => {
+    async (
+      requestId: string,
+      optionId: string,
+      { model, at, provider: harness }: { model?: string; at?: string; provider?: ProviderId },
+    ) => {
       const client = clientRef.current;
       if (!client || !threadId) throw new Error("not connected");
-      await client.dispatch({ type: "thread.choice_reply", threadId, requestId, optionId, ...(model ? { model } : {}) });
+      await client.dispatch({
+        type: "thread.choice_reply",
+        threadId,
+        requestId,
+        optionId,
+        ...(model ? { model } : {}),
+        ...(at ? { at } : {}),
+      });
+      // The composer opens on it once the session is on that harness.
+      if (model && (harness === "claude" || harness === "codex")) rememberLastModel(`${project.id}:${harness}`, model);
+    },
+    [threadId, project.id],
+  );
+
+  /** Moves the scheduled continue to another time, or with null cancels it. */
+  const updateResume = useCallback(
+    async (resumeId: string, at: string | null) => {
+      const client = clientRef.current;
+      if (!client || !threadId) throw new Error("not connected");
+      await client.dispatch({ type: "thread.resume_update", threadId, resumeId, at });
     },
     [threadId],
   );
@@ -2261,7 +2286,21 @@ export function ProjectChat({ project, session, gitRepair }: { project: Project;
           )}
           {/* A limit's question: the thread's own, or one of its subagents'. */}
           {choices[0] && !prompts[0] && (
-            <ChoicePromptCard key={choices[0].requestId} choice={choices[0]} onReply={replyChoice} />
+            <ChoicePromptCard
+              key={choices[0].requestId}
+              choice={choices[0]}
+              cards={providers.cards}
+              projectId={project.id}
+              onReply={replyChoice}
+            />
+          )}
+          {scheduledResume && !running && !sending && (
+            <ResumeCard
+              key={scheduledResume.resumeId}
+              resume={scheduledResume}
+              harness={providerLabel(scheduledResume.provider)}
+              onUpdate={updateResume}
+            />
           )}
           {planReady && !running && !sending && !choices[0] && !prompts[0] && (
             <PlanReadyCard

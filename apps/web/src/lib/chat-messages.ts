@@ -1,3 +1,4 @@
+import type { ScheduledResume } from "@ucch/protocol";
 import type { DomainEvent, FileDiff, MessageMode, PlanStage } from "@ucch/protocol";
 import { isUcchAgentTool, PLAN_CLOSE, PLAN_OPEN, proposedPlanIn, stripPlanTags } from "@ucch/protocol/plain";
 import { parseAttachments, type MessageAttachment } from "./attachments.js";
@@ -377,6 +378,8 @@ export interface ChatState {
    * closes when anything else moves the session on.
    */
   choices: ChoicePrompt[];
+  /** The turn a usage limit stopped, waiting for the time the person set. */
+  scheduledResume: ScheduledResume | null;
 }
 
 /**
@@ -409,6 +412,7 @@ export function toMessages(
   let switching: ProviderId | null = null;
   const prompts = new Map<string, PermissionPrompt>();
   const choices = new Map<string, ChoicePrompt>();
+  let scheduledResume: ScheduledResume | null = null;
   /** A new turn or switch overtakes the thread's own limit card. */
   const overtake = () => {
     for (const [id, choice] of choices) if (choice.kind === "harness_limit") choices.delete(id);
@@ -516,6 +520,7 @@ export function toMessages(
         break;
       }
       case "user.message": {
+        scheduledResume = null;
         if (event.agentMessageIds?.length) break;
         // The attachment block is for the model; the chat shows the sentence
         // that was typed, and a tag per file.
@@ -887,7 +892,20 @@ export function toMessages(
         overtake();
         break;
 
+      case "thread.resume_scheduled": {
+        const { type: _type, threadId: _thread, ...resume } = event;
+        scheduledResume = resume;
+        compactionError = null;
+        break;
+      }
+
+      case "thread.resume_cancelled":
+        if (scheduledResume?.resumeId === event.resumeId) scheduledResume = null;
+        if (event.error) compactionError = `The session did not continue: ${event.error}`;
+        break;
+
       case "thread.harness_switched":
+        scheduledResume = null;
         switching = null;
         running = false;
         // A quiet handover (the server's own, past the fallback line) leaves
@@ -980,6 +998,7 @@ export function toMessages(
     continuedFrom,
     switching,
     choices: [...choices.values()],
+    scheduledResume,
   };
 }
 

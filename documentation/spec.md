@@ -217,6 +217,9 @@ Toggle with **+ → Documentation** or `/documentation`. This mode creates, edit
   3. The two threads link with "Continued in →" / "Continued from ←".
   4. While the brief is written, the composer shows "Writing a brief … for <harness>…". A failure ends with `thread.handoff_failed`.
 - **Automatic handoff on a usage limit** (workspace setting): a Claude Code or Codex turn that fails on its plan's limit continues on the fallback provider with the failed message. This happens once per chain.
+- **Asking on a usage limit** (when nothing is automatic, or the fallback is limited too): a card above the composer asks how to go on.
+  - Another harness, or another account of the same one, with the model to run picked from its list. The failed message goes over with a brief.
+  - Wait: a time to continue on the same account, by default just past the reset the CLI reported. The session keeps its conversation and model. A turn that had begun its work is told to carry on; one refused before it did anything is sent again. The waiting turn survives a restart (`threads.scheduled_resume`), can be moved, run now or cancelled, and gives way to any message or harness switch. An archived or settled session is not resumed.
 - **Memory** (workspace setting, OMP): one mnemopi bank per project. OMP turns recall and retain facts. With the bridge on, Claude Code and Codex get `omp_recall` / `omp_retain`. Optionally, each completed CLI turn's final answer is scanned for durable facts. The memory card (Settings) shows counts only and can clear a bank (`GET/DELETE /api/omp-memory/:projectId`).
 
 ---

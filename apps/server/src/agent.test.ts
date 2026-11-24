@@ -1530,7 +1530,8 @@ describe("automatic switch on a usage limit (OM4.6)", () => {
     if (asking?.type !== "agent.choice_requested") throw new Error("no card");
     // Every harness but the limited one, saying why one cannot be picked.
     expect(asking.options).toEqual([
-      { id: "codex", label: "Continue on Codex", provider: "codex", blocker: "Sign in to Codex in Settings" },
+      expect.objectContaining({ id: "wait", provider: "claude", schedule: true }),
+      { id: "codex", label: "Continue on Codex", provider: "codex", pickModel: true, blocker: "Sign in to Codex in Settings" },
       { id: "custom", label: "Continue on an OpenRouter model", provider: "native", pickModel: true, detail: "Billed to the OpenRouter key" },
     ]);
     expect(run.dispatched).toEqual([]);
@@ -1566,6 +1567,86 @@ describe("automatic switch on a usage limit (OM4.6)", () => {
     run.agent.react({ type: "thread.choice_reply", threadId: THREAD, requestId: asking.requestId, optionId: "codex" }, [], principal);
     await settle();
     expect(run.dispatched).toHaveLength(before);
+  });
+
+  const RESUME = "77777777-7777-4777-8777-777777777777";
+  const CARD: DomainEvent = {
+    type: "agent.choice_requested",
+    threadId: THREAD,
+    requestId: "wait-1",
+    kind: "harness_limit",
+    title: "Claude Code hit its usage limit",
+    options: [{ id: "wait", label: "Continue later", provider: "claude", schedule: true }],
+    provider: "claude",
+    message: "Add the retry test",
+    turn: { message: "Add the retry test", model: "claude-opus-5-5", plan: "draft" },
+  };
+  const opened: DomainEvent = { type: "turn.started", threadId: THREAD, turnId: "55555555-5555-4555-8555-555555555555" };
+  const waitFor = (at?: string): Command => ({ type: "thread.choice_reply", threadId: THREAD, requestId: "wait-1", optionId: "wait", ...(at ? { at } : {}) });
+
+  it("records the turn it stopped on the card, for asking again", async () => {
+    const run = limitReactor({}, [], [[owner], [person]]);
+    run.agent.react({ ...ask, model: "claude-opus-5-5" }, [asked], principal);
+    await settled(run);
+    expect(run.appended.flat().find((e) => e.type === "agent.choice_requested")).toMatchObject({
+      turn: { message: "Add the retry test", model: "claude-opus-5-5" },
+    });
+  });
+
+  it("waits until the time the person set, and leaves the card open without one", async () => {
+    const at = new Date(Date.now() + 3_600_000).toISOString();
+    const run = limitReactor({}, [opened, CARD]);
+    run.agent.react(waitFor(), [], principal);
+    await settle();
+    expect(run.appended).toEqual([]);
+    run.agent.react(waitFor(at), [], principal);
+    await settle();
+    expect(run.appended.flat()).toMatchObject([
+      { type: "agent.choice_resolved", optionId: "wait" },
+      // Nothing had been done yet: the message itself goes again, still a plan draft.
+      { type: "thread.resume_scheduled", at, provider: "claude", scheduledBy: USER, turn: { message: "Add the retry test", model: "claude-opus-5-5", plan: "draft" } },
+    ]);
+    expect(run.dispatched).toEqual([]);
+    await run.agent.killAll();
+  });
+
+  it("carries on rather than starting over when the turn had begun its work", async () => {
+    const used: DomainEvent = { type: "agent.tool_use", threadId: THREAD, turnId: "55555555-5555-4555-8555-555555555555", toolUseId: "t", name: "Edit", input: {} } as DomainEvent;
+    const run = limitReactor({}, [opened, used, CARD]);
+    run.agent.react(waitFor(new Date(Date.now() + 3_600_000).toISOString()), [], principal);
+    await settle();
+    expect(run.appended.flat()[1]).toMatchObject({ turn: { message: expect.stringContaining("Carry on"), model: "claude-opus-5-5" } });
+    await run.agent.killAll();
+  });
+
+  /** A reactor whose thread row, at the resume's time, is `row`. */
+  async function due(row: Record<string, unknown>) {
+    const run = limitReactor({});
+    const resume = { resumeId: RESUME, at: new Date().toISOString(), provider: "claude", turn: { message: "Go on", model: "m", effort: "high" }, scheduledBy: USER };
+    const chain: Record<string, unknown> = {};
+    for (const step of ["from", "innerJoin", "where", "orderBy"]) chain[step] = () => chain;
+    chain.limit = () => Promise.resolve([{ status: "error", projectId: PROJECT, archivedAt: null, settleState: null, resume, ...row }]);
+    (run.agent as unknown as { db: unknown }).db = { select: () => chain };
+    const event: DomainEvent = { type: "thread.resume_scheduled", threadId: THREAD, ...resume } as DomainEvent;
+    run.agent.react({ type: "thread.resume_update", threadId: THREAD, resumeId: RESUME, at: resume.at }, [event], principal);
+    for (let i = 0; i < 5; i++) await settle();
+    await run.agent.killAll();
+    return run;
+  }
+
+  it("sends the waiting turn at its time", async () => {
+    const run = await due({});
+    expect(run.dispatched).toEqual([
+      { type: "thread.send", threadId: THREAD, text: "Go on", provider: "claude", model: "m", effort: "high" },
+    ]);
+  });
+
+  it("sends nothing for a replaced, archived or busy session", async () => {
+    expect((await due({ resume: null })).dispatched).toEqual([]);
+    expect((await due({ status: "running" })).dispatched).toEqual([]);
+    const archived = await due({ archivedAt: new Date() });
+    expect(archived.dispatched).toEqual([]);
+    expect(archived.appended.flat()).toMatchObject([{ type: "thread.resume_cancelled", resumeId: RESUME, error: expect.any(String) }]);
   });
 
   it("does not switch back on its own to a harness a limit switched away from", async () => {

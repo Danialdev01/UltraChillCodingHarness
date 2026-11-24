@@ -140,7 +140,7 @@ describe("turn.started", () => {
 
     // The message claims the thread (and names it); the turn moves it on.
     expect(statements.filter((s) => s.table === "threads")).toEqual([
-      { op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything(), agentMessagesPaused: false } },
+      { op: "update", table: "threads", values: { status: "queued", scheduledResume: null, lastActivityAt: expect.anything(), agentMessagesPaused: false } },
       { op: "update", table: "threads", values: { title: "Hello" } },
       { op: "update", table: "threads", values: { status: "running", idleCompactAt: null } },
     ]);
@@ -188,7 +188,7 @@ describe("turn.started", () => {
 describe("thread status", () => {
   it("is claimed by a message, only from idle or error", async () => {
     const statements = await apply([{ type: "user.message", threadId: THREAD, text: "hello" }]);
-    expect(statements[0]).toEqual({ op: "update", table: "threads", values: { status: "queued", lastActivityAt: expect.anything(), agentMessagesPaused: false } });
+    expect(statements[0]).toEqual({ op: "update", table: "threads", values: { status: "queued", scheduledResume: null, lastActivityAt: expect.anything(), agentMessagesPaused: false } });
     const where = rendered(wheres.get(statements[0]!));
     expect(where.sql).toMatch(/"threads"\."id" = \$1 and "threads"\."status" in \(\$2, \$3\)/);
     expect(where.params).toEqual([THREAD, "idle", "error"]);

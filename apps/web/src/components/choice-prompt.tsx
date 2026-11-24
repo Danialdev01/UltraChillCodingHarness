@@ -1,12 +1,16 @@
 "use client"
 
 import * as React from "react"
-import { ArrowRightLeftIcon, Loader2Icon, XIcon } from "lucide-react"
+import { ArrowRightLeftIcon, ClockIcon, Loader2Icon, XIcon } from "lucide-react"
 
 import { HarnessIcon } from "@/components/harness-icon"
-import { ModelSelect, useModels } from "@/components/model-picker"
+import { ModelSelect, useModels, type ModelChoice } from "@/components/model-picker"
 import { Button } from "@/components/ui/button"
+import { ResumeTimeField } from "@/components/resume-card"
 import type { ChoicePrompt } from "@/lib/chat-messages"
+import { readLastModel } from "@/lib/model-preference"
+import type { ProviderCard, ProviderId } from "@/lib/providers-api"
+import { formatResume, suggestedResume } from "@/lib/resume-time"
 
 /**
  * A question from the server with fixed answers, above the composer:
@@ -15,31 +19,56 @@ import type { ChoicePrompt } from "@/lib/chat-messages"
  * to compact a big session whose prompt cache ran out before its message
  * goes (`resume_compact`, plan2 §3.7).
  *
- * Each option is a button. One that runs an OpenRouter model asks for the
- * model first, from the catalogue. The card goes when the answer is recorded
+ * Each option is a button. One that carries on elsewhere asks for the model
+ * first, from that harness's list or OpenRouter's catalogue; one that waits
+ * asks for the time. The card goes when the answer is recorded
  * (`agent.choice_resolved`), from this tab or another; "Not now" dismisses
  * it, which for a subagent ends that subagent as failed.
  */
 export function ChoicePromptCard({
   choice,
+  cards,
+  projectId,
   onReply,
 }: {
   choice: ChoicePrompt
-  onReply: (requestId: string, optionId: string, model?: string) => Promise<void>
+  cards: Record<ProviderId, ProviderCard> | null
+  /** Whose remembered models the lists open on. */
+  projectId: string
+  onReply: (requestId: string, optionId: string, picked: { model?: string; at?: string; provider?: ProviderId }) => Promise<void>
 }) {
   const [busy, setBusy] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
-  /** The option waiting on a model pick, and the model picked so far. */
+  /** The option waiting on a model or a time, and the model picked so far, if any. */
   const [picking, setPicking] = React.useState<string | null>(null)
-  const [model, setModel] = React.useState("")
-  const { models, defaultModel } = useModels()
+  const [chosen, setChosen] = React.useState<string | null>(null)
+  const openRouter = useModels()
 
-  const reply = async (optionId: string, chosen?: string) => {
+  const picked = choice.options.find((option) => option.id === picking)
+  const cli = picked?.provider === "claude" || picked?.provider === "codex" ? picked.provider : null
+  const models: ModelChoice[] = cli
+    ? (cards?.[cli]?.models ?? []).map((m) => ({
+        id: m.id,
+        name: m.name,
+        provider: cards?.[cli]?.label ?? cli,
+        contextLength: null,
+        reasoning: false,
+        images: true,
+      }))
+    : openRouter.models
+  const remembered = cli ? readLastModel(`${projectId}:${cli}`) : null
+  const model =
+    chosen ?? (cli ? ((models.find((m) => m.id === remembered) ?? models[0])?.id ?? "") : (openRouter.defaultModel ?? ""))
+
+  const reply = async (optionId: string, answer: { model?: string; at?: string } = {}) => {
     if (busy) return
     setBusy(optionId)
     setError(null)
     try {
-      await onReply(choice.requestId, optionId, chosen)
+      await onReply(choice.requestId, optionId, {
+        ...answer,
+        ...(picked?.provider ? { provider: picked.provider } : {}),
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setBusy(null)
@@ -47,10 +76,10 @@ export function ChoicePromptCard({
     // On success the card leaves the state and this unmounts.
   }
 
-  const pick = (optionId: string, pickModel: boolean | undefined) => {
-    if (!pickModel) return void reply(optionId)
-    setPicking(optionId)
-    if (!model && defaultModel) setModel(defaultModel)
+  const pick = (option: ChoicePrompt["options"][number]) => {
+    if (!option.pickModel && !option.schedule) return void reply(option.id)
+    setPicking(option.id)
+    setChosen(null)
   }
 
   return (
@@ -65,6 +94,7 @@ export function ChoicePromptCard({
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="font-medium">{choice.title}</span>
           {choice.detail && <span className="text-muted-foreground">{choice.detail}</span>}
+          {choice.resetsAt && <span className="text-muted-foreground">The limit resets at {formatResume(choice.resetsAt)}.</span>}
         </div>
       </div>
 
@@ -78,10 +108,12 @@ export function ChoicePromptCard({
             className="h-7 gap-1.5 text-xs"
             disabled={busy !== null || Boolean(option.blocker)}
             title={option.blocker ?? option.detail}
-            onClick={() => pick(option.id, option.pickModel)}
+            onClick={() => pick(option)}
           >
             {busy === option.id ? (
               <Loader2Icon className="animate-spin" />
+            ) : option.schedule ? (
+              <ClockIcon />
             ) : option.provider ? (
               <HarnessIcon harness={option.provider} size={14} />
             ) : null}
@@ -109,20 +141,30 @@ export function ChoicePromptCard({
         </Button>
       </div>
 
-      {picking && (
+      {picked?.schedule && (
+        <ResumeTimeField
+          initial={suggestedResume(choice.resetsAt)}
+          busy={busy !== null}
+          label="Continue then"
+          onSubmit={(at) => void reply(picked.id, { at })}
+        />
+      )}
+
+      {picked?.pickModel && (
         <div className="flex flex-col gap-1.5 @md:flex-row @md:items-center">
-          <span className="text-muted-foreground shrink-0">OpenRouter model:</span>
+          <span className="text-muted-foreground shrink-0">{cli ? `${cards?.[cli]?.label ?? "Harness"} model:` : "OpenRouter model:"}</span>
           <div className="min-w-0 flex-1">
-            <ModelSelect models={models} value={model} onChange={setModel} disabled={busy !== null} />
+            <ModelSelect models={models} value={model} onChange={setChosen} disabled={busy !== null} />
           </div>
           <Button
             type="button"
             size="sm"
             className="h-7 shrink-0 text-xs"
-            disabled={busy !== null || !model}
-            onClick={() => void reply(picking, model)}
+            // A CLI whose list is empty runs on its own default.
+            disabled={busy !== null || (!model && !(cli && cards))}
+            onClick={() => void reply(picked.id, model ? { model } : {})}
           >
-            {busy === picking ? <Loader2Icon className="animate-spin" /> : null}
+            {busy === picked.id ? <Loader2Icon className="animate-spin" /> : null}
             Continue
           </Button>
         </div>

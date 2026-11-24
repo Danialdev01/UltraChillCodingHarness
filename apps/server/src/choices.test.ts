@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountBlocker, limitOptions, type HarnessAvailability } from "./choices.js";
+import { accountBlocker, limitOptions, limitReset, type HarnessAvailability } from "./choices.js";
 
 const harnesses: HarnessAvailability[] = [
   { provider: "claude", label: "Claude Code", usable: true, blocker: null, custom: false },
@@ -31,6 +31,17 @@ describe("limitOptions", () => {
 
   it("offers no accounts when there are none", () => {
     expect(limitOptions(harnesses, "codex").every((o) => !o.profileId)).toBe(true);
+  });
+});
+
+describe("limitReset", () => {
+  const now = Date.parse("2026-11-24T10:00:00Z");
+  it("is the latest reset of the windows that are spent", () => {
+    const session = { usedPercent: 100, resetsAt: "2026-11-24T12:00:00.000Z" };
+    const weekly = { usedPercent: 60, resetsAt: "2026-11-28T12:00:00.000Z" };
+    expect(limitReset([session, weekly], now)).toBe(session.resetsAt);
+    expect(limitReset([session, { ...weekly, usedPercent: 100 }], now)).toBe(weekly.resetsAt);
+    expect(limitReset([weekly], now)).toBeNull();
   });
 });
 

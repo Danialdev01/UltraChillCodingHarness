@@ -20,6 +20,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   ContextReading,
+  ScheduledResume,
   DomainEvent,
   SessionPrefix,
   NoteDoc,
@@ -386,6 +387,8 @@ export const threads = pgTable(
     sessionPrefix: jsonb("session_prefix").$type<SessionPrefix>(),
     /** When an idle compaction is due (plan2 §3.3); re-armed on startup. Null: none scheduled. */
     idleCompactAt: timestamp("idle_compact_at", { withTimezone: true }),
+    /** A turn a usage limit stopped, waiting for its time; re-armed on startup. Null: none. */
+    scheduledResume: jsonb("scheduled_resume").$type<ScheduledResume>(),
     /** "Don't ask again" on the offer to compact a stale session before it resumes (plan2 §3.7). */
     resumeCompactPromptOff: boolean("resume_compact_prompt_off").notNull().default(false),
     /** Who started the thread; whose own subscription a `member` thread bills. */

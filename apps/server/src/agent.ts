@@ -115,7 +115,7 @@ import { accountOpenRouterKey, anonCatalogue, baseUrlFor, parseKeyedModel, type 
 import type { Complete } from "@ucch/agent";
 import type { BrowserManager } from "@ucch/browser";
 import { browserSpec, isBrowserOp, type BrowserProvider, type BrowserResult } from "@ucch/browser/tools";
-import { ChoiceWaiters, accountBlocker, harnessAvailability, harnessLabel, limitOptions, type LimitAccount } from "./choices.js";
+import { ChoiceWaiters, accountBlocker, harnessAvailability, harnessLabel, limitOptions, limitReset, waitOption, type LimitAccount } from "./choices.js";
 import { AgentMessaging, COLLABORATION_GUIDE } from "./agent-messaging.js";
 import { assembleCliInstructions, planSessionPrefix } from "./cli-instructions.js";
 export { ompInstructions } from "./cli-instructions.js";
@@ -260,7 +260,24 @@ interface TurnOptions {
   images?: readonly MessageImage[] | undefined;
   /** The knowledge bases this message is answered from, and whether the web is allowed too. */
   knowledge?: MessageKnowledge | undefined;
+  /** Nobody is there to answer: a turn a limit stopped, sent at its time. */
+  unattended?: boolean | undefined;
 }
+
+/** A turn that stopped on a usage limit: whose, and when it resets if the CLI said. */
+interface LimitHit {
+  provider: ProviderId;
+  resetsAt: string | null;
+}
+
+/** The session a scheduled resume is sent under. */
+const RESUME_SESSION = "scheduled-resume";
+
+/** What a turn that had begun its work is asked when its limit has reset. */
+const RESUME_MESSAGE = "The usage limit has reset. Carry on with the task from where you left off.";
+
+/** How soon a resume whose thread was busy at its time is tried again. */
+const RESUME_RETRY_MS = 60_000;
 
 /** The account a turn is billed to; see `#owner`. */
 interface TurnOwner {
@@ -399,6 +416,8 @@ export class AgentTurnReactor {
    * (`rearmIdleCompactions`); this is only the timer.
    */
   readonly #idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Scheduled resumes armed, per thread: only the timer, as above (`threads.scheduled_resume`). */
+  readonly #resumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
    * Threads whose prompt someone answered with "Allow All": every later
@@ -649,6 +668,7 @@ export class AgentTurnReactor {
       const answer = {
         optionId: command.optionId === "dismiss" ? null : command.optionId,
         ...(command.model ? { model: command.model } : {}),
+        ...(command.at ? { at: command.at } : {}),
       };
       // A subagent waiting in this process takes it; otherwise it is a
       // card of the thread's own, read back from its log.
@@ -658,6 +678,14 @@ export class AgentTurnReactor {
     }
 
     for (const event of batch) {
+      if (event.type === "thread.resume_scheduled") {
+        this.#armResume(event.threadId, event.resumeId, Date.parse(event.at));
+        continue;
+      }
+      if (event.type === "thread.resume_cancelled") {
+        this.#clearResume(event.threadId);
+        continue;
+      }
       if (event.type === "thread.harness_switch_requested") {
         void this.#switchHarness(event, principal).catch(this.onError);
         continue;
@@ -694,6 +722,7 @@ export class AgentTurnReactor {
           plan: event.plan,
           images: event.images,
           knowledge: sent?.knowledge,
+          unattended: principal?.sessionId === RESUME_SESSION,
         },
         principal,
       ).catch(this.onError);
@@ -807,6 +836,8 @@ export class AgentTurnReactor {
   async killAll(): Promise<void> {
     for (const timer of this.#idleTimers.values()) clearTimeout(timer);
     this.#idleTimers.clear();
+    for (const timer of this.#resumeTimers.values()) clearTimeout(timer);
+    this.#resumeTimers.clear();
     this.messaging?.shutdown();
     this.#subagents?.shutdown();
     await Promise.all([...this.#cliRuns].map((run) => run.kill().catch(() => {})));
@@ -822,7 +853,7 @@ export class AgentTurnReactor {
   async #run(threadId: string, text: string, options: TurnOptions, principal?: Principal): Promise<void> {
     const controller = new AbortController();
     this.#running.set(threadId, controller);
-    let limited: ProviderId | undefined;
+    let limited: LimitHit | undefined;
     try {
       limited = await this.#turn(threadId, text, options, controller);
     } finally {
@@ -832,7 +863,7 @@ export class AgentTurnReactor {
       if (!controller.signal.aborted) setImmediate(() => void this.messaging?.deliver(threadId).catch(this.onError));
     }
     // After the turn has let go of the thread: the handoff claims it anew.
-    if (limited) await this.#handOffOnLimit(threadId, limited, text, principal);
+    if (limited) await this.#handOffOnLimit(threadId, limited, text, options, principal);
     else if (!controller.signal.aborted) {
       const compacting = await this.#handOverIfFull(threadId, principal).catch((error: unknown) => {
         this.onError(error);
@@ -1046,11 +1077,18 @@ export class AgentTurnReactor {
    *   handoff on (`agent_settings.autoHandoff`) -- once per chain, so a
    *   fallback limited too does not switch back on its own;
    * - otherwise on whichever the person picks from a card in the chat
-   *   (`agent.choice_requested`, answered in `#answerLimitCard`).
+   *   (`agent.choice_requested`, answered in `#answerLimitCard`) -- or on
+   *   the same one, at a time they set (`thread.resume_scheduled`).
    *
    * A subagent's session asks its parent instead (`SubagentRunner`).
    */
-  async #handOffOnLimit(threadId: string, provider: ProviderId, text: string, principal: Principal | undefined): Promise<void> {
+  async #handOffOnLimit(
+    threadId: string,
+    { provider, resetsAt }: LimitHit,
+    text: string,
+    asked: TurnOptions,
+    principal: Principal | undefined,
+  ): Promise<void> {
     const dispatch = this.options.dispatch;
     if (!dispatch || !principal) return;
     const [row] = await this.db
@@ -1095,14 +1133,20 @@ export class AgentTurnReactor {
       credentialSource: row.credentialSource ?? null,
     });
     if (!owner) return;
+    // The person is asked whatever else fails: waiting is always an answer.
     const options = limitOptions(
-      await this.#harnesses(owner.id),
+      await this.#harnesses(owner.id).catch((error: unknown) => {
+        this.onError(error);
+        return [];
+      }),
       provider,
       await this.#otherAccounts(row.projectId, owner, threadId, provider).catch((error: unknown) => {
         this.onError(error);
         return [];
       }),
     );
+    const reset = await this.#resetOf(row.projectId, owner, threadId, provider, resetsAt);
+    const { model, effort, mode, plan, images, subagentId, knowledge } = asked;
     const events: DomainEvent[] = [
       {
         type: "agent.choice_requested",
@@ -1110,13 +1154,118 @@ export class AgentTurnReactor {
         requestId: randomUUID(),
         kind: "harness_limit",
         title: `${harnessLabel(provider)} hit its usage limit`,
-        detail: "Carry this session on with another harness. The work so far goes over as a brief, and your last message is sent again.",
-        options,
+        detail:
+          "Pick another harness and model to carry on with: the work so far goes over as a brief, and your last message is sent again. Or set a time to continue here.",
+        options: [waitOption(provider), ...options].slice(0, 12),
         provider,
         message: text,
+        ...(reset ? { resetsAt: reset } : {}),
+        turn: {
+          message: text,
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
+          ...(mode ? { mode } : {}),
+          ...(plan ? { plan } : {}),
+          ...(images?.length ? { images: [...images] } : {}),
+          ...(subagentId ? { subagentId } : {}),
+          ...(knowledge ? { knowledge } : {}),
+        },
       },
     ];
     await this.store.append({ projectId: row.projectId, threadId }, events, (tx) => applyProjection(tx, events, null));
+  }
+
+  /** When the limit resets: the CLI's own word in the turn, else its usage meters'. */
+  async #resetOf(projectId: string, owner: TurnOwner, threadId: string, provider: ProviderId, said: string | null): Promise<string | null> {
+    const at = said ? Date.parse(said) : NaN;
+    if (at > Date.now()) return new Date(at).toISOString();
+    const quotas = this.options.providers?.quotas;
+    if (!quotas || (provider !== "claude" && provider !== "codex")) return null;
+    try {
+      const [thread] = await this.db.select({ profileId: threads.profileId }).from(threads).where(eq(threads.id, threadId)).limit(1);
+      const quota = await quotas.get(owner.id, provider, await this.#profileFor(projectId, owner, thread?.profileId, provider));
+      return quota.status === "ok" ? limitReset(quota.windows) : null;
+    } catch (error) {
+      this.onError(error);
+      return null;
+    }
+  }
+
+  #armResume(threadId: string, resumeId: string, at: number): void {
+    this.#clearResume(threadId);
+    const timer = setTimeout(() => {
+      this.#resumeTimers.delete(threadId);
+      void this.#resumeDue(threadId, resumeId).catch(this.onError);
+    }, Math.max(0, at - Date.now()));
+    timer.unref?.();
+    this.#resumeTimers.set(threadId, timer);
+  }
+
+  #clearResume(threadId: string): void {
+    const timer = this.#resumeTimers.get(threadId);
+    if (timer) clearTimeout(timer);
+    this.#resumeTimers.delete(threadId);
+  }
+
+  /** Arms every resume a restart dropped. One due meanwhile is sent now: the limit has reset all the same. */
+  async rearmResumes(): Promise<number> {
+    const rows = await this.db
+      .select({ id: threads.id, resume: threads.scheduledResume })
+      .from(threads)
+      .where(isNotNull(threads.scheduledResume));
+    for (const row of rows) if (row.resume) this.#armResume(row.id, row.resume.resumeId, Date.parse(row.resume.at));
+    return rows.length;
+  }
+
+  /**
+   * A scheduled resume's moment: its turn, sent as whoever scheduled it --
+   * who must still be allowed to. One overtaken by a turn, a switch or
+   * another time is gone from the thread. One that cannot be sent says why.
+   */
+  async #resumeDue(threadId: string, resumeId: string): Promise<void> {
+    const dispatch = this.options.dispatch;
+    const [row] = await this.db
+      .select({
+        status: threads.status,
+        projectId: threads.projectId,
+        archivedAt: threads.archivedAt,
+        settleState: threads.settleState,
+        resume: threads.scheduledResume,
+      })
+      .from(threads)
+      .where(eq(threads.id, threadId))
+      .limit(1);
+    const resume = row?.resume;
+    if (!dispatch || !resume || resume.resumeId !== resumeId) return;
+    const cancel = (error?: string) => {
+      const events: DomainEvent[] = [
+        { type: "thread.resume_cancelled", threadId, resumeId, ...(error ? { error: error.slice(0, 2_000) } : {}) },
+      ];
+      return this.store.append({ projectId: row.projectId, threadId }, events, (tx) => applyProjection(tx, events, null));
+    };
+    // Put away since: sending would bring it back.
+    if (row.archivedAt || row.settleState) {
+      await cancel("the session was archived or settled");
+      return;
+    }
+    // A compaction, or a message about to open its turn (which overtakes this).
+    if (row.status !== "idle" && row.status !== "error") {
+      this.#armResume(threadId, resumeId, Date.now() + RESUME_RETRY_MS);
+      return;
+    }
+    const { message, effort, ...turn } = resume.turn;
+    const result = await dispatch(
+      { userId: resume.scheduledBy, sessionId: RESUME_SESSION, scopes: ["exec"], internal: true },
+      {
+        type: "thread.send",
+        threadId,
+        text: message,
+        provider: resume.provider,
+        ...turn,
+        ...(effort && isEffort(effort) ? { effort } : {}),
+      },
+    );
+    if (!result.ok) await cancel(result.message);
   }
 
   /**
@@ -1153,7 +1302,7 @@ export class AgentTurnReactor {
   async #answerLimitCard(
     threadId: string,
     requestId: string,
-    answer: { optionId: string | null; model?: string },
+    answer: { optionId: string | null; model?: string; at?: string },
     principal: Principal | undefined,
   ): Promise<void> {
     const dispatch = this.options.dispatch;
@@ -1176,11 +1325,35 @@ export class AgentTurnReactor {
       }
     }
     if (!request || !projectId || request.kind !== "harness_limit") return;
+    const option = answer.optionId ? request.options.find((candidate) => candidate.id === answer.optionId) : undefined;
+    const at = option?.schedule ? (answer.at ?? request.resetsAt) : undefined;
+    // The card stays open: without a time there is nothing to wait for.
+    if (option?.schedule && !at) return;
     const resolved: DomainEvent[] = [
       { type: "agent.choice_resolved", threadId, requestId, optionId: answer.optionId, ...(answer.model ? { model: answer.model } : {}) },
     ];
+    if (at && option?.provider) {
+      const turn = request.turn ?? { message: request.message ?? RESUME_MESSAGE };
+      // A turn that had begun is resumed, not asked over: its harness has
+      // the conversation. One refused before it did anything is sent again.
+      const opened = history.findLastIndex(({ event }) => event.type === "turn.started");
+      const worked = history.slice(opened + 1).some(({ event }) => event.type === "agent.tool_use");
+      const { images: _images, ...again } = turn;
+      const scheduled: Extract<DomainEvent, { type: "thread.resume_scheduled" }> = {
+        type: "thread.resume_scheduled",
+        threadId,
+        resumeId: randomUUID(),
+        at,
+        provider: option.provider,
+        turn: worked ? { ...again, message: RESUME_MESSAGE } : turn,
+        scheduledBy: principal.userId,
+      };
+      resolved.push(scheduled);
+      await this.store.append({ projectId, threadId }, resolved, (tx) => applyProjection(tx, resolved, null));
+      this.#armResume(threadId, scheduled.resumeId, Date.parse(at));
+      return;
+    }
     await this.store.append({ projectId, threadId }, resolved, (tx) => applyProjection(tx, resolved, null));
-    const option = answer.optionId ? request.options.find((candidate) => candidate.id === answer.optionId) : undefined;
     if (!option?.provider) return;
     const result = await dispatch(principal, {
       type: "thread.switch_harness",
@@ -1200,14 +1373,15 @@ export class AgentTurnReactor {
   async #turn(
     threadId: string,
     text: string,
-    { model, effort, provider: requestedProvider, mode, plan, subagentId, subagentHandle, images, knowledge }: TurnOptions,
+    { model, effort, provider: requestedProvider, mode, plan, subagentId, subagentHandle, images, knowledge, unattended }: TurnOptions,
     controller: AbortController,
-  ): Promise<ProviderId | undefined> {
+  ): Promise<LimitHit | undefined> {
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
     // Nothing to release: the thread, and its status, went with it.
     if (!thread) return;
     // A message came first: an idle compaction armed for it is overtaken.
     this.#clearIdle(threadId);
+    this.#clearResume(threadId);
 
     // Until `turn.started`, the thread is `queued` and refuses every other
     // message: each way out before it says so, or the thread stays stuck.
@@ -1575,7 +1749,7 @@ export class AgentTurnReactor {
         if (resumeToken && !subagentId && !thread.parentThreadId && (provider === "claude" || provider === "codex")) {
           const reading = thread.contextReading?.harness === provider ? thread.contextReading : null;
           let compactFirst = false;
-          if (provider === "claude" && !thread.resumeCompactPromptOff && offerCompactOnResume(reading, Date.now())) {
+          if (provider === "claude" && !unattended && !thread.resumeCompactPromptOff && offerCompactOnResume(reading, Date.now())) {
             compactFirst = (await this.#askCompactOnResume(threadId, reading!, controller.signal, append)) === "compact";
           }
           const files = Math.max(0, (images?.length ?? 0) - pictures.length);
@@ -1639,7 +1813,7 @@ export class AgentTurnReactor {
           session,
         });
         // A plan's usage limit (Claude Code, Codex) or the OpenRouter key's (OMP).
-        return limited ? provider : undefined;
+        return limited ? { provider, resetsAt: limitResetsAt } : undefined;
       }
 
       const resolvedModel = resolveModel(model, owner.defaultModel, this.options.defaultModel);
@@ -1751,7 +1925,7 @@ export class AgentTurnReactor {
       // conversation up, and a failure here is never the turn's.
       void this.#recheckStack(thread.projectId, workspace).catch(this.onError);
     }
-    return limited ? runsOn : undefined;
+    return limited ? { provider: runsOn, resetsAt: limitResetsAt } : undefined;
   }
 
   /**

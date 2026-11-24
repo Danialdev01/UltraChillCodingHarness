@@ -937,6 +937,19 @@ describe("thread.switch_harness", () => {
   });
 });
 
+describe("thread.resume_update", () => {
+  const resume = { resumeId: "77777777-7777-4777-8777-777777777777", at: "2026-01-01T00:00:00.000Z", provider: "claude" as const, turn: { message: "Go on" }, scheduledBy: "88888888-8888-4888-8888-888888888888" };
+  const update = (at: string | null): Command => ({ type: "thread.resume_update", threadId: THREAD, resumeId: resume.resumeId, at });
+  const state = { project: project(), thread: thread({ scheduledResume: resume }) };
+  it("cancels, moves, and refuses what is gone or too far off", () => {
+    expect(run(state, update(null))).toMatchObject({ ok: true, events: [{ type: "thread.resume_cancelled", resumeId: resume.resumeId }] });
+    const at = ctx.now.toISOString();
+    expect(run(state, update(at))).toMatchObject({ ok: true, events: [{ type: "thread.resume_scheduled", at, resumeId: NEW_ID, turn: resume.turn, scheduledBy: ctx.userId }] });
+    expect(run(state, update(new Date(ctx.now.getTime() + 15 * 86_400_000).toISOString()))).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(run({ project: project(), thread: thread() }, update(null))).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+});
+
 describe("thread.create for a subagent", () => {
   const create: Command = { type: "thread.create", projectId: PROJECT, title: "Research", parentThreadId: THREAD };
 

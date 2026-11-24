@@ -345,7 +345,7 @@ export class SubagentRunner {
           await finish(childSignal.aborted ? "aborted" : "failed", why);
           return { error: why };
         }
-        if (picked.pickModel && !answer.model) {
+        if (picked.id === "custom" && !answer.model) {
           await finish("failed", "no model was picked to carry the subagent on");
           return { error: "no model was picked to carry the subagent on" };
         }

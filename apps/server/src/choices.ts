@@ -5,6 +5,8 @@ import type { ProviderCard } from "./providers.js";
 export interface ChoiceAnswer {
   optionId: string | null;
   model?: string | undefined;
+  /** When to carry on, for the option that waits. */
+  at?: string | undefined;
 }
 
 /**
@@ -86,8 +88,8 @@ export function harnessAvailability(
 
 /**
  * The options of a limit card: every harness but the one that hit its
- * limit, each with why it cannot be picked when it cannot. The Custom one
- * asks for an OpenRouter model.
+ * limit, each with why it cannot be picked when it cannot. Each asks for
+ * the model to carry on with.
  */
 export function limitOptions(
   harnesses: readonly HarnessAvailability[],
@@ -101,7 +103,8 @@ export function limitOptions(
       id: harness.custom ? "custom" : harness.provider,
       label: harness.custom ? "Continue on an OpenRouter model" : `Continue on ${harness.label}`,
       provider: harness.provider,
-      ...(harness.custom ? { pickModel: true, detail: "Billed to the OpenRouter key" } : {}),
+      pickModel: true,
+      ...(harness.custom ? { detail: "Billed to the OpenRouter key" } : {}),
       ...(harness.blocker ? { blocker: harness.blocker } : {}),
     }));
   // The person's other accounts of the limited provider: offered, never
@@ -112,10 +115,31 @@ export function limitOptions(
     label: `Continue on another ${harnessLabel(limited)} account: ${account.label}`,
     provider: limited,
     profileId: account.id,
+    pickModel: true,
     detail: "Plan limits assume individual use",
     ...(account.blocker ? { blocker: account.blocker } : {}),
   }));
   return [...others, ...sameProvider];
+}
+
+/** The limit card's other answer: wait, then carry on with the same harness and account. */
+export function waitOption(provider: ProviderId): ChoiceOption {
+  return {
+    id: "wait",
+    label: `Continue on ${harnessLabel(provider)} later`,
+    provider,
+    schedule: true,
+    detail: "Same account and conversation, at a time you set",
+  };
+}
+
+/**
+ * When a spent plan has room again: the latest reset among the windows that
+ * are used up, since every one of them has to have room. Null when unknown.
+ */
+export function limitReset(windows: readonly { usedPercent: number; resetsAt: string | null }[], now = Date.now()): string | null {
+  const resets = windows.filter((w) => w.usedPercent >= 99 && w.resetsAt && Date.parse(w.resetsAt) > now).map((w) => Date.parse(w.resetsAt!));
+  return resets.length > 0 ? new Date(Math.max(...resets)).toISOString() : null;
 }
 
 /** Another account of the limited provider, for its limit card. */

@@ -322,8 +322,8 @@ const ThreadSwitchHarness = z.object({
 
 /**
  * The person's answer to an `agent.choice_requested` card: one of its
- * options by id, or `dismiss`. `model` is the OpenRouter model picked for
- * an option that takes one (`allowCustomModel`).
+ * options by id, or `dismiss`. `model` is the model picked for an option
+ * that takes one (`pickModel`); `at` the time for one that waits (`schedule`).
  */
 const ThreadChoiceReply = z.object({
   type: z.literal("thread.choice_reply"),
@@ -331,6 +331,15 @@ const ThreadChoiceReply = z.object({
   requestId: z.string().min(1).max(100),
   optionId: z.string().min(1).max(100),
   model: z.string().min(1).max(200).optional(),
+  at: z.string().datetime().optional(),
+});
+
+/** Moves a thread's scheduled resume to another time (now, when `at` is past), or with null cancels it. */
+const ThreadResumeUpdate = z.object({
+  type: z.literal("thread.resume_update"),
+  threadId: z.string().uuid(),
+  resumeId: z.string().uuid(),
+  at: z.string().datetime().nullable(),
 });
 
 const TerminalCreate = z.object({
@@ -474,6 +483,7 @@ export const Command = z.discriminatedUnion("type", [
   ThreadHandoffTo,
   ThreadSwitchHarness,
   ThreadChoiceReply,
+  ThreadResumeUpdate,
   TerminalCreate,
   TerminalInput,
   TerminalResize,

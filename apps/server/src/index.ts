@@ -964,6 +964,11 @@ async function auditCommand(
         optionId: command.optionId,
       });
       break;
+    case "thread.resume_update":
+      entry = thread("chat.resume", command.at === null ? "Cancelled the scheduled continue" : "Changed when the session continues", {
+        ...(command.at ? { at: command.at } : {}),
+      });
+      break;
     case "terminal.create":
       entry = { ...base, action: "terminal.open", targetType: "terminal", targetId: command.terminalId, summary: "Opened a terminal" };
       break;
@@ -1195,6 +1200,13 @@ void agentTurns
     if (armed > 0) app.log.info({ threads: armed }, "re-armed idle compactions");
   })
   .catch((error: unknown) => app.log.error({ err: error }, "re-arming idle compactions failed"));
+// Sessions waiting for a usage limit to reset: one due meanwhile goes now.
+void agentTurns
+  .rearmResumes()
+  .then((armed) => {
+    if (armed > 0) app.log.info({ threads: armed }, "re-armed scheduled resumes");
+  })
+  .catch((error: unknown) => app.log.error({ err: error }, "re-arming scheduled resumes failed"));
 if (dequeued.length > 0) {
   app.log.warn({ threads: dequeued.length }, "released threads left queued by a previous process");
 }

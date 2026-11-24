@@ -7,6 +7,7 @@ import type {
   DomainEvent,
   Membership,
   ProviderId,
+  ScheduledResume,
   WorkspacePermission,
 } from "@ucch/protocol";
 
@@ -80,6 +81,7 @@ export interface ThreadSnapshot {
   /** The CLI session its next turn resumes; null when it has none (yet, or since a clear). */
   providerSessionId?: string | null;
   hasActiveChildren?: boolean;
+  scheduledResume?: ScheduledResume | null;
 }
 
 export interface TurnSnapshot {
@@ -659,7 +661,24 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       // Whether the card is still open is the reactor's to know: it holds
       // the open ones (a subagent's) or reads them from the log. What the
       // answer picks is recorded there, once it is acted on.
-      return ok([]);
+      const refused = command.at ? resumeTimeRefusal(command.at, ctx.now) : null;
+      return refused ?? ok([]);
+    }
+
+    case "thread.resume_update": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      const resume = thread.value.scheduledResume;
+      // Sent, cancelled or replaced since the caller last looked.
+      if (!resume || resume.resumeId !== command.resumeId) return fail("conflict", "this session is not waiting to continue any more");
+      if (command.at === null) {
+        return ok([{ type: "thread.resume_cancelled", threadId: thread.value.id, resumeId: resume.resumeId }]);
+      }
+      const refused = resumeTimeRefusal(command.at, ctx.now);
+      if (refused) return refused;
+      return ok([
+        { type: "thread.resume_scheduled", threadId: thread.value.id, ...resume, resumeId: ctx.newId(), at: command.at, scheduledBy: ctx.userId },
+      ]);
     }
 
     // -- Terminals -----------------------------------------------------------
@@ -846,6 +865,13 @@ function profileRefusal(
     return fail("forbidden", `this project runs only on ${required} accounts, and that one is tagged ${profile.context}`);
   }
   return null;
+}
+
+/** How far ahead a session may be told to wait: past a weekly limit, and within a timer's reach. */
+const MAX_RESUME_MS = 14 * 24 * 60 * 60_000;
+
+function resumeTimeRefusal(at: string, now: Date): Decision | null {
+  return Date.parse(at) - now.getTime() > MAX_RESUME_MS ? fail("invalid", "pick a time within the next 14 days") : null;
 }
 
 function worktreeRefusal(thread: ThreadSnapshot): Decision | null {

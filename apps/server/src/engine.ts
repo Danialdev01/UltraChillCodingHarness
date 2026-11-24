@@ -265,6 +265,7 @@ export class OrchestrationEngine {
           profileId: row.profileId,
           createdByUserId: row.createdByUserId,
           providerSessionId: row.providerSessionId,
+          scheduledResume: row.scheduledResume,
           hasActiveChildren: command.type === "thread.cancel" && (await this.db.select({ id: agentRuns.id }).from(agentRuns).where(and(eq(agentRuns.parentThreadId, row.id), eq(agentRuns.status, "running"))).limit(1)).length > 0,
         };
       }
@@ -535,7 +536,7 @@ export async function applyProjection(
         // `turn.started` moves it on to `running`, `turn.dequeued` back.
         const claimed = await tx
           .update(threads)
-          .set({ status: "queued", lastActivityAt: sql`now()`, ...(!event.agentMessageIds ? { agentMessagesPaused: false } : {}) })
+          .set({ status: "queued", scheduledResume: null, lastActivityAt: sql`now()`, ...(!event.agentMessageIds ? { agentMessagesPaused: false } : {}) })
           .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["idle", "error"])))
           .returning({ id: threads.id });
         if (claimed.length === 0) throw new ProjectionConflict("this thread already has a turn in progress");
@@ -675,6 +676,7 @@ export async function applyProjection(
             contextReading: null,
             sessionPrefix: null,
             idleCompactAt: null,
+            scheduledResume: null,
             // Events from before accounts leave the binding as it was.
             ...(event.toProfileId !== undefined ? { profileId: existingProfile(event.toProfileId) } : {}),
           })
@@ -683,6 +685,25 @@ export async function applyProjection(
           .update(threads)
           .set({ status: "idle" })
           .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["running", "cancelling"])));
+        break;
+
+      case "thread.resume_scheduled": {
+        const { type: _type, threadId: _thread, ...resume } = event;
+        // Only on a thread at rest: a message sent since has overtaken it.
+        const claimed = await tx
+          .update(threads)
+          .set({ scheduledResume: resume })
+          .where(and(eq(threads.id, event.threadId), inArray(threads.status, ["idle", "error"])))
+          .returning({ id: threads.id });
+        if (claimed.length === 0) throw new ProjectionConflict("this thread is busy");
+        break;
+      }
+
+      case "thread.resume_cancelled":
+        await tx
+          .update(threads)
+          .set({ scheduledResume: null })
+          .where(and(eq(threads.id, event.threadId), sql`${threads.scheduledResume} ->> 'resumeId' = ${event.resumeId}`));
         break;
 
       case "thread.harness_switch_failed":

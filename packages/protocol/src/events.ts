@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ProjectDatabase } from "./database.js";
 import { FileDiff } from "./file-diff.js";
+import { MessageKnowledge } from "./knowledge.js";
 import { BranchName, PreviewHash, ProjectHash, ThreadHash } from "./ids.js";
 import { PROJECT_MODES } from "./plain.js";
 import type { ProjectTask } from "./tasks.js";
@@ -715,14 +716,59 @@ export const ChoiceOption = z.object({
   detail: z.string().optional(),
   provider: ProviderId.optional(),
   model: z.string().optional(),
-  /** Picking it asks for an OpenRouter model first. */
+  /** Picking it asks for a model first: the provider's own list, or OpenRouter's for Custom. */
   pickModel: z.boolean().optional(),
+  /** Picking it asks for a time: the session waits, and carries on as it is. */
+  schedule: z.boolean().optional(),
   /** Why it cannot be picked now: not signed in, no key, … */
   blocker: z.string().optional(),
   /** Another subscription account of `provider` to carry on as. */
   profileId: z.string().uuid().optional(),
 });
 export type ChoiceOption = z.infer<typeof ChoiceOption>;
+
+/** A turn as it was asked for, kept so that it can be asked again after a limit resets. */
+export const ResumeTurn = z.object({
+  message: z.string().min(1),
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  mode: MessageMode.optional(),
+  plan: PlanStage.optional(),
+  images: z.array(MessageImage).max(8).optional(),
+  subagentId: z.string().optional(),
+  knowledge: MessageKnowledge.optional(),
+});
+export type ResumeTurn = z.infer<typeof ResumeTurn>;
+
+/** A turn waiting for its time, as the thread keeps it (`threads.scheduled_resume`). */
+export const ScheduledResume = z.object({
+  resumeId: z.string().uuid(),
+  /** When it is sent. */
+  at: z.string().datetime(),
+  provider: ProviderId,
+  turn: ResumeTurn,
+  /** Who asked for it: it is sent as them. */
+  scheduledBy: z.string().uuid(),
+});
+export type ScheduledResume = z.infer<typeof ScheduledResume>;
+
+/**
+ * The session waits for `at`, then carries on with the same harness and
+ * account. A second one replaces the first; a message and a harness
+ * switch overtake it.
+ */
+const ThreadResumeScheduled = ScheduledResume.extend({
+  type: z.literal("thread.resume_scheduled"),
+  threadId: z.string().uuid(),
+});
+
+/** The scheduled turn will not be sent: cancelled, or (with `error`) refused at its time. */
+const ThreadResumeCancelled = z.object({
+  type: z.literal("thread.resume_cancelled"),
+  threadId: z.string().uuid(),
+  resumeId: z.string().uuid(),
+  error: z.string().max(2_000).optional(),
+});
 
 const AgentChoiceRequested = z.object({
   type: z.literal("agent.choice_requested"),
@@ -739,6 +785,9 @@ const AgentChoiceRequested = z.object({
   /** `harness_limit`: the provider that hit its limit, and the message it stopped. */
   provider: ProviderId.optional(),
   message: z.string().optional(),
+  /** `harness_limit`: when the limit resets, if the CLI said; and the turn it stopped. */
+  resetsAt: z.string().datetime().optional(),
+  turn: ResumeTurn.optional(),
 });
 
 const AgentChoiceResolved = z.object({
@@ -1472,6 +1521,8 @@ export const DomainEvent = z.discriminatedUnion("type", [
   ThreadHarnessSwitchRequested,
   ThreadHarnessSwitched,
   ThreadHarnessSwitchFailed,
+  ThreadResumeScheduled,
+  ThreadResumeCancelled,
   TurnDequeued,
   AgentQueued,
   ContextInjected,

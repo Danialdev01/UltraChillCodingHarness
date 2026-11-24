@@ -1067,6 +1067,15 @@ describe("choice cards", () => {
     expect(toMessages([ev(card), ev({ type: "agent.choice_resolved", threadId: THREAD, requestId: "r1", optionId: "codex" })]).choices).toEqual([]);
   });
 
+  it("shows the time a session waits for until it is cancelled or a message goes", () => {
+    const resume = { resumeId: "77777777-7777-4777-8777-777777777777", at: "2026-11-24T12:01:00.000Z", provider: "claude", turn: { message: "Add the test" }, scheduledBy: THREAD } as const;
+    const scheduled: DomainEvent = { type: "thread.resume_scheduled", threadId: THREAD, ...resume };
+    expect(toMessages([ev(scheduled)]).scheduledResume).toEqual(resume);
+    expect(toMessages([ev(scheduled), ev({ type: "user.message", threadId: THREAD, text: "hi" })]).scheduledResume).toBeNull();
+    const refused = toMessages([ev(scheduled), ev({ type: "thread.resume_cancelled", threadId: THREAD, resumeId: resume.resumeId, error: "busy" })]);
+    expect(refused).toMatchObject({ scheduledResume: null, compactionError: "The session did not continue: busy" });
+  });
+
   it("closes the thread's own card when a new turn overtakes it, but not a subagent's", () => {
     const subagent: DomainEvent = { ...card, requestId: "r2", kind: "subagent_limit", childThreadId: "66666666-6666-4666-8666-666666666666" } as DomainEvent;
     const state = toMessages([ev(card), ev(subagent), ev({ type: "turn.started", threadId: THREAD, turnId: TURN })]);
