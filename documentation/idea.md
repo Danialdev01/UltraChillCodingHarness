@@ -12,8 +12,6 @@
 - - add monitoring section for monitor system vps or website statistics.
   - add monitoring for the ai agents, if the server usage is too high then the AI agents will be in standby or queue mode to avoid server crashing.
 
-- create a default queue for ai model based on limit. priority choice 
-
 ## UI UX
 
 - create view for proper git tree managment view. I want the ability for the person to review changes, comment changes, merge changes, review pr and more.
@@ -43,7 +41,7 @@
 
 ### Fix
 
-- add select model and harness to continue using other ai model if the primary model hit their limit. or set time to run and continue the task using the same subscription.
+<!-- - make sure to ask the user to select model and harness to continue using other ai model if the primary model hit their limit. or set time to run and continue the task using the same subscription. -->
 - Fix the terminal agent chat section
   - add ai model select and proper close and open agent tab.
   - manage agent session context window
