@@ -192,16 +192,19 @@ export class WebProxy {
     const path = normalize(join(root, relative));
     if (!path.startsWith(root + sep)) return notFound(res);
     try {
-      const info = await stat(path);
-      if (!info.isFile()) return notFound(res);
+      const raw = await stat(path);
+      if (!raw.isFile()) return notFound(res);
+      const copy = await precompressed(path, req.headers["accept-encoding"]);
       res.writeHead(200, {
         "content-type": TYPES[extname(path).toLowerCase()] ?? "application/octet-stream",
-        "content-length": info.size,
+        "content-length": copy?.size ?? raw.size,
+        ...(copy ? { "content-encoding": copy.encoding } : {}),
+        vary: "accept-encoding",
         "cache-control": IMMUTABLE,
         "x-content-type-options": "nosniff",
       });
       if (req.method === "HEAD") return void res.end();
-      createReadStream(path)
+      createReadStream(copy?.path ?? path)
         .on("error", () => res.destroy())
         .pipe(res);
     } catch {
@@ -286,3 +289,31 @@ self.addEventListener("activate", (event) => {
 const UNAVAILABLE = `<!doctype html><meta charset="utf-8"><title>Starting up</title>
 <meta http-equiv="refresh" content="3">
 <body style="font:16px system-ui;padding:3rem;color:#444">UCCH is starting up. This page will retry in a moment.</body>`;
+
+/** The copies the build may leave beside a file (apps/web/scripts/precompress.mjs), best first. */
+const COPIES = [
+  ["br", ".br"],
+  ["gzip", ".gz"],
+] as const;
+
+async function precompressed(path: string, accept: string | string[] | undefined) {
+  for (const [encoding, suffix] of COPIES) {
+    if (!accepts(accept, encoding)) continue;
+    const info = await stat(path + suffix).catch(() => null);
+    if (info?.isFile()) return { encoding, path: path + suffix, size: info.size };
+  }
+  return null;
+}
+
+/** Whether `Accept-Encoding` allows a coding: by name, or else by `*`, and not at `q=0`. */
+function accepts(header: string | string[] | undefined, encoding: string): boolean {
+  let any = false;
+  for (const part of String(header ?? "").toLowerCase().split(",")) {
+    const [name, ...params] = part.split(";").map((piece) => piece.trim());
+    const q = params.find((param) => param.startsWith("q="));
+    const wanted = q === undefined || Number(q.slice(2)) > 0;
+    if (name === encoding) return wanted;
+    if (name === "*") any = wanted;
+  }
+  return any;
+}

@@ -20,7 +20,7 @@ import type { KnowledgeDocumentSummary } from "@ucch/protocol"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { FileTypeIcon } from "@/components/file-type-icon"
-import { KnowledgeBaseDialog } from "@/components/knowledge/knowledge-base-dialog"
+import { KnowledgeBaseDialog } from "@/components/on-demand"
 import { KnowledgeGraphView } from "@/components/knowledge/knowledge-graph-view"
 import { EmptyState } from "@/components/layout/empty-state"
 import { PageContainer, PageHeading } from "@/components/layout/page-container"

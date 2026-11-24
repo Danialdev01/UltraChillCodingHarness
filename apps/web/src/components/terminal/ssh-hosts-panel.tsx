@@ -13,7 +13,7 @@ import {
 import type { SshHostSummary } from "@ucch/protocol"
 
 import { ConfirmDialog } from "@/components/confirm-dialog"
-import { SshHostDialog } from "@/components/terminal/ssh-host-dialog"
+import { SshHostDialog } from "@/components/on-demand"
 import {
   DropdownMenu,
   DropdownMenuContent,

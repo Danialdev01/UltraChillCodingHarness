@@ -78,7 +78,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN id="${BUILD_ID:-$(date -u +%Y%m%d%H%M%S)}" \
   && printf '%s' "$id" > /app/build-id \
   && cd apps/web && mkdir -p public \
-  && NEXT_PUBLIC_BUILD_ID="$id" pnpm exec next build --webpack
+  && NEXT_PUBLIC_BUILD_ID="$id" pnpm exec next build --webpack \
+  && node scripts/precompress.mjs .next/static
 # The file-tree icons are read off disk at run time, so the standalone trace
 # only has them through next.config.ts's outputFileTracingIncludes; without
 # them every icon request is a 500. Fail the build rather than ship that.
@@ -102,7 +103,7 @@ COPY apps/server ./apps/server
 RUN cd apps/server && node build.mjs
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @ucch/server --prod deploy --legacy --store-dir /pnpm/store /out/server \
-  && rm -rf /out/server/src \
+  && rm -rf /out/server/src /out/server/dist \
   && cp -r apps/server/dist /out/server/dist \
   && cp -r packages/db/migrations /out/server/migrations \
   && cp -r packages/agent/doc-kit /out/server/doc-kit

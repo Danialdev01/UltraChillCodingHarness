@@ -113,6 +113,30 @@ describe("WebProxy", () => {
     expect(response.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
   });
 
+  it.each([
+    ["gzip, deflate, br, zstd", "br", "BR"],
+    ["gzip", "gzip", "GZ"],
+    ["br;q=0, gzip;q=0.5", "gzip", "GZ"],
+    ["*", "br", "BR"],
+    ["*, br;q=0", "gzip", "GZ"],
+    ["identity", undefined, "console.log(1)"],
+    ["", undefined, "console.log(1)"],
+  ])("serves the copy the browser can read: %s", async (accept, encoding, body) => {
+    await writeFile(join(staticDir, "chunks", "app.js.br"), "BR");
+    await writeFile(join(staticDir, "chunks", "app.js.gz"), "GZ");
+    const got = await new Promise<{ headers: Record<string, unknown>; body: string }>((resolve, reject) => {
+      request({ port: port(edge), host: "127.0.0.1", path: "/_next/static/chunks/app.js", agent: false, headers: { "accept-encoding": accept } }, (res) => {
+        let text = "";
+        res.on("data", (chunk) => (text += chunk)).on("end", () => resolve({ headers: res.headers, body: text }));
+      }).on("error", reject).end();
+    });
+    expect(got.body).toBe(body);
+    expect(got.headers["content-encoding"]).toBe(encoding);
+    expect(got.headers["content-length"]).toBe(String(body.length));
+    expect(got.headers["content-type"]).toContain("javascript");
+    expect(got.headers["vary"]).toBe("accept-encoding");
+  });
+
   it("serves the build's static files from disk, cached forever", async () => {
     const response = await get("/_next/static/chunks/app.js");
     expect(response.status).toBe(200);

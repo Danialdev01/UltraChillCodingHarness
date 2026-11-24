@@ -45,7 +45,10 @@ const DATA_LANES = 3
  */
 const CHUNKS: ReadonlyArray<() => Promise<unknown>> = [
   ...ON_DEMAND,
+  () => import("@/lib/highlight-lines"),
+  () => import("@/components/code-editor"),
   () => import("@/components/vim-editor"),
+  () => import("@/components/notes/notes-workspace"),
   () => import("@/components/notes/note-editor-impl"),
   () => import("@/components/git/git-view"),
   () => import("@/components/browser-view"),

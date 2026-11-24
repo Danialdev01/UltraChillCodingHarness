@@ -4,7 +4,7 @@ import * as React from "react"
 import { usePathname } from "next/navigation"
 import { LibraryBigIcon, PlusIcon } from "lucide-react"
 
-import { KnowledgeBaseDialog } from "@/components/knowledge/knowledge-base-dialog"
+import { KnowledgeBaseDialog } from "@/components/on-demand"
 import { TreeRowsSkeleton } from "@/components/page-skeletons"
 import {
   SidebarGroup,

@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@/components/on-demand", () => ({ ON_DEMAND: [] }))
 vi.mock("@/components/prefetch", () => ({ saveData: () => false }))
+vi.mock("@/lib/highlight-lines", () => ({}))
+vi.mock("@/components/code-editor", () => ({}))
+vi.mock("@/components/notes/notes-workspace", () => ({}))
 vi.mock("@/components/vim-editor", () => ({}))
 vi.mock("@/components/notes/note-editor-impl", () => ({}))
 vi.mock("@/components/git/git-view", () => ({}))

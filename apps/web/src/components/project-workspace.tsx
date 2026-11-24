@@ -4,10 +4,9 @@ import * as React from "react"
 import dynamic from "next/dynamic"
 
 import { ChatDock, ChatPortal } from "@/components/chat-dock"
-import { CodeEditor } from "@/components/code-editor"
 import { useCurrentProject, useFilesPanel, type ViewMode } from "@/components/files-panel"
-import { NotesWorkspace, type DocLocation } from "@/components/notes/notes-workspace"
-import { BrowserViewSkeleton } from "@/components/page-skeletons"
+import type { DocLocation } from "@/components/notes/notes-workspace"
+import { BrowserViewSkeleton, CodeLinesSkeleton, NotesSkeleton } from "@/components/page-skeletons"
 import { ProjectChat, type BrowserReference } from "@/components/project-chat"
 import { SessionContextCard } from "@/components/session-context-card"
 import { useProject } from "@/lib/queries/project"
@@ -24,6 +23,19 @@ const TerminalView = dynamic(
 const GitView = dynamic(() => import("@/components/git/git-view").then((m) => m.GitView), {
   ssr: false,
 })
+// The file and documentation views bring Yjs and the collab client.
+const CodeEditor = dynamic(() => import("@/components/code-editor").then((m) => m.CodeEditor), {
+  ssr: false,
+  loading: () => (
+    <div className="min-h-0 flex-1">
+      <CodeLinesSkeleton />
+    </div>
+  ),
+})
+const NotesWorkspace = dynamic(
+  () => import("@/components/notes/notes-workspace").then((m) => m.NotesWorkspace),
+  { ssr: false, loading: () => <NotesSkeleton /> },
+)
 const BrowserView = dynamic(() => import("@/components/browser-view").then((m) => m.BrowserView), {
   ssr: false,
   loading: () => <BrowserViewSkeleton />,

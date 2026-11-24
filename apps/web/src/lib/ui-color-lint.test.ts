@@ -74,6 +74,9 @@ describe("components use semantic colour tokens", () => {
         ["logo-mark.tsx", 'fill="#377876"'],
         // Claude Code's generic mark keeps one warm tone in either theme.
         ["icons/harness/claude.tsx", 'fill="#D97757"'],
+        // A painting, not interface: the sun, moon and stars are drawn in
+        // their own light, whatever the theme. No text sits in these colours.
+        ["sky-backdrop.tsx", ""],
       ]),
     ).toEqual([])
   })

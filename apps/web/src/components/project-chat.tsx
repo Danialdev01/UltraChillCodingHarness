@@ -86,7 +86,7 @@ import {
   AttachmentPreviewDialog,
   type PreviewableAttachment,
 } from "@/components/attachment-preview";
-import { ImageEditorDialog } from "@/components/image-editor-dialog";
+import { ImageEditorDialog } from "@/components/on-demand";
 import { useVoiceInput, type VoiceState } from "@/lib/use-voice-input";
 import { insertTranscript } from "@/lib/voice-transcribe";
 import { discardUpload, stageLink, stageUpload, uploadContentUrl } from "@/lib/uploads-api";

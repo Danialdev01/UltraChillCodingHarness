@@ -15,8 +15,9 @@ import {
   type ToolPart,
 } from "@/lib/chat-messages"
 import type { FileDiff } from "@ucch/protocol"
-import { highlightLines, type Token } from "@/lib/highlight-lines"
+import type { Token } from "@/lib/highlight-lines"
 import { classifyTool, fileViews, inputViews, parseShellResult, type FileView } from "@/lib/tool-transcript"
+import { useHighlighter } from "@/lib/use-highlighter"
 import { cn } from "@/lib/utils"
 
 /** How many lines show before "show all": of output and thought, of a diff, of what was read. */
@@ -534,13 +535,14 @@ function DiffBlock({ file }: { file: FileView }) {
     })
     return out
   }, [file])
+  const highlightLines = useHighlighter()
   const tokens = React.useMemo(
     () =>
       file.hunks.map((lines) => ({
         old: highlightLines(lines.filter((l) => l.kind !== "add").map((l) => l.text).join("\n"), file.path),
         new: highlightLines(lines.filter((l) => l.kind !== "del").map((l) => l.text).join("\n"), file.path),
       })),
-    [file],
+    [file, highlightLines],
   )
   const shown = all ? rows : rows.slice(0, DIFF_LINES)
 

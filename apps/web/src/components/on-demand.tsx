@@ -42,6 +42,11 @@ const loaders = {
   quickMenu: () => import("@/components/quick-menu-palette"),
   workspaceList: () => import("@/components/workspace-list"),
   viewModeList: () => import("@/components/view-mode-list"),
+  sshHost: () => import("@/components/terminal/ssh-host-dialog"),
+  s3Store: () => import("@/components/resources/s3-store-dialog"),
+  resourceName: () => import("@/components/resources/name-dialog"),
+  knowledgeBase: () => import("@/components/knowledge/knowledge-base-dialog"),
+  imageEditor: () => import("@/components/image-editor-dialog"),
   filesTree: () => import("@/components/files-tree"),
 }
 
@@ -63,6 +68,11 @@ export const TaskDetailDialog = dynamic(() => loaders.taskDetail().then((m) => m
 export const PreviewDialog = dynamic(() => loaders.preview().then((m) => m.PreviewDialog), { ssr: false })
 export const ManageCommandsDialog = dynamic(() => loaders.manageCommands().then((m) => m.ManageCommandsDialog), { ssr: false })
 export const QuickMenuPalette = dynamic(() => loaders.quickMenu().then((m) => m.QuickMenuPalette), { ssr: false })
+export const SshHostDialog = dynamic(() => loaders.sshHost().then((m) => m.SshHostDialog), { ssr: false })
+export const S3StoreDialog = dynamic(() => loaders.s3Store().then((m) => m.S3StoreDialog), { ssr: false })
+export const NameDialog = dynamic(() => loaders.resourceName().then((m) => m.NameDialog), { ssr: false })
+export const KnowledgeBaseDialog = dynamic(() => loaders.knowledgeBase().then((m) => m.KnowledgeBaseDialog), { ssr: false })
+export const ImageEditorDialog = dynamic(() => loaders.imageEditor().then((m) => m.ImageEditorDialog), { ssr: false })
 
 /** Rows of a picker list while its chunk is on the way. */
 function ListSkeleton({ rows }: { rows: number }) {

@@ -4,7 +4,7 @@ import * as React from "react"
 import { FileTextIcon, LibraryBigIcon, NetworkIcon, PlusIcon } from "lucide-react"
 import type { KnowledgeBaseSummary } from "@ucch/protocol"
 
-import { KnowledgeBaseDialog } from "@/components/knowledge/knowledge-base-dialog"
+import { KnowledgeBaseDialog } from "@/components/on-demand"
 import { EmptyState } from "@/components/layout/empty-state"
 import { PageContainer, PageHeading } from "@/components/layout/page-container"
 import { KnowledgeCardsSkeleton } from "@/components/page-skeletons"
