@@ -6,3 +6,7 @@ onlyBuiltDependencies:
   - esbuild
   - sharp
   - tsc-rs
+
+overrides:
+  # drizzle-kit's abandoned loader pins an esbuild whose dev server answers any site.
+  "@esbuild-kit/core-utils>esbuild": "^0.25.12"

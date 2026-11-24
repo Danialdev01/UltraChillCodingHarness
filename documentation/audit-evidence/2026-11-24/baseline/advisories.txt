@@ -1,0 +1,2 @@
+audit {"info":0,"low":21,"moderate":63,"high":37,"critical":5}
+audit-prod {"info":0,"low":20,"moderate":51,"high":36,"critical":1}
