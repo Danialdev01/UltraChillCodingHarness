@@ -11,7 +11,7 @@ import {
 } from "./model-keys.js";
 
 /**
- * The named model keys, listed under Settings -> Providers -> Custom.
+ * The named model keys, listed under Settings -> AI Provider -> Custom.
  *
  *   GET    /api/account/model-keys        metadata only, never a value
  *   POST   /api/account/model-keys        { kind, name, key }: format check, live check, store

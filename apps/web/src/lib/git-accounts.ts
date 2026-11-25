@@ -1,7 +1,7 @@
 import type { GitProvider } from "@ucch/protocol"
 
 /**
- * The person's connected git accounts (Settings -> Providers -> Git Provider).
+ * The person's connected git accounts (Settings -> Git Provider).
  * A token never comes back to the browser: the list carries its prefix and
  * last four, nothing more.
  */
@@ -29,7 +29,7 @@ export interface GitAccountsResponse {
 export const MAX_NAME_LENGTH = 40
 
 /** Where "connect one in Settings" goes. */
-export const GIT_PROVIDER_HREF = "/setting/providers?type=git"
+export const GIT_PROVIDER_HREF = "/setting/git-provider"
 
 const PATH = "/api/account/git-accounts"
 const NO_STORE: RequestInit = { credentials: "include", cache: "no-store" }

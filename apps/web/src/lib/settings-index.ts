@@ -48,9 +48,10 @@ const ACCOUNT_GROUPS: readonly SettingsGroup[] = [
     ],
   },
   {
-    label: "Agents",
+    label: "Provider",
     entries: [
-      { scope: "account", id: "providers", keywords: "providers ai git github gitlab gitea token repository claude codex sign in login cli custom api keys openrouter anonrouter model keys" },
+      { scope: "account", id: "ai-provider", keywords: "providers ai claude codex sign in login cli token custom api keys openrouter anonrouter model keys" },
+      { scope: "account", id: "git-provider", keywords: "providers git github gitlab gitea token repository account" },
     ],
   },
 ];

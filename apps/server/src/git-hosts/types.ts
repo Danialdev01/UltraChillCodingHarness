@@ -118,7 +118,7 @@ export async function call(
   if (status >= 300 && status < 400) {
     throw new GitHostError(`${label} answered with a redirect. Use the address it redirects to as the server URL.`, 502);
   }
-  if (status === 401) throw new GitHostError(`${label} rejected that token. Check it in Settings → Providers.`, 401);
+  if (status === 401) throw new GitHostError(`${label} rejected that token. Check it in Settings → Git Provider.`, 401);
   if (status === 403) throw new GitHostError(`That token is not allowed to do this on ${label}. Check its scopes.`, 403);
   if (status === 404) throw new GitHostError(`${label} has no such thing, or the token cannot see it.`, 404);
   if (status === 429) throw new GitHostError(`${label}'s rate limit is exhausted. Try again shortly.`, 429);

@@ -170,7 +170,7 @@ export function NewSessionDialog({
         aside={
           anyBlocked && (
             <TransitionLink
-              href={settingsPageHref("providers")}
+              href={settingsPageHref("ai-provider")}
               className={cn("rounded-[4px] text-[11px] text-(--fd-text-muted) hover:text-(--fd-text)", FOCUS)}
             >
               Set up in Settings

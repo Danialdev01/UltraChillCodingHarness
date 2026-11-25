@@ -218,7 +218,7 @@ export function ProviderSettings({
         {/* A: header row */}
         <div className="flex items-center justify-between gap-3">
           <Heading id="providers-heading" className={cn("font-semibold", workspaceId ? "text-sm" : "text-lg")}>
-            Providers
+            AI providers
           </Heading>
           <Button
             variant="ghost"

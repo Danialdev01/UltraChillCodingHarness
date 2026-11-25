@@ -80,7 +80,7 @@ const INFO: Record<GitProvider, ProviderInfo> = {
 const errorText = (e: unknown, fallback: string) => (e instanceof Error ? e.message : fallback)
 
 /**
- * Settings -> Providers -> Git Provider.
+ * Settings -> Git Provider.
  *
  * A card per host, each with any number of named accounts. Their repositories
  * are what New project offers, and their tokens are what clones, pulls and

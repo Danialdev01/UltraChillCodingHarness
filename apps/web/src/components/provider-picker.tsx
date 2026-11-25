@@ -141,7 +141,7 @@ export function ProviderSelect({
   currentProfileId?: string | null
   onAccount?: (account: AgentAccount) => void
   /**
-   * The named keys from Settings -> Providers -> Custom. Each is listed as
+   * The named keys from Settings -> AI Provider -> Custom. Each is listed as
    * a harness of its own, by the name it was given, in place of Custom:
    * picking one is Custom with the model moved onto that key.
    */

@@ -105,7 +105,7 @@ export function QuotaCard({ quota }: { quota: QuotaResult }) {
           footnote={
             quota.status === "no_key" ? (
               <TransitionLink
-                href="/setting/providers"
+                href="/setting/ai-provider"
                 className="text-ucch-active underline underline-offset-2"
               >
                 Add one in Settings

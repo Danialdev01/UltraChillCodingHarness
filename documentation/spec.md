@@ -148,11 +148,11 @@ Prompt history is available with ↑/↓, and chat-block navigation with the fad
 
 | Harness | Requirements | Notes |
 |---|---|---|
-| **Custom** | an OpenRouter key (Settings → Providers, or the workspace's) | Without `OMP_ENABLED`, the built-in loop (`packages/agent`); with it, new threads run on **OMP**. A thread keeps the runtime it started on. |
+| **Custom** | an OpenRouter key (Settings → AI Provider, or the workspace's) | Without `OMP_ENABLED`, the built-in loop (`packages/agent`); with it, new threads run on **OMP**. A thread keeps the runtime it started on. |
 | **Claude Code** | `claude` on the server's `PATH`, then a login (a terminal dialog runs the CLI's login with the account's own `CLAUDE_CONFIG_DIR`) or a pasted OAuth token | runs on the Claude subscription; `AGENT_ALLOW_HOST_SHELL` in production |
 | **Codex** | `codex` on `PATH`, then a device login | runs on the ChatGPT subscription; the UI shows a terms warning that must be acknowledged |
 
-**Settings → Providers → AI Provider** (`/setting/providers`, `GET /api/providers`):
+**Settings → AI Provider** (`/setting/ai-provider`, `GET /api/providers`):
 - each card shows installed, signed in, version and the last probe;
 - a CLI can be signed out with `DELETE /api/providers/:id/credentials`;
 - the **default provider** and **default model** are set under Settings → Preferences (`PUT /api/settings/default-provider`, `/default-model`).
@@ -284,7 +284,7 @@ All of these need `OMP_ENABLED`, the pinned `omp` binary (in the image) and an O
 
 The server caches reads per working tree (`git-cache.ts`) and invalidates them on `file.changed` and git actions. Every git write is announced so all tabs refresh, and is written to the activity log. Pushing and pulling authenticate with the project owner's git account for that server (the project's own one first, else the oldest that matches, else the GitHub sign-in) through a credential helper scoped to that origin, and the token never goes on a command line. Commits use the account's name and email.
 
-**Settings → Providers → Git Provider** (`/setting/providers?type=git`): any number of named GitHub, GitLab and Gitea accounts (`git_accounts`, `/api/account/git-accounts`). GitLab and Gitea take a server URL: https anywhere, http only where every address is loopback or private, checked on each connection. A token is checked live before saving, encrypted, never shown again, and tied to its server; only the name and the token can change.
+**Settings → Git Provider** (`/setting/git-provider`): any number of named GitHub, GitLab and Gitea accounts (`git_accounts`, `/api/account/git-accounts`). GitLab and Gitea take a server URL: https anywhere, http only where every address is loopback or private, checked on each connection. A token is checked live before saving, encrypted, never shown again, and tied to its server; only the name and the token can change.
 
 **Settings → API keys** (`/setting/api`): a Resend key (and the older OpenRouter one), each encrypted and checked live against the provider before saving (`PUT /api/account/keys/:provider`). A stored key can be revealed or copied for 30 seconds after a password step-up (`POST /api/account/reauth`, then `POST /api/account/keys/:provider/reveal`); every reveal and copy is recorded in Activity.
 
@@ -420,7 +420,8 @@ The dialog shows "Listening" / "Nothing on port" live.
 | `account` | name, email, password, avatar (§1) |
 | `preferences` | default model, agent permission mode, chat view, widget follow-ups, modal keybindings, editor and file-tree font sizes |
 | `api` (API keys) | Resend key (§12) |
-| `providers` (Providers) | **AI Provider**: Claude Code, Codex and Custom cards: install state, sign-in, token, sign-out (§5). **Git Provider**: GitHub, GitLab and Gitea accounts (§12) |
+| `ai-provider` (AI Provider) | Claude Code, Codex and Custom cards: install state, sign-in, token, sign-out (§5) |
+| `git-provider` (Git Provider) | GitHub, GitLab and Gitea accounts (§12) |
 | `usage` | the person's tokens and cost, and storage per project |
 | `activity` | the account's own activity feed (§20) |
 | `theme` | light/dark/system, accent hue and palette, syntax colours with a live preview, saved presets |

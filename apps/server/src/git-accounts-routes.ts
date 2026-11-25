@@ -15,7 +15,7 @@ import {
 import { GIT_HOSTS, GitHostError, type FetchLike, type GitRepo } from "./git-hosts/index.js";
 
 /**
- * Connected git accounts (Settings -> Providers -> Git Provider), and what the
+ * Connected git accounts (Settings -> Git Provider), and what the
  * new-project dialog asks of them.
  *
  *   GET    /api/account/git-accounts          metadata only, never a token
@@ -256,7 +256,7 @@ export function registerGitAccountRoutes(app: FastifyInstance, deps: GitAccountR
       if (account) await record(request, principal.userId, "git_account.token_replaced", account, `Replaced the token of the ${label(account)}`);
     } else {
       if (existing.length >= MAX_GIT_ACCOUNTS || existing.some((a) => a.name.toLowerCase() === LEGACY_NAME.toLowerCase())) {
-        return reply.code(409).send({ error: "That account can't be added. Use Settings → Providers." });
+        return reply.code(409).send({ error: "That account can't be added. Use Settings → Git Provider." });
       }
       const account = await deps.accounts.create(principal.userId, {
         provider: "github",
@@ -277,7 +277,7 @@ export function registerGitAccountRoutes(app: FastifyInstance, deps: GitAccountR
 
   function connect(source: Source) {
     const token = source.token();
-    if (!token) throw new GitHostError("The saved token can't be read. Replace it in Settings → Providers.", 409);
+    if (!token) throw new GitHostError("The saved token can't be read. Replace it in Settings → Git Provider.", 409);
     return { host: GIT_HOSTS[source.provider], ctx: { baseUrl: source.baseUrl, token, fetch: deps.fetch } };
   }
 

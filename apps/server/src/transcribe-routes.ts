@@ -95,7 +95,7 @@ export function registerTranscribeRoutes(app: FastifyInstance, deps: TranscribeR
       if (!apiKey) {
         return reply
           .code(409)
-          .send({ error: "Add an OpenRouter key in Settings → Providers to dictate in this browser." });
+          .send({ error: "Add an OpenRouter key in Settings → AI Provider to dictate in this browser." });
       }
 
       if (!Buffer.isBuffer(request.body)) {

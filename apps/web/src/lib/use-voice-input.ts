@@ -27,7 +27,7 @@ const MAX_RECORDING_MS = 2 * 60_000;
 const ENGINE_BROKEN = new Set(["network", "service-not-allowed", "language-not-supported"]);
 
 const NO_KEY =
-  "This browser cannot transcribe speech itself. Add an OpenRouter key in Settings → Providers " +
+  "This browser cannot transcribe speech itself. Add an OpenRouter key in Settings → AI Provider " +
   "to dictate here, or use Chrome, Edge or Safari.";
 
 /**

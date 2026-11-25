@@ -248,7 +248,7 @@ Open `https://<ROOT_DOMAIN>` and sign in with `DEFAULT_USER_EMAIL` (default `adm
 cat /data/secrets/default_user_password
 ```
 
-The account is created on the first boot only, so changing these variables later does not reset it. Then add your OpenRouter key under **Settings → Providers**.
+The account is created on the first boot only, so changing these variables later does not reset it. Then add your OpenRouter key under **Settings → AI Provider**.
 
 Optional GitHub sign-in: create an OAuth App with callback `https://<ROOT_DOMAIN>/api/auth/github/callback`, set `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, and list who may sign in with `GITHUB_ALLOWED_USERS` (logins) and/or `GITHUB_ALLOWED_ORGS` (organisations), then redeploy. With neither set, GitHub sign-in only admits accounts that already exist — every account gets a shell, so new sign-ups are closed by default.
 

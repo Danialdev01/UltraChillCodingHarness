@@ -1298,7 +1298,7 @@ export function explainClaudeError(message: string): string {
   if (!AUTH_FAILURE.test(message)) return message;
   return (
     "Claude Code's sign-in has expired and could not be renewed. Sign in again under " +
-    "Settings → Agent Providers → Claude Code, or store a setup token there: it lasts a " +
+    "Settings → AI Provider → Claude Code, or store a setup token there: it lasts a " +
     `year and never needs renewing. (${message})`
   );
 }

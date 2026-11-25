@@ -40,7 +40,7 @@ describe("explainClaudeError", () => {
 
   it("says how to sign in again when the login is gone, keeping the CLI's words", () => {
     const explained = explainClaudeError(EXPIRED);
-    expect(explained).toContain("Settings → Agent Providers → Claude Code");
+    expect(explained).toContain("Settings → AI Provider → Claude Code");
     expect(explained).toContain("setup token");
     expect(explained).toContain(EXPIRED);
   });

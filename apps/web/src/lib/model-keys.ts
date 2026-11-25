@@ -1,5 +1,5 @@
 /**
- * The account's named model-provider keys (Settings -> Providers -> Custom),
+ * The account's named model-provider keys (Settings -> AI Provider -> Custom),
  * and how a model picked under one is named.
  *
  * A named key never comes back to the browser: the list carries its prefix

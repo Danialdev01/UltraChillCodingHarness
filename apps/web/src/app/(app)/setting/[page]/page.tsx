@@ -24,6 +24,10 @@ export default async function Page({
   const { page } = await params;
   // The defaults are on Preferences; old bookmarks follow them.
   if (page === "default") redirect(settingsPageHref("preferences"));
+  // AI and Git Provider were tabs of one Providers page; old links follow them.
+  if (page === "providers") {
+    redirect(settingsPageHref((await searchParams).type === "git" ? "git-provider" : "ai-provider"));
+  }
   if (!isSettingsPageId(page)) notFound();
 
   // Outside any workspace's address, so the one these figures are for is
@@ -44,8 +48,8 @@ export default async function Page({
       ])
     : [null, null, []];
 
-  if (page === "providers") {
-    // Its own frame: the providers card lays a list beside a detail panel,
+  if (page === "ai-provider" || page === "git-provider") {
+    // Their own frame: the providers card lays a list beside a detail panel,
     // which needs more room than a form column gives it.
     return (
       <div className="flex flex-1 flex-col">
@@ -55,7 +59,6 @@ export default async function Page({
             usage={usage}
             storage={storage}
             projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-            providerType={(await searchParams).type === "git" ? "git" : "ai"}
           />
         </div>
       </div>

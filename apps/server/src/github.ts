@@ -120,7 +120,7 @@ async function send(
   if (response.ok) return response.json();
 
   if (response.status === 401) {
-    throw new GithubError("GitHub rejected that token. Check it in Settings → Providers.", 401);
+    throw new GithubError("GitHub rejected that token. Check it in Settings → Git Provider.", 401);
   }
   if (response.status === 404) {
     throw new GithubError("GitHub has no such repository, or the token cannot see it.", 404);
