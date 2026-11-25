@@ -6,14 +6,11 @@ import {
   DatabaseIcon,
   FolderPlusIcon,
   GitBranchIcon,
-  GitForkIcon,
   LinkIcon,
   LockIcon,
   Loader2Icon,
   PlusIcon,
   SearchIcon,
-  UserRoundIcon,
-  UsersIcon,
 } from "lucide-react";
 import {
   DATABASE_ENGINE_LABELS,
@@ -61,7 +58,6 @@ import {
   OptionTabs,
   PopoverSelect,
   Segmented,
-  TEXTAREA,
 } from "@/components/form-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createProject } from "@/lib/create-project";
@@ -121,6 +117,19 @@ const VISIBILITY_OPTIONS = [
   { value: "private", label: "Private" },
   { value: "public", label: "Public" },
 ] as const;
+
+/** An owner, and the connected account that can create under it. */
+type RepoOwner = GitOwner & { accountId: string };
+
+/** Two accounts can reach the same owner, so its login alone does not identify it. */
+const ownerKey = (owner: RepoOwner) => `${owner.accountId}:${owner.login}`;
+
+/** With several accounts, the account too: logins can repeat across them. */
+function ownerHint(owner: RepoOwner, accounts: GitAccount[]) {
+  const kind = owner.kind === "org" ? "Organisation" : "You";
+  const account = accounts.length > 1 ? accounts.find((a) => a.id === owner.accountId) : undefined;
+  return account ? `${kind} · ${account.name}` : kind;
+}
 
 /** The combined list's identity for a repository: two accounts can share a full name. */
 const repoKey = (repo: GitRepo) => `${repo.accountId}:${repo.fullName}`;
@@ -206,13 +215,12 @@ export function NewProjectDialog({
   const [hosts, setHosts] = React.useState<GitAccount[] | null>(null);
   const [hostsError, setHostsError] = React.useState<string | null>(null);
   const [host, setHost] = React.useState<GitProvider>("github");
-  /** The account chosen for each host; its first reachable one until then. */
-  const [chosenAccounts, setChosenAccounts] = React.useState<Partial<Record<GitProvider, string>>>({});
-  const [owners, setOwners] = React.useState<GitOwner[] | null>(null);
-  const [ownersError, setOwnersError] = React.useState<string | null>(null);
-  const [owner, setOwner] = React.useState("");
+  /** Null until read; the chosen host's accounts and their organisations. */
+  const [repoOwners, setRepoOwners] = React.useState<RepoOwner[] | null>(null);
+  const [ownerErrors, setOwnerErrors] = React.useState<string[]>([]);
+  /** An `ownerKey`; the first owner until one is chosen. */
+  const [chosenOwner, setChosenOwner] = React.useState("");
   const [visibility, setVisibility] = React.useState<Visibility>("private");
-  const [description, setDescription] = React.useState("");
   /**
    * The repository this dialog already created, so a retry after the clone
    * failed reuses it instead of being refused for a name that is now taken.
@@ -251,12 +259,10 @@ export function NewProjectDialog({
     setHosts(null);
     setHostsError(null);
     setHost("github");
-    setChosenAccounts({});
-    setOwners(null);
-    setOwnersError(null);
-    setOwner("");
+    setRepoOwners(null);
+    setOwnerErrors([]);
+    setChosenOwner("");
     setVisibility("private");
-    setDescription("");
     createdRepo.current = null;
   }, [open]);
 
@@ -310,37 +316,41 @@ export function NewProjectDialog({
   }, [open, source, hosts, hostsError]);
 
   const hostAccounts = hosts?.filter((h) => h.provider === host) ?? [];
-  const hostAccount =
-    hostAccounts.find((h) => h.id === chosenAccounts[host]) ??
-    hostAccounts.find((h) => h.connected) ??
-    hostAccounts[0] ??
-    null;
-  const hostUsable = Boolean(hostAccount?.connected);
-  const hostAccountId = hostUsable ? hostAccount!.id : null;
+  const connectedAccounts = hostAccounts.filter((h) => h.connected);
+  const hostUsable = connectedAccounts.length > 0;
+  /** A string so the effect below reruns only when the accounts themselves change. */
+  const connectedKey = connectedAccounts.map((h) => h.id).join("\n");
+  const repoOwner = repoOwners?.find((o) => ownerKey(o) === chosenOwner) ?? repoOwners?.[0] ?? null;
 
-  /** Reads where the chosen account can create a repository: itself, then its organisations. */
+  /** Reads where a repository can be created: each account itself, then its organisations. */
   React.useEffect(() => {
-    if (!open || source !== "create" || !hostAccountId) return;
+    if (!open || source !== "create" || !connectedKey) return;
 
     let cancelled = false;
-    // One account's owners are not another's.
-    setOwners(null);
-    setOwnersError(null);
-    setOwner("");
-    void fetchOwners(hostAccountId)
-      .then((list) => {
-        if (cancelled) return;
-        setOwners(list);
-        setOwner(list[0]?.login ?? "");
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setOwnersError(e instanceof Error ? e.message : String(e));
+    // One host's owners are not another's.
+    setRepoOwners(null);
+    setOwnerErrors([]);
+    setChosenOwner("");
+    const ids = connectedKey.split("\n");
+    void Promise.allSettled(ids.map((id) => fetchOwners(id))).then((results) => {
+      if (cancelled) return;
+      const found: RepoOwner[] = [];
+      const errors: string[] = [];
+      results.forEach((result, i) => {
+        if (result.status === "fulfilled") {
+          found.push(...result.value.map((o) => ({ ...o, accountId: ids[i]! })));
+        } else {
+          errors.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+        }
       });
+      setRepoOwners(found);
+      setOwnerErrors(errors);
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [open, source, hostAccountId]);
+  }, [open, source, connectedKey]);
 
   /**
    * Reads the chosen repository's branches.
@@ -479,13 +489,13 @@ export function NewProjectDialog({
       if (!looksLikeRepoUrl(url) || !name.trim()) return null;
       return { repoUrl: url, name: name.trim(), ...(branch ? { branch } : {}), ...what };
     }
-    if (source === "create" && (!hostUsable || !owner)) return null;
+    if (source === "create" && (!hostUsable || !repoOwner)) return null;
     // No `repoUrl` at all: the server reads its absence as "start one".
     if (!isValidRepoName(name)) return null;
     return { name: name.trim(), ...what };
     // `database` is rebuilt each render; its parts are the real dependencies.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, gitMode, picked, name, pickedBranch, repoUrl, branch, mode, engine, dbName, dbNameValid, sessionBranches, hostUsable, owner]);
+  }, [source, gitMode, picked, name, pickedBranch, repoUrl, branch, mode, engine, dbName, dbNameValid, sessionBranches, hostUsable, repoOwner]);
 
   // Blank is fine: the key is optional. Typed, it must be one that can be set up.
   const projectKeyError = projectKey || projectKeyConfirm ? newKeyProblem(projectKey, projectKeyConfirm) : null;
@@ -498,22 +508,22 @@ export function NewProjectDialog({
 
     try {
       let toSend = command;
-      if (source === "create") {
+      if (source === "create" && repoOwner) {
+        const { accountId, login } = repoOwner;
         setStage("repo");
         // Created with a README so it has a default branch to clone.
         const previous = createdRepo.current;
         const repo =
-          previous && previous.accountId === hostAccountId && previous.owner.toLowerCase() === owner.toLowerCase() && previous.name === command.name
+          previous && previous.accountId === accountId && previous.owner.toLowerCase() === login.toLowerCase() && previous.name === command.name
             ? previous
-            : await createRepo(hostAccountId!, {
-                owner,
+            : await createRepo(accountId, {
+                owner: login,
                 name: command.name,
                 private: visibility === "private",
-                ...(description.trim() ? { description: description.trim() } : {}),
                 autoInit: true,
               });
-        createdRepo.current = { ...repo, accountId: hostAccountId! };
-        toSend = { ...command, repoUrl: repo.cloneUrl, ...accountOf(hostAccountId!), branch: repo.defaultBranch };
+        createdRepo.current = { ...repo, accountId };
+        toSend = { ...command, repoUrl: repo.cloneUrl, ...accountOf(accountId), branch: repo.defaultBranch };
       }
 
       const created = await createProject({ workspaceId, ...toSend }, setStage);
@@ -546,6 +556,75 @@ export function NewProjectDialog({
       setStage("idle");
     }
   }
+
+  /** Within the New Repo tab it sits under the host, with the owner; otherwise below the tabs. */
+  const nameField = (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor="new-project-name" className={LABEL}>
+        Project name
+      </label>
+      <div className="relative flex h-[34px] overflow-hidden rounded-[8px] border border-(--fd-border-field) bg-(--fd-field) transition-[border-color,box-shadow] focus-within:border-(--fd-accent) focus-within:ring-[3px] focus-within:ring-(--fd-ring)">
+        {source === "create" && repoOwners === null && ownerErrors.length === 0 && (
+          <Skeleton className="h-full w-28 shrink-0 rounded-none" />
+        )}
+        {source === "create" && repoOwner && repoOwners && repoOwners.length > 1 && (
+          <>
+            <span id="new-project-owner-label" className="sr-only">
+              Repository owner
+            </span>
+            <PopoverSelect
+              value={ownerKey(repoOwner)}
+              options={repoOwners.map((o) => ({
+                value: ownerKey(o),
+                label: o.login,
+                hint: ownerHint(o, connectedAccounts),
+              }))}
+              onChange={setChosenOwner}
+              heading="Create the repository under"
+              disabled={busy}
+              labelledBy="new-project-owner-label"
+              searchable={repoOwners.length > 6}
+              triggerClassName="fd-mono h-full w-auto max-w-[45%] shrink-0 rounded-none border-0 bg-(--fd-prefix) text-[11.5px]"
+            />
+          </>
+        )}
+        {source === "create" && repoOwner && (
+          <span className="fd-mono flex max-w-[45%] shrink-0 items-center border-r border-(--fd-prefix-border) bg-(--fd-prefix) px-2.5 text-[11.5px] text-(--fd-icon-dim) select-none">
+            {repoOwners && repoOwners.length > 1 ? "/" : <span className="truncate">{repoOwner.login} /</span>}
+          </span>
+        )}
+        <input
+          id="new-project-name"
+          value={name}
+          onChange={(e) => {
+            setNameTouched(true);
+            // A new repository's name is its directory's name, so it is
+            // corrected as it is typed, as GitHub does.
+            setName(nameIsRepoName ? suggestRepoName(e.target.value) : e.target.value);
+          }}
+          placeholder="my-project"
+          spellCheck={false}
+          autoComplete="off"
+          maxLength={100}
+          disabled={busy}
+          className="fd-mono min-w-0 grow bg-transparent px-2.5 text-[12.5px] text-(--fd-text) outline-none placeholder:text-(--fd-text-disabled) focus-visible:outline-none"
+        />
+      </div>
+      {source !== "git" && (
+        <p className={HELPER}>
+          {source === "create"
+            ? "Letters, numbers, dots, dashes and underscores. It also names the repository created for it."
+            : "Letters, numbers, dots, dashes and underscores. It also names the local repository."}
+        </p>
+      )}
+      {source === "create" &&
+        ownerErrors.map((message, i) => (
+          <p key={i} role="alert" className="text-destructive text-[11.5px]">
+            {message}
+          </p>
+        ))}
+    </div>
+  );
 
   return (
     <FormDialog
@@ -750,104 +829,29 @@ export function NewProjectDialog({
                   )}
                 </div>
 
-                {hostAccounts.length > 1 && (
-                  <div className="flex flex-col gap-1.5">
-                    <span id="new-project-account-label" className={LABEL}>
-                      Account
-                    </span>
-                    <PopoverSelect
-                      value={hostAccount?.id ?? ""}
-                      options={hostAccounts.map((a) => ({
-                        value: a.id,
-                        label: a.name,
-                        hint: a.connected ? a.login ?? "" : "Not connected",
-                      }))}
-                      onChange={(id) => setChosenAccounts((was) => ({ ...was, [host]: id }))}
-                      heading={`Your ${GIT_PROVIDER_LABELS[host]} accounts`}
-                      icon={UserRoundIcon}
-                      disabled={busy}
-                      labelledBy="new-project-account-label"
-                    />
-                  </div>
-                )}
-
                 {hosts !== null && !hostUsable ? (
                   <NoGitAccount>
-                    {hostAccount
-                      ? `${GIT_PROVIDER_LABELS[host]} could not be reached as "${hostAccount.name}". Check its token in Settings.`
+                    {hostAccounts[0]
+                      ? `${GIT_PROVIDER_LABELS[host]} could not be reached as "${hostAccounts[0].name}". Check its token in Settings.`
                       : `Connect ${GIT_PROVIDER_LABELS[host]} in Settings to create repositories on it.`}{" "}
                     The Empty tab starts a project without a remote.
                   </NoGitAccount>
                 ) : (
                   <>
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-                      <div className="flex flex-col gap-1.5">
-                        <span id="new-project-owner-label" className={LABEL}>
-                          Owner
-                        </span>
-                        {owners === null && !ownersError ? (
-                          <Skeleton className="h-[34px] w-full rounded-[8px]" />
-                        ) : (
-                          <PopoverSelect
-                            value={owner}
-                            options={(owners ?? []).map((o) => ({
-                              value: o.login,
-                              label: o.login,
-                              hint: o.kind === "org" ? "Organisation" : "You",
-                            }))}
-                            onChange={setOwner}
-                            heading="Create the repository under"
-                            icon={UsersIcon}
-                            placeholder="Choose an owner"
-                            disabled={busy || !owners?.length}
-                            labelledBy="new-project-owner-label"
-                            searchable={(owners?.length ?? 0) > 6}
-                          />
-                        )}
-                        {ownersError && (
-                          <p role="alert" className="text-destructive text-[11.5px]">
-                            {ownersError}
-                          </p>
-                        )}
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <span id="new-project-visibility-label" className={LABEL}>
-                          Visibility
-                        </span>
-                        <Segmented
-                          options={VISIBILITY_OPTIONS}
-                          value={visibility}
-                          onChange={setVisibility}
-                          disabled={busy}
-                          labelledBy="new-project-visibility-label"
-                        />
-                      </div>
-                    </div>
+                    {nameField}
 
                     <div className="flex flex-col gap-1.5">
-                      <label htmlFor="new-project-description" className={LABEL}>
-                        Description <span className="text-(--fd-text-disabled)">· optional</span>
-                      </label>
-                      <textarea
-                        id="new-project-description"
-                        value={description}
-                        onChange={(e) => setDescription(e.target.value)}
-                        maxLength={350}
-                        rows={2}
+                      <span id="new-project-visibility-label" className={LABEL}>
+                        Visibility
+                      </span>
+                      <Segmented
+                        options={VISIBILITY_OPTIONS}
+                        value={visibility}
+                        onChange={setVisibility}
                         disabled={busy}
-                        className={cn(TEXTAREA, "min-h-14 placeholder:text-(--fd-text-disabled)")}
-                        placeholder="What this repository is for"
+                        labelledBy="new-project-visibility-label"
                       />
                     </div>
-
-                    <Callout icon={GitForkIcon} accent className="p-3">
-                      Created as{" "}
-                      <Code>
-                        {owner || "owner"}/{name || "name"}
-                      </Code>{" "}
-                      with a README on {GIT_PROVIDER_LABELS[host]}&apos;s default branch, then
-                      cloned into the workspace with its remote already set.
-                    </Callout>
                   </>
                 )}
               </OptionPanel>
@@ -863,41 +867,7 @@ export function NewProjectDialog({
 
             <div role="separator" className="h-px bg-(--fd-border-subtle)" />
 
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="new-project-name" className={LABEL}>
-                Project name
-              </label>
-              <div className="flex h-[34px] overflow-hidden rounded-[8px] border border-(--fd-border-field) bg-(--fd-field) transition-[border-color,box-shadow] focus-within:border-(--fd-accent) focus-within:ring-[3px] focus-within:ring-(--fd-ring)">
-                {source === "create" && owner && (
-                  <span className="fd-mono flex shrink-0 items-center border-r border-(--fd-prefix-border) bg-(--fd-prefix) px-2.5 text-[11.5px] text-(--fd-icon-dim) select-none">
-                    {owner} /
-                  </span>
-                )}
-                <input
-                  id="new-project-name"
-                  value={name}
-                  onChange={(e) => {
-                    setNameTouched(true);
-                    // A new repository's name is its directory's name, so it is
-                    // corrected as it is typed, as GitHub does.
-                    setName(nameIsRepoName ? suggestRepoName(e.target.value) : e.target.value);
-                  }}
-                  placeholder="my-project"
-                  spellCheck={false}
-                  autoComplete="off"
-                  maxLength={100}
-                  disabled={busy}
-                  className="fd-mono min-w-0 grow bg-transparent px-2.5 text-[12.5px] text-(--fd-text) outline-none placeholder:text-(--fd-text-disabled) focus-visible:outline-none"
-                />
-              </div>
-              {source !== "git" && (
-                <p className={HELPER}>
-                  {source === "create"
-                    ? "Letters, numbers, dots, dashes and underscores. It also names the repository created for it."
-                    : "Letters, numbers, dots, dashes and underscores. It also names the local repository."}
-                </p>
-              )}
-            </div>
+            {source !== "create" && nameField}
 
             {/* Mode is the wider column: it has three options to the database's one trigger. */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
@@ -1073,7 +1043,7 @@ function HostChoice({
     return (
       <div className="grid grid-cols-3 gap-1.5">
         {[0, 1, 2].map((i) => (
-          <Skeleton key={i} className="h-[46px] rounded-[8px]" />
+          <Skeleton key={i} className="h-[34px] rounded-[8px]" />
         ))}
       </div>
     );
@@ -1083,9 +1053,6 @@ function HostChoice({
     <div role="radiogroup" aria-labelledby={labelledBy} className="grid grid-cols-3 gap-1.5">
       {GIT_PROVIDERS.map((provider) => {
         const checked = provider === value;
-        const connected = hosts.filter((h) => h.provider === provider && h.connected);
-        const status =
-          connected.length > 1 ? `${connected.length} accounts` : connected[0] ? connected[0].login ?? "Connected" : "Not connected";
         return (
           <button
             key={provider}
@@ -1095,7 +1062,7 @@ function HostChoice({
             disabled={disabled}
             onClick={() => onChange(provider)}
             className={cn(
-              "flex min-w-0 flex-col items-start gap-[3px] rounded-[8px] border border-(--fd-border) bg-(--fd-field) px-2.5 py-2 text-left transition-[border-color,box-shadow,background-color] disabled:cursor-not-allowed disabled:opacity-60",
+              "flex h-[34px] min-w-0 items-center rounded-[8px] border border-(--fd-border) bg-(--fd-field) px-2.5 text-left transition-[border-color,box-shadow,background-color] disabled:cursor-not-allowed disabled:opacity-60",
               FOCUS,
               checked
                 ? "border-(--fd-accent) bg-(--fd-accent-tint) ring-[3px] ring-(--fd-ring-soft)"
@@ -1106,7 +1073,6 @@ function HostChoice({
               <ProviderMark provider={provider} className="size-3.5 shrink-0" />
               {GIT_PROVIDER_LABELS[provider]}
             </span>
-            <span className="max-w-full truncate text-[11px] text-(--fd-text-muted)">{status}</span>
           </button>
         );
       })}

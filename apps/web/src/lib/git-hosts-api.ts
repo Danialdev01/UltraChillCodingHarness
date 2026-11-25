@@ -90,7 +90,6 @@ export interface CreateRepoInput {
   owner: string;
   name: string;
   private: boolean;
-  description?: string;
   autoInit: boolean;
 }
 

@@ -405,6 +405,7 @@ export function PopoverSelect<T extends string>({
   searchable,
   emptyText = "Nothing matches that.",
   popoverClassName,
+  triggerClassName,
 }: {
   value: T;
   options: readonly { value: T; label: string; hint?: string }[];
@@ -418,6 +419,7 @@ export function PopoverSelect<T extends string>({
   searchable?: boolean;
   emptyText?: string;
   popoverClassName?: string;
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = React.useState(false);
   const selected = options.find((option) => option.value === value);
@@ -432,7 +434,7 @@ export function PopoverSelect<T extends string>({
             aria-expanded={open}
             aria-labelledby={labelledBy}
             disabled={disabled}
-            className={FIELD}
+            className={cn(FIELD, triggerClassName)}
           />
         }
       >
