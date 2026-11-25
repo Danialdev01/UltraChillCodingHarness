@@ -26,7 +26,6 @@ const PROJECT_FILTERS = [
   { label: "Chat", action: "chat" },
   { label: "Notes", action: "note" },
   { label: "Files", action: "file" },
-  { label: "Timeline", action: "timeline" },
   { label: "Git", action: "git" },
   { label: "Keys", action: "key" },
   { label: "Project", action: "project" },

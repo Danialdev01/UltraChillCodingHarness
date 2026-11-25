@@ -27,7 +27,6 @@ describe("cacheEffect", () => {
 
   it("maps each domain's events to its own cache family", () => {
     expect(cacheEffect(ev({ type: "task.changed", projectId: P, change: "created" })).invalidate).toEqual([["tasks"]])
-    expect(cacheEffect(ev({ type: "timeline.changed", projectId: P, change: "created" })).invalidate).toEqual([["timeline"]])
     expect(cacheEffect(ev({ type: "note.changed", projectId: P })).invalidate).toEqual([["notes"]])
     expect(cacheEffect(ev({ type: "file.changed", projectId: P })).invalidate).toEqual([["files"]])
     expect(cacheEffect(ev({ type: "resource.changed", projectId: P, resource: "files" })).invalidate).toEqual([["files"]])
@@ -62,7 +61,7 @@ describe("cacheEffect", () => {
   })
 
   it("takes a deleted row out of its list", () => {
-    const effect = cacheEffect(ev({ type: "timeline.changed", projectId: P, taskId: "b", change: "deleted" }))
+    const effect = cacheEffect(ev({ type: "task.changed", projectId: P, taskId: "b", change: "deleted" }))
     expect(effect.invalidate).toEqual([])
     expect(effect.patch![0]!.update([{ id: "a" }, { id: "b" }])).toEqual([{ id: "a" }])
   })

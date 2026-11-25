@@ -401,7 +401,6 @@ const ROUTE_TEMPLATES: readonly string[] = [
   "/[workspace]/p/[project]/keys",
   "/[workspace]/p/[project]/manage",
   "/[workspace]/p/[project]/tasks",
-  "/[workspace]/p/[project]/timeline",
 ];
 
 const TEMPLATE_SEGMENTS = ROUTE_TEMPLATES.map((template) => ({

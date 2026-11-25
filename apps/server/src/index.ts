@@ -89,7 +89,6 @@ import { WorkspaceService, type ProjectSummary } from "./workspaces.js";
 import { StorageService } from "./storage.js";
 import { NotesService } from "./notes.js";
 import { registerNoteRoutes } from "./notes-routes.js";
-import { registerTimelineRoutes } from "./timeline-routes.js";
 import { registerEnvRoutes } from "./env-routes.js";
 import { registerAccountKeyRoutes } from "./account-keys-routes.js";
 import { gitAuthFor, type GitAuthFor, type GitAuthSource } from "./git-auth.js";
@@ -107,7 +106,6 @@ import { DbStepUpStore } from "./step-up.js";
 import { LoginThrottle } from "./login-throttle.js";
 import { LOG_REDACT, LOG_SCRUB } from "./log-redact.js";
 import { EnvVarService } from "./env-vars.js";
-import { TimelineService } from "./timeline.js";
 import { TasksService } from "./tasks.js";
 import { TodoMirror } from "./agent-todo.js";
 import { NotesMirror, type MirroredNote } from "./agent-notes.js";
@@ -3393,18 +3391,6 @@ registerNoteRoutes(app, {
       .catch((error) => app.log.error({ err: error }, "could not announce a note change"));
   },
   ...(collab ? { writeContent: (noteId, content) => collab.writeNote(noteId, content) } : {}),
-});
-
-registerTimelineRoutes(app, {
-  projectFor,
-  originOf,
-  audit: (input) => audit.record(input),
-  timeline: new TimelineService(db),
-  announce: async (event) => {
-    await store
-      .append({ projectId: event.projectId, threadId: null }, [event])
-      .catch((error) => app.log.error({ err: error }, "could not announce a timeline change"));
-  },
 });
 
 /**

@@ -366,11 +366,9 @@ The dialog shows "Listening" / "Nothing on port" live.
 
 ---
 
-## 18. Timeline
+## 18. Timeline (removed)
 
-**UI.** `/{ws}/p/{project}/timeline`: a Gantt chart. A task list on the left and bars on the right share one row height. Drag bars to move or resize them. Each task has a title, start and end dates, progress, a colour and an optional dependency, edited in a dialog.
-
-**Flow.** `GET/POST /api/projects/:hash/timeline/tasks`, `PATCH/DELETE …/:taskId`. Writes are optimistic, guarded per field like the Tasks board, announced as `timeline.changed`, and logged.
+The Gantt timeline was removed; planning is done on the Tasks board (§17). Its `timeline_tasks` table is kept, unused.
 
 ---
 
@@ -396,7 +394,7 @@ The dialog shows "Listening" / "Nothing on port" live.
 
 **UI.** `/{ws}/p/{project}/activity` for a project, and the account-level feed (`GET /api/activity`), with filter chips by action.
 
-**Flow.** Every command and every successful REST write produces an `audit_log` row and a live `audit.recorded` event. REST writes are described by `route-audit.ts`; routes with richer entries write their own (notes, files, tasks and timeline carry diffs). Bodies are never logged: no key values, passwords or SQL. Repeated saves of one thing by one person fold into one line. Rows are kept forever unless `AUDIT_RETENTION_DAYS` is set.
+**Flow.** Every command and every successful REST write produces an `audit_log` row and a live `audit.recorded` event. REST writes are described by `route-audit.ts`; routes with richer entries write their own (notes, files and tasks carry diffs). Bodies are never logged: no key values, passwords or SQL. Repeated saves of one thing by one person fold into one line. Rows are kept forever unless `AUDIT_RETENTION_DAYS` is set.
 
 ---
 

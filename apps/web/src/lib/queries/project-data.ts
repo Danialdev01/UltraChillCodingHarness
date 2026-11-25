@@ -10,7 +10,6 @@ import type { ProjectTarget } from "../project-target"
 import { qk } from "../query-keys"
 import type { ProjectSession } from "../session"
 import { fetchTaskSettings, listTasks } from "../tasks-api"
-import { listTimelineTasks } from "../timeline-api"
 
 /**
  * A project's lists as the client cache holds them: key, fetcher and whether
@@ -52,11 +51,6 @@ export const projectQueries = {
     persist: false,
   }),
   notesTree: (hash: string) => ({ queryKey: qk.notes.tree(hash), queryFn: () => listNotes(hash), persist: true }),
-  timeline: (hash: string) => ({
-    queryKey: qk.timeline.list(hash),
-    queryFn: () => listTimelineTasks(hash),
-    persist: true,
-  }),
   // Names, tags and links only: values never reach the cache.
   env: (hash: string) => ({ queryKey: qk.keys.list(hash), queryFn: () => listEnvVars(hash), persist: true }),
   commands: (hash: string) => ({ queryKey: qk.commands.list(hash), queryFn: () => listCommands(hash), persist: true }),

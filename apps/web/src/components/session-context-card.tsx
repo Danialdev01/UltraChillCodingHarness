@@ -17,7 +17,6 @@ import {
   GitCommitHorizontalIcon,
   AppWindowIcon,
   GlobeIcon,
-  HistoryIcon,
   Loader2Icon,
   PanelRightOpenIcon,
   SearchIcon,
@@ -215,11 +214,6 @@ function CardBody({
               <TasksSheet open={tasksOpen} onOpenChange={setTasksOpen} currentProjectHash={project.hash} />
             )}
           </>
-        )}
-        {manageable && (
-          <Row icon={HistoryIcon} to={projectPageHref(ws, project.hash, "timeline")} title="The project's timeline">
-            <span>Timeline</span>
-          </Row>
         )}
         {manageable && kind === "project" && (
           <>

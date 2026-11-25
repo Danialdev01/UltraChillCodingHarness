@@ -1,5 +1,5 @@
 /**
- * Field-at-a-time writes for the Tasks board and the timeline.
+ * Field-at-a-time writes for the Tasks board.
  *
  * Two people on one board change different things at once: one drags a
  * card while the other renames it. So a write sends only the fields that

@@ -876,7 +876,8 @@ export const noteYdocs = pgTable("note_ydocs", {
 });
 
 /**
- * The tasks on a project's timeline page, drawn there as a Gantt chart.
+ * The tasks of the Gantt timeline, a page since removed. Nothing reads or
+ * writes them; the table stays so that the plans people drew are not dropped.
  *
  * Plain rows like `notes`: a task is dragged along the chart and saved on
  * every release, and nothing replays it. Dates are calendar dates rather than
@@ -913,7 +914,7 @@ export const timelineTasks = pgTable(
 /**
  * The cards on a project's Tasks board.
  *
- * Plain rows like `timeline_tasks`. A person writes the idea; the pipeline
+ * Plain rows like `notes`. A person writes the idea; the pipeline
  * fills in the rest as it carries the card along -- the research brief, the
  * thread the agent worked in, the verifier's verdict -- so the card is the
  * whole record of what was done for it.

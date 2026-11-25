@@ -21,7 +21,6 @@ export * from "./hostname.js";
 export * from "./notes.js";
 export * from "./knowledge-limits.js";
 export * from "./note-text.js";
-export * from "./timeline.js";
 export * from "./tasks.js";
 export * from "./keys.js";
 export * from "./text-replacement.js";

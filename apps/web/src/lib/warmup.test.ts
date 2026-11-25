@@ -35,7 +35,7 @@ describe("warmupPlan data", () => {
   it("loads each warmed project's lists, under the keys the views read", () => {
     const { data } = plan({ pathname: `/${WS}`, projectHashes: [HASH] })
     const keys = data.map((q) => JSON.stringify(q.queryKey))
-    for (const family of ["tasks", "notes", "timeline", "keys"]) {
+    for (const family of ["tasks", "notes", "keys"]) {
       expect(keys.some((k) => k.startsWith(`["${family}"`) && k.includes(HASH))).toBe(true)
     }
     expect(data.map((q) => q.queryKey)).toEqual(projectLists(HASH).map((q) => q.queryKey))

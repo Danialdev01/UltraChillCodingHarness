@@ -58,7 +58,6 @@ export function projectLists(hash: string): ProjectQuery<unknown>[] {
     projectQueries.tasks(hash),
     projectQueries.taskSettings(hash),
     projectQueries.notesTree(hash),
-    projectQueries.timeline(hash),
     projectQueries.env(hash),
   ]
 }

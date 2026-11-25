@@ -4,7 +4,7 @@ import type { LiveResource } from "@ucch/protocol";
  * What a successful write through the REST API means, for the activity log
  * and for the other tabs that need to refetch.
  *
- * The routes with something richer to say -- notes, timeline tasks, files,
+ * The routes with something richer to say -- notes, files,
  * whose logs carry diffs and whose notices carry content -- write their own
  * entries and are listed in `SELF_AUDITED`. Everything else that changes
  * something is described here once, from the route's pattern, so a new route
@@ -51,9 +51,6 @@ export const SELF_AUDITED = new Set([
   "PATCH /api/projects/:hash/notes/:noteId",
   "POST /api/projects/:hash/notes/:noteId/move",
   "DELETE /api/projects/:hash/notes/:noteId",
-  "POST /api/projects/:hash/timeline/tasks",
-  "PATCH /api/projects/:hash/timeline/tasks/:taskId",
-  "DELETE /api/projects/:hash/timeline/tasks/:taskId",
   "PUT /api/projects/:hash/file",
   "POST /api/projects/:hash/file",
   // A copy from Resources logs itself as the file it created.

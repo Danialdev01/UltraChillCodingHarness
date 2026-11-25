@@ -130,8 +130,8 @@ describe("sectionHref / sectionEntry", () => {
 describe("projectPageFromPath", () => {
   it("names the page under a project", () => {
     expect(projectPageFromPath(`/${WS}/p/${P}/documentation`)).toBe("documentation");
-    expect(projectPageFromPath(`/${WS}/p/${P}/timeline/`)).toBe("timeline");
-    expect(projectPageFromPath(`/${WS}/p/${P}/tasks`)).toBe("tasks");
+    expect(projectPageFromPath(`/${WS}/p/${P}/timeline`)).toBeNull();
+    expect(projectPageFromPath(`/${WS}/p/${P}/tasks/`)).toBe("tasks");
     expect(projectPageFromPath(projectPageHref(WS, P, "manage"))).toBe("manage");
   });
 
@@ -200,7 +200,7 @@ describe("noteHref / noteIdFromPath", () => {
     expect(noteIdFromPath(noteHref(WS, P, NOTE))).toBe(NOTE);
     expect(noteIdFromPath(`/${WS}/p/${P}/documentation`)).toBeNull();
     expect(noteIdFromPath(`/${WS}/p/${P}/documentation/not-a-uuid`)).toBeNull();
-    expect(noteIdFromPath(`/${WS}/p/${P}/timeline/${NOTE}`)).toBeNull();
+    expect(noteIdFromPath(`/${WS}/p/${P}/tasks/${NOTE}`)).toBeNull();
   });
 });
 

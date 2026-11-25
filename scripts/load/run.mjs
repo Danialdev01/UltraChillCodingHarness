@@ -253,7 +253,7 @@ class Socket {
 
 // -- A virtual user ----------------------------------------------------------------
 
-const PROJECT_PAGES = ["", "/tasks", "/timeline", "/documentation", "/activity"];
+const PROJECT_PAGES = ["", "/tasks", "/documentation", "/activity"];
 
 function roleOf(index) {
   // Spread the roles evenly over the user list rather than in blocks.

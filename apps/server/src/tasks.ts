@@ -42,7 +42,7 @@ export const DOCS_DIGEST_MAX = 20_000;
 /**
  * A project's Tasks board: the cards, and the board's own settings.
  *
- * Scoped like `TimelineService`: every method takes the project id first and
+ * Every method takes the project id first and
  * filters by it, so a card id from another project is simply not found.
  */
 export class TasksService {

@@ -59,7 +59,6 @@ async function pickRoute(): Promise<{ steps: { name: string; href: string }[] }>
     .filter((n) => n.parentId !== null)
     .slice(0, 2)
     .forEach((n, i) => steps.push({ name: `note ${i ? "B" : "A"}`, href: `${p}/documentation/${n.id}` }));
-  steps.push({ name: "timeline", href: `${p}/timeline` });
   steps.push({ name: "settings account", href: "/setting/account" });
   steps.push({ name: "settings theme", href: "/setting/theme" });
   steps.push({ name: "workspace settings", href: `/${ws}/workspace-settings/general` });

@@ -43,10 +43,6 @@ export const qk = {
     list: (projectHash: string) => ["tasks", "list", projectHash] as const,
     settings: (projectHash: string) => ["tasks", "settings", projectHash] as const,
   },
-  timeline: {
-    all: ["timeline"] as const,
-    list: (projectHash: string) => ["timeline", "list", projectHash] as const,
-  },
   notes: {
     all: ["notes"] as const,
     tree: (projectHash: string) => ["notes", "tree", projectHash] as const,

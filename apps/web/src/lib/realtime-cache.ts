@@ -71,14 +71,11 @@ export function cacheEffect(event: DomainEvent): CacheEffect {
     // A new row's list is not known from the event (lists are by project
     // hash): those refetch. A saved or deleted row is put in place.
     case "task.changed":
-    case "timeline.changed": {
-      const family = event.type === "task.changed" ? qk.tasks.all : qk.timeline.all
-      if (event.change === "deleted") return { invalidate: [], patch: [{ key: family, update: removeRow(event.taskId) }] }
+      if (event.change === "deleted") return { invalidate: [], patch: [{ key: qk.tasks.all, update: removeRow(event.taskId) }] }
       if (event.change === "updated" && event.task) {
-        return { invalidate: [], patch: [{ key: family, update: upsertRow(event.task) }] }
+        return { invalidate: [], patch: [{ key: qk.tasks.all, update: upsertRow(event.task) }] }
       }
-      return { invalidate: [family] }
-    }
+      return { invalidate: [qk.tasks.all] }
     case "note.changed":
       return { invalidate: [qk.notes.all] }
     // The git status follows from the server's own `resource.changed{git}`,

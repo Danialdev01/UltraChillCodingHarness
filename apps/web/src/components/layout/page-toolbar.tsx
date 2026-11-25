@@ -3,7 +3,7 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 /**
- * The bar across the top of a full-bleed page -- tasks, timeline, activity,
+ * The bar across the top of a full-bleed page -- tasks, activity,
  * documentation, a database view: what the page is, how many it holds, and
  * its actions on the right. One height (h-10) on every page, so moving
  * between them never shifts the content.

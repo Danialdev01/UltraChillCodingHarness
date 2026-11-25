@@ -2,7 +2,7 @@
 
 # UCCH architecture
 
-**UCCH (Ultra Chill Coding Harness)** is a self-hosted, browser-based coding workspace. You clone a GitHub repository (or start an empty one), talk to an AI agent that edits it, watch the files, terminal and git change live, preview the running dev server on its own subdomain, and keep notes, tasks, timelines and database tools next to the code.
+**UCCH (Ultra Chill Coding Harness)** is a self-hosted, browser-based coding workspace. You clone a GitHub repository (or start an empty one), talk to an AI agent that edits it, watch the files, terminal and git change live, preview the running dev server on its own subdomain, and keep notes, tasks and database tools next to the code.
 
 This document covers the tech stack, how the pieces fit together inside the one container, the data model, and every external system UCCH talks to.
 
@@ -133,7 +133,7 @@ client ── dispatch{command} ──▶ WebSocketGateway (scope check: REQUIRE
 - **Reactors** do the side effects after the commit and record what actually happened as new events. A decision records intent (`thread.handoff_requested`); the reactor records the outcome (`thread.handed_off` or `thread.handoff_failed`).
 - **The bus** (`bus.ts`) is in-process fan-out by topic. A single instance owns the processes, so no broker is needed. Going to several replicas would mean swapping this class for LISTEN/NOTIFY or Redis behind the same interface.
 
-Not everything is event-sourced. Organisation data (workspaces, members, invites, database connections, keys, notes, tasks, timeline tasks, settings) is plain REST over tables. Each successful write is described for the activity log by `route-audit.ts` and announced to other tabs as a `resource.changed` / `*.changed` event, so their caches refetch.
+Not everything is event-sourced. Organisation data (workspaces, members, invites, database connections, keys, notes, tasks, settings) is plain REST over tables. Each successful write is described for the activity log by `route-audit.ts` and announced to other tabs as a `resource.changed` / `*.changed` event, so their caches refetch.
 
 ### 4.2 Realtime: the `/ws` gateway
 
@@ -174,7 +174,6 @@ Not everything is event-sourced. Organisation data (workspaces, members, invites
 | Collab                 | `collab.ts`, `collab/*`, `collab-link.ts`                                                                               | Hocuspocus process for notes and files; Yjs ↔ ProseMirror; disk merges                                                         |
 | Notes, diagrams        | `notes.ts`, `notes-routes.ts`, `diagrams.ts`, `mermaid-repair.ts`                                                     | documentation pages, Mermaid diagrams generated from the codebase                                                               |
 | Tasks                  | `tasks.ts`, `tasks-routes.ts`, `task-pipeline.ts`, `task-scheduler.ts`                                                | Kanban board whose cards an agent carries through research → work → verification                                              |
-| Timeline               | `timeline.ts`, `timeline-routes.ts`                                                                                       | Gantt tasks with per-field conflict checks (`field-guard.ts`)                                                                 |
 | Databases              | `database-connections.ts`, `database-routes.ts`, `db-manager/*`, `dev-database.ts`                                    | saved MySQL/Postgres servers, a phpMyAdmin-style manager, per-project dev databases                                             |
 | Keys                   | `keys.ts`, `keys-routes.ts`                                                                                               | per-project secrets, encrypted at rest                                                                                          |
 | Public sites           | `public-routes.ts`                                                                                                          | read-only notes, files and history at `/shared/{slug}`                                                                        |
@@ -187,7 +186,7 @@ Not everything is event-sourced. Organisation data (workspaces, members, invites
 
 ## 5. Web internals
 
-- **Routes** (`apps/web/src/app`): `(app)` holds the signed-in app: `/{workspaceHash}` dashboard, `/code`, `/p/{projectHash}` (chat, `/{sessionHash}`, `documentation`, `tasks`, `timeline`, `keys`, `activity`, `manage`), `/database/...`, `/publish`, `/todo`, `/workspace-settings/...`, `/setting/...`, `/invite/{token}`. Outside it: `/login`, `/shared/{slug}/...` (public sites), `/offline`, `/healthz`, `/file-icons/*`, `/dev/themes`.
+- **Routes** (`apps/web/src/app`): `(app)` holds the signed-in app: `/{workspaceHash}` dashboard, `/code`, `/p/{projectHash}` (chat, `/{sessionHash}`, `documentation`, `tasks`, `keys`, `activity`, `manage`), `/database/...`, `/publish`, `/todo`, `/workspace-settings/...`, `/setting/...`, `/invite/{token}`. Outside it: `/login`, `/shared/{slug}/...` (public sites), `/offline`, `/healthz`, `/file-icons/*`, `/dev/themes`.
 - **The shell is a layout** (`app-shell.tsx`): the icon rail, the section panel, the header and the session/workspace resolution render once and stay mounted across navigations.
 - **Instant navigation** (`apps/web/CLAUDE.md`): every route has a `loading.tsx` skeleton; layouts await nothing; navigation only goes through `TransitionLink` / `useTransitionRouter`; data changes invalidate queries rather than calling `router.refresh()`. `navigation.test.ts` enforces the mechanical parts.
 - **Data**: TanStack Query, with a persisted cache for recent projects. `lib/warmup.ts` and `lib/preload.ts` load a small, fixed set of data once the shell is idle (`route-warmup.tsx`). Pages are never pre-rendered in the background.
@@ -222,7 +221,7 @@ Not everything is event-sourced. Organisation data (workspaces, members, invites
 | `database_connections` | table         | a workspace's saved MySQL/Postgres servers (password encrypted)                                                                                                                  |
 | `notes`                | table         | documentation pages: tree position, title, icon, cover, ProseMirror body, plain text for search                                                                                  |
 | `note_ydocs`           | table         | each note's Yjs state, projected back to `notes`                                                                                                                               |
-| `timeline_tasks`       | table         | Gantt tasks                                                                                                                                                                      |
+| `timeline_tasks`       | table         | Unused: the removed Gantt page's rows                                                                                                                                                   |
 | `project_tasks`        | table         | Tasks-board cards: stage, status, research, verification, feedback                                                                                                               |
 | `project_keys`         | table         | the project's saved keys (encrypted)                                                                                                                                             |
 | `audit_log`            | table         | the activity log: who, what, target, summary, details                                                                                                                            |

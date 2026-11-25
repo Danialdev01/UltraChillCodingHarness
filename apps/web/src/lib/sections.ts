@@ -5,7 +5,6 @@ import {
   ChartColumnIcon,
   DatabaseIcon,
   GitBranchIcon,
-  HistoryIcon,
   HomeIcon,
   KeyRoundIcon,
   LayersIcon,
@@ -402,7 +401,7 @@ function projectPage<Id extends string>(id: Id, title: string, icon: LucideIcon,
   return { id, title, icon, blurb } satisfies ProjectPage;
 }
 
-/** The pages under a project. Tasks and Timeline are linked from the session card beside the chat; Manage from the settings button beside the search. */
+/** The pages under a project. Tasks is linked from the session card beside the chat; Manage from the settings button beside the search. */
 export const PROJECT_PAGES = [
   projectPage(
     "tasks",
@@ -416,12 +415,6 @@ export const PROJECT_PAGES = [
     "Documentation",
     StickyNoteIcon,
     "Pages kept with this project: decisions, links, diagrams, and things to remember.",
-  ),
-  projectPage(
-    "timeline",
-    "Timeline",
-    HistoryIcon,
-    "The project's plan as a Gantt chart: what has to happen, from when to when, and what comes after what.",
   ),
   projectPage(
     "manage",

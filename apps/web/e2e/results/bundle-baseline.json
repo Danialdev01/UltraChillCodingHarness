@@ -17,7 +17,6 @@
   "/(app)/[workspaceHash]/p/[projectHash]/keys": 342,
   "/(app)/[workspaceHash]/p/[projectHash]/manage": 410,
   "/(app)/[workspaceHash]/p/[projectHash]/tasks": 352,
-  "/(app)/[workspaceHash]/p/[projectHash]/timeline": 353,
   "/(app)/[workspaceHash]/publish": 342,
   "/(app)/[workspaceHash]/s/[sessionHash]": 500,
   "/(app)/[workspaceHash]/terminal": 343,

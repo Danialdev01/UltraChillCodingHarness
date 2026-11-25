@@ -123,7 +123,7 @@ export function AppHeader() {
   const pathname = useShellPathname()
   const projectHash = projectHashFromPath(pathname)
   const project = projectHash ? projects.find((p) => p.hash === projectHash) : undefined
-  // Notes, Timeline, Keys: a page of the project rather than the project.
+  // Notes, Tasks, Keys: a page of the project rather than the project.
   const projectPage = projectPageFromPath(pathname)
   const sessionHash = projectSessionHashFromPath(pathname)
   const section = sectionForPath(pathname)

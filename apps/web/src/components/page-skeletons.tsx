@@ -388,54 +388,6 @@ export function DatabaseSkeleton() {
   )
 }
 
-/**
- * The timeline before its tasks arrive: the toolbar, then rows of a name
- * beside a bar, each bar starting and ending somewhere different so it
- * reads as a chart rather than a table.
- */
-export function TimelineSkeleton({ rows = 5 }: { rows?: number }) {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b pr-2 pl-4">
-        <Skeleton className="size-4 rounded-sm" />
-        <Skeleton className="h-3 w-16" />
-        <div className="flex-1" />
-        <Skeleton className="h-7 w-36 rounded-lg" />
-        <Skeleton className="h-7 w-20 rounded-lg" />
-      </div>
-      <TimelineChartSkeleton rows={rows} />
-    </div>
-  )
-}
-
-/** The timeline's chart alone, for the workspace to show under its own toolbar. */
-export function TimelineChartSkeleton({ rows = 5 }: { rows?: number }) {
-  return (
-    <div className="flex min-h-0 flex-1">
-      <div className="w-64 shrink-0 border-r">
-        <div className="h-11 border-b" />
-        {Array.from({ length: rows }, (_, i) => (
-          <div key={i} className="flex h-9 items-center gap-2 border-b px-3">
-            <Skeleton className="size-2.5 rounded-full" />
-            <Skeleton className="h-3" style={{ width: `${35 + ((i * 29) % 40)}%` }} />
-          </div>
-        ))}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="h-11 border-b" />
-        {Array.from({ length: rows }, (_, i) => (
-          <div key={i} className="flex h-9 items-center border-b">
-            <Skeleton
-              className="h-5 rounded-md"
-              style={{ marginLeft: `${5 + ((i * 17) % 40)}%`, width: `${15 + ((i * 13) % 30)}%` }}
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 /** The keys table alone, for the workspace to show under its own toolbar. */
 export function KeysRowsSkeleton({ rows = 4 }: { rows?: number }) {
   return (

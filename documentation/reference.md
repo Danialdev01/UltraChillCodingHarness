@@ -150,10 +150,6 @@ Every `/api` route except `auth/*`, `public/*` (rate-limited per address), `inte
 | POST | `/api/projects/:hash/tasks/:taskId/move` | move a card (stage, position) | `tasks-routes.ts:188` |
 | POST | `/api/projects/:hash/tasks/:taskId/retry` | retry a failed card | `tasks-routes.ts:269` |
 | GET | `/api/projects/:hash/threads` | the project's sessions | `index.ts:3783` |
-| GET | `/api/projects/:hash/timeline/tasks` | list / create Gantt tasks | `timeline-routes.ts:102` |
-| POST | `/api/projects/:hash/timeline/tasks` | list / create Gantt tasks | `timeline-routes.ts:108` |
-| PATCH | `/api/projects/:hash/timeline/tasks/:taskId` | change / delete a Gantt task | `timeline-routes.ts:137` |
-| DELETE | `/api/projects/:hash/timeline/tasks/:taskId` | change / delete a Gantt task | `timeline-routes.ts:183` |
 | GET | `/api/projects/:hash/uploads` | list / stage attachments | `index.ts:3075` |
 | POST | `/api/projects/:hash/uploads` | list / stage attachments | `index.ts:3081` |
 | DELETE | `/api/projects/:hash/uploads/:id` | discard an attachment | `index.ts:3241` |
@@ -252,7 +248,6 @@ Every `/api` route except `auth/*`, `public/*` (rate-limited per address), `inte
 | `/[ws]/p/[project]/[sessionHash]` | a session |
 | `/[ws]/p/[project]/documentation[/[noteId]]` | notes, diagrams, references, environment variables (`?view=`) |
 | `/[ws]/p/[project]/tasks` | Tasks board |
-| `/[ws]/p/[project]/timeline` | Gantt timeline |
 | `/[ws]/p/[project]/keys` | project keys |
 | `/[ws]/p/[project]/activity` | project activity |
 | `/[ws]/p/[project]/manage` | figures, git, activity, project key, preferences (`?tab=`) |
@@ -344,7 +339,7 @@ Defined in `packages/protocol/src/rpc.ts`, served by `apps/server/src/ws.ts`. Ge
 | Subagents | `agent.subagent_started`, `agent.subagent_progress`, `agent.subagent_finished` |
 | Compaction and handoff | `thread.compaction_requested`, `thread.compaction_finished`, `thread.handoff_requested`, `thread.handed_off`, `thread.handoff_failed` |
 | Checkpoints | `checkpoint.captured`, `checkpoint.reverted` (defined, not produced) |
-| Files and data | `file.changed` (`worktreeId`, origin), `note.changed`, `timeline.changed`, `task.changed`, `upload.changed`†, `resource.changed`† (`LiveResource`: what to refetch) |
+| Files and data | `file.changed` (`worktreeId`, origin), `note.changed`, `task.changed`, `upload.changed`†, `resource.changed`† (`LiveResource`: what to refetch) |
 | Collaboration | `composer.changed`†, `presence.changed`†, `audit.recorded` |
 | Ports and terminals | `port.opened`†, `port.closed`†, `terminal.output`† |
 | Git and previews | `git.committed`, `git.pushed`, `preview.published` |
@@ -424,7 +419,6 @@ Defined in `packages/protocol/src/rpc.ts`, served by `apps/server/src/ws.ts`. Ge
 | `tasks.ts`, `tasks-routes.ts` | **`TasksService`**, `toTask`, `registerTaskRoutes` | Tasks board |
 | `task-pipeline.ts` | **`TaskPipeline`**, `researchPrompt`, `codingPrompt`, `verifyBrief`, `verifyPrompt`, `parseVerdict`, `ompVerdict` | carrying cards |
 | `task-scheduler.ts` | **`TaskScheduler`**, `isDue`, `localClock`, `usageBlock` | Auto Run |
-| `timeline.ts`, `timeline-routes.ts` | **`TimelineService`**, `wouldCycle`, `registerTimelineRoutes` | Gantt |
 | `field-guard.ts` | `staleFields` | per-field conflicts |
 | `env-vars.ts`, `env-vault.ts`, `env-routes.ts` | **`EnvVarService`**, `readVault`, `registerEnvRoutes` | environment variables and the project key |
 | `public-routes.ts` | `registerPublicRoutes`, `publicUrl`, `rewriteUploadUrls` | public sites |
@@ -455,7 +449,7 @@ Defined in `packages/protocol/src/rpc.ts`, served by `apps/server/src/ws.ts`. Ge
 | `permissions.ts` | `needsApproval`, `isRiskyCommand`, `AgentPermissionMode` |
 | `workspace-roles.ts`, `plain.ts` | roles, `ROLE_PERMISSIONS`, `can`, `permissionsOf`, `canManageMember`, `canAssignRole`, `resolveCredentialSource`, `effectiveCredentialSource`, `PROJECT_MODES`, `suggestDevDatabaseName`, `privilegesFor` (`plain.ts` is the zod-free browser entry, `@ucch/protocol/plain`) |
 | `agent-settings.ts` | `WorkspaceAgentSettings`, `readAgentSettings`, `limitFallback` |
-| `database.ts`, `git.ts`, `tasks.ts`, `timeline.ts`, `notes.ts`, `keys.ts`, `verifier.ts` | request/response shapes for those features; `verificationText` |
+| `database.ts`, `git.ts`, `tasks.ts`, `notes.ts`, `keys.ts`, `verifier.ts` | request/response shapes for those features; `verificationText` |
 | `media.ts` | `previewKindFor`, `mediaTypeFor`, `isPreviewable`, `isModelImageType`, `extensionOf` |
 | `avatar.ts` | `isAvatarDataUrl`, `decodedLength` |
 | `note-text.ts` | `noteText`, `snippetAround` |
@@ -532,7 +526,7 @@ Bridge environment variables: `OPENROUTER_API_KEY`, `UCCH_OMP_OVERLAY`, `UCCH_OM
 
 | Area | Modules |
 |---|---|
-| API clients | `account-api`, `activity-api`, `database-api`, `diagrams-api`, `files-api`, `git-api`, `github-api`, `keys-api`, `notes-api`, `omp-trust-api`, `preview-api`, `providers-api`, `public-api`, `review-api`, `search-api`, `tasks-api`, `timeline-api`, `uploads-api`, `workspace-api`, `session` (server-side reads) |
+| API clients | `account-api`, `activity-api`, `database-api`, `diagrams-api`, `files-api`, `git-api`, `github-api`, `keys-api`, `notes-api`, `omp-trust-api`, `preview-api`, `providers-api`, `public-api`, `review-api`, `search-api`, `tasks-api`, `uploads-api`, `workspace-api`, `session` (server-side reads) |
 | Realtime and data | `realtime.tsx` (socket, subscriptions), `realtime-cache.ts` (event → query invalidation), `thread-store.ts`, `query-client.tsx`, `query-keys.ts`, `queries/`, `use-invalidate.ts`, `composer-sync.ts`, `collab.ts`, `note-collab.ts`, `doc-sync.ts`, `tab-id.ts` |
 | Navigation and loading | `view-transitions.tsx` (`TransitionLink`, `useTransitionRouter`), `sections.ts` (routes, rail, settings pages, doc views, diagram kinds), `warmup.ts`, `preload.ts`, `last-location.ts`, `workspace-route.ts`, `workspace-cookie.ts`, `auth-gate.ts` |
 | Chat | `chat-messages.ts`, `streaming-markdown.ts`, `slash-commands.ts`, `slash-filter.ts`, `file-mention.ts`, `prompt-history.ts`, `attachments.ts`, `file-drop.ts`, `context-window.ts`, `turn-status.ts`, `agent-activity.ts`, `chat-feedback.ts`, `thread-position.ts`, `model-preference.ts`, `composer-size.ts`, `code-chat.ts` |
@@ -540,13 +534,13 @@ Bridge environment variables: `OPENROUTER_API_KEY`, `UCCH_OMP_OVERLAY`, `UCCH_OM
 | Files | `file-tree.ts`, `file-icons.ts`, `file-icons-server.ts`, `icon-resolver.ts`, `tree-font-size.ts`, `stack-icons.ts` |
 | Notes | `note-tree.ts`, `note-search.ts`, `note-autosave.ts`, `note-drop.ts`, `markdown-paste.ts`, `markdown-file.ts`, `markdown-containers.ts`, `embed-url.ts`, `emoji-search.ts`, `drawio-protocol.ts`, `doc-width.ts` |
 | Git | `git-diff.ts`, `review-anchor.ts`, `repo-url.ts` |
-| Boards | `gantt.ts`, `field-edit.ts` |
+| Boards | `field-edit.ts` |
 | Database | `db-cells.ts`, `database-url.ts` |
 | Theme | `theme.ts`, `theme-css.ts`, `color-engine.ts`, `selection-color.ts`, `person-color.ts` |
 | PWA and ops | `pwa.ts`, `pwa-caches.ts`, `app-update.ts`, `vitals.ts`, `next-frame.ts` |
 | Misc | `quotas.ts`, `usage-breakdown.ts`, `stats-format.ts`, `uptime.ts`, `image-resize.ts`, `avatar-image.ts`, `zoom.ts`, `clipboard.ts`, `confirm-name.ts`, `credential-choice.ts`, `create-project.ts`, `project-target.ts`, `project-sessions.ts`, `public-url.ts`, `public-project.ts`, `manage-tabs.ts`, `sidebar-metrics.ts`, `use-new-session.ts`, `workspace-context.tsx`, `workspace-header.ts`, `utils.ts` |
 
-Components (`apps/web/src/components`) by feature: shell (`app-shell`, `app-sidebar`, `app-header`, `section-panel`, `rail-flyout`, `right-sidebar`, `quick-menu*`, `workspace-switcher`), chat (`project-chat`, `chat-dock`, `markdown`, `permission-prompt`, `subagent-card`, `turn-progress`, `context-meter`, `model-picker`, `provider-picker`, `composer-menu`, `attachment-preview`), files (`files-panel`, `files-tree`, `code-editor`, `vim-editor`, `file-preview`, `image-viewer`, `pdf-viewer`, `search-panel`), `terminal-view` / `xterm-pane`, `git/*`, `notes/*`, `diagrams/*`, `tasks/*`, `timeline/*`, `database/*`, `keys/*`, `public/*`, `activity/*`, settings (`*-settings.tsx`, `settings-page`, `workspace-settings-page`), `page-skeletons`, `on-demand`, `ui/*` (shadcn primitives).
+Components (`apps/web/src/components`) by feature: shell (`app-shell`, `app-sidebar`, `app-header`, `section-panel`, `rail-flyout`, `right-sidebar`, `quick-menu*`, `workspace-switcher`), chat (`project-chat`, `chat-dock`, `markdown`, `permission-prompt`, `subagent-card`, `turn-progress`, `context-meter`, `model-picker`, `provider-picker`, `composer-menu`, `attachment-preview`), files (`files-panel`, `files-tree`, `code-editor`, `vim-editor`, `file-preview`, `image-viewer`, `pdf-viewer`, `search-panel`), `terminal-view` / `xterm-pane`, `git/*`, `notes/*`, `diagrams/*`, `tasks/*`, `database/*`, `keys/*`, `public/*`, `activity/*`, settings (`*-settings.tsx`, `settings-page`, `workspace-settings-page`), `page-skeletons`, `on-demand`, `ui/*` (shadcn primitives).
 
 ---
 
