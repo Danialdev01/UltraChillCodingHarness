@@ -14,20 +14,29 @@ import {
 } from "@/components/ui/sidebar"
 import { settingsPageFromPath, workspaceSettingsPageFromPath } from "@/lib/sections"
 import {
-  SETTINGS_GROUPS,
   settingsEntryHref,
   settingsEntryIcon,
   settingsEntryTitle,
+  settingsGroups,
+  type SettingsScope,
 } from "@/lib/settings-index"
 import { TransitionLink } from "@/lib/view-transitions"
 import { useWorkspaceHash } from "@/lib/workspace-context"
 
 /**
- * The settings nav in the sidebar panel: every settings page, account and
- * workspace alike, in a few named groups, with a search field over their
- * names and what they hold. `/` focuses the search while the nav is shown.
+ * The settings nav in the sidebar panel: the pages of one settings tree, the
+ * account's or the workspace's, in a few named groups, with a search field
+ * over their names and what they hold. `/` focuses the search while the nav is shown.
  */
-export function SettingsNav({ onNavigate, compact = false }: { onNavigate?: () => void; compact?: boolean }) {
+export function SettingsNav({
+  scope,
+  onNavigate,
+  compact = false,
+}: {
+  scope: SettingsScope
+  onNavigate?: () => void
+  compact?: boolean
+}) {
   const pathname = usePathname()
   const ws = useWorkspaceHash()
   const activeAccount = settingsPageFromPath(pathname)
@@ -49,7 +58,7 @@ export function SettingsNav({ onNavigate, compact = false }: { onNavigate?: () =
   }, [compact])
 
   const needle = query.trim().toLowerCase()
-  const groups = SETTINGS_GROUPS.map((group) => ({
+  const groups = settingsGroups(scope).map((group) => ({
     ...group,
     entries: group.entries.filter((entry) => {
       // A workspace page needs a workspace to live under.

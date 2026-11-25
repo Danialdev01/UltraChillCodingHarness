@@ -21,7 +21,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { SETTINGS, WORKSPACE_SETTINGS, projectHashFromPath, SECTIONS, sectionForPath, type Section } from "@/lib/sections"
+import { WORKSPACE_SETTINGS, projectHashFromPath, SECTIONS, sectionForPath, type Section } from "@/lib/sections"
 import { useShellPathname } from "@/lib/view-transitions"
 import { useShell } from "@/lib/workspace-context"
 import { useWorkspaceSessionStats } from "@/lib/queries/workspace-sessions"
@@ -85,12 +85,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
       <RailItem
         key={section.id}
         section={section}
-        // Account and workspace settings share one nav, so the gear stays lit
-        // on either tree's pages.
-        isActive={
-          !resources.open &&
-          (active.id === section.id || (section.id === WORKSPACE_SETTINGS.id && active.id === SETTINGS.id))
-        }
+        isActive={!resources.open && active.id === section.id}
         projects={projects}
         connections={connections}
         activeProjectHash={activeProjectHash}

@@ -25,7 +25,7 @@ const ICONS: Record<AgentPermissionMode, React.ComponentType<{ className?: strin
 /**
  * How much the agent may do before it asks, chosen where you talk to it.
  *
- * The same account setting as Settings → General's "Agent permission" --
+ * The same account setting as Settings → Preferences's "Agent permission" --
  * one value, two places to change it -- so a session about to do something
  * risky can be tightened without leaving the chat. Applies from the agent's
  * next action on.

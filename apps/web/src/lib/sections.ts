@@ -159,7 +159,7 @@ export function knowledgeBaseIdFromPath(pathname: string): string | null {
  * rail: they follow the person across every workspace.
  */
 export const SETTINGS = {
-  ...section("setting", "Settings", UserRoundIcon, "Your account, keys, providers, usage and appearance."),
+  ...section("setting", "Settings", UserRoundIcon, "Your account, preferences, keys, providers, usage and appearance."),
   scope: "global",
   // `/setting` redirects to its first page; links go there directly.
   entry: "/setting/account",
@@ -175,7 +175,7 @@ export const WORKSPACE_SETTINGS = {
     "workspace-settings",
     "Settings",
     SettingsIcon,
-    "Defaults, members and roles, sharing, and the harness subscription for this workspace.",
+    "Workspace limits, members and roles, sharing, and the harness subscription for this workspace.",
   ),
   entry: "/workspace-settings/general",
 } satisfies Section;
@@ -216,6 +216,7 @@ function settingsPage<Id extends string>(id: Id, title: string, icon: LucideIcon
 /** The pages of Settings, in the order the sidebar lists them. */
 export const SETTINGS_PAGES = [
   settingsPage("account", "Account", UserRoundIcon),
+  settingsPage("preferences", "Preferences", SlidersHorizontalIcon),
   settingsPage("api", "API keys", KeyRoundIcon),
   settingsPage("providers", "Providers", BotIcon),
   settingsPage("usage", "Usage", ChartColumnIcon),

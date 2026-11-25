@@ -3,7 +3,7 @@ import { notFound, redirect } from "next/navigation";
 
 import { PageContainer } from "@/components/layout/page-container";
 import { SettingsPage } from "@/components/settings-page";
-import { isSettingsPageId, workspaceSettingsPageHref } from "@/lib/sections";
+import { isSettingsPageId, settingsPageHref } from "@/lib/sections";
 import {
   getWorkspaceStorage,
   getWorkspaceUsage,
@@ -22,7 +22,9 @@ export default async function Page({
   searchParams: Promise<{ type?: string | string[] }>;
 }) {
   const { page } = await params;
-  if (page !== "default" && !isSettingsPageId(page)) notFound();
+  // The defaults are on Preferences; old bookmarks follow them.
+  if (page === "default") redirect(settingsPageHref("preferences"));
+  if (!isSettingsPageId(page)) notFound();
 
   // Outside any workspace's address, so the one these figures are for is
   // the last one open.
@@ -30,9 +32,6 @@ export default async function Page({
   const jar = await cookies();
   const requested = jar.get(WORKSPACE_COOKIE_NAME)?.value;
   const active = pickActiveWorkspace(workspaces, requested);
-  // The defaults moved to Workspace Settings; old bookmarks follow them.
-  if (page === "default") redirect(active ? workspaceSettingsPageHref(active.hash, "general") : "/");
-  if (!isSettingsPageId(page)) notFound();
   // Fetched here rather than in the page: it would otherwise have to
   // discover the active workspace for itself, which the route already knows.
   // Storage walks every project directory, so only the page that shows it

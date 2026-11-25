@@ -25,7 +25,7 @@ import { countLabel } from "@/lib/workspace-api";
 import { SoonBadge } from "@/components/ui/badge";
 import { SECTIONS, projectHref, sectionEntry } from "@/lib/sections";
 import {
-  SETTINGS_GROUPS,
+  SETTINGS_ENTRIES,
   settingsEntryHref,
   settingsEntryIcon,
   settingsEntryTitle,
@@ -172,8 +172,7 @@ export function QuickMenuPalette({
 
         <CommandSeparator />
         <CommandGroup heading="Settings">
-          {SETTINGS_GROUPS.flatMap((group) => group.entries)
-            .filter((entry) => entry.scope === "account" || ws)
+          {SETTINGS_ENTRIES.filter((entry) => entry.scope === "account" || ws)
             .map((entry) => {
               const Icon = settingsEntryIcon(entry)
               return (

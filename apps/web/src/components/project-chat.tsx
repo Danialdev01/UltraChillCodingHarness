@@ -856,7 +856,7 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
     return () => observer.disconnect();
   }, [pinToEnd]);
 
-  /** Default or CLI-style transcript, from Workspace Settings → Chat view. */
+  /** Default or CLI-style transcript, from Settings → Preferences. */
   const viewMode = useChatViewMode();
 
   /** Scrolls a message to the top of the view, for the prompt arrows. */
@@ -3070,7 +3070,7 @@ const Message = memo(function Message({
   /** The prompts before and after this one; only set on a user message. */
   neighbours: PromptNeighbours | undefined;
   onJump: (index: number) => void;
-  /** "transcript": every step inline, CLI-style (Workspace Settings → Chat view). */
+  /** "transcript": every step inline, CLI-style (Settings → Preferences). */
   viewMode: ChatViewMode;
 }) {
   if (message.switched) return <HarnessSwitchRow ref={ref} change={message.switched} />;

@@ -1,8 +1,3 @@
-import { AgentPermissionSettings } from "@/components/agent-permission-settings"
-import { ChatViewSettings, WidgetPromptSettings } from "@/components/chat-view-settings"
-import { DefaultSettings } from "@/components/default-settings"
-import { FontSizeSettings, TreeFontSizeSettings } from "@/components/font-size-settings"
-import { KeybindingSettings } from "@/components/keybinding-settings"
 import { SettledSessionsSettings } from "@/components/settled-sessions-settings"
 import { BrowserLimitSettings } from "@/components/browser-limit-settings"
 import { TerminalLimitSettings } from "@/components/terminal-limit-settings"
@@ -36,13 +31,6 @@ export function WorkspaceSettingsPage({
     case "general":
       return (
         <div className="flex flex-col gap-8">
-          <DefaultSettings />
-          <AgentPermissionSettings />
-          <ChatViewSettings />
-          <WidgetPromptSettings />
-          <KeybindingSettings />
-          <FontSizeSettings />
-          <TreeFontSizeSettings />
           <TerminalLimitSettings workspace={workspace} />
           <BrowserLimitSettings workspace={workspace} />
           <SettledSessionsSettings workspace={workspace} />

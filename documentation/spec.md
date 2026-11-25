@@ -155,11 +155,11 @@ Prompt history is available with ↑/↓, and chat-block navigation with the fad
 **Settings → Providers → AI Provider** (`/setting/providers`, `GET /api/providers`):
 - each card shows installed, signed in, version and the last probe;
 - a CLI can be signed out with `DELETE /api/providers/:id/credentials`;
-- the **default provider** and **default model** are set under Workspace Settings → General (`PUT /api/settings/default-provider`, `/default-model`).
+- the **default provider** and **default model** are set under Settings → Preferences (`PUT /api/settings/default-provider`, `/default-model`).
 
 The model list comes from OpenRouter's catalogue (`GET /api/models`).
 
-**Permission modes** (Workspace Settings → General; stored on the account, so they follow the person; `PUT /api/settings/agent-permission-mode`):
+**Permission modes** (Settings → Preferences; stored on the account, so they follow the person; `PUT /api/settings/agent-permission-mode`):
 - `strict`: every call that changes something (an edit or a command) waits for an answer. Reads never wait.
 - `normal`: edits and ordinary commands run. Risky commands (`isRiskyCommand`: destroying work, reaching past the project) wait.
 - `allow_all`: nothing waits.
@@ -245,7 +245,7 @@ All of these need `OMP_ENABLED`, the pinned `omp` binary (in the image) and an O
 
 **UI.** The project view's file tree (right column) and editor, the same in every session (each session sees its own worktree).
 - **Tree**: create, rename, move (drag), delete, upload by drop. Material file icons (`/file-icons`). Font size is a preference.
-- **Editor**: CodeMirror 6 with syntax highlighting, loaded on first use. Optional **modal keybindings** (vim, with Doom-style emacs chords and a leader-key picker; Workspace Settings → General). Configurable syntax colours, fonts and themes.
+- **Editor**: CodeMirror 6 with syntax highlighting, loaded on first use. Optional **modal keybindings** (vim, with Doom-style emacs chords and a leader-key picker; Settings → Preferences). Configurable syntax colours, fonts and themes.
 - **Previews**: images (pan and zoom: keyboard, wheel, pinch, touch) and PDFs replace the editor. Text, Markdown and Mermaid render where useful.
 - **Co-editing**: an open file is a Yjs document on the collab service. Everyone's carets show in their colour. A change on disk (agent, terminal, `git checkout`) is merged into the open document without losing typing (§13).
 
@@ -418,6 +418,7 @@ The dialog shows "Listening" / "Nothing on port" live.
 | Page | Holds |
 |---|---|
 | `account` | name, email, password, avatar (§1) |
+| `preferences` | default model, agent permission mode, chat view, widget follow-ups, modal keybindings, editor and file-tree font sizes |
 | `api` (API keys) | Resend key (§12) |
 | `providers` (Providers) | **AI Provider**: Claude Code, Codex and Custom cards: install state, sign-in, token, sign-out (§5). **Git Provider**: GitHub, GitLab and Gitea accounts (§12) |
 | `usage` | the person's tokens and cost, and storage per project |
@@ -428,7 +429,7 @@ The dialog shows "Listening" / "Nothing on port" live.
 
 | Page | Holds |
 |---|---|
-| `general` | default model and provider, agent permission mode, editor and file-tree font sizes, modal keybindings |
+| `general` | terminals per project, browser tabs per session, deleting settled session data |
 | `members` (Members & Roles) | members, roles, per-member project and session permissions (§2) |
 | `sharing` | invite links (§2) |
 | `harness` (Harness Subscription) | credential policy, the workspace's own credentials, and agent settings: auto-handoff, bridge, memory, isolated fan-out, verify with OMP (§2, §8, §9) |

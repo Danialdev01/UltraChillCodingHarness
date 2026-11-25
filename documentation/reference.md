@@ -245,7 +245,7 @@ Every `/api` route except `auth/*`, `public/*` (rate-limited per address), `inte
 | `/` | workspaces (home) |
 | `/login` | sign in |
 | `/invite/[token]` | accept an invite |
-| `/setting`, `/setting/[page]` | account settings: `account`, `api`, `providers`, `usage`, `activity`, `theme` |
+| `/setting`, `/setting/[page]` | account settings: `account`, `preferences`, `api`, `providers`, `usage`, `activity`, `theme` |
 | `/[ws]` | workspace dashboard |
 | `/[ws]/code` | projects table |
 | `/[ws]/p/[project]` | project chat (first session) |

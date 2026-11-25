@@ -263,7 +263,9 @@ export function SectionPanel({
   }
 
   if (section.id === WORKSPACE_SETTINGS.id || section.id === SETTINGS.id) {
-    return <SettingsNav onNavigate={onNavigate} compact={compact} />
+    // Keyed, so a search typed in one tree does not filter the other.
+    const scope = section.id === SETTINGS.id ? "account" : "workspace"
+    return <SettingsNav key={scope} scope={scope} onNavigate={onNavigate} compact={compact} />
   }
 
   return (

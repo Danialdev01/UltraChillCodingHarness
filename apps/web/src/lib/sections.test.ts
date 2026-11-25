@@ -175,6 +175,7 @@ describe("WORKSPACE_SETTINGS", () => {
 describe("settingsPageFromPath", () => {
   it("names the page of Settings", () => {
     expect(settingsPageFromPath("/setting/api")).toBe("api");
+    expect(settingsPageFromPath("/setting/preferences")).toBe("preferences");
     expect(settingsPageFromPath("/setting/theme/")).toBe("theme");
     expect(settingsPageFromPath(settingsPageHref("usage"))).toBe("usage");
     expect(settingsPageFromPath("/setting/activity")).toBe("activity");

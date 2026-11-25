@@ -1,6 +1,11 @@
 import { AccountSettings } from "@/components/account-settings"
 import { ActivityFeed } from "@/components/activity/activity-feed"
+import { AgentPermissionSettings } from "@/components/agent-permission-settings"
 import { ApiKeySettings } from "@/components/api-key-settings"
+import { ChatViewSettings, WidgetPromptSettings } from "@/components/chat-view-settings"
+import { DefaultSettings } from "@/components/default-settings"
+import { FontSizeSettings, TreeFontSizeSettings } from "@/components/font-size-settings"
+import { KeybindingSettings } from "@/components/keybinding-settings"
 import { ProvidersPage, type ProviderType } from "@/components/providers-page"
 import { SyntaxSettings } from "@/components/syntax-settings"
 import { ThemePresets } from "@/components/theme-presets"
@@ -36,6 +41,18 @@ export function SettingsPage({
   switch (page) {
     case "account":
       return <AccountSettings />
+    case "preferences":
+      return (
+        <div className="flex flex-col gap-8">
+          <DefaultSettings />
+          <AgentPermissionSettings />
+          <ChatViewSettings />
+          <WidgetPromptSettings />
+          <KeybindingSettings />
+          <FontSizeSettings />
+          <TreeFontSizeSettings />
+        </div>
+      )
     case "api":
       return <ApiKeySettings />
     case "providers":

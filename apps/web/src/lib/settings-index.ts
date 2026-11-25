@@ -10,38 +10,38 @@ import {
 } from "@/lib/sections";
 
 /**
- * Every settings page, account and workspace alike, in the groups the
- * settings nav shows them in.
+ * Every settings page, in the groups the settings nav shows them in.
  *
- * Which tree a page lives in -- `/setting/{id}` or
- * `/{ws}/workspace-settings/{id}` -- is a fact about where its data is kept.
- * Someone looking for a setting should not have to know it, so the nav, its
- * search and the command palette all read this one list.
+ * Account settings (`/setting/{id}`) follow the person; workspace settings
+ * (`/{ws}/workspace-settings/{id}`) belong to the workspace. The nav lists
+ * only the tree it is in (`settingsGroups`); the command palette lists both.
  */
 export type SettingsEntry =
   | { scope: "account"; id: SettingsPageId; keywords: string }
   | { scope: "workspace"; id: WorkspaceSettingsPageId; keywords: string };
 
-export const SETTINGS_GROUPS: readonly { label: string | null; entries: readonly SettingsEntry[] }[] = [
+export type SettingsScope = SettingsEntry["scope"];
+
+export interface SettingsGroup {
+  label: string | null;
+  entries: readonly SettingsEntry[];
+}
+
+const ACCOUNT_GROUPS: readonly SettingsGroup[] = [
   {
-    label: null,
+    label: "Account",
     entries: [
+      { scope: "account", id: "account", keywords: "profile name email avatar password github sign in" },
       {
-        scope: "workspace",
-        id: "general",
-        keywords: "default model permission mode access keybindings shortcuts vim font size editor tree chat view transcript debug diff commands widget follow-up sendprompt terminal terminals limit per project",
+        scope: "account",
+        id: "preferences",
+        keywords: "general default model permission mode access keybindings shortcuts vim font size editor tree chat view transcript debug diff commands widget follow-up sendprompt",
       },
       {
         scope: "account",
         id: "theme",
         keywords: "theme colour color accent hue dark light system contrast syntax presets palette",
       },
-    ],
-  },
-  {
-    label: "Account",
-    entries: [
-      { scope: "account", id: "account", keywords: "profile name email avatar password github sign in" },
       { scope: "account", id: "api", keywords: "api keys resend secrets email" },
       { scope: "account", id: "usage", keywords: "usage tokens cost storage quota" },
       { scope: "account", id: "activity", keywords: "activity log audit history" },
@@ -51,17 +51,40 @@ export const SETTINGS_GROUPS: readonly { label: string | null; entries: readonly
     label: "Agents",
     entries: [
       { scope: "account", id: "providers", keywords: "providers ai git github gitlab gitea token repository claude codex sign in login cli custom api keys openrouter anonrouter model keys" },
-      { scope: "workspace", id: "harness", keywords: "harness subscription claude codex shared login widgets interactive visual chart diagram" },
     ],
   },
+];
+
+const WORKSPACE_GROUPS: readonly SettingsGroup[] = [
   {
     label: "Workspace",
     entries: [
+      {
+        scope: "workspace",
+        id: "general",
+        keywords: "terminal terminals limit per project browser tabs per session settled sessions delete data",
+      },
       { scope: "workspace", id: "members", keywords: "members roles invite people permissions" },
       { scope: "workspace", id: "sharing", keywords: "sharing invite link public access" },
     ],
   },
+  {
+    label: "Agents",
+    entries: [
+      { scope: "workspace", id: "harness", keywords: "harness subscription claude codex shared login widgets interactive visual chart diagram" },
+    ],
+  },
 ];
+
+/** The groups of one settings tree. */
+export function settingsGroups(scope: SettingsScope): readonly SettingsGroup[] {
+  return scope === "account" ? ACCOUNT_GROUPS : WORKSPACE_GROUPS;
+}
+
+/** Every settings page of both trees, for the command palette. */
+export const SETTINGS_ENTRIES: readonly SettingsEntry[] = [...ACCOUNT_GROUPS, ...WORKSPACE_GROUPS].flatMap(
+  (group) => group.entries,
+);
 
 export function settingsEntryTitle(entry: SettingsEntry): string {
   return settingsEntryPage(entry).title;
