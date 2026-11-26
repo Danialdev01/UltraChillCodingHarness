@@ -18,10 +18,16 @@ describe("finding the command at the caret", () => {
 
 describe("matching", () => {
   it("puts commands that start with the query first", () => {
-    expect(matchCommands(SLASH_COMMANDS, "e").map((c) => c.name)).toEqual(["effort", "model", "harness", "research", "documentation", "continue"]);
+    expect(matchCommands(SLASH_COMMANDS, "e").map((c) => c.name)).toEqual(["effort", "model", "harness", "research", "documentation", "continue", "reviewer"]);
     expect(matchCommands(SLASH_COMMANDS, "cl").map((c) => c.name)).toEqual([]);
     expect(matchCommands(SLASH_COMMANDS, "con")).toEqual([expect.objectContaining({ name: "continue", takesArg: "target" })]);
     expect(matchCommands(SLASH_COMMANDS, "zz")).toEqual([]);
+  });
+
+  it("lists /reviewer and /council, which take no argument: they insert the @ mention (plan4 §4.1)", () => {
+    expect(matchCommands(SLASH_COMMANDS, "rev")).toEqual([expect.objectContaining({ name: "reviewer" })]);
+    expect(matchCommands(SLASH_COMMANDS, "cou")).toEqual([expect.objectContaining({ name: "council" })]);
+    expect(SLASH_COMMANDS.find((c) => c.name === "council")?.takesArg).toBeUndefined();
   });
 
   it("returns everything for an empty query", () => {

@@ -581,6 +581,18 @@ describe("an OMP turn", () => {
     expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
   });
 
+  it("denies every write a read-only (reviewer or council) thread asks for, and asks nobody (plan4 §2.2)", async () => {
+    process.env.FAKE_OMP_FIXTURE = join(FIXTURES, "omp-confirm.jsonl");
+    // Under Strict, where the same fixture asks the person twice (above).
+    const { agent, appended } = ompReactor({ ...thread, readOnly: true }, { ...keyed, agentPermissionMode: "strict" });
+    agent.react(omp, [message]);
+    await until(appended, closed);
+    const events = appended.flat();
+    // The prompts were answered in the reactor: none reached the chat.
+    expect(events.some((e) => e.type === "agent.permission_requested")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "agent.turn_completed" });
+  });
+
   it("answers a safe command itself under Normal, as for Claude Code", async () => {
     process.env.FAKE_OMP_FIXTURE = join(FIXTURES, "omp-confirm.jsonl");
     const { agent, appended } = ompReactor(thread, keyed);

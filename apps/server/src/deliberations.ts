@@ -85,6 +85,21 @@ export class RunningDeliberations {
   }
 }
 
+/**
+ * What a `@reviewer` asked of a turn gets once the turn is over (plan4
+ * §3.1): a review of a completed answer, a failure on the card for one
+ * that failed, and nothing for one that was stopped or never opened --
+ * a stop is the person's say, not the reviewer's.
+ */
+export function reviewAfterTurn(report: { turnId?: string; end?: "completed" | "cancelled" | "failed" }):
+  | { turnId: string; failed?: string }
+  | null {
+  if (!report.turnId || !report.end || report.end === "cancelled") return null;
+  return report.end === "failed"
+    ? { turnId: report.turnId, failed: "the answer did not finish, so there was nothing to review" }
+    : { turnId: report.turnId };
+}
+
 export function appendTo(store: DeliberationDeps["store"], parent: Pick<DeliberationParent, "projectId" | "threadId">) {
   return (events: DomainEvent[]) =>
     store.append({ projectId: parent.projectId, threadId: parent.threadId }, events, (tx) => applyProjection(tx, events, null));

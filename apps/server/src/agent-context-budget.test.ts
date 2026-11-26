@@ -11,6 +11,8 @@ import {
 } from "@ucch/protocol";
 import { COLLABORATION_GUIDE } from "./agent-messaging.js";
 import { assembleCliInstructions, type CliInstructionsInput } from "./cli-instructions.js";
+import { COUNCIL_MODERATOR_BRIEF, COUNCIL_OPENING_BRIEF, COUNCIL_ROUND_BRIEF } from "./council.js";
+import { PEER_REVIEW_BRIEF, PEER_REVIEW_FIX_BRIEF } from "./peer-review.js";
 
 /**
  * How many bytes of instructions UCCH hands each harness, on fixed fixture
@@ -74,6 +76,13 @@ function measure(): Record<string, number> {
   figures["native.every_tool"] = native + bytes(`${COLLABORATION_GUIDE}\n\n${UCCH_AGENT_GUIDE}`);
   figures["native.subagent"] = bytes(HARNESS_RULES) + bytes(`${COLLABORATION_GUIDE}\n\n${UCCH_SUBAGENT_RULES}`);
   figures["native.plan_draft"] = native + bytes(PLAN_DRAFT_RULES);
+  // Reviewer and Council (plan4 §3.5): fixed text in a child's first message
+  // or the moderator's turn, never in anyone's per-turn prefix.
+  figures["deliberation.peer_review"] = bytes(PEER_REVIEW_BRIEF);
+  figures["deliberation.peer_review_fix"] = bytes(PEER_REVIEW_FIX_BRIEF);
+  figures["deliberation.council_opening"] = bytes(COUNCIL_OPENING_BRIEF);
+  figures["deliberation.council_round"] = bytes(COUNCIL_ROUND_BRIEF);
+  figures["deliberation.council_moderator"] = bytes(COUNCIL_MODERATOR_BRIEF);
   return figures;
 }
 
@@ -97,7 +106,16 @@ describe("the instructions each harness is handed", () => {
   }
 
   it(`keeps each shared block under ${MAX_BLOCK_BYTES} bytes`, () => {
-    for (const [name, block] of Object.entries({ UCCH_WORKING_RULES, DEFAULT_MODE_RULES, UCCH_SUBAGENT_RULES })) {
+    for (const [name, block] of Object.entries({
+      UCCH_WORKING_RULES,
+      DEFAULT_MODE_RULES,
+      UCCH_SUBAGENT_RULES,
+      PEER_REVIEW_BRIEF,
+      PEER_REVIEW_FIX_BRIEF,
+      COUNCIL_OPENING_BRIEF,
+      COUNCIL_ROUND_BRIEF,
+      COUNCIL_MODERATOR_BRIEF,
+    })) {
       expect(bytes(block), name).toBeLessThanOrEqual(MAX_BLOCK_BYTES);
     }
   });

@@ -1,6 +1,7 @@
 import type { ScheduledResume } from "@ucch/protocol";
 import type { DomainEvent, FileDiff, MessageMode, PlanStage } from "@ucch/protocol";
 import { isUcchAgentTool, PLAN_CLOSE, PLAN_OPEN, proposedPlanIn, stripPlanTags } from "@ucch/protocol/plain";
+import { foldDeliberation, isDeliberationEvent, type DeliberationState } from "./deliberations";
 import { parseAttachments, type MessageAttachment } from "./attachments.js";
 
 /**
@@ -304,6 +305,13 @@ export interface ChatMessage {
   switched?: HarnessSwitch;
   /** Not a turn: the row where the session's context was cleared. */
   cleared?: true;
+  /** Not a turn: a `@reviewer` or `@council` run's card (plan4 §4.2, §4.3). */
+  deliberation?: DeliberationState;
+  /**
+   * A message the Reviewer sent the agent (`peerReviewId`): its findings,
+   * to fix. `text` is what was sent; the label names who sent it.
+   */
+  fromReviewer?: { peerReviewId: string; model: string | null };
   /** From `agent.turn_completed`. "cancelled" and "max_iterations" are not failures. */
   stopReason?: string | null;
   error?: string;
@@ -503,8 +511,15 @@ export function toMessages(
   const subagentCalls = new Map<string, ToolPart>();
 
   const deliveredMessages = new Set(events.flatMap(({ event }) => event.type === "agent.message_delivered" ? event.messageIds : event.type === "user.message" ? event.agentMessageIds ?? [] : []));
+  /** Reviews and councils by id; each has one row, placed where it began. */
+  const deliberations = new Map<string, DeliberationState>();
   for (const row of events) {
     const { event } = row;
+    if (isDeliberationEvent(event)) {
+      const opened = foldDeliberation(deliberations, event);
+      if (opened) messages.push({ role: "assistant", text: "", parts: [], streaming: false, deliberation: opened, startedAt: row.receivedAt ?? null, completedAt: null });
+      continue;
+    }
     switch (event.type) {
       case "agent.session_message":
       case "agent.session_message_sent": {
@@ -522,6 +537,20 @@ export function toMessages(
       case "user.message": {
         scheduledResume = null;
         if (event.agentMessageIds?.length) break;
+        if (event.peerReviewId) {
+          const review = deliberations.get(event.peerReviewId);
+          const model = review?.kind === "peer_review" ? (review.reviewers[0]?.model ?? null) : null;
+          messages.push({
+            role: "user",
+            text: event.text,
+            fromReviewer: { peerReviewId: event.peerReviewId, model },
+            parts: [],
+            streaming: false,
+            startedAt: row.receivedAt ?? null,
+            completedAt: null,
+          });
+          break;
+        }
         // The attachment block is for the model; the chat shows the sentence
         // that was typed, and a tag per file.
         const { text: typed, attachments } = parseAttachments(event.text);
@@ -686,6 +715,8 @@ export function toMessages(
       }
 
       case "agent.subagent_started": {
+        // A reviewer or council member: drawn on its run's card, not as one of its own.
+        if (event.deliberationId) break;
         const message = turn(event.turnId);
         const known = subagent(event.subagentId);
         if (known) {

@@ -19,6 +19,7 @@ import type { Project } from "@/lib/session"
 import { useInvalidate } from "@/lib/use-invalidate"
 import { cn } from "@/lib/utils"
 import { SettingsSection } from "@/components/layout/settings-section"
+import { DeliberationSettings } from "@/components/deliberation-settings"
 
 /**
  * The project's own settings, on the manage page's Preferences tab: the
@@ -36,6 +37,7 @@ export function ProjectPreferences({ project }: { project: Project }) {
       <PreviewPortSetting project={project} />
       <PublicSiteSetting hash={project.hash} />
       <OmpTrustSetting hash={project.hash} />
+      <DeliberationSettings hash={project.hash} />
       <TaskAutomationSettings hash={project.hash} />
       <DocWidthSetting />
     </div>

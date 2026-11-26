@@ -170,7 +170,7 @@ const COMPONENTS: Components = {
  * the form every harness is taught): opens UCCH's file viewer at that line.
  * Outside a project view there is no viewer to open, so it is plain text.
  */
-function FileLink({
+export function FileLink({
   path,
   line,
   children,

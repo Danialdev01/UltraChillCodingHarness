@@ -298,6 +298,8 @@ The `dev` user may create as many databases as you like on both servers; add the
 | `PG_JIT` | `off` | Short queries pay JIT's start-up for nothing. |
 | `PG_WAL_COMPRESSION` / `PG_MAX_WAL_SIZE` / `PG_CHECKPOINT_COMPLETION_TARGET` | `on` / `2GB` / `0.9` | Fewer, smoother checkpoints. |
 | `PG_IDLE_IN_TRANSACTION_TIMEOUT` | `5min` | A transaction left open this long (a stuck dev server's) is ended. |
+| `PEER_REVIEW_MAX_COST_USD` | `2.00` | The most one `@reviewer` run may spend across its reviewers; past it the run is stopped and its card says so. |
+| `COUNCIL_MAX_COST_USD` | `5.00` | The most one `@council` may spend across its members and rounds. |
 
 **Alerts.** The server watches itself and logs at error when the container has used more than 85% of its memory limit for 2 minutes, the event loop's p99 has been above 200 ms or the engine queue's wait p99 above 500 ms for a minute, or the kernel OOM-killed a process. Set `ALERT_WEBHOOK_URL` to also have each POSTed as JSON, the message in `text`, to [ntfy](https://ntfy.sh) or a Slack-compatible webhook. Each condition alerts at most once per 15 minutes. Prometheus and Grafana scraping `/metrics` stay optional.
 

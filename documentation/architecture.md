@@ -92,7 +92,7 @@ apps/server         Fastify API, /ws gateway, engine, reactors, terminals, previ
 apps/web            Next.js UI
 packages/protocol   zod schemas shared by both sides: commands, events, RPC frames, hostnames,
                     roles, permissions; `@ucch/protocol/plain` is the zod-free subset for the browser
-packages/db         Drizzle schema, 32 SQL migrations, bootstrap (migrate on boot)
+packages/db         Drizzle schema, 52 SQL migrations, bootstrap (migrate on boot)
 packages/agent      the native agent loop, tool registry, tools, executor, doc kit (doc-kit/)
 packages/providers  the provider boundary: Claude Code, Codex and OMP adapters, process host
 packages/omp-bridge MCP server that lends OMP's tools to Claude Code and Codex
@@ -225,8 +225,9 @@ Not everything is event-sourced. Organisation data (workspaces, members, invites
 | `project_tasks`        | table         | Tasks-board cards: stage, status, research, verification, feedback                                                                                                               |
 | `project_keys`         | table         | the project's saved keys (encrypted)                                                                                                                                             |
 | `audit_log`            | table         | the activity log: who, what, target, summary, details                                                                                                                            |
+| `agent_deliberations`  | table         | `@reviewer` and `@council` runs: kind, the turn reviewed or held, status, members, verdicts or positions by round and the conclusion, cost (projected from `agent.peer_review_*` / `agent.council_*`) |
 
-Migrations live in `packages/db/migrations` (32 of them, up to `0031_reviews.sql`) and run on every server boot (`packages/db/src/bootstrap.ts`).
+Migrations live in `packages/db/migrations` (52 of them, up to `0051_agent_deliberations.sql`) and run on every server boot (`packages/db/src/bootstrap.ts`).
 
 **Disk layout** (in production everything is under `/data`):
 
@@ -345,6 +346,34 @@ Sanitized captures and regression tests are in `tests/fixtures/codex-0.167.0`
 and `tests/codex-native-v2.test.ts`. The native browser case in
 `apps/web/e2e/subagent.spec.ts` streams normalized fixture events through the
 normal WebSocket client and verifies live cards, reload, and reconnect.
+
+### Reviewer and Council (deliberations)
+
+`@reviewer` and `@council` in a message are parsed once by
+`parseDirectives` and stored as `user.message.directives`. Everything after
+that is the server's, bounded by code rather than left to a model
+(`documentation/agent-coordination.md` has the syntax and limits).
+
+- `peer-review.ts` (`PeerReviewer`) and `council.ts` (`CouncilRunner`) share
+  `deliberations.ts`: the deps, the settings (`projects.deliberation`), the
+  running-run registry for Stop, and `recoverDeliberations` on startup.
+- Members are hidden, read-only child threads started with
+  `SubagentRunner.startManaged`. It skips the tool-call claim that
+  `ucch_agent` needs and places `agent.subagent_started { deliberationId }`
+  on the triggering turn. The chat draws such children on the
+  deliberation's card, not as subagent cards of their own.
+- **The held turn.** A council's message claims the thread (`queued`) but
+  `#deliberate` runs the council before `#turn` opens. The moderator's turn
+  then carries `COUNCIL_MODERATOR_BRIEF` in its message, so the fixed prefix
+  is never touched.
+- Events: `agent.peer_review_{requested,started,completed,failed,ended}`,
+  `agent.council_{started,position,dropped,concluded,failed}` and
+  `agent.deliberation_cancelled`, projected into `agent_deliberations`
+  (migration `0051`). Commands: `thread.peer_review` (Review again /
+  Review with…), `thread.peer_review_fix`, `thread.deliberation_cancel`.
+- **Not the code review.** `review.*`, the `reviews` table and
+  `omp-review.ts` are OMP's branch review in the Git view. Deliberations
+  review one answer in the chat, and nothing in them shares a name with it.
 
 ---
 

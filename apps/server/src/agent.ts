@@ -114,7 +114,7 @@ import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 import { TurnScheduler, type TurnKind } from "./turn-scheduler.js";
 import { CouncilRunner } from "./council.js";
-import { deliberationSettings, type DeliberationDeps, type DeliberationParent } from "./deliberations.js";
+import { deliberationSettings, reviewAfterTurn, type DeliberationDeps, type DeliberationParent } from "./deliberations.js";
 import { PeerReviewer } from "./peer-review.js";
 import { DEFAULT_OMP_SETTINGS, writeOmpOverlay, type OmpPreset } from "./omp-overlay.js";
 import { bridgeServer, writeClaudeMcpConfig, writeCodexBridge } from "./omp-bridge-config.js";
@@ -1059,12 +1059,8 @@ export class AgentTurnReactor {
       if (!controller.signal.aborted) setImmediate(() => void this.messaging?.deliver(threadId).catch(this.onError));
     }
     const reviewer = options.directives?.reviewer;
-    if (reviewer && report.turnId && report.end && report.end !== "cancelled") {
-      void this.#peerReview(threadId, reviewer, principal, {
-        turnId: report.turnId,
-        ...(report.end === "failed" ? { failed: "the answer did not finish, so there was nothing to review" } : {}),
-      }).catch(this.onError);
-    }
+    const review = reviewer ? reviewAfterTurn(report) : null;
+    if (reviewer && review) void this.#peerReview(threadId, reviewer, principal, review).catch(this.onError);
     // After the turn has let go of the thread: the handoff claims it anew.
     if (limited) await this.#handOffOnLimit(threadId, limited, text, options, principal);
     else if (!controller.signal.aborted) {

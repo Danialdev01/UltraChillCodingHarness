@@ -159,7 +159,7 @@
   - A child thread (one with `parentThreadId`) refuses directives: "Reviewer and Council run from the main session". This mirrors the no-grandchildren rule.
   - `decide.test.ts` gets table rows for each of these.
 
-- [x] **2.5 Migration `0048_agent_deliberations.sql`** plus the schema (`packages/db/src/schema.ts`, next to `agent_runs` at `:1227`).
+- [x] **2.5 Migration `0051_agent_deliberations.sql`** (planned as `0048`; three other migrations landed first) plus the schema (`packages/db/src/schema.ts`, next to `agent_runs` at `:1227`).
   - `agent_deliberations`:
     - `id` (uuid), `thread_id`, `project_id`, `kind` (`peer_review | council`), `turn_id`
     - `status` (`running | completed | failed | cancelled`)
@@ -221,7 +221,7 @@
   - Register their reactors in the reactor composition (`index.ts:726-730`).
   - Add the new env vars (`PEER_REVIEW_MAX_COST_USD`, `COUNCIL_MAX_COST_USD`) to the config parser and to the README env table.
 
-- [ ] **3.5 Server tests**, which follow `subagents.test.ts` and `agent-messaging.test.ts` with a fake runner:
+- [x] **3.5 Server tests**, which follow `subagents.test.ts` and `agent-messaging.test.ts` with a fake runner:
   - **Peer review:**
     - It triggers only on a completed turn.
     - The model choice prefers another vendor.
@@ -240,14 +240,14 @@
 
 ### Phase 4: Web UI
 
-- [ ] **4.1 Composer mentions** (`apps/web/src/lib/file-mention.ts` → generalised into `lib/composer-mention.ts`).
+- [x] **4.1 Composer mentions** (`apps/web/src/lib/file-mention.ts` → generalised into `lib/composer-mention.ts`).
   - The `@` menu lists **Reviewer** and **Council** above the file results, filtered by what has been typed. Each row has a one-line description and an icon.
   - Choosing one inserts `@reviewer` / `@council` and opens a second step listing the models (the same merged catalogue `project-chat.tsx:418-433` builds), plus "Auto (best available)" and "Same as this session". Several models can be picked, up to the limit. It writes `@reviewer(gpt-5, opus)`.
   - Highlight the mentions in the draft using the ranges from `parseDirectives`, and show the inline `errors` under the composer. Send is disabled while an error is present.
   - The `/` menu (`lib/slash-commands.ts`) gets `/reviewer` and `/council` entries that **insert the `@` mention** and never send a slash. They are listed so people can find them.
   - Tests: extend `slash-commands.test.ts` and `file-mention.test.ts` (renamed to `composer-mention.test.ts`).
 
-- [ ] **4.2 `components/peer-review-card.tsx`**, rendered under the answer it reviews, through `chat-messages.ts` handling the `agent.peer_review_*` events, as `isSubagentCall` does today (`chat-messages.ts:93`).
+- [x] **4.2 `components/peer-review-card.tsx`**, rendered under the answer it reviews, through `chat-messages.ts` handling the `agent.peer_review_*` events, as `isSubagentCall` does today (`chat-messages.ts:93`).
   - **Header:** a verdict badge (Approved / Changes requested / Incorrect), the reviewer's model icon and name, the `reason`, cost, and a transcript link (`useSessionHref`, `subagent-card.tsx:176`).
   - **Body:** the summary, then the findings grouped by severity. A `file:line` opens the file in the editor view where the project has one. Each finding has a checkbox, all checked by default.
   - **Actions:**
@@ -259,14 +259,14 @@
   - **While running:** a skeleton row per reviewer (no spinner and no "Loading…", per the `apps/web/CLAUDE.md` rule). Several reviewers show as tabs or stacked sections.
   - **Colours:** tokens only (`ui-color-lint.test.ts`).
 
-- [ ] **4.3 `components/council-card.tsx`**, rendered in place of the held turn while the council runs, then above the moderator's answer.
+- [x] **4.3 `components/council-card.tsx`**, rendered in place of the held turn while the council runs, then above the moderator's answer.
   - **Member strip:** seat letter, model icon, status (thinking / answered / dropped) and the transcript link.
   - **Rounds:** each round is a collapsible section with every seat's recommendation, a confidence bar, and its reasons and risks. A "changed position" marker shows when a member moved.
   - **Conclusion row:** a consensus badge (Unanimous / Majority / Split), the recommendation, and dissent callouts.
   - **Footer:** cost and rounds run, plus Stop while the council is running.
   - **Mobile:** works at 375 px, and the member strip wraps.
 
-- [ ] **4.4 Settings: the default model when none is named.**
+- [x] **4.4 Settings: the default model when none is named.**
   - In the project manage page's agent settings, and as a per-user default through `lib/model-preference.ts`:
     - **Reviewer model:** Auto (default) · Same as session · a specific model.
     - **Council size:** 2–5 (default 3).
@@ -274,7 +274,7 @@
   - Stored server-side with the project settings, so it works from any device. `pickModels` reads it as `preference`.
   - These implement the request's "same model or best model" rule: Auto picks the best model available, and "Same as session" uses the session's own model.
 
-- [ ] **4.5 E2E** (`apps/web/e2e/peer-review.spec.ts`, `council.spec.ts`), using the fake-provider setup `subagent.spec.ts` uses:
+- [x] **4.5 E2E** (`apps/web/e2e/peer-review.spec.ts`, `council.spec.ts`), using the fake-provider setup `subagent.spec.ts` uses:
   - Typing `@rev` shows the menu.
   - Sending `do X @reviewer` → an answer, then a review card with findings → Ask agent to fix → a fix turn attributed to the Reviewer.
   - `@council` → a card with 3 seats and rounds → the moderator's answer below it.
@@ -283,19 +283,32 @@
 
 ### Phase 5: Documentation
 
-- [ ] **5.1 `documentation/agent-coordination.md`:** a "Reviewer and Council" section covering the syntax, the model choice, the read-only rule, limits, costs and cancellation.
-- [ ] **5.2 `documentation/architecture.md`:**
+- [x] **5.1 `documentation/agent-coordination.md`:** a "Reviewer and Council" section covering the syntax, the model choice, the read-only rule, limits, costs and cancellation.
+- [x] **5.2 `documentation/architecture.md`:**
   - The deliberation events and table, and the held-turn mechanism for the council.
   - How this differs from the OMP code review (`review.*`).
   - Fix the stale migration count at `:230`.
-- [ ] **5.3 `documentation/spec.md`:** the composer mentions and the two cards.
-- [ ] **5.4 `README.md`:** the new env vars.
+- [x] **5.3 `documentation/spec.md`:** the composer mentions and the two cards.
+- [x] **5.4 `README.md`:** the new env vars.
+
+## Completion notes (2026-11-26)
+
+- **3.5:** Most server tests were already in `apps/server/src/deliberations.test.ts`. The gaps were filled as follows:
+  - `reviewAfterTurn`, the gate that reviews only a completed turn and turns a failed one into `peer_review_failed`, is tested on its own.
+  - The read-only denial is tested end to end on OMP under Strict (`agent.test.ts`). Claude's plan mode with its held-back tools and Codex's `read-only` sandbox were already covered in `claude.test.ts` and `codex.test.ts`.
+  - The five briefs have entries in `agent-context-budget.json` and fall under the 1,500-byte block limit.
+  - A held council turn after a restart is released by the startup sweep that releases every `queued` thread (`index.ts`, `turn.dequeued { reason: "restart" }`). There is no separate path to test.
+- **3.2 / 4.4 preference:** The council takes no model preference, by design. Seat A is the author's model and the other seats are picked for vendor spread. The project setting covers the reviewer's model, the council's size and the council's rounds.
+- **4.1:** The agent mentions live in a new `lib/composer-mention.ts`, beside `file-mention.ts` rather than replacing it. The file mention is unchanged, and the `@` menu shows both.
+- **4.4:** The settings are a section on Manage → Preferences (`deliberation-settings.tsx`). Like the other sections there, it reads and writes `/api/projects/:hash/deliberation` directly (`lib/deliberation-api.ts`).
+- **4.5:** The specs play the thread's events back over the real socket (`e2e/deliberation-playback.ts`) and catch the commands the cards send, so no model runs. Both pass. They cover the menu, inline errors, the cards, Fix, Stop and reload, plus a 375 px overflow check on the council card.
+- **Not run:** the live checks in the Verification section, with signed-in Claude Code and Codex accounts on real models.
 
 ## Critical files
 
 - **Protocol:** `packages/protocol/src/agent-directives.ts` (new), `model-profiles.ts` (new), `commands.ts`, `events.ts`, `plain.ts` (exports)
 - **Server:** `apps/server/src/peer-review.ts` (new), `council.ts` (new), `subagents.ts` (`startManaged`, `#launch`, `followUp`), `agent.ts` (the `#run` finally hook, the held council turn, read-only mapping), `decide.ts`, `engine.ts`, `plan-mode.ts`, `index.ts`, `agent-context-budget.json`
-- **Database:** `packages/db/migrations/0048_agent_deliberations.sql` (new), `packages/db/src/schema.ts`
+- **Database:** `packages/db/migrations/0051_agent_deliberations.sql` (new), `packages/db/src/schema.ts`
 - **Web:** `apps/web/src/lib/composer-mention.ts` (from `file-mention.ts`), `lib/slash-commands.ts`, `lib/chat-messages.ts`, `components/project-chat.tsx`, `components/composer-menu.tsx`, `components/peer-review-card.tsx` (new), `components/council-card.tsx` (new), `lib/model-preference.ts`
 
 ## Reuse, don't rebuild

@@ -1247,3 +1247,121 @@ describe("project agent messages", () => {
     expect(folded.messages[0]).toMatchObject({ agentMessage: { direction: "to", delivered: true } });
   });
 });
+
+describe("Reviewer and Council rows (plan4 §4.2, §4.3)", () => {
+  const D = "66666666-6666-4666-8666-666666666666";
+  const CHILD = "77777777-7777-4777-8777-777777777777";
+  const member = { subagentId: "s1", childThreadId: CHILD, childHash: "abcdefghij", model: "gpt-5", provider: "codex" as const, reason: "different vendor from the author" };
+  const answered: DomainEvent[] = [
+    { type: "user.message", threadId: THREAD, text: "add validation" },
+    { type: "turn.started", threadId: THREAD, turnId: TURN, provider: "claude" },
+    { type: "agent.text_delta", threadId: THREAD, turnId: TURN, text: "Done." },
+    { type: "agent.turn_completed", threadId: THREAD, turnId: TURN, stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }, costUsd: 0 },
+  ];
+  const rows = (events: DomainEvent[]) => events.map((event) => ({ event }));
+
+  it("puts a review on one row after the answer, and fills it in as reviewers report", () => {
+    const { messages } = toMessages(
+      rows([
+        ...answered,
+        { type: "agent.peer_review_started", threadId: THREAD, deliberationId: D, targetTurnId: TURN, reviewers: [member], fix: false },
+        // The reviewer's own child session: on the card, not a card of its own.
+        { type: "agent.subagent_started", threadId: THREAD, turnId: TURN, subagentId: "s1", parentToolUseId: null, agent: "reviewer", description: "Reviewer", model: "gpt-5", deliberationId: D } as DomainEvent,
+        {
+          type: "agent.peer_review_completed",
+          threadId: THREAD,
+          deliberationId: D,
+          subagentId: "s1",
+          verdict: "changes_requested",
+          summary: "One bug.",
+          findings: [
+            { id: "f1", severity: "major", file: "src/a.ts", line: 3, title: "Off by one", detail: "…" },
+            { id: "f2", severity: "nit", title: "Name", detail: "…" },
+          ],
+          costUsd: 0.12,
+        },
+        { type: "agent.peer_review_ended", threadId: THREAD, deliberationId: D, status: "completed", costUsd: 0.12 },
+      ]),
+    );
+    const turn = messages.find((m) => m.turnId === TURN)!;
+    expect(turn.parts.some((p) => p.kind === "tool")).toBe(false);
+    const row = messages.at(-1)!;
+    expect(row.deliberation).toMatchObject({
+      kind: "peer_review",
+      targetTurnId: TURN,
+      status: "completed",
+      costUsd: 0.12,
+      reviewers: [{ subagentId: "s1", status: "completed", verdict: "changes_requested", summary: "One bug." }],
+    });
+  });
+
+  it("attributes the fix turn's message to the Reviewer", () => {
+    const { messages } = toMessages(
+      rows([
+        ...answered,
+        { type: "agent.peer_review_started", threadId: THREAD, deliberationId: D, targetTurnId: TURN, reviewers: [member], fix: true },
+        { type: "user.message", threadId: THREAD, text: "Fix these: …", peerReviewId: D },
+      ]),
+    );
+    expect(messages.at(-1)).toMatchObject({ role: "user", fromReviewer: { peerReviewId: D, model: "gpt-5" } });
+  });
+
+  it("draws a council where the held turn waits, rounds and conclusion included, and a stop", () => {
+    const HELD = "88888888-8888-4888-8888-888888888888";
+    const position = (round: number, seat: string, changed = false): DomainEvent => ({
+      type: "agent.council_position",
+      threadId: THREAD,
+      deliberationId: D,
+      round,
+      seat,
+      recommendation: "Stay on Postgres",
+      confidence: 0.8,
+      reasons: ["fewer moving parts"],
+      risks: [],
+      changed,
+    });
+    const started: DomainEvent[] = [
+      { type: "user.message", threadId: THREAD, text: "should sessions move to Redis?" },
+      {
+        type: "agent.council_started",
+        threadId: THREAD,
+        deliberationId: D,
+        turnId: HELD,
+        members: [
+          { ...member, seat: "A", model: "claude-opus-5-5", provider: "claude" },
+          { ...member, subagentId: "s2", seat: "B" },
+        ],
+        rounds: 1,
+        question: "should sessions move to Redis?",
+      },
+      position(0, "B"),
+      position(0, "A"),
+    ];
+    const live = toMessages(rows(started)).messages.at(-1)!.deliberation!;
+    expect(live).toMatchObject({ kind: "council", status: "running", turnId: HELD });
+    if (live.kind !== "council") throw new Error("not a council");
+    expect(live.positions[0]!.map((p) => p.seat)).toEqual(["A", "B"]);
+    expect(live.members.map((m) => m.status)).toEqual(["answered", "answered"]);
+
+    const done = toMessages(
+      rows([
+        ...started,
+        { type: "agent.council_dropped", threadId: THREAD, deliberationId: D, seat: "B", error: "timed out" },
+        { type: "agent.council_concluded", threadId: THREAD, deliberationId: D, consensus: "unanimous", recommendation: "Stay on Postgres", dissent: [], roundsRun: 0, costUsd: 0.4, partial: true },
+        { type: "turn.started", threadId: THREAD, turnId: HELD, provider: "claude" },
+      ]),
+    ).messages;
+    // The card sits above the moderator's answer.
+    const card = done.findIndex((m) => m.deliberation);
+    expect(done.findIndex((m) => m.turnId === HELD)).toBeGreaterThan(card);
+    expect(done[card]!.deliberation).toMatchObject({ status: "completed", conclusion: { consensus: "unanimous", partial: true } });
+
+    const stopped = toMessages(rows([...started, { type: "agent.deliberation_cancelled", threadId: THREAD, deliberationId: D, by: "user" }])).messages;
+    expect(stopped.at(-1)!.deliberation).toMatchObject({ status: "cancelled", cancelledBy: "user" });
+  });
+
+  it("shows a review that could not start as a failed card", () => {
+    const { messages } = toMessages(rows([...answered, { type: "agent.peer_review_failed", threadId: THREAD, deliberationId: D, error: "no other model is available" }]));
+    expect(messages.at(-1)!.deliberation).toMatchObject({ kind: "peer_review", status: "failed", error: "no other model is available" });
+  });
+});

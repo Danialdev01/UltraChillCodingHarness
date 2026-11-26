@@ -13,5 +13,10 @@
   "native.default": 4352,
   "native.every_tool": 6831,
   "native.subagent": 3715,
-  "native.plan_draft": 5519
+  "native.plan_draft": 5519,
+  "deliberation.peer_review": 987,
+  "deliberation.peer_review_fix": 241,
+  "deliberation.council_opening": 495,
+  "deliberation.council_round": 570,
+  "deliberation.council_moderator": 367
 }

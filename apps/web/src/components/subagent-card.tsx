@@ -173,7 +173,7 @@ export function SubagentCard({ call, harness }: { call: ToolPart; harness?: stri
  * Where a `ucch_agent` subagent's own session is: its full transcript. Only
  * in a project workspace, whose sessions have addresses of their own.
  */
-function useSessionHref(childHash: string | undefined): string | null {
+export function useSessionHref(childHash: string | undefined): string | null {
   const pathname = usePathname();
   const ws = useWorkspaceHash();
   const kind = useActiveWorkspace()?.kind ?? "project";

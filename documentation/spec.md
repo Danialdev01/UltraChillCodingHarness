@@ -131,6 +131,12 @@ Prompt history is available with ↑/↓, and chat-block navigation with the fad
 | `/compact [focus]` | fold older turns into a summary now |
 | `/handoff [focus]` | replace the context with a brief of the work so far |
 | `/continue <harness>` | carry the work on in a new thread on another harness (§8) |
+| `/reviewer`, `/council` | insert `@reviewer(` / `@council(` and open its model step; nothing is sent as a slash |
+
+**Reviewer and Council.** The `@` menu lists **Reviewer** and **Council** above the file results. Picking one inserts `@reviewer()` or `@council()` with the caret inside, and a second step lists Done, Auto (best available), Same as this session, `fix` / `implement`, and every signed-in harness's models, up to the limit (3 reviewers, 5 members). A mistake in a mention (an unknown option, too many models, a council with no question) shows under the composer, and Send stays off until it is fixed. The server reads the mention with the same parser.
+- A **review card** under the answer shows each reviewer's model, why it was chosen, its verdict (Approved / Changes requested / Incorrect), cost, transcript link, and findings grouped by severity. A `file:line` opens the file. Each finding has a checkbox. **Ask agent to fix (n)** sends the checked ones (nits never), and the fix turn's message reads "From Reviewer (model)". The card also has **Review again**, **Review with…**, **Dismiss**, and **Stop** while running.
+- A **council card** stands where the held turn waits, then above the moderator's answer. It has a member strip (seat, model, thinking / answered / dropped, transcript link), each round folded open to every seat's recommendation, confidence bar, reasons and risks with a "changed position" marker, the consensus (Unanimous / Majority / Split) with dissent, and cost, rounds and **Stop**.
+- Both cards are rebuilt from the thread's log on reload. A running reviewer or round shows a skeleton.
 
 **Shared composer and presence.** The draft in a thread's composer is synced to every tab and person viewing it (`composer` frames with a revision; a stale write gets the newer state back). Presence badges show who else has the page open, in their caret colour, pulsing while they type.
 

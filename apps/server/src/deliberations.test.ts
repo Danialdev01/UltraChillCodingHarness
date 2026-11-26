@@ -3,7 +3,7 @@ import type { Database } from "@ucch/db";
 import type { Command, DomainEvent } from "@ucch/protocol";
 import type { Principal } from "./auth.js";
 import { conclude, CouncilRunner, parsePosition, type Position } from "./council.js";
-import { DeliberationSettings, recoverDeliberations, type DeliberationDeps } from "./deliberations.js";
+import { DeliberationSettings, recoverDeliberations, reviewAfterTurn, type DeliberationDeps } from "./deliberations.js";
 import { fixMessage, parseReviewBlock, PeerReviewer, renderChanges, reviewedTurn } from "./peer-review.js";
 import type { ManagedRequest, RunOutcome } from "./subagents.js";
 
@@ -282,6 +282,20 @@ describe("council", () => {
   it("takes an answer with no block at its words", () => {
     expect(parsePosition("Use Redis.")).toMatchObject({ recommendation: "Use Redis.", confidence: 0.5 });
     expect(parsePosition("  ")).toBeNull();
+  });
+});
+
+describe("reviewAfterTurn (plan4 §3.1)", () => {
+  it("reviews a completed answer", () => {
+    expect(reviewAfterTurn({ turnId: "t1", end: "completed" })).toEqual({ turnId: "t1" });
+  });
+  it("puts a failed answer on the card as a failure, not a review", () => {
+    expect(reviewAfterTurn({ turnId: "t1", end: "failed" })).toEqual({ turnId: "t1", failed: expect.stringContaining("did not finish") });
+  });
+  it("does nothing for a stopped turn, or one that never opened", () => {
+    expect(reviewAfterTurn({ turnId: "t1", end: "cancelled" })).toBeNull();
+    expect(reviewAfterTurn({})).toBeNull();
+    expect(reviewAfterTurn({ turnId: "t1" })).toBeNull();
   });
 });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode, type Ref } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode, type Ref } from "react";
 import {
   AlertCircleIcon,
   ArrowDownIcon,
@@ -34,12 +34,14 @@ import {
   MicOffIcon,
   PlusIcon,
   RotateCcwIcon,
+  SearchCheckIcon,
   SparklesIcon,
   SquareIcon,
   TelescopeIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
   UploadIcon,
+  UsersIcon,
   XIcon,
 } from "lucide-react";
 
@@ -106,6 +108,8 @@ import { cliContextWindow, isShowWidgetTool } from "@ucch/protocol/plain";
 import { TurnProgress } from "@/components/turn-progress";
 import { PermissionPromptCard } from "@/components/permission-prompt";
 import { subagentConversation, subagentParentRequest } from "@/lib/subagent-chat";
+import { CouncilCard } from "@/components/council-card";
+import { PeerReviewCard, type ReviewModelChoice } from "@/components/peer-review-card";
 import { AgentSessionMessage, SubagentCard, SubagentComposer, SubagentDetail, SubagentGroup } from "@/components/subagent-card";
 import { TranscriptTurn } from "@/components/chat-transcript";
 import { ConversationRail, type RailTurn } from "@/components/conversation-rail";
@@ -173,6 +177,18 @@ import { codeChatPrompt, type CodeReference } from "@/lib/code-chat";
 import { basename, dirname } from "@/lib/files-api";
 import { flattenEntries } from "@/lib/file-tree";
 import { insertMention, mentionAt, rankEntries, type Mention } from "@/lib/file-mention";
+import {
+  AGENT_MENTION_MAX,
+  agentArgsAt,
+  closeAgentArgs,
+  insertAgentMention,
+  matchAgentMentions,
+  namedModels,
+  pickAgentModel,
+  SAME_MODEL,
+  type AgentArgs,
+} from "@/lib/composer-mention";
+import { parseDirectives } from "@ucch/protocol/plain";
 import { matchCommands, matchOptions, SLASH_COMMANDS, slashAt, type Slash } from "@/lib/slash-commands";
 import { PlanReadyCard } from "@/components/plan-ready";
 import { KnowledgeBaseSelect, KnowledgeModeSubmenu, useKnowledgeChoice } from "@/components/knowledge/knowledge-picker";
@@ -196,7 +212,7 @@ import { afterNextPaint, reportVital } from "@/lib/vitals";
 import { useViewerFirstName } from "@/components/viewer";
 
 /** Which menu the composer has open, and the word it was opened by. */
-type ComposerMenuState = { kind: "mention"; mention: Mention } | { kind: "slash"; slash: Slash };
+type ComposerMenuState = { kind: "mention"; mention: Mention } | { kind: "slash"; slash: Slash } | { kind: "agent"; args: AgentArgs };
 
 /**
  * The conversation view for one project -- or, given `session`, for that one
@@ -435,6 +451,27 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
       images: true,
     }));
   }, [cli, models, modelKeyId, providers.cards, provider]);
+
+  /**
+   * The first `@reviewer` / `@council` mistake in the draft, as the server
+   * would refuse it (plan4 §4.1). Not while the model step is still open:
+   * an unfinished `@reviewer(` is not an error yet.
+   */
+  const directiveError = useMemo(() => {
+    if (!/@(reviewer|council)/i.test(draft)) return null;
+    const planned = /^\/plan\s+(\S[\s\S]*)$/.exec(draft);
+    return parseDirectives(planned ? planned[1]! : draft).errors[0]?.message ?? null;
+  }, [draft]);
+
+  /** What "Review with…" offers: every signed-in CLI harness's models. */
+  const reviewModels: ReviewModelChoice[] = useMemo(
+    () =>
+      Object.values(providers.cards ?? {}).flatMap((card) =>
+        card && card.models ? card.models.map((m) => ({ id: m.id, label: `${m.name} · ${card.label}` })) : [],
+      ),
+    [providers.cards],
+  );
+  const deliberationHost = useMemo(() => ({ threadId, models: reviewModels }), [threadId, reviewModels]);
 
   // A CLI harness always has a model selected -- the remembered one for this
   // project and harness, else the first it offers -- so every prompt names
@@ -1205,8 +1242,10 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
     let next: ComposerMenuState | null = null;
     if (el && caret !== null) {
       const slash = slashAt(el.value, caret);
-      const mention = slash ? null : mentionAt(el.value, caret);
-      next = slash ? { kind: "slash", slash } : mention ? { kind: "mention", mention } : null;
+      // Inside `@reviewer(…)`: the model step, before a file mention could claim the word.
+      const args = slash ? null : agentArgsAt(el.value, caret);
+      const mention = slash || args ? null : mentionAt(el.value, caret);
+      next = slash ? { kind: "slash", slash } : args ? { kind: "agent", args } : mention ? { kind: "mention", mention } : null;
     }
     const key = next && JSON.stringify(next);
     if (key && key === dismissedMenu.current) next = null;
@@ -1225,8 +1264,13 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
     history.current = idleCursor;
     setDraft(text);
     setMenu(null);
-    requestAnimationFrame(() => draftRef.current?.setSelectionRange(caret, caret));
-  }, []);
+    requestAnimationFrame(() => {
+      draftRef.current?.setSelectionRange(caret, caret);
+      // The caret may now sit in a menu's word -- inside `@reviewer(…)` for
+      // its model step -- which the draft's own change read too early to see.
+      trackMenus();
+    });
+  }, [trackMenus]);
 
   // Thumbs, per conversation. Read once the thread is known and written
   // through to storage on every click; see lib/chat-feedback.ts for what
@@ -1303,6 +1347,8 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
       windowTokens,
     );
     if (!text || !threadId || sending || worktreeBlocked) return;
+    // The server would refuse it: the error under the box says why.
+    if (parseDirectives(typed).errors.length > 0) return;
     if (planned) {
       setMode(null);
       setPlanning(true);
@@ -1862,9 +1908,78 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
    */
   const menuItems: { row: MenuRow; pick: () => void }[] = (() => {
     if (!menu) return [];
+    if (menu.kind === "agent") {
+      const { args } = menu;
+      const named = namedModels(args);
+      const pickModel = (model: string | null) => {
+        const next = pickAgentModel(draft, args, model);
+        replaceDraft(next.text, next.caret);
+      };
+      const option = args.name === "reviewer" ? "fix" : "implement";
+      const rows: { row: MenuRow; pick: () => void }[] = [
+        {
+          row: { key: "done", icon: <CheckIcon className="text-muted-foreground size-4 shrink-0" />, label: "Done", detail: args.before.length ? args.before.join(", ") : "Let UCCH choose" },
+          pick: () => {
+            const next = closeAgentArgs(draft, args);
+            replaceDraft(next.text, next.caret);
+          },
+        },
+      ];
+      if (args.before.length === 0) {
+        rows.push({
+          row: { key: "auto", icon: <SparklesIcon className="text-muted-foreground size-4 shrink-0" />, label: "Auto (best available)", detail: args.name === "reviewer" ? "A different vendor from the author" : "The widest spread of vendors" },
+          pick: () => pickModel(null),
+        });
+      }
+      if (!named.has(SAME_MODEL)) {
+        rows.push({
+          row: { key: SAME_MODEL, icon: <BotIcon className="text-muted-foreground size-4 shrink-0" />, label: "Same as this session", detail: activeModel ? bareModelId(activeModel) : undefined },
+          pick: () => pickModel(SAME_MODEL),
+        });
+      }
+      if (!named.has(option)) {
+        rows.push({
+          row: {
+            key: option,
+            icon: <ListChecksIcon className="text-muted-foreground size-4 shrink-0" />,
+            label: option,
+            detail: option === "fix" ? "Fix what the review finds, then review once more" : "Carry the conclusion out once the council has met",
+          },
+          pick: () => pickModel(option),
+        });
+      }
+      const room = args.before.filter((t) => !["fix", "implement"].includes(t.toLowerCase())).length < AGENT_MENTION_MAX[args.name];
+      const models = room
+        ? matchOptions(reviewModels.length ? reviewModels : catalogue.map((m) => ({ id: m.id, label: m.name })), args.query, (m) => `${m.label} ${m.id}`)
+            .filter((m) => !named.has(m.id.toLowerCase()))
+            .slice(0, 50)
+        : [];
+      const typed = args.query.trim();
+      return [
+        ...rows.filter((r) => !typed || r.row.key === "done" || `${r.row.label}`.toLowerCase().includes(typed.toLowerCase())),
+        ...models.map((m) => ({
+          row: { key: `model:${m.id}`, icon: <BrainIcon className="text-muted-foreground size-4 shrink-0" />, label: m.label, detail: m.id },
+          pick: () => pickModel(m.id),
+        })),
+      ];
+    }
     if (menu.kind === "mention") {
       const { mention } = menu;
-      return mentionResults.map((entry) => ({
+      const agents = matchAgentMentions(mention.query).map((agent) => ({
+        row: {
+          key: `agent:${agent.name}`,
+          icon: agent.name === "reviewer" ? <SearchCheckIcon className="text-muted-foreground size-4 shrink-0" /> : <UsersIcon className="text-muted-foreground size-4 shrink-0" />,
+          label: agent.label,
+          detail: agent.description,
+        },
+        pick: () => {
+          const el = draftRef.current;
+          if (!el) return;
+          const next = insertAgentMention(draft, mention, el.selectionStart, agent.name);
+          replaceDraft(next.text, next.caret);
+        },
+      }));
+      return [...agents, ...mentionResults.map((entry) => ({
         row: {
           key: entry.path,
           icon: <FileTypeIcon name={entry.name} kind={entry.kind} />,
@@ -1878,7 +1993,7 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
           const next = insertMention(draft, mention, el.selectionStart, entry);
           replaceDraft(next.text, next.caret);
         },
-      }));
+      }))];
     }
 
     const { slash } = menu;
@@ -1891,6 +2006,16 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
           const step = () => replaceDraft(`/${command.name} `, command.name.length + 2);
           const row = { key: command.name, label: `/${command.name}`, detail: command.description };
           switch (command.name) {
+            case "reviewer":
+            case "council":
+              // Never sent as a slash: it becomes the `@` mention, in front of the message.
+              return {
+                row: { ...row, icon: icon(command.name === "reviewer" ? SearchCheckIcon : UsersIcon) },
+                pick: () => {
+                  const head = `@${command.name}(`;
+                  replaceDraft(`${head}) `, head.length);
+                },
+              };
             case "plan":
               return {
                 row: { ...row, icon: icon(ListChecksIcon), detail: `Plan mode is ${planning ? "on" : "off"}` },
@@ -2148,6 +2273,7 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
               </>
             ) : (
               <WidgetHostProvider value={widgetHost}>
+              <DeliberationHost.Provider value={deliberationHost}>
               <ChatImageHostProvider value={{ target: targetOf(project), busy: running || sending || worktreeBlocked || !threadId, send: dispatchMessage }}>
               {messages.map((message, i) => (
                 <Message
@@ -2165,6 +2291,7 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
                 />
               ))}
               </ChatImageHostProvider>
+              </DeliberationHost.Provider>
               </WidgetHostProvider>
             )}
 
@@ -2360,6 +2487,8 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
                 empty={
                   menu.kind === "mention"
                     ? "No matching files"
+                    : menu.kind === "agent"
+                      ? "No matching models"
                     : "No matching commands — Enter sends this as a message"
                 }
                 onHover={setMenuIndex}
@@ -2773,6 +2902,8 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
                         (reference !== null && !draft.trim()) ||
                         !threadId ||
                         sending ||
+                        // The mention's error under the box says why.
+                        directiveError !== null ||
                         // The worktree notice says why.
                         worktreeBlocked)
                     }
@@ -2792,6 +2923,12 @@ export function ProjectChat({ project, session, gitRepair, browserRef }: { proje
               </div>
             </div>
           </form>
+          {/* What the server would refuse the send for, from the same parser. */}
+          {directiveError && (
+            <p role="alert" className="text-danger px-1 pt-1 text-xs" data-testid="directive-error">
+              {directiveError}
+            </p>
+          )}
 
           {/* A first thread: three ways in, each filling the draft -- never
               sending -- so the reader can still edit it before it goes. */}
@@ -3047,6 +3184,14 @@ function turnAnchor(index: number): string {
   return `m${index}`;
 }
 
+/**
+ * What a Reviewer or Council card needs beyond its message: the thread it
+ * dispatches to, and the models "Review with…" offers (every signed-in
+ * harness's list, not just the composer's). A context, so the memoised
+ * rows do not re-render when it is the same.
+ */
+const DeliberationHost = createContext<{ threadId: string | null; models: readonly ReviewModelChoice[] }>({ threadId: null, models: [] });
+
 const Message = memo(function Message({
   ref,
   anchor,
@@ -3073,6 +3218,8 @@ const Message = memo(function Message({
   /** "transcript": every step inline, CLI-style (Settings → Preferences). */
   viewMode: ChatViewMode;
 }) {
+  if (message.deliberation) return <div ref={ref}><DeliberationRow state={message.deliberation} /></div>;
+  if (message.fromReviewer) return <div ref={ref}><ReviewerMessage message={message} /></div>;
   if (message.switched) return <HarnessSwitchRow ref={ref} change={message.switched} />;
   if (message.cleared) return <ContextClearedRow ref={ref} />;
   if (message.agentMessage) return <div ref={ref}><AgentSessionMessage message={message} /></div>;
@@ -3382,6 +3529,38 @@ function HandoffRow({ direction, href, label }: { direction: "in" | "from"; href
  * Where the session moved to another harness: a rule saying from what to
  * what, and the brief the new harness started from a click away.
  */
+function DeliberationRow({ state }: { state: NonNullable<ChatMessage["deliberation"]> }) {
+  const host = useContext(DeliberationHost);
+  if (!host.threadId) return null;
+  return state.kind === "peer_review" ? (
+    <PeerReviewCard state={state} threadId={host.threadId} models={host.models} />
+  ) : (
+    <CouncilCard state={state} threadId={host.threadId} />
+  );
+}
+
+/** The findings the Reviewer sent back to the agent: who sent them, and what. */
+function ReviewerMessage({ message }: { message: ChatMessage }) {
+  const from = message.fromReviewer!;
+  return (
+    <div className="flex flex-col items-end gap-1.5" data-testid="reviewer-message">
+      <span className="text-muted-foreground flex items-center gap-1 text-[0.7rem] tracking-wide uppercase">
+        <BotIcon className="size-3" />
+        From Reviewer{from.model ? ` (${bareModelId(from.model)})` : ""}
+      </span>
+      <details className="group/fix bg-muted/50 text-foreground max-w-[92%] rounded-lg border px-3 py-2 text-sm @md:max-w-[85%]">
+        <summary className="text-muted-foreground flex cursor-pointer list-none items-center gap-1.5 text-xs select-none">
+          <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-open/fix:rotate-90" />
+          Findings to fix
+        </summary>
+        <div className="mt-2">
+          <Markdown>{message.text}</Markdown>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function HarnessSwitchRow({ ref, change }: { ref: Ref<HTMLDivElement>; change: HarnessSwitch }) {
   const name = (id: string) => HARNESS_NAMES[id] ?? id;
   const move = change.context

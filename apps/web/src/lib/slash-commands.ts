@@ -30,6 +30,9 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "compact", description: "Fold older turns into a summary now", takesArg: "focus" },
   { name: "handoff", description: "Hand over: replace the context with a brief of the work so far", takesArg: "focus" },
   { name: "continue", description: "Carry the work on in a new thread on another harness", takesArg: "target" },
+  // These two become `@reviewer(` / `@council(` in the draft; no slash is sent.
+  { name: "reviewer", description: "Have another model review the answer (@reviewer)" },
+  { name: "council", description: "Ask several models to discuss it first (@council)" },
 ];
 
 export interface Slash {
