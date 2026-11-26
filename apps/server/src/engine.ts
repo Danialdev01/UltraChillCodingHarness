@@ -10,10 +10,12 @@ import {
   type ContainerState,
   type ContextReading,
   type DomainEvent,
+  type PeerReviewFinding,
   type ProviderId,
   type StoredEvent,
 } from "@ucch/protocol";
 import {
+  agentDeliberations,
   agentMessages,
   agentProfiles,
   agentRuns,
@@ -72,6 +74,11 @@ export interface EngineOptions {
    * A failure refuses the send with its message.
    */
   beforeSend?: (principal: Principal, threadId: string) => Promise<void>;
+  /**
+   * Whether the models a person's `@reviewer` or `@council` names can run,
+   * or why not: what `decide` cannot know. Refuses the command with it.
+   */
+  checkModels?: (principal: Principal, command: Extract<Command, { type: "thread.send" | "thread.peer_review" }>) => Promise<string | null>;
 }
 
 /**
@@ -177,6 +184,11 @@ export class OrchestrationEngine {
       }
     }
 
+    if ((command.type === "thread.send" || command.type === "thread.peer_review") && !principal.internal && this.options.checkModels) {
+      const refusal = await this.options.checkModels(principal, command);
+      if (refusal) return { ok: false, code: "invalid", message: refusal };
+    }
+
     let state: DecisionState;
     try {
       state = await this.#loadState(command, principal);
@@ -280,6 +292,26 @@ export class OrchestrationEngine {
         && row.event.subagentId === command.subagentId && row.event.resumeHandle)?.event;
       const resumeHandle = handle?.type === "agent.subagent_started" || handle?.type === "agent.subagent_finished" ? handle.resumeHandle : undefined;
       if (started?.type === "agent.subagent_started") state.subagent = { id: started.subagentId, provider: started.provider, childThreadId: started.childThreadId, ...(resumeHandle ? { resumeHandle } : {}) };
+    }
+    const deliberationId =
+      command.type === "thread.peer_review_fix" ? command.peerReviewId : command.type === "thread.deliberation_cancel" ? command.deliberationId : undefined;
+    if (deliberationId) {
+      const [row] = await this.db.select().from(agentDeliberations).where(eq(agentDeliberations.id, deliberationId)).limit(1);
+      if (row) {
+        const reviews = Object.values((row.result as ReviewResult).reviews ?? {});
+        state.deliberation = {
+          id: row.id,
+          threadId: row.threadId,
+          kind: row.kind,
+          status: row.status,
+          fixable: reviews.some((review) => (review.findings?.length ?? 0) > 0 || (review.rawText && review.verdict !== "approve")),
+        };
+      }
+    }
+    if (command.type === "thread.peer_review" || (command.type === "thread.send" && state.thread && /@reviewer/i.test(command.text))) {
+      state.reviewing = (await this.db.select({ id: agentDeliberations.id }).from(agentDeliberations)
+        .where(and(eq(agentDeliberations.threadId, command.threadId), eq(agentDeliberations.kind, "peer_review"), eq(agentDeliberations.status, "running")))
+        .limit(1)).length > 0;
     }
     if (command.type === "thread.agent_message") {
       const [source] = await this.db.select({ id: threads.id, projectId: threads.projectId, hash: threads.hash, workspaceId: projects.workspaceId })
@@ -526,6 +558,88 @@ export async function applyProjection(
       case "agent.subagent_finished":
         await tx.update(agentRuns).set({ status: event.status, result: event.result }).where(eq(agentRuns.id, event.subagentId));
         break;
+      case "agent.peer_review_requested":
+      case "agent.peer_review_started":
+        await tx
+          .insert(agentDeliberations)
+          .values({
+            id: event.deliberationId,
+            threadId: event.threadId,
+            projectId: projectOfThread(event.threadId),
+            kind: "peer_review",
+            ...reviewRow(event),
+          })
+          .onConflictDoUpdate({ target: agentDeliberations.id, set: reviewRow(event) });
+        break;
+      case "agent.peer_review_completed":
+      case "agent.peer_review_failed": {
+        if (!event.subagentId) break;
+        const { type, threadId: _thread, deliberationId, subagentId, ...review } = event;
+        await tx
+          .update(agentDeliberations)
+          .set({
+            result: merged(["reviews", subagentId], { ...review, status: type === "agent.peer_review_completed" ? "completed" : "failed" }),
+          })
+          .where(eq(agentDeliberations.id, deliberationId));
+        break;
+      }
+      case "agent.peer_review_ended":
+        await tx
+          .update(agentDeliberations)
+          .set({ status: event.status, costUsd: event.costUsd, finishedAt: sql`now()` })
+          .where(and(eq(agentDeliberations.id, event.deliberationId), eq(agentDeliberations.status, "running")));
+        break;
+      case "agent.council_started":
+        await tx.insert(agentDeliberations).values({
+          id: event.deliberationId,
+          threadId: event.threadId,
+          projectId: projectOfThread(event.threadId),
+          kind: "council",
+          turnId: event.turnId,
+          members: event.members,
+          directive: { rounds: event.rounds, question: event.question },
+        }).onConflictDoNothing();
+        break;
+      case "agent.council_position": {
+        const { type: _type, threadId: _thread, deliberationId, round, seat, ...position } = event;
+        await tx
+          .update(agentDeliberations)
+          .set({ result: merged(["rounds", String(round), seat], position) })
+          .where(eq(agentDeliberations.id, deliberationId));
+        break;
+      }
+      case "agent.council_dropped":
+        await tx
+          .update(agentDeliberations)
+          .set({ result: merged(["dropped", event.seat], event.error) })
+          .where(eq(agentDeliberations.id, event.deliberationId));
+        break;
+      case "agent.council_concluded": {
+        const { type: _type, threadId: _thread, deliberationId, ...conclusion } = event;
+        await tx
+          .update(agentDeliberations)
+          .set({ result: merged(["conclusion"], conclusion), status: "completed", costUsd: event.costUsd, finishedAt: sql`now()` })
+          .where(and(eq(agentDeliberations.id, deliberationId), eq(agentDeliberations.status, "running")));
+        break;
+      }
+      case "agent.council_failed":
+        await tx
+          .update(agentDeliberations)
+          .set({ result: merged(["error"], event.error), status: "failed", finishedAt: sql`now()` })
+          .where(and(eq(agentDeliberations.id, event.deliberationId), eq(agentDeliberations.status, "running")));
+        break;
+      case "agent.deliberation_cancelled":
+        await tx
+          .update(agentDeliberations)
+          .set({
+            result: merged(["cancelledBy"], event.by),
+            // A restart cut it off; nobody stopped it.
+            status: event.by === "restart" ? "failed" : "cancelled",
+            finishedAt: sql`now()`,
+          })
+          .where(and(eq(agentDeliberations.id, event.deliberationId), eq(agentDeliberations.status, "running")));
+        break;
+
       case "user.message": {
         if (event.agentMessageIds?.length) await tx.update(agentMessages).set({ deliveredAt: sql`now()` })
           .where(and(eq(agentMessages.threadId, event.threadId), inArray(agentMessages.id, event.agentMessageIds)));
@@ -730,6 +844,7 @@ export async function applyProjection(
           worktreeState: event.branch ? (event.worktreeOf ? "ready" : "creating") : null,
           treeHash: event.treeHash ?? null,
           parentThreadId: event.parentThreadId ?? null,
+          readOnly: event.readOnly ?? false,
           profileId: existingProfile(event.profileId),
         });
         // A subagent's session is not one of the project's sessions.
@@ -961,4 +1076,33 @@ export function usageEventOf(threadId: string, reading: ContextReading): Extract
     model: reading.model,
     at: reading.at,
   };
+}
+
+/** A review's row, as its request and its start each know it. */
+function reviewRow(event: Extract<DomainEvent, { type: "agent.peer_review_requested" | "agent.peer_review_started" }>) {
+  return event.type === "agent.peer_review_requested"
+    ? { directive: event.directive, ...(event.turnId ? { turnId: event.turnId } : {}) }
+    : { turnId: event.targetTurnId, members: event.reviewers };
+}
+
+/** What `agent_deliberations.result` holds of a review. */
+export interface ReviewResult {
+  reviews?: Record<string, { status: string; verdict?: string; summary?: string; rawText?: boolean; findings?: PeerReviewFinding[] }>;
+}
+
+/** `result` with `value` at `path`, in one statement: members finish side by side. */
+function merged(path: readonly string[], value: unknown) {
+  const nested = path.reduceRight<unknown>((inner, key) => ({ [key]: inner }), value) as Record<string, unknown>;
+  // Two levels at most under one key: each is merged into what is there.
+  let expression = sql`${JSON.stringify(nested)}::jsonb`;
+  if (path.length >= 2) {
+    const [first, second] = path as [string, string, ...string[]];
+    const under = (nested[first] as Record<string, unknown>)[second];
+    const inner =
+      path.length === 2
+        ? sql`${JSON.stringify({ [second]: under })}::jsonb`
+        : sql`jsonb_build_object(${second}::text, coalesce(${agentDeliberations.result} #> array[${first}::text, ${second}::text], '{}'::jsonb) || ${JSON.stringify(under)}::jsonb)`;
+    expression = sql`jsonb_build_object(${first}::text, coalesce(${agentDeliberations.result} -> ${first}::text, '{}'::jsonb) || ${inner})`;
+  }
+  return sql`${agentDeliberations.result} || ${expression}`;
 }

@@ -229,3 +229,29 @@ describe("automatic same-model fallback", () => {
     expect(commands.at(-1)).toMatchObject({ type: "thread.send", provider: "omp", model: "anthropic/claude-opus-5.5" });
   });
 });
+
+describe("startManaged", () => {
+  const request = { parentThreadId: PARENT, subject: USER, turnId: TURN, deliberationId: "d", description: "Reviewer", model: "gpt6 sol", author: { provider: "claude" as const, model: null } };
+
+  it("runs turn after turn in one read-only session that is allowed nothing", async () => {
+    const { run, onParent, commands, allowed } = runner([reply("One."), reply("Two.")]);
+    const agent = await run.startManaged({ ...request, signal: new AbortController().signal });
+    if ("error" in agent) throw new Error(agent.error);
+    expect(commands[0]).toMatchObject({ type: "thread.create", readOnly: true, parentThreadId: PARENT });
+    expect(onParent[0]).toMatchObject({ type: "agent.subagent_started", deliberationId: "d", background: false });
+    expect(await agent.turn("First")).toMatchObject({ kind: "done", text: "One.", costUsd: 0.01 });
+    expect(await agent.turn("Second")).toMatchObject({ kind: "done", text: "Two.", costUsd: 0.01 });
+    const sends = commands.filter((command) => command.type === "thread.send");
+    expect(sends).toHaveLength(2);
+    expect(sends[1]).toMatchObject({ threadId: CHILD, text: "Second" });
+    await agent.end();
+    await agent.end();
+    expect(onParent.filter((event) => event.type === "agent.subagent_finished")).toMatchObject([{ status: "completed", costUsd: 0.02 }]);
+    expect(allowed).toEqual([]);
+  });
+
+  it("says why a model cannot run", async () => {
+    const { run } = runner([]);
+    expect(await run.startManaged({ ...request, model: "nonesuch-9", signal: new AbortController().signal })).toMatchObject({ error: expect.any(String) });
+  });
+});

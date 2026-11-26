@@ -20,6 +20,7 @@ import {
   type Membership,
   type WorkspacePermission,
 } from "@ucch/protocol";
+import { deliberationSettings, type DeliberationSettings } from "./deliberations.js";
 
 /**
  * A column spelled out with its table, for correlated sub-selects inside a
@@ -692,6 +693,26 @@ export class WorkspaceService {
     if (!can(project.membership, "workspace.manage")) return { error: "forbidden" };
     await this.db.update(projects).set({ ompTrusted: trusted }).where(eq(projects.id, project.id));
     return { trusted, canChange: true };
+  }
+
+  /** What `@reviewer` and `@council` use here when a message names nothing. */
+  async deliberation(hash: string, userId: string): Promise<(DeliberationSettings & { canChange: boolean }) | null> {
+    const project = await this.findByHash(hash, userId);
+    if (!project) return null;
+    return { ...(await deliberationSettings(this.db, project.id)), canChange: can(project.membership, "workspace.manage") };
+  }
+
+  async setDeliberation(
+    hash: string,
+    userId: string,
+    patch: Partial<DeliberationSettings>,
+  ): Promise<(DeliberationSettings & { canChange: boolean }) | { error: "forbidden" } | null> {
+    const project = await this.findByHash(hash, userId);
+    if (!project) return null;
+    if (!can(project.membership, "workspace.manage")) return { error: "forbidden" };
+    const next = { ...(await deliberationSettings(this.db, project.id)), ...patch };
+    await this.db.update(projects).set({ deliberation: next }).where(eq(projects.id, project.id));
+    return { ...next, canChange: true };
   }
 
   /**

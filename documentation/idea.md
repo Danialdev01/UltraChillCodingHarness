@@ -12,6 +12,10 @@
 - - add monitoring section for monitor system vps or website statistics.
   - add monitoring for the ai agents, if the server usage is too high then the AI agents will be in standby or queue mode to avoid server crashing.
 
+- add a overview knowledgebase for a workspace for example the meeting notes, the organization information (like obsidian).
+- add function to export all workspace information. zip or something else. 
+- add function to delete workspace. 
+
 ## UI UX
 
 - create view for proper git tree managment view. I want the ability for the person to review changes, comment changes, merge changes, review pr and more.
@@ -45,3 +49,4 @@
 - Fix the terminal agent chat section
   - add ai model select and proper close and open agent tab.
   - manage agent session context window
+

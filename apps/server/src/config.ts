@@ -264,6 +264,10 @@ const Env = z.object({
    * slot, and the thread says how many are ahead (`turn-scheduler.ts`).
    */
   AGENT_MAX_CONCURRENT_TOTAL: z.coerce.number().int().positive().default(5),
+  /** What one `@reviewer` review may cost, in dollars, before it is stopped. */
+  PEER_REVIEW_MAX_COST_USD: z.coerce.number().positive().default(2),
+  /** What one `@council` may cost, in dollars, before it concludes early. */
+  COUNCIL_MAX_COST_USD: z.coerce.number().positive().default(5),
 
   /** Native turns running at once on the whole server, diagram jobs included; likewise. */
   AGENT_MAX_NATIVE_TOTAL: z.coerce.number().int().positive().default(32),

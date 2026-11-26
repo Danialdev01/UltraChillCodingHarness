@@ -3,7 +3,7 @@ import { ProjectDatabase } from "./database.js";
 import { FileDiff } from "./file-diff.js";
 import { MessageKnowledge } from "./knowledge.js";
 import { BranchName, PreviewHash, ProjectHash, ThreadHash } from "./ids.js";
-import { PROJECT_MODES } from "./plain.js";
+import { COUNCIL_MAX, COUNCIL_MAX_ROUNDS, COUNCIL_MIN, PEER_REVIEW_MAX_REVIEWERS, PROJECT_MODES } from "./plain.js";
 import type { ProjectTask } from "./tasks.js";
 
 /** A row carried whole in an event: checked only for being an object, its type is the server's. */
@@ -132,6 +132,8 @@ const ThreadCreated = z.object({
   parentThreadId: z.string().uuid().optional(),
   /** The subscription account its Claude Code or Codex turns sign in as. */
   profileId: z.string().uuid().optional(),
+  /** A reviewer's or council member's session: no turn of it may change anything. */
+  readOnly: z.literal(true).optional(),
 });
 
 /** The session's worktree exists and is checked out on its branch. */
@@ -251,8 +253,25 @@ const AgentMessageDelivered = z.object({
   threadId: z.string().uuid(),
   messageIds: z.array(z.string().uuid()),
 });
+/** `@reviewer` and `@council` as the message asked for them (`agent-directives.ts`). */
+export const ReviewerDirectiveSchema = z.object({
+  models: z.array(z.string().max(100)).max(PEER_REVIEW_MAX_REVIEWERS),
+  fix: z.boolean(),
+  previous: z.boolean(),
+});
+export const CouncilDirectiveSchema = z.object({
+  models: z.array(z.string().max(100)).max(COUNCIL_MAX),
+  size: z.number().int().min(COUNCIL_MIN).max(COUNCIL_MAX).nullable(),
+  rounds: z.number().int().min(0).max(COUNCIL_MAX_ROUNDS).nullable(),
+  implement: z.boolean(),
+});
+
 const UserMessage = z.object({
   type: z.literal("user.message"),
+  /** What the message asked for besides its answer; the mentions are gone from `text`. */
+  directives: z.object({ reviewer: ReviewerDirectiveSchema.optional(), council: CouncilDirectiveSchema.optional() }).optional(),
+  /** A fix turn the server sent from a review's findings: which review. */
+  peerReviewId: z.string().uuid().optional(),
   subagentId: z.string().optional(),
   /** A follow-up to a CLI's built-in subagent: the id its harness resumes it by, from the subagent's own events (never the client). */
   subagentHandle: SubagentHandle.optional(),
@@ -928,6 +947,8 @@ const AgentSubagentStarted = z.object({
   /** How its harness was chosen: "claude-opus-5-5 on Claude Code", … */
   routing: z.string().optional(),
   background: z.boolean().optional(),
+  /** A reviewer or council member: drawn on that card, not as one of its own. */
+  deliberationId: z.string().uuid().optional(),
   quota: z.object({ status: z.string(), checkedAt: z.string().optional(), usedPercent: z.number().optional() }).optional(),
   /** A CLI's built-in subagent its harness can continue: the id it does so by (Claude Code's agentId). */
   resumeHandle: SubagentHandle.optional(),
@@ -984,6 +1005,136 @@ const AgentSubagentFinished = z.object({
   costUsd: z.number().nonnegative().optional(),
   toolCalls: z.number().int().nonnegative().optional(),
   durationMs: z.number().int().nonnegative().optional(),
+});
+
+// -- Reviewer and Council -----------------------------------------------------
+//
+// Agents the person asked for in a message (`@reviewer`, `@council`), each a
+// hidden child session the server started. Not `review.*`, which is OMP's
+// code review of a tree.
+
+export const PeerReviewFinding = z.object({
+  id: z.string(),
+  severity: z.enum(["critical", "major", "minor", "nit"]),
+  /** Relative to the worktree. */
+  file: z.string().max(1_000).optional(),
+  line: z.number().int().positive().optional(),
+  title: z.string().max(300),
+  detail: z.string().max(4_000),
+});
+export type PeerReviewFinding = z.infer<typeof PeerReviewFinding>;
+
+export const PeerReviewVerdict = z.enum(["approve", "changes_requested", "incorrect"]);
+export type PeerReviewVerdict = z.infer<typeof PeerReviewVerdict>;
+
+const DeliberationMember = z.object({
+  subagentId: z.string(),
+  childThreadId: z.string().uuid(),
+  childHash: ThreadHash,
+  model: z.string().nullable(),
+  provider: ProviderId,
+  /** Why this model. */
+  reason: z.string(),
+});
+const deliberation = { threadId: z.string().uuid(), deliberationId: z.string().uuid() };
+
+/** A review with no turn of its own: `@reviewer` alone in a message, or "Review again". */
+const AgentPeerReviewRequested = z.object({
+  type: z.literal("agent.peer_review_requested"),
+  ...deliberation,
+  /** The answer to review; absent: the thread's latest. */
+  turnId: z.string().uuid().optional(),
+  directive: ReviewerDirectiveSchema,
+});
+const AgentPeerReviewStarted = z.object({
+  type: z.literal("agent.peer_review_started"),
+  ...deliberation,
+  targetTurnId: z.string().uuid(),
+  reviewers: z.array(DeliberationMember).max(PEER_REVIEW_MAX_REVIEWERS),
+  fix: z.boolean(),
+  /** The review this one follows up, after its fix. */
+  rereviewOf: z.string().uuid().optional(),
+});
+const AgentPeerReviewCompleted = z.object({
+  type: z.literal("agent.peer_review_completed"),
+  ...deliberation,
+  subagentId: z.string(),
+  verdict: PeerReviewVerdict,
+  summary: z.string().max(4_000),
+  findings: z.array(PeerReviewFinding).max(30),
+  /** The reviewer gave no readable verdict: `summary` is the start of its text. */
+  rawText: z.literal(true).optional(),
+  costUsd: z.number().nonnegative(),
+});
+/** One reviewer failed, or (no `subagentId`) none could start. */
+const AgentPeerReviewFailed = z.object({
+  type: z.literal("agent.peer_review_failed"),
+  ...deliberation,
+  subagentId: z.string().optional(),
+  error: z.string().max(2_000),
+});
+/** Every reviewer is in. */
+const AgentPeerReviewEnded = z.object({
+  type: z.literal("agent.peer_review_ended"),
+  ...deliberation,
+  status: z.enum(["completed", "failed"]),
+  costUsd: z.number().nonnegative(),
+  /** Why an asked-for fix was not sent. */
+  fixSkipped: z.string().max(500).optional(),
+});
+
+const CouncilSeat = z.string().regex(/^[A-E]$/);
+const AgentCouncilStarted = z.object({
+  type: z.literal("agent.council_started"),
+  ...deliberation,
+  /** The held turn: the moderator's, once the council has met. */
+  turnId: z.string().uuid(),
+  members: z.array(DeliberationMember.extend({ seat: CouncilSeat })).max(COUNCIL_MAX),
+  rounds: z.number().int().min(0).max(COUNCIL_MAX_ROUNDS),
+  question: z.string(),
+});
+const AgentCouncilPosition = z.object({
+  type: z.literal("agent.council_position"),
+  ...deliberation,
+  round: z.number().int().nonnegative(),
+  seat: CouncilSeat,
+  recommendation: z.string().max(4_000),
+  confidence: z.number().min(0).max(1),
+  reasons: z.array(z.string().max(1_000)).max(10),
+  risks: z.array(z.string().max(1_000)).max(10),
+  changed: z.boolean(),
+});
+/** A member left: it failed, or ran out of time. */
+const AgentCouncilDropped = z.object({
+  type: z.literal("agent.council_dropped"),
+  ...deliberation,
+  seat: CouncilSeat,
+  error: z.string().max(2_000),
+});
+const AgentCouncilConcluded = z.object({
+  type: z.literal("agent.council_concluded"),
+  ...deliberation,
+  consensus: z.enum(["unanimous", "majority", "split"]),
+  recommendation: z.string().max(4_000),
+  dissent: z.array(z.object({ seat: CouncilSeat, position: z.string().max(4_000) })).max(COUNCIL_MAX),
+  roundsRun: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative(),
+  /** A member was dropped on the way. */
+  partial: z.boolean().optional(),
+  /** Ended before its rounds did. */
+  stopped: z.enum(["budget", "timeout"]).optional(),
+});
+const AgentCouncilFailed = z.object({
+  type: z.literal("agent.council_failed"),
+  ...deliberation,
+  error: z.string().max(2_000),
+  /** Some members answered, too few to meet. */
+  partial: z.boolean(),
+});
+const AgentDeliberationCancelled = z.object({
+  type: z.literal("agent.deliberation_cancelled"),
+  ...deliberation,
+  by: z.enum(["user", "parent", "budget", "timeout", "restart"]),
 });
 
 // -- Checkpoints and files ---------------------------------------------------
@@ -1528,6 +1679,17 @@ export const DomainEvent = z.discriminatedUnion("type", [
   AgentFileDiff,
   AgentTurnDiff,
   AgentSubagentFinished,
+  AgentPeerReviewRequested,
+  AgentPeerReviewStarted,
+  AgentPeerReviewCompleted,
+  AgentPeerReviewFailed,
+  AgentPeerReviewEnded,
+  AgentCouncilStarted,
+  AgentCouncilPosition,
+  AgentCouncilDropped,
+  AgentCouncilConcluded,
+  AgentCouncilFailed,
+  AgentDeliberationCancelled,
   CheckpointCaptured,
   CheckpointReverted,
   FileChanged,

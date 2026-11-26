@@ -72,6 +72,66 @@ type ChildOutcome =
   | { kind: "failed"; error: string }
   | { kind: "cancelled" };
 
+/** How a subagent's work came out, after any fallback. */
+export type RunOutcome =
+  | { kind: "done"; text: string; costUsd: number }
+  | { kind: "failed"; error: string }
+  | { kind: "cancelled"; error: string };
+
+interface LaunchRequest {
+  description: string;
+  model?: string | undefined;
+  background?: boolean | undefined;
+  /** A person may be asked how to go on at a usage limit. */
+  attended: boolean;
+  /** Its session changes nothing, and is asked nothing. */
+  readOnly: boolean;
+  /** What the parent's turn runs on, when its thread does not say yet. */
+  author?: { provider: ProviderId; model: string | null } | undefined;
+  deliberationId?: string | undefined;
+}
+
+interface Launched {
+  childId: string;
+  hash: string;
+  subagentId: string;
+  provider: ProviderId;
+  model: string | null;
+  routing: string;
+  task(text: string): string;
+  run(text: string): Promise<RunOutcome>;
+  finish(outcome: RunOutcome): Promise<void>;
+  abort(): void;
+  close(): void;
+}
+
+export interface ManagedRequest {
+  parentThreadId: string;
+  /** Whose subscriptions pay. */
+  subject: string;
+  /** The turn its card belongs to. */
+  turnId: string;
+  deliberationId: string;
+  description: string;
+  /** Absent: the author's own. */
+  model?: string | undefined;
+  author: { provider: ProviderId; model: string | null };
+  signal: AbortSignal;
+}
+
+export interface ManagedAgent {
+  subagentId: string;
+  childThreadId: string;
+  childHash: string;
+  provider: ProviderId;
+  model: string | null;
+  routing: string;
+  /** The task, then each message after it, in the same session. */
+  turn(text: string): Promise<RunOutcome>;
+  stop(): void;
+  end(): Promise<void>;
+}
+
 /**
  * `ucch_agent` (any harness's): a subagent that runs as a session of its
  * own -- hidden from the sessions list, in its parent's folder -- on
@@ -107,6 +167,86 @@ export class SubagentRunner {
     signal: AbortSignal,
     call?: SubagentCall,
   ): Promise<{ text: string } | { error: string }> {
+    const launched = await this.#launch(
+      parentThreadId,
+      subject,
+      { ...request, attended: true, readOnly: false },
+      signal,
+      async () => call ?? (await this.deps.claimCall(parentThreadId, request)),
+    );
+    if ("error" in launched) return launched;
+    const running = launched
+      .run(launched.task(request.task))
+      .then(async (outcome) => {
+        await launched.finish(outcome);
+        return outcome.kind === "done" ? { text: outcome.text } : { error: outcome.error };
+      })
+      .catch(async (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        await launched.finish({ kind: "failed", error: message });
+        return { error: message };
+      })
+      .finally(() => launched.close());
+    if (!request.background) return running;
+    void running.then(async (outcome) => {
+      await this.deps.notify?.(parentThreadId, launched.childId, `Agent ${launched.childId} (${request.description}) ${"text" in outcome ? "completed" : "failed"}:\n${"text" in outcome ? outcome.text : outcome.error}`);
+    }).catch(this.deps.onError);
+    return { text: JSON.stringify({ sessionId: launched.childId, hash: launched.hash, subagentId: launched.subagentId, provider: launched.provider, model: launched.model, routing: launched.routing, status: "running" }) };
+  }
+
+  /**
+   * A read-only subagent the server runs itself -- a reviewer, a council
+   * member -- rather than one a tool call asked for. Its turns are the
+   * caller's to start, one at a time, in one session, and nobody is asked
+   * anything: a usage limit that the automatic fallback cannot get past
+   * fails it. `end` closes its card and gives its session up.
+   */
+  async startManaged(request: ManagedRequest): Promise<ManagedAgent | { error: string }> {
+    const launched = await this.#launch(
+      request.parentThreadId,
+      request.subject,
+      { description: request.description, model: request.model, attended: false, readOnly: true, author: request.author, deliberationId: request.deliberationId },
+      request.signal,
+      async () => ({ turnId: request.turnId, toolUseId: null }),
+    );
+    if ("error" in launched) return launched;
+    let turns = 0;
+    let ended = false;
+    let last: RunOutcome = { kind: "cancelled", error: "the subagent was stopped" };
+    return {
+      subagentId: launched.subagentId,
+      childThreadId: launched.childId,
+      childHash: launched.hash,
+      provider: launched.provider,
+      model: launched.model,
+      routing: launched.routing,
+      turn: async (text) => {
+        last = await launched
+          .run(turns++ === 0 ? launched.task(text) : text)
+          .catch((error: unknown) => ({ kind: "failed" as const, error: error instanceof Error ? error.message : String(error) }));
+        return last;
+      },
+      stop: () => launched.abort(),
+      end: async () => {
+        if (ended) return;
+        ended = true;
+        try {
+          await launched.finish(last);
+        } finally {
+          launched.close();
+        }
+      },
+    };
+  }
+
+  /** Routes a subagent, makes its session and puts its card on the parent; its turns follow. */
+  async #launch(
+    parentThreadId: string,
+    subject: string,
+    request: LaunchRequest,
+    signal: AbortSignal,
+    place: () => Promise<SubagentCall | null>,
+  ): Promise<Launched | { error: string }> {
     if (signal.aborted) return { error: "the subagent was stopped" };
     const { db } = this.deps;
     const [parent] = await db
@@ -125,14 +265,16 @@ export class SubagentRunner {
       .limit(1);
     if (!parent) return { error: "the session that asked for this subagent is gone" };
     if (parent.parentThreadId) return { error: "a subagent cannot start subagents of its own" };
-    const parentProvider = knownProvider(parent.provider) ?? this.deps.customProvider;
+    const parentProvider = request.author?.provider ?? knownProvider(parent.provider) ?? this.deps.customProvider;
 
-    const [lastTurn] = await db
-      .select({ model: turns.model })
-      .from(turns)
-      .where(eq(turns.threadId, parentThreadId))
-      .orderBy(desc(turns.seq))
-      .limit(1);
+    const [lastTurn] = request.author
+      ? [{ model: request.author.model }]
+      : await db
+          .select({ model: turns.model })
+          .from(turns)
+          .where(eq(turns.threadId, parentThreadId))
+          .orderBy(desc(turns.seq))
+          .limit(1);
     const requestedModel = request.model?.trim() || lastTurn?.model || undefined;
     const harnesses = await this.deps.harnesses(subject, requestedModel);
     const catalogue = requestedModel ? await this.deps.catalogue().catch(() => []) : [];
@@ -154,7 +296,7 @@ export class SubagentRunner {
     const subscription = harnesses.find((h) => h.provider === (family === "claude" ? "claude" : family === "openai" ? "codex" : routing.provider));
     const quota = subscription?.quota ?? { status: subscription?.usedPercent === undefined ? "unknown" : "ok", ...(subscription?.usedPercent !== undefined ? { usedPercent: subscription.usedPercent } : {}) };
 
-    const placed = call ?? (await this.deps.claimCall(parentThreadId, request));
+    const placed = await place();
     if (!placed) return { error: "the turn that asked for this subagent is over" };
 
     if (signal.aborted) return { error: "the subagent was stopped" };
@@ -169,6 +311,7 @@ export class SubagentRunner {
       projectId: parent.projectId,
       title: request.description.slice(0, 200),
       parentThreadId,
+      ...(request.readOnly ? { readOnly: true } : {}),
       ...(parent.credentialSource === "workspace" || parent.credentialSource === "member" ? { credentialSource: parent.credentialSource } : {}),
     });
     if (!created.ok) return { error: `could not start the subagent's session: ${created.message}` };
@@ -181,7 +324,8 @@ export class SubagentRunner {
       if (!signal.aborted) signal.addEventListener("abort", () => controller.abort(), { once: true, signal: controller.signal });
     }
     this.active.set(childId, { parentThreadId, controller });
-    this.deps.allowAllFor(childId);
+    // A read-only session's questions are refused, not allowed.
+    if (!request.readOnly) this.deps.allowAllFor(childId);
     this.deps.manage?.(childId);
 
     const subagentId = randomUUID();
@@ -208,60 +352,67 @@ export class SubagentRunner {
         childHash: made.hash,
         routing: routing.label,
         background: request.background ?? false,
+        ...(request.deliberationId ? { deliberationId: request.deliberationId } : {}),
         quota,
       },
     ]).catch((error: unknown) => { this.active.delete(childId); controller.abort(); this.deps.release?.(childId); throw error; });
 
     const childSignal = controller.signal;
-    const execute = async (): Promise<{ text: string } | { error: string }> => {
-      let provider = routing.provider;
-      let currentModel = routing.model;
-      let autoFallback = false;
-      let toolCalls = 0;
-      let lastProgress = 0;
-      const usage: TokenUsage = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
-      let costUsd = 0;
-      const progress = (summary: string) => {
-        const now = Date.now();
-        if (now - lastProgress < PROGRESS_MS) return;
-        lastProgress = now;
-        void onParent([
-          {
-            type: "agent.subagent_progress",
-            threadId: parentThreadId,
-            turnId: placed.turnId,
-            subagentId,
-            summary: summary.slice(0, 200),
-            toolCalls,
-            durationMs: now - started,
-          },
-        ]).catch(this.deps.onError);
-      };
-      const finish = async (status: "completed" | "failed" | "aborted", result: string) => {
-        await onParent([
-          {
-            type: "agent.subagent_finished",
-            threadId: parentThreadId,
-            turnId: placed.turnId,
-            subagentId,
-            status,
-            result: result.slice(0, RESULT_CHARS),
-            usage,
-            costUsd,
-            toolCalls,
-            durationMs: Date.now() - started,
-          },
-        ]);
-      };
+    let provider = routing.provider;
+    let currentModel = routing.model;
+    let autoFallback = false;
+    let toolCalls = 0;
+    let lastProgress = 0;
+    const usage: TokenUsage = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+    let costUsd = 0;
+    const progress = (summary: string) => {
+      const now = Date.now();
+      if (now - lastProgress < PROGRESS_MS) return;
+      lastProgress = now;
+      void onParent([
+        {
+          type: "agent.subagent_progress",
+          threadId: parentThreadId,
+          turnId: placed.turnId,
+          subagentId,
+          summary: summary.slice(0, 200),
+          toolCalls,
+          durationMs: now - started,
+        },
+      ]).catch(this.deps.onError);
+    };
+    const finish = async (outcome: RunOutcome) => {
+      const status = outcome.kind === "done" ? "completed" : outcome.kind === "cancelled" ? "aborted" : "failed";
+      const result = outcome.kind === "done" ? outcome.text : outcome.kind === "cancelled" && outcome.error === "the subagent was stopped" ? "Stopped." : outcome.error;
+      await onParent([
+        {
+          type: "agent.subagent_finished",
+          threadId: parentThreadId,
+          turnId: placed.turnId,
+          subagentId,
+          status,
+          result: result.slice(0, RESULT_CHARS),
+          usage,
+          costUsd,
+          toolCalls,
+          durationMs: Date.now() - started,
+        },
+      ]);
+    };
+    const task = (text: string) => `${PREAMBLE}\n\n<task>\n${text.trim()}\n</task>`;
 
-      // The first turn is the task; after a limit, the switch's own message.
+    let turnsRun = 0;
+    const run = async (text: string): Promise<RunOutcome> => {
+      const first = turnsRun++ === 0;
+      const costBefore = costUsd;
+      // The message; after a limit, the switch's own.
       let start: () => Promise<EngineResult> = () =>
         this.deps.dispatch(principal, {
           type: "thread.send",
           threadId: childId,
-          text: `${PREAMBLE}\n\n<task>\n${request.task.trim()}\n</task>`,
+          text,
           provider,
-          ...(routing.model ? { model: routing.model } : {}),
+          ...(currentModel ? { model: currentModel } : {}),
         });
       for (;;) {
         let outcome = await this.#childTurn(childId, principal, start, childSignal, {
@@ -274,12 +425,10 @@ export class SubagentRunner {
         if (outcome.kind === "done") {
           addUsage(usage, outcome.usage);
           costUsd += outcome.costUsd ?? 0;
-          await finish("completed", outcome.text);
-          return { text: outcome.text };
+          return { kind: "done", text: outcome.text, costUsd: costUsd - costBefore };
         }
         if (outcome.kind === "cancelled") {
-          await finish("aborted", "Stopped.");
-          return { error: "the subagent was stopped" };
+          return { kind: "cancelled", error: "the subagent was stopped" };
         }
         const recoverable = outcome.kind === "limit" || (outcome.kind === "failed" && /model.*(?:not (?:found|available|supported)|unavailable|access|invalid)|(?:unknown|invalid|unsupported) model|not (?:logged|signed) in|authentication|unauthorized|token.*expired/i.test(outcome.error));
         if (recoverable && !autoFallback && (provider === "claude" || provider === "codex") && requestedModel) {
@@ -298,19 +447,17 @@ export class SubagentRunner {
             start = async () => {
               const [state] = await db.select({ provider: threads.provider }).from(threads).where(eq(threads.id, childId)).limit(1);
               if (!state?.provider) return this.deps.dispatch(principal, { type: "thread.send", threadId: childId,
-                provider, ...(currentModel ? { model: currentModel } : {}), text: `${PREAMBLE}\n\n<task>\n${request.task.trim()}\n</task>` });
+                provider, ...(currentModel ? { model: currentModel } : {}), text });
               return this.deps.dispatch(principal, { type: "thread.switch_harness", threadId: childId,
                 targetProvider: provider, ...(currentModel ? { model: currentModel } : {}), reason: "limit",
-                message: "Continue the assigned task from the handoff brief. Preserve completed work." });
+                message: first ? "Continue the assigned task from the handoff brief. Preserve completed work." : text });
             };
             continue;
           }
         }
         if (outcome.kind === "failed" && autoFallback && provider === "omp") outcome = { kind: "limit", error: `OpenRouter fallback failed: ${outcome.error}` };
-        if (outcome.kind === "failed") {
-          await finish("failed", outcome.error);
-          return { error: outcome.error };
-        }
+        if (outcome.kind === "failed") return { kind: "failed", error: outcome.error };
+        if (!request.attended) return { kind: "failed", error: outcome.error };
 
         // Its harness hit a usage limit: the person picks how it goes on.
         const requestId = randomUUID();
@@ -342,12 +489,10 @@ export class SubagentRunner {
         const picked = answer.optionId ? limitOptions(latest, provider).find((option) => option.id === answer.optionId) : undefined;
         if (!picked?.provider || picked.blocker) {
           const why = childSignal.aborted ? "the subagent was stopped" : `${harnessLabel(provider)} hit its usage limit, and the subagent was not carried on`;
-          await finish(childSignal.aborted ? "aborted" : "failed", why);
-          return { error: why };
+          return { kind: childSignal.aborted ? "cancelled" : "failed", error: why };
         }
         if (picked.id === "custom" && !answer.model) {
-          await finish("failed", "no model was picked to carry the subagent on");
-          return { error: "no model was picked to carry the subagent on" };
+          return { kind: "failed", error: "no model was picked to carry the subagent on" };
         }
         provider = picked.provider;
         const model = answer.model ?? picked.model;
@@ -364,17 +509,23 @@ export class SubagentRunner {
           });
       }
     };
-    const running = execute().catch(async (error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      const events: DomainEvent[] = [{ type: "agent.subagent_finished", threadId: parentThreadId, turnId: placed.turnId, subagentId, status: "failed", result: message }];
-      await onParent(events);
-      return { error: message };
-    }).finally(() => { this.active.delete(childId); controller.abort(); this.deps.release?.(childId); });
-    if (!request.background) return running;
-    void running.then(async (outcome) => {
-      await this.deps.notify?.(parentThreadId, childId, `Agent ${childId} (${request.description}) ${"text" in outcome ? "completed" : "failed"}:\n${"text" in outcome ? outcome.text : outcome.error}`);
-    }).catch(this.deps.onError);
-    return { text: JSON.stringify({ sessionId: childId, hash: made.hash, subagentId, provider: routing.provider, model: routing.model, routing: routing.label, status: "running" }) };
+    return {
+      childId,
+      hash: made.hash,
+      subagentId,
+      provider: routing.provider,
+      model: routing.model,
+      routing: routing.label,
+      task,
+      run,
+      finish,
+      abort: () => controller.abort(),
+      close: () => {
+        this.active.delete(childId);
+        controller.abort();
+        this.deps.release?.(childId);
+      },
+    };
   }
 
   /**

@@ -36,6 +36,7 @@ import { AgentTurnReactor } from "./agent.js";
 import { TurnScheduler } from "./turn-scheduler.js";
 import { BridgeLeases } from "./bridge-leases.js";
 import { documentsBackends } from "./documents.js";
+import { DeliberationSettings, recoverDeliberations } from "./deliberations.js";
 import { researchBackends } from "./research.js";
 import { DIAGRAM_FILES, diagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
 import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.js";
@@ -508,6 +509,8 @@ const agentTurns = new AgentTurnReactor(
     // For following a `ucch_agent` subagent's session to its end.
     bus,
     ...(browser ? { browser } : {}),
+    peerReviewMaxCostUsd: config.PEER_REVIEW_MAX_COST_USD,
+    councilMaxCostUsd: config.COUNCIL_MAX_COST_USD,
   },
   (error) => app.log.error({ err: error }, "agent turn failed"),
 );
@@ -745,6 +748,7 @@ const engine = new OrchestrationEngine(
     maxParallel: config.ENGINE_MAX_PARALLEL,
     projectOfThread: (threadId) => access.projectOfThread(threadId),
     // A message into an archived or settled session makes it active again.
+    checkModels: (principal, command) => agentTurns.checkModels(principal, command),
     beforeSend: (principal, threadId) => reviveSession({ db, store, projectGit }, principal, threadId),
   },
 );
@@ -3822,6 +3826,29 @@ app.patch<{ Params: { hash: string } }>("/api/projects/:hash/omp-trust", async (
   return state;
 });
 
+/**
+ * What `@reviewer` and `@council` use when a message names nothing. Any
+ * member reads it; a workspace admin changes it.
+ */
+app.get<{ Params: { hash: string } }>("/api/projects/:hash/deliberation", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const state = await workspaceService.deliberation(request.params.hash, principal.userId);
+  if (!state) return reply.code(404).send({ error: "project not found" });
+  return state;
+});
+
+app.patch<{ Params: { hash: string } }>("/api/projects/:hash/deliberation", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const parsed = DeliberationSettings.partial().strict().safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: "those are not reviewer and council settings" });
+  const state = await workspaceService.setDeliberation(request.params.hash, principal.userId, parsed.data);
+  if (!state) return reply.code(404).send({ error: "project not found" });
+  if ("error" in state) return reply.code(403).send({ error: "only a workspace admin can change the reviewer and council defaults" });
+  return state;
+});
+
 registerPublicRoutes(app, {
   findPublic: (slug) => workspaceService.findPublic(slug),
   notes: notesService,
@@ -5498,6 +5525,7 @@ await bridgeLeases
   .listen(BRIDGE_SOCKET)
   .catch((error: unknown) => app.log.warn({ err: error, path: BRIDGE_SOCKET }, "could not open the OMP bridge's scheduler socket"));
 await agentTurns.messaging?.recover();
+await recoverDeliberations(db, store);
 
 // What deleted work left behind before deleting cleaned up after itself:
 // subagent sessions whose parent is gone, the CLIs' transcripts of projects

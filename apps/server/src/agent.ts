@@ -4,7 +4,7 @@ import type { ProfileRef } from "./profile-ref.js";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { and, count, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
-import { events, projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
+import { agentDeliberations, events, projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
 import {
   HostExecutor,
   hostToolSchemas,
@@ -22,6 +22,12 @@ import {
 } from "@ucch/agent";
 import {
   AgentPermissionMode,
+  modelProfile,
+  parseDirectives,
+  resolveHarness,
+  SAME_MODEL,
+  type PickHarness,
+  type ReviewerDirective,
   cliContextWindow,
   estimateTokens,
   handoffBudgetChars,
@@ -86,7 +92,7 @@ import { decryptSecret } from "./crypto.js";
 import { ensureProjectInfo, readProjectKnowledge } from "./dev-database.js";
 import { workspaceSubject, type ProviderService } from "./providers.js";
 import { toPolicy } from "./workspaces.js";
-import { applyProjection, readingOf } from "./engine.js";
+import { applyProjection, readingOf, type ReviewResult } from "./engine.js";
 import { treeFor, worktreeIdOf } from "./trees.js";
 import { TurnSnapshots } from "./turn-snapshot.js";
 import type { Principal } from "./auth.js";
@@ -105,6 +111,9 @@ import type { KnowledgeService } from "./knowledge.js";
 import { briefedPrompt, EMPTY_BRIEF, researchAsk } from "./research.js";
 import { DeltaCoalescer, isDelta } from "./delta-coalescer.js";
 import { TurnScheduler, type TurnKind } from "./turn-scheduler.js";
+import { CouncilRunner } from "./council.js";
+import { deliberationSettings, type DeliberationDeps, type DeliberationParent } from "./deliberations.js";
+import { PeerReviewer } from "./peer-review.js";
 import { DEFAULT_OMP_SETTINGS, writeOmpOverlay, type OmpPreset } from "./omp-overlay.js";
 import { bridgeServer, writeClaudeMcpConfig, writeCodexBridge } from "./omp-bridge-config.js";
 import type { ArgvWrapper } from "./child-priority.js";
@@ -229,6 +238,10 @@ export interface AgentOptions {
    * this server, or `BROWSER_ENABLED=false`; no turn gets browser tools.
    */
   browser?: BrowserManager;
+  /** What one review may cost before it stops (`PEER_REVIEW_MAX_COST_USD`). 2 when absent. */
+  peerReviewMaxCostUsd?: number;
+  /** What one council may cost before it concludes (`COUNCIL_MAX_COST_USD`). 5 when absent. */
+  councilMaxCostUsd?: number;
 }
 
 /** What the server knows about the OMP bridge: where it is, and where its calls take a slot. */
@@ -262,6 +275,18 @@ interface TurnOptions {
   knowledge?: MessageKnowledge | undefined;
   /** Nobody is there to answer: a turn a limit stopped, sent at its time. */
   unattended?: boolean | undefined;
+  /** The message's `@reviewer` and `@council`, from its event. */
+  directives?: Extract<DomainEvent, { type: "user.message" }>["directives"];
+  /** The turn's id, when it was named before it opened. */
+  turnId?: string | undefined;
+  /** What a council left for the turn to answer from. */
+  moderator?: string | undefined;
+}
+
+/** How a turn came out, for what follows it. */
+interface TurnReport {
+  turnId?: string;
+  end?: "completed" | "cancelled" | "failed";
 }
 
 /** A turn that stopped on a usage limit: whose, and when it resets if the CLI said. */
@@ -269,6 +294,9 @@ interface LimitHit {
   provider: ProviderId;
   resetsAt: string | null;
 }
+
+/** What a reviewer's or council member's session is told when a tool would need asking. */
+const READ_ONLY_DENIAL = "This session is read-only, and nobody is there to ask. Use the tools that read.";
 
 /** The session a scheduled resume is sent under. */
 const RESUME_SESSION = "scheduled-resume";
@@ -442,6 +470,8 @@ export class AgentTurnReactor {
   /** `ucch_agent` subagents: absent without a bus and a dispatcher. */
   readonly #subagents: SubagentRunner | null;
   readonly messaging: AgentMessaging | null;
+  readonly #reviewer: PeerReviewer | null;
+  readonly #council: CouncilRunner | null;
   #ompProbe: { at: number; value: Promise<boolean> } | null = null;
 
   readonly #snapshots: TurnSnapshots;
@@ -483,6 +513,141 @@ export class AgentTurnReactor {
             onError,
           })
         : null;
+    const deliberation: DeliberationDeps | null =
+      this.#subagents && dispatch
+        ? {
+            store,
+            runner: this.#subagents,
+            dispatch,
+            harnesses: (subject) => this.#pickHarnesses(subject),
+            catalogue: () => catalogue(),
+            settings: (projectId) => deliberationSettings(db, projectId),
+            onError,
+          }
+        : null;
+    this.#reviewer = deliberation && new PeerReviewer(deliberation, { maxCostUsd: options.peerReviewMaxCostUsd ?? 2 });
+    this.#council = deliberation && new CouncilRunner(deliberation, { maxCostUsd: options.councilMaxCostUsd ?? 5 });
+  }
+
+  /** `#routingHarnesses`, with the models each is known to offer. */
+  async #pickHarnesses(subject: string): Promise<PickHarness[]> {
+    const [harnesses, cards] = await Promise.all([this.#routingHarnesses(subject), this.options.providers?.health(subject)]);
+    return harnesses.map((h) =>
+      h.provider === "claude" || h.provider === "codex" ? { ...h, knownModels: cards?.[h.provider].models ?? [] } : h,
+    );
+  }
+
+  /** Who a thread's reviewers or council answer to: its payer, and what its answers run on. */
+  async #deliberationParent(
+    threadId: string,
+    asked: { provider?: ProviderId | undefined; model?: string | undefined } = {},
+  ): Promise<{ parent: DeliberationParent; thread: typeof threads.$inferSelect } | null> {
+    const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
+    const owner = thread ? await this.#owner(thread.projectId, thread) : null;
+    if (!thread || !owner) return null;
+    const provider = resolveProvider(asked.provider, thread.provider, owner.defaultProvider, { ompEnabled: this.options.ompEnabled ?? false });
+    const [last] = await this.db
+      .select({ model: turns.model })
+      .from(turns)
+      .where(eq(turns.threadId, threadId))
+      .orderBy(desc(turns.seq))
+      .limit(1);
+    // Of a turn before a harness switch, the last model is the other harness's.
+    const vendor = provider === "claude" ? "anthropic" : provider === "codex" ? "openai" : null;
+    const runsHere = (model: string) => vendor === null || (!model.includes("/") && modelProfile(model).vendor === vendor);
+    const model =
+      asked.model ??
+      (last?.model && runsHere(last.model) ? last.model : null) ??
+      (provider === "native" || provider === "omp" ? resolveModel(undefined, owner.defaultModel, this.options.defaultModel) : null);
+    return { parent: { projectId: thread.projectId, threadId, subject: owner.id, author: { provider, model } }, thread };
+  }
+
+  /** A review of an answer of the thread; its events say how it went. */
+  async #peerReview(
+    threadId: string,
+    directive: ReviewerDirective,
+    principal: Principal | undefined,
+    of: { turnId?: string | undefined; deliberationId?: string | undefined; failed?: string },
+  ): Promise<void> {
+    const found = await this.#deliberationParent(threadId);
+    if (!found) return;
+    const { parent, thread } = found;
+    const by = principal ?? (await this.#internalPrincipal(thread));
+    if (!this.#reviewer || !by) return;
+    if (of.failed) return this.#reviewer.fail(parent, of.turnId ?? randomUUID(), directive, of.failed, of.deliberationId);
+    await this.#reviewer.run({
+      parent,
+      turnId: of.turnId,
+      directive,
+      principal: by,
+      deliberationId: of.deliberationId,
+    });
+  }
+
+  /** The findings a person sent back, to the agent that answered. */
+  async #peerReviewFix(command: Extract<Command, { type: "thread.peer_review_fix" }>, principal: Principal | undefined): Promise<void> {
+    const found = await this.#deliberationParent(command.threadId);
+    const [row] = await this.db.select().from(agentDeliberations).where(eq(agentDeliberations.id, command.peerReviewId)).limit(1);
+    if (!found || !row || !this.#reviewer) return;
+    const by = principal ?? (await this.#internalPrincipal(found.thread));
+    if (by) await this.#reviewer.fix(found.parent, by, row.id, row.result as ReviewResult, command.findingIds);
+  }
+
+  /** A person stopped a review or a council. */
+  async #cancelDeliberation(threadId: string, deliberationId: string): Promise<void> {
+    const reviewing = this.#reviewer?.running.cancel(deliberationId, "user");
+    const meeting = this.#council?.running.cancel(deliberationId, "user");
+    if (reviewing || meeting) return;
+    // Nothing here runs it: only its card is still open.
+    const [row] = await this.db.select().from(agentDeliberations).where(eq(agentDeliberations.id, deliberationId)).limit(1);
+    if (row?.status !== "running") return;
+    const events: DomainEvent[] = [{ type: "agent.deliberation_cancelled", threadId, deliberationId, by: "user" }];
+    await this.store.append({ projectId: row.projectId, threadId }, events, (tx) => applyProjection(tx, events, null));
+  }
+
+  /**
+   * Why a message's `@reviewer` or `@council` cannot run the models it
+   * names, or null (`EngineOptions.checkModels`).
+   */
+  async checkModels(_principal: Principal, command: Extract<Command, { type: "thread.send" | "thread.peer_review" }>): Promise<string | null> {
+    let named: string[];
+    if (command.type === "thread.peer_review") named = command.models ?? [];
+    else {
+      const asked = parseDirectives(command.text);
+      if (asked.errors.length) return null; // `decide` says so.
+      named = [...(asked.reviewer?.models ?? []), ...(asked.council?.models ?? [])];
+      if (asked.ranges.length && !this.#reviewer) return "this server does not run subagents";
+    }
+    named = named.filter((model) => model !== SAME_MODEL);
+    if (named.length === 0) return null;
+    const found = await this.#deliberationParent(command.threadId);
+    if (!found) return null; // Nor a thread: `decide` says so.
+    const { parent } = found;
+    const listed = await catalogue().catch(() => []);
+    for (const model of named) {
+      const routing = resolveHarness(model, {
+        parent: parent.author,
+        harnesses: await this.#routingHarnesses(parent.subject, model),
+        customProvider: this.#customProvider(),
+        catalogue: listed,
+      });
+      if (!routing.ok) return `${routing.reason}${routing.candidates.length ? `: ${routing.candidates.join(", ")}` : ""}`;
+    }
+    return null;
+  }
+
+  /**
+   * A council's deliberation, before the turn that asked for it opens: the
+   * thread stays `queued` and holds no slot. Null when it was stopped.
+   */
+  async #deliberate(threadId: string, text: string, options: TurnOptions, signal: AbortSignal): Promise<TurnOptions | null> {
+    const directive = options.directives?.council;
+    if (!directive || !this.#council) return options;
+    const found = await this.#deliberationParent(threadId, options);
+    if (!found) return options;
+    const turnId = randomUUID();
+    const outcome = await this.#council.run({ parent: found.parent, turnId, directive, question: text, signal });
+    return outcome.kind === "cancelled" ? null : { ...options, turnId, moderator: outcome.text };
   }
 
   /** What runs OpenRouter models: OMP with `OMP_ENABLED`, else the native loop. */
@@ -645,8 +810,19 @@ export class AgentTurnReactor {
       // The loop notices between tool calls and unwinds itself; a tool
       // already dispatched still records its result rather than vanishing.
       this.messaging?.pause(command.threadId);
+      this.#reviewer?.running.cancelThread(command.threadId, "user");
+      this.#council?.running.cancelThread(command.threadId, "user");
       this.#subagents?.cancel(command.threadId);
       this.#running.get(command.threadId)?.abort();
+      return;
+    }
+
+    if (command.type === "thread.peer_review_fix") {
+      void this.#peerReviewFix(command, principal).catch(this.onError);
+      return;
+    }
+    if (command.type === "thread.deliberation_cancel") {
+      void this.#cancelDeliberation(command.threadId, command.deliberationId).catch(this.onError);
       return;
     }
 
@@ -704,6 +880,10 @@ export class AgentTurnReactor {
         void this.#review(event).catch(this.onError);
         continue;
       }
+      if (event.type === "agent.peer_review_requested") {
+        void this.#peerReview(event.threadId, event.directive, principal, { turnId: event.turnId, deliberationId: event.deliberationId }).catch(this.onError);
+        continue;
+      }
       if (event.type !== "user.message") continue;
       // The model and effort ride on the command rather than the event: they
       // are how this turn was asked for, not something that happened.
@@ -725,6 +905,7 @@ export class AgentTurnReactor {
           images: event.images,
           knowledge: sent?.knowledge,
           unattended: principal?.sessionId === RESUME_SESSION,
+          directives: event.directives,
         },
         principal,
       ).catch(this.onError);
@@ -841,6 +1022,8 @@ export class AgentTurnReactor {
     for (const timer of this.#resumeTimers.values()) clearTimeout(timer);
     this.#resumeTimers.clear();
     this.messaging?.shutdown();
+    this.#reviewer?.running.shutdown();
+    this.#council?.running.shutdown();
     this.#subagents?.shutdown();
     await Promise.all([...this.#cliRuns].map((run) => run.kill().catch(() => {})));
   }
@@ -856,13 +1039,29 @@ export class AgentTurnReactor {
     const controller = new AbortController();
     this.#running.set(threadId, controller);
     let limited: LimitHit | undefined;
+    const report: TurnReport = {};
     try {
-      limited = await this.#turn(threadId, text, options, controller);
+      const ready = await this.#deliberate(threadId, text, options, controller.signal).catch(async (error: unknown) => {
+        await this.#dequeue(threadId, "error");
+        throw error;
+      });
+      if (!ready) {
+        await this.#dequeue(threadId, "cancelled");
+        return;
+      }
+      limited = await this.#turn(threadId, text, ready, controller, report);
     } finally {
       // Only if it is still ours: a turn that overran its own cancellation
       // must not clear a controller the next turn has already registered.
       if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
       if (!controller.signal.aborted) setImmediate(() => void this.messaging?.deliver(threadId).catch(this.onError));
+    }
+    const reviewer = options.directives?.reviewer;
+    if (reviewer && report.turnId && report.end && report.end !== "cancelled") {
+      void this.#peerReview(threadId, reviewer, principal, {
+        turnId: report.turnId,
+        ...(report.end === "failed" ? { failed: "the answer did not finish, so there was nothing to review" } : {}),
+      }).catch(this.onError);
     }
     // After the turn has let go of the thread: the handoff claims it anew.
     if (limited) await this.#handOffOnLimit(threadId, limited, text, options, principal);
@@ -873,6 +1072,14 @@ export class AgentTurnReactor {
       });
       if (!compacting) await this.#scheduleIdleCompaction(threadId).catch(this.onError);
     }
+  }
+
+  /** Lets a `queued` thread go without a turn. */
+  async #dequeue(threadId: string, reason: "error" | "cancelled"): Promise<void> {
+    const [thread] = await this.db.select({ projectId: threads.projectId }).from(threads).where(eq(threads.id, threadId)).limit(1);
+    if (!thread) return;
+    const events: DomainEvent[] = [{ type: "turn.dequeued", threadId, reason }];
+    await this.store.append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null)).catch(this.onError);
   }
 
   /**
@@ -1375,8 +1582,9 @@ export class AgentTurnReactor {
   async #turn(
     threadId: string,
     text: string,
-    { model, effort, provider: requestedProvider, mode, plan, subagentId, subagentHandle, images, knowledge, unattended }: TurnOptions,
+    { model, effort, provider: requestedProvider, mode, plan, subagentId, subagentHandle, images, knowledge, unattended, turnId: namedTurnId, moderator }: TurnOptions,
     controller: AbortController,
+    report: TurnReport = {},
   ): Promise<LimitHit | undefined> {
     const [thread] = await this.db.select().from(threads).where(eq(threads.id, threadId)).limit(1);
     // Nothing to release: the thread, and its status, went with it.
@@ -1419,7 +1627,8 @@ export class AgentTurnReactor {
       return;
     }
 
-    const turnId = randomUUID();
+    const turnId = namedTurnId ?? randomUUID();
+    report.turnId = turnId;
     const target = { projectId: thread.projectId, threadId };
     // Where this turn's `ucch_agent` calls wait to be matched (`#claimCall`).
     const spawnCalls = { turnId, calls: [] as { toolUseId: string; task: string | null }[] };
@@ -1454,6 +1663,8 @@ export class AgentTurnReactor {
       }
       for (const event of batch) {
         if (event.type === "context.usage") reading = event;
+        if (event.type === "agent.turn_completed") report.end = event.stopReason === "cancelled" ? "cancelled" : "completed";
+        if (event.type === "agent.turn_failed") report.end = "failed";
         if (event.type === "agent.subagent_finished") subagentsTotal.inc({ provider: runsOn, status: event.status });
         // The CLI's own usage reading: the meters' only source for Claude.
         if (event.type === "agent.rate_limit" && owner) {
@@ -1690,6 +1901,12 @@ export class AgentTurnReactor {
           await append([{ type: "context.injected", threadId, source: "system_prompt", content: WIDGET_TURN_NUDGE }]);
         }
 
+        // What a council concluded, for the agent that answers for it.
+        if (moderator) {
+          prompt = `${moderator}\n\n${prompt}`;
+          await append([{ type: "context.injected", threadId, source: "system_prompt", content: moderator }]);
+        }
+
         // Plan mode: a draft is told to plan and ask, read-only; a run is
         // handed the plan it carries out, so it holds after a compaction.
         if (plan) {
@@ -1807,7 +2024,8 @@ export class AgentTurnReactor {
           agentSettings: readAgentSettings(project.agent),
           trusted: project.ompTrusted === true,
           ...(mode ? { mode } : {}),
-          ...(plan === "draft" ? { readOnly: true } : {}),
+          ...(plan === "draft" || thread.readOnly ? { readOnly: true } : {}),
+          ...(thread.readOnly ? { sealed: true } : {}),
           ...(noWeb ? { noWeb: true } : {}),
           ...(turnKnowledge?.dirs.length ? { readDirs: turnKnowledge.dirs } : {}),
           ...(researched ? { researched } : {}),
@@ -1852,28 +2070,29 @@ export class AgentTurnReactor {
         ...(effort ? { effort: effort === "xhigh" || effort === "max" ? "high" : effort } : {}),
         history: history.map((row) => row.event),
         instructions: [
-          ...(this.messaging ? [COLLABORATION_GUIDE, !thread.parentThreadId ? UCCH_AGENT_GUIDE : ""] : []),
+          ...(this.messaging && !thread.readOnly ? [COLLABORATION_GUIDE, !thread.parentThreadId ? UCCH_AGENT_GUIDE : ""] : []),
           // A subagent's own session reports to its parent (plan1 §2.2).
           ...(thread.parentThreadId ? [UCCH_SUBAGENT_RULES] : []),
           // Plan mode rides in the system prompt here: the history is the log.
           ...(plan ? [(await this.#planPrompt(threadId, plan, "")).trim()] : []),
           ...(turnKnowledge ? [turnKnowledge.prompt] : []),
+          ...(moderator ? [moderator] : []),
         ].filter(Boolean).join("\n\n") || undefined,
         stack: project.stack,
         // The preset and the mode travel together: each mode's prompt
         // describes its own tools, and only its preset offers them. A plan
         // draft reads only.
-        preset: plan === "draft" ? "readonly" : (mode ?? "standard"),
+        preset: plan === "draft" || thread.readOnly ? "readonly" : (mode ?? "standard"),
         ...(mode === "research" ? { mode, research: this.options.research } : {}),
         ...(mode === "documentation" ? { mode, documents: this.options.documents } : {}),
         // The workspace's "Allow interactive widgets": the prompt section
         // and `show_widget` together.
         registry: {
           ...this.options.registry,
-          browser: await this.#browserToolset(readAgentSettings(project.agent), threadId, history),
+          browser: thread.readOnly ? false : await this.#browserToolset(readAgentSettings(project.agent), threadId, history),
           widgets: widgetsOn(readAgentSettings(project.agent)) && !thread.parentThreadId,
           ...(noWeb ? { web: false } : {}),
-          ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx), subagents: !thread.parentThreadId } : {}),
+          ...(this.messaging && !thread.readOnly ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx), subagents: !thread.parentThreadId } : {}),
         },
         contextLength,
         supportsImages: canSeeImages,
@@ -1890,7 +2109,7 @@ export class AgentTurnReactor {
         ...(this.#browserOn(readAgentSettings(project.agent)) ? { browser: this.#browserFor(thread.projectId, threadId, workspace) } : {}),
         complete: route.complete,
         signal: controller.signal,
-        approve: (request) =>
+        approve: (request) => thread.readOnly ? Promise.resolve<ApprovalDecision>({ behavior: "deny", message: READ_ONLY_DENIAL }) :
           this.#approveNative({
             threadId,
             turnId,
@@ -2826,6 +3045,11 @@ export class AgentTurnReactor {
        * person before anything but a read.
        */
       readOnly?: boolean;
+      /**
+       * A reviewer's or council member's turn: read-only, with none of the
+       * harness's own tools, and every question it asks refused.
+       */
+      sealed?: boolean;
       /** A knowledge-only turn: the CLI's own web tools are switched off. */
       noWeb?: boolean;
       /** Folders outside the tree the CLI may read: this turn's knowledge bases. */
@@ -2891,16 +3115,16 @@ export class AgentTurnReactor {
       // as the server can still give them: a setting changed mid-session
       // takes effect in its next session, so the tool list -- the front of
       // the cached prefix -- holds.
-      const offersSubagents = this.#subagents !== null && !input.subagent && (stored ? stored.tools.subagents : true);
-      const ompTools = stored ? stored.tools.omp : input.agentSettings?.ompBridge.enabled === true;
+      const offersSubagents = this.#subagents !== null && !input.subagent && !input.sealed && (stored ? stored.tools.subagents : true);
+      const ompTools = input.sealed ? false : stored ? stored.tools.omp : input.agentSettings?.ompBridge.enabled === true;
       // Interactive widgets: taught in the instructions (the fence works on
       // every harness), and `show_widget` on the bridge. Not for a
       // subagent, whose answer goes to its parent rather than the reader.
-      const widgets = !input.subagent && (stored ? stored.tools.widgets : widgetsOn(input.agentSettings));
-      const messaging = Boolean(this.messaging) && (stored ? stored.tools.messaging : true);
+      const widgets = !input.subagent && !input.sealed && (stored ? stored.tools.widgets : widgetsOn(input.agentSettings));
+      const messaging = Boolean(this.messaging) && !input.sealed && (stored ? stored.tools.messaging : true);
       // The shared browser, on the bridge: a resumed session keeps the tool
       // list it started with, so one from before the browser stays without.
-      const browserTools = provider !== "omp" && (stored ? stored.tools.browser === true : this.#browserOn(input.agentSettings));
+      const browserTools = provider !== "omp" && !input.sealed && (stored ? stored.tools.browser === true : this.#browserOn(input.agentSettings));
       // Codex lists every MCP tool it is given on every request, so a thread
       // that has not used the browser is handed `browser_open` alone; the
       // bridge lists the rest once it succeeds. Claude Code already keeps
@@ -2921,7 +3145,7 @@ export class AgentTurnReactor {
         effort: input.effort,
         knowledge,
         mode: input.mode,
-        planDraft: input.readOnly === true,
+        planDraft: input.readOnly === true && !input.sealed,
         subagent: input.subagent === true,
         bridge: bridge ? { omp: bridge.omp } : null,
         offersSubagents,
@@ -2962,25 +3186,25 @@ export class AgentTurnReactor {
       let host: Pick<ProviderRunInput, "hostTools" | "onHostToolCall"> = {};
       if (provider === "omp") {
         const providers = this.options.providers;
-        const browserOn = this.#browserOn(input.agentSettings);
-        const hostTools = [
+        const browserOn = !input.sealed && this.#browserOn(input.agentSettings);
+        const hostTools = input.sealed ? [] : [
           ...hostToolSchemas(preset, { ...this.options.registry, widgets, browser: browserOn, ...(this.messaging ? { coordination: (name, args, ctx) => this.#coordinate(name, args, ctx) } : {}) }),
           ...(offersSubagents ? [UCCH_AGENT_HOST_TOOL] : []),
         ];
         // The session's bank and the ones it may recall, under the subject that pays.
         const memory = input.agentSettings?.memory ?? DEFAULT_OMP_SETTINGS.memory;
-        if (memory.enabled) recall = await this.#openMemory(input, input.turnId, input.text);
+        if (memory.enabled && !input.sealed) recall = await this.#openMemory(input, input.turnId, input.text);
         const written = await writeOmpOverlay(providers.ompRunDir(input.ownerId), input.turnId, {
           // Every model role is the turn's model until the workspace picks
           // its own (OM8.1): a role left unnamed is the repository's to set.
           settings: {
             ...DEFAULT_OMP_SETTINGS,
             models: input.model ? { default: input.model } : {},
-            isolatedFanOut: input.agentSettings?.isolatedFanOut.enabled ?? false,
-            memory,
+            isolatedFanOut: !input.sealed && (input.agentSettings?.isolatedFanOut.enabled ?? false),
+            memory: input.sealed ? { ...memory, enabled: false } : memory,
           },
           ...(recall ? { memoryDbPath: recall.path } : {}),
-          preset,
+          preset: input.sealed ? "review" : preset,
           permissionMode,
           // A trusted project keeps its debugger (§0.3); its LSP is the argv's.
           trusted: input.trusted === true,
@@ -3088,6 +3312,14 @@ export class AgentTurnReactor {
               );
             }
           }
+          if (
+            event.type === "agent.permission_requested" &&
+            input.sealed &&
+            current.answerPermission?.(event.requestId, { behavior: "deny", message: READ_ONLY_DENIAL })
+          ) {
+            autoAnswered.add(event.requestId);
+            continue;
+          }
           if (event.type === "agent.permission_requested") {
             const mode = this.#modeFor(input.threadId, input.owner);
             const needsPerson =
@@ -3129,7 +3361,7 @@ export class AgentTurnReactor {
         await this.#keepPrefix(input.threadId, { ...prefix, sessionId: keptSession, resend: prefix.resend === true || codexCompacted });
       }
       const memory = input.agentSettings?.memory;
-      if (provider !== "omp" && !input.compaction && completed && answer && memory?.enabled && memory.retainCliTurns) {
+      if (provider !== "omp" && !input.compaction && !input.sealed && completed && answer && memory?.enabled && memory.retainCliTurns) {
         // After the turn, on a slot of its own: the thread never waits on it.
         void this.#retainAnswer({ ...input, answer }).catch(this.onError);
       }

@@ -276,6 +276,8 @@ export const projects = pgTable(
      * sessions share the project's checkout and commit to the base branch.
      */
     sessionBranches: boolean("session_branches").notNull().default(true),
+    /** What `@reviewer` and `@council` use when a message names nothing (`DeliberationSettings`). Null: the defaults. */
+    deliberation: jsonb("deliberation"),
     /**
      * The owner's `git_accounts` row to authenticate with, when it matches the
      * remote. No foreign key: events replay after an account is removed, and
@@ -435,6 +437,8 @@ export const threads = pgTable(
      * sessions list; its page is still reachable by hash, from the card.
      */
     parentThreadId: uuid("parent_thread_id"),
+    /** A reviewer's or council member's session: every turn of it is read-only, whoever sends it. */
+    readOnly: boolean("read_only").notNull().default(false),
     /**
      * null | settled | failed: the outcome of the last settle. A settled
      * session's branch was merged into `settleBaseBranch` at
@@ -1290,4 +1294,28 @@ export const agentRuns = pgTable("agent_runs", {
   index("agent_runs_parent_idx").on(t.parentThreadId),
   // For the cascade, as above.
   index("agent_runs_child_idx").on(t.childThreadId),
+]);
+
+/** Reviews and councils a message asked for, projected from their events. */
+export const agentDeliberations = pgTable("agent_deliberations", {
+  id: uuid("id").primaryKey(),
+  threadId: uuid("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  /** `peer_review` or `council`. */
+  kind: text("kind").notNull(),
+  /** The answer reviewed, or the council's held turn. */
+  turnId: uuid("turn_id"),
+  /** running | completed | failed | cancelled */
+  status: text("status").notNull().default("running"),
+  directive: jsonb("directive"),
+  members: jsonb("members").$type<Record<string, unknown>[]>().notNull().default([]),
+  /** A review's verdicts by reviewer, or a council's positions by round and its conclusion. */
+  result: jsonb("result").$type<Record<string, unknown>>().notNull().default({}),
+  costUsd: doublePrecision("cost_usd").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, (t) => [
+  index("agent_deliberations_thread_idx").on(t.threadId, t.createdAt),
+  index("agent_deliberations_project_idx").on(t.projectId),
+  index("agent_deliberations_running_idx").on(t.status).where(sql`status = 'running'`),
 ]);

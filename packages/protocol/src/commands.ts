@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ProjectDatabase } from "./database.js";
-import { MessageImage, MessageMode, PlanStage, ProjectMode, ProviderId, ReviewScope } from "./events.js";
+import { MessageImage, MessageMode, PlanStage, ProjectMode, ProviderId, ReviewerDirectiveSchema, ReviewScope } from "./events.js";
+import { PEER_REVIEW_MAX_REVIEWERS } from "./plain.js";
 import { BranchName, PreviewHash, ThreadHash } from "./ids.js";
 import { MessageKnowledge } from "./knowledge.js";
 
@@ -94,6 +95,8 @@ const ThreadCreate = z.object({
    * the person, else the Default account.
    */
   profileId: z.string().uuid().optional(),
+  /** Server-only, with `parentThreadId`: a session no turn of which may change anything. */
+  readOnly: z.literal(true).optional(),
 });
 
 /**
@@ -122,6 +125,10 @@ const ThreadSend = z.object({
   /** Follow-up for an existing native worker in this thread. */
   subagentId: z.string().min(1).max(500).optional(),
   agentMessageIds: z.array(z.string().uuid()).min(1).max(100).optional(),
+  /** Server-only: the review whose findings this message sends back to be fixed. */
+  peerReviewId: z.string().uuid().optional(),
+  /** Server-only, with `peerReviewId`: review the fix. A person asks with `@reviewer` in `text`. */
+  reviewer: ReviewerDirectiveSchema.optional(),
   threadId: z.string().uuid(),
   text: z.string().min(1),
   /** An OpenRouter model id. Falls back to the harness default when absent. */
@@ -342,6 +349,30 @@ const ThreadResumeUpdate = z.object({
   at: z.string().datetime().nullable(),
 });
 
+/** Reviews an answer (the latest, without `turnId`) with another agent: the card's "Review again". */
+const ThreadPeerReview = z.object({
+  type: z.literal("thread.peer_review"),
+  threadId: z.string().uuid(),
+  turnId: z.string().uuid().optional(),
+  models: z.array(z.string().trim().min(1).max(100)).max(PEER_REVIEW_MAX_REVIEWERS).optional(),
+  fix: z.boolean().optional(),
+});
+
+/** Sends a review's findings -- all of them, or the ones named -- to the thread's agent to fix. */
+const ThreadPeerReviewFix = z.object({
+  type: z.literal("thread.peer_review_fix"),
+  threadId: z.string().uuid(),
+  peerReviewId: z.string().uuid(),
+  findingIds: z.array(z.string().max(100)).min(1).max(100).optional(),
+});
+
+/** Stops a running review or council, and everyone in it. */
+const ThreadDeliberationCancel = z.object({
+  type: z.literal("thread.deliberation_cancel"),
+  threadId: z.string().uuid(),
+  deliberationId: z.string().uuid(),
+});
+
 const TerminalCreate = z.object({
   type: z.literal("terminal.create"),
   projectId: z.string().uuid(),
@@ -484,6 +515,9 @@ export const Command = z.discriminatedUnion("type", [
   ThreadSwitchHarness,
   ThreadChoiceReply,
   ThreadResumeUpdate,
+  ThreadPeerReview,
+  ThreadPeerReviewFix,
+  ThreadDeliberationCancel,
   TerminalCreate,
   TerminalInput,
   TerminalResize,

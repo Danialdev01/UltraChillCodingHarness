@@ -1,4 +1,4 @@
-import { can, effectiveCredentialSource, normalizeWorkspacePath, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
+import { can, effectiveCredentialSource, normalizeWorkspacePath, parseDirectives, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
 import type {
   Command,
   ContainerState,
@@ -100,6 +100,19 @@ export interface DecisionState {
   subagent?: { id: string; provider?: string; childThreadId?: string; resumeHandle?: string };
   messageSource?: { id: string; projectId: string; workspaceId?: string | null; hash?: string | null };
   profile?: ProfileSnapshot;
+  /** The review or council a command names. */
+  deliberation?: DeliberationSnapshot;
+  /** A review of the thread is running. */
+  reviewing?: boolean;
+}
+
+export interface DeliberationSnapshot {
+  id: string;
+  threadId: string;
+  kind: string;
+  status: string;
+  /** A review with something to send back. */
+  fixable: boolean;
 }
 
 /** Non-deterministic inputs, injected so decisions stay pure. */
@@ -222,6 +235,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if ("error" in project) return project.decision;
 
       const hash = ctx.newHash();
+      if (command.readOnly && !command.parentThreadId) return fail("invalid", "only a subagent's session is read-only");
       if (command.parentThreadId) {
         // A subagent's session (`ucch_agent`): only the server starts one,
         // in its parent's folder, and a subagent does not start its own.
@@ -246,6 +260,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
             hash,
             worktreeOf: parent.value.id,
             parentThreadId: parent.value.id,
+            ...(command.readOnly ? { readOnly: true as const } : {}),
             // A subagent bills the account its parent runs on.
             ...(parent.value.profileId ? { profileId: parent.value.profileId } : {}),
             ...(tree
@@ -337,6 +352,7 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
 
     case "thread.send": {
       if (command.agentMessageIds && !ctx.internal) return fail("forbidden", "agent delivery is server-only");
+      if ((command.peerReviewId || command.reviewer) && !ctx.internal) return fail("forbidden", "a review's fix is server-only");
       const thread = requireThread(state, ctx, "project.write");
       if ("error" in thread) return thread.decision;
       const project = requireProject(state, ctx, "project.write");
@@ -387,11 +403,27 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
         );
       }
 
+      // What a person typed; a message the server sends quotes no one.
+      const asked = ctx.internal ? null : parseDirectives(command.text);
+      if (asked?.ranges.length) {
+        if (thread.value.parentThreadId) return fail("invalid", "Reviewer and Council run from the main session");
+        if (command.subagentId) return fail("invalid", "A subagent follow-up cannot start a Reviewer or a Council");
+        if (asked.errors[0]) return fail("invalid", asked.errors[0].message);
+        if (asked.reviewer?.previous) return reviewRequested(state, thread.value.id, asked.reviewer, ctx);
+      }
+      const reviewer = command.reviewer ?? asked?.reviewer;
+      const directives = {
+        ...(reviewer ? { reviewer } : {}),
+        ...(asked?.council ? { council: asked.council } : {}),
+      };
+
       return ok([
         {
           type: "user.message",
           threadId: thread.value.id,
-          text: command.text,
+          text: asked?.ranges.length ? asked.text : command.text,
+          ...(reviewer || asked?.council ? { directives } : {}),
+          ...(command.peerReviewId ? { peerReviewId: command.peerReviewId } : {}),
           ...(command.subagentId ? { subagentId: command.subagentId } : {}),
           ...(command.subagentId && follow?.provider !== "codex" && follow?.resumeHandle ? { subagentHandle: follow.resumeHandle } : {}),
           ...(command.agentMessageIds ? { agentMessageIds: command.agentMessageIds } : {}),
@@ -402,6 +434,50 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           ...(command.plan ? { plan: command.plan } : command.mode ? { mode: command.mode } : {}),
         },
       ]);
+    }
+
+    case "thread.peer_review": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      if (thread.value.parentThreadId) return fail("invalid", "Reviewer and Council run from the main session");
+      if (thread.value.status !== "idle" && thread.value.status !== "error") {
+        return fail("conflict", "wait for the answer to finish");
+      }
+      if (command.turnId && state.turn?.threadId !== thread.value.id) return fail("not_found", "turn not found on this thread");
+      return reviewRequested(
+        state,
+        thread.value.id,
+        { models: command.models ?? [], fix: command.fix ?? false, previous: true },
+        ctx,
+        command.turnId,
+      );
+    }
+
+    case "thread.peer_review_fix": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      const review = state.deliberation;
+      if (!review || review.threadId !== thread.value.id || review.kind !== "peer_review") {
+        return fail("not_found", "review not found on this thread");
+      }
+      if (review.status === "running") return fail("conflict", "the review is still running");
+      if (!review.fixable) return fail("invalid", "this review found nothing to fix");
+      if (thread.value.status !== "idle" && thread.value.status !== "error") {
+        return fail("conflict", "this thread already has a turn in progress");
+      }
+      // The reactor sends it: the message is made of the review's findings,
+      // and goes out on the model the thread last ran on.
+      return ok([]);
+    }
+
+    case "thread.deliberation_cancel": {
+      const thread = requireThread(state, ctx, "project.write");
+      if ("error" in thread) return thread.decision;
+      if (!state.deliberation || state.deliberation.threadId !== thread.value.id) {
+        return fail("not_found", "review or council not found on this thread");
+      }
+      if (state.deliberation.status !== "running") return fail("conflict", "it is already over");
+      return ok([]);
     }
 
     case "thread.update": {
@@ -906,4 +982,24 @@ function deriveName(repoUrl: string): string {
   const trimmed = repoUrl.replace(/\.git$/, "").replace(/\/+$/, "");
   const last = trimmed.split("/").pop() ?? "";
   return last.slice(0, 100);
+}
+
+/** A review that has no turn of its own: of an answer already given. */
+function reviewRequested(
+  state: DecisionState,
+  threadId: string,
+  directive: { models: string[]; fix: boolean; previous: boolean },
+  ctx: DecisionContext,
+  turnId?: string,
+): Decision {
+  if (state.reviewing) return fail("conflict", "a review of this session is already running");
+  return ok([
+    {
+      type: "agent.peer_review_requested",
+      threadId,
+      deliberationId: ctx.newId(),
+      directive,
+      ...(turnId ? { turnId } : {}),
+    },
+  ]);
 }

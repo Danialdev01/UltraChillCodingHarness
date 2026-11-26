@@ -1148,3 +1148,48 @@ describe("subscription accounts", () => {
     expect(run({ project: project() }, shell)).toMatchObject({ ok: false, error: { code: "invalid" } });
   });
 });
+
+describe("@reviewer and @council", () => {
+  const send = (text: string, over: Partial<ThreadSnapshot> = {}, ctx: object = {}, state: object = {}) =>
+    run({ project: project(), thread: thread(over), ...state }, { type: "thread.send", threadId: THREAD, text }, ctx);
+  const REVIEW = { id: NEW_ID, threadId: THREAD, kind: "peer_review", status: "completed", fixable: true };
+
+  it("takes the mentions out of the text, and records them", () => {
+    expect(send("add a route @reviewer(fix)")).toMatchObject({
+      ok: true,
+      events: [{ type: "user.message", text: "add a route", directives: { reviewer: { fix: true } } }],
+    });
+    expect(send("@council(3) Redis?")).toMatchObject({ events: [{ text: "Redis?", directives: { council: { size: 3 } } }] });
+  });
+  it("alone, reviews the last answer without a turn", () => {
+    expect(send("@reviewer")).toMatchObject({ ok: true, events: [{ type: "agent.peer_review_requested", directive: { previous: true } }] });
+    expect(send("@reviewer", {}, {}, { reviewing: true })).toMatchObject({ ok: false, error: { code: "conflict" } });
+  });
+  it("refuses a bad mention, and one in a subagent's session", () => {
+    expect(send("@council(9) x")).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(send("fix it @reviewer", { parentThreadId: TURN })).toMatchObject({ ok: false, error: { code: "invalid" } });
+  });
+  it("leaves the server's own messages alone", () => {
+    expect(send("an answer said @reviewer", {}, { internal: true })).toMatchObject({ events: [{ text: "an answer said @reviewer" }] });
+  });
+  it("keeps read-only sessions and fixes to the server", () => {
+    expect(run({ project: project() }, { type: "thread.create", projectId: PROJECT, readOnly: true })).toMatchObject({ ok: false });
+    expect(run({ project: project(), thread: thread() }, { type: "thread.send", threadId: THREAD, text: "x", peerReviewId: NEW_ID })).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+  it("fixes only a finished review of its own thread, when idle", () => {
+    const fix = (review: object | undefined, over: Partial<ThreadSnapshot> = {}) =>
+      run({ project: project(), thread: thread(over), ...(review ? { deliberation: review as never } : {}) }, { type: "thread.peer_review_fix", threadId: THREAD, peerReviewId: NEW_ID });
+    expect(fix(REVIEW)).toEqual({ ok: true, events: [] });
+    expect(fix({ ...REVIEW, status: "running" })).toMatchObject({ error: { code: "conflict" } });
+    expect(fix({ ...REVIEW, fixable: false })).toMatchObject({ error: { code: "invalid" } });
+    expect(fix({ ...REVIEW, threadId: TURN })).toMatchObject({ error: { code: "not_found" } });
+    expect(fix(undefined)).toMatchObject({ error: { code: "not_found" } });
+    expect(fix(REVIEW, { status: "running" })).toMatchObject({ error: { code: "conflict" } });
+  });
+  it("cancels only what is running", () => {
+    const cancel = (status: string) =>
+      run({ project: project(), thread: thread({ status: "queued" }), deliberation: { ...REVIEW, status } }, { type: "thread.deliberation_cancel", threadId: THREAD, deliberationId: NEW_ID });
+    expect(cancel("running")).toEqual({ ok: true, events: [] });
+    expect(cancel("completed")).toMatchObject({ error: { code: "conflict" } });
+  });
+});

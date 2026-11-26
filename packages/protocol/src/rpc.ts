@@ -248,6 +248,10 @@ export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   "thread.handoff_to": "exec",
   // Writes the brief on OMP, then (with a message) starts a turn.
   "thread.switch_harness": "exec",
+  // Each runs models, or stops them.
+  "thread.peer_review": "exec",
+  "thread.peer_review_fix": "exec",
+  "thread.deliberation_cancel": "exec",
   // Answers a card; what it picks may start a turn.
   "thread.choice_reply": "exec",
   // Moving it to now starts a turn.

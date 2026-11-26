@@ -73,7 +73,7 @@
 
 ### Phase 1: Protocol (shared, pure)
 
-- [ ] **1.1 `packages/protocol/src/agent-directives.ts`** (plain, so the browser can import it from `@ucch/protocol/plain`).
+- [x] **1.1 `packages/protocol/src/agent-directives.ts`** (plain, so the browser can import it from `@ucch/protocol/plain`).
   - **Contents:**
     - `parseDirectives(text) → { text: string /* mentions removed */, reviewer?: ReviewerDirective, council?: CouncilDirective, errors: DirectiveError[] }`.
     - `ReviewerDirective = { models: string[]; fix: boolean; previous: boolean }`. `previous` is true when the message holds nothing else.
@@ -86,7 +86,7 @@
     - It returns character ranges so the composer can highlight the mentions.
   - **Why share it:** the web uses it for chips and inline errors, the server for the authoritative decision, so the two can't disagree.
 
-- [ ] **1.2 `packages/protocol/src/model-profiles.ts`**: model metadata for picking the "best model".
+- [x] **1.2 `packages/protocol/src/model-profiles.ts`**: model metadata for picking the "best model".
   - `ModelProfile = { family: string; vendor: "anthropic" | "openai" | "google" | "xai" | "deepseek" | "other"; tier: 1 | 2 | 3; strengths: ("code" | "review" | "reasoning" | "long-context" | "fast")[] }`. Tier 1 is the frontier models.
   - A small hand-maintained table keyed by family pattern, covering the models the providers list today (`packages/providers/src/claude.ts:55`, `codex.ts:44`) and the common OpenRouter families.
   - Unknown models get `{ vendor: from the id prefix, tier: 3, strengths: [] }`.
@@ -99,7 +99,7 @@
     - It returns `{ model, reason }[]`. `reason` ("different vendor from the author", "same model: nothing else available", "you asked for it") goes on the card, like `routing.label`.
   - **Unit tests:** diversity, explicit override, the fallback chain, determinism (sorted, no randomness).
 
-- [ ] **1.3 Commands** (`packages/protocol/src/commands.ts`):
+- [x] **1.3 Commands** (`packages/protocol/src/commands.ts`):
   - `thread.send` gains **no new user field**. The server parses directives from `text`, so every client (web, API, mobile) gets the same behaviour.
   - New internal-only fields on `thread.send`, the same pattern as `agentMessageIds` (`decide.ts:336`):
     - `peerReviewId?`: a fix turn that carries findings.
@@ -108,7 +108,7 @@
   - **`thread.peer_review_fix`** `{ threadId, peerReviewId, findingIds? }`: the "Ask agent to fix" button.
   - **`thread.deliberation_cancel`** `{ threadId, deliberationId }`.
 
-- [ ] **1.4 Events** (`packages/protocol/src/events.ts`). Every event carries `deliberationId` and `threadId` (the parent).
+- [x] **1.4 Events** (`packages/protocol/src/events.ts`). Every event carries `deliberationId` and `threadId` (the parent).
   - **On `user.message`:** an optional `directives?: { reviewer?, council? }`. It holds the normalised directive, not the raw text, and is optional so old events still read.
   - **Peer review:**
     - `agent.peer_review_started { reviewers: { subagentId, childThreadId, model, provider, reason }[], targetTurnId, fix }`
@@ -123,20 +123,20 @@
   - **Ending:** `agent.deliberation_cancelled { by: "user" | "parent" | "budget" | "timeout" }`.
   - All of these go into the `DomainEvent` union, and into `isTransient` = false, because they are persisted.
 
-- [ ] **1.5 Protocol tests:**
+- [x] **1.5 Protocol tests:**
   - `agent-directives.test.ts`: the grammar table, code-fence exclusion, email false positives, limits, error messages.
   - `model-profiles.test.ts`.
 
 ### Phase 2: Server: running children without a tool call
 
-- [ ] **2.1 `SubagentRunner.startManaged(request)`** (`apps/server/src/subagents.ts`). This is a server-initiated entry point next to `start`.
+- [x] **2.1 `SubagentRunner.startManaged(request)`** (`apps/server/src/subagents.ts`). This is a server-initiated entry point next to `start`.
   - It **skips `claimCall`**. It is placed on the triggering turn through a `placement: { turnId, kind: "peer_review" | "council", deliberationId }` argument, so `agent.subagent_started` is still emitted and the existing child card and lineage rail work without changes.
   - It takes `readOnly: true` (task 2.2) and `resolvedModel` (from `pickModels`; it still goes through `resolveHarness` for the harness).
   - It is always background mode, but `notify` is replaced by a returned promise that resolves with the child's final assistant text, `costUsd` and status. This reuses `#childTurn` (`:385`).
   - Refactor the shared body of `start` (from model resolution to `thread.send`) into a private `#launch` that both entry points call. There is no copy-paste.
   - `followUp(childThreadId, text)`: a follow-up turn on the same child, used for council rounds, so each member keeps its own context and its prompt cache. It reuses the `thread.send` + `subagentId` path (`commands.ts`).
 
-- [ ] **2.2 Read-only turns for reviewers and members.**
+- [x] **2.2 Read-only turns for reviewers and members.**
   - Reuse plan mode's `draft` read-only enforcement (`apps/server/src/plan-mode.ts`).
   - **Check each harness first:**
     - Claude Code: permission mode `plan`, or a tool allowlist without Edit/Write/Bash writes.
@@ -145,21 +145,21 @@
   - Add a `readOnly` flag to `thread.send` (server-only) that maps to whichever of these each harness uses.
   - **Test:** a reviewer asked to "fix this typo" cannot change the worktree.
 
-- [ ] **2.3 Turn snapshot for review context.**
+- [x] **2.3 Turn snapshot for review context.**
   - At turn start, when `directives.reviewer` is set, record `{ head: git rev-parse HEAD, stash: git stash create || head }` for the parent's worktree in memory, keyed by turn id. Recording it only on request keeps every other turn fast.
   - At turn end, compute `git diff <stash>` (working tree against the turn-start state, including uncommitted and new files), plus `git diff --stat`.
   - Reuse the existing git helpers that the git view uses. Run them as argv, with no shell.
   - **Size cap:** if the diff exceeds 40 kB, include only the `--stat` and the list of changed files, and tell the reviewer to read the files itself (it has read tools). This keeps the task under the 60k `task` limit.
   - When `previous` is set (`@reviewer` alone), there is no snapshot. The review covers the previous turn's answer and its recorded tool-call file list.
 
-- [ ] **2.4 Directive parsing in `decide()`** (`apps/server/src/decide.ts`).
+- [x] **2.4 Directive parsing in `decide()`** (`apps/server/src/decide.ts`).
   - `thread.send` from a user runs `parseDirectives`.
   - When `errors` is not empty, the send is refused with the first error's message. The web shows it inline before sending; this is the authoritative copy.
   - `user.message` stores the stripped `text` plus `directives`.
   - A child thread (one with `parentThreadId`) refuses directives: "Reviewer and Council run from the main session". This mirrors the no-grandchildren rule.
   - `decide.test.ts` gets table rows for each of these.
 
-- [ ] **2.5 Migration `0048_agent_deliberations.sql`** plus the schema (`packages/db/src/schema.ts`, next to `agent_runs` at `:1227`).
+- [x] **2.5 Migration `0048_agent_deliberations.sql`** plus the schema (`packages/db/src/schema.ts`, next to `agent_runs` at `:1227`).
   - `agent_deliberations`:
     - `id` (uuid), `thread_id`, `project_id`, `kind` (`peer_review | council`), `turn_id`
     - `status` (`running | completed | failed | cancelled`)
@@ -171,7 +171,7 @@
 
 ### Phase 3: Server: the two orchestrators
 
-- [ ] **3.1 `apps/server/src/peer-review.ts`: the `PeerReviewer` class.**
+- [x] **3.1 `apps/server/src/peer-review.ts`: the `PeerReviewer` class.**
   - **Trigger:** in `agent.ts` `#run` `finally` (`:818-835`), when the turn ended `agent.turn_completed` (not failed or cancelled) and the turn's `user.message` carried `directives.reviewer`, call `peerReviewer.run({ threadId, turnId, directive, snapshot })`. A failed or cancelled turn appends `agent.peer_review_failed { error: "the answer did not finish" }` instead. For `previous`, the trigger is immediate and no parent turn runs: `decide` emits `user.message` and the reactor starts the review.
   - **Choosing models:** `pickModels({ role: "reviewer", author: <model of the turn being reviewed>, count: max(1, models.length), explicit: models, preference })`.
   - **Task text** (a fixed template constant, `PEER_REVIEW_BRIEF`, under the 1,500-byte block budget):
@@ -193,7 +193,7 @@
     - A per-reviewer timeout of `PEER_REVIEW_TIMEOUT_MS = 15 min`.
     - A spend cap of `PEER_REVIEW_MAX_COST_USD` (env, default 2.00), taken from the child turn's `costUsd`. Exceeding it cancels the child and ends with `agent.deliberation_cancelled { by: "budget" }`.
 
-- [ ] **3.2 `apps/server/src/council.ts`: the `CouncilRunner` class.**
+- [x] **3.2 `apps/server/src/council.ts`: the `CouncilRunner` class.**
   - **Trigger:** when a `user.message` carries `directives.council`, the parent's normal turn is **held back**. `decide` marks the turn `awaitingCouncil`, and the scheduler doesn't start it. `CouncilRunner.run(...)` starts instead.
   - **Seats:** `pickModels({ role: "council", author: <session model>, count: size ?? max(models.length, COUNCIL_DEFAULT_SIZE), explicit: models, preference })`. Seats are labelled A–E. Members see only the labels, never the other members' model names, which avoids brand bias. The card shows the models.
   - **Context:** `<question>` (the stripped message), plus `<context>` from the existing **handoff brief** of the parent conversation (capped at 8 kB). Members have read-only access to the worktree, so they can inspect code themselves.
@@ -212,11 +212,11 @@
     - The whole council has a `COUNCIL_TIMEOUT_MS = 30 min` and a `COUNCIL_MAX_COST_USD` (env, default 5.00) across all members.
     - The members' turns take ordinary scheduler slots, so a council can't starve other sessions.
 
-- [ ] **3.3 Cancellation and recovery.**
+- [x] **3.3 Cancellation and recovery.**
   - `thread.cancel` on the parent (it already cancels children at `agent.ts:618-626`) and `thread.deliberation_cancel` both abort every child of the deliberation and append `agent.deliberation_cancelled`. When a council is cancelled, the held parent turn is dropped too.
   - On startup, next to `messaging.recover()` (`agent-messaging.ts:190`), mark `running` deliberations `failed { error: "server restarted" }` and release any held council turn with a note. Nothing re-runs by itself.
 
-- [ ] **3.4 Wiring** (`apps/server/src/index.ts`, where `SubagentRunner` and messaging are constructed, `agent.ts:444-462`):
+- [x] **3.4 Wiring** (`apps/server/src/index.ts`, where `SubagentRunner` and messaging are constructed, `agent.ts:444-462`):
   - Construct `PeerReviewer` and `CouncilRunner` with the runner, the store, `dispatch`, the git helpers and `#routingHarnesses`.
   - Register their reactors in the reactor composition (`index.ts:726-730`).
   - Add the new env vars (`PEER_REVIEW_MAX_COST_USD`, `COUNCIL_MAX_COST_USD`) to the config parser and to the README env table.
