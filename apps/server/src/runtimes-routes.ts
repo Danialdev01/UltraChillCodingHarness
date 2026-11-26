@@ -5,7 +5,7 @@ import { RUNTIME_IDS, RuntimeSelection, type ProjectRuntimesResponse, type Runti
 
 import type { ProjectSummary } from "./workspaces.js";
 import { RuntimeInUseError, writeSelections, type RuntimeManager } from "./runtimes/manager.js";
-import { parseVersion, pickVersion } from "./runtimes/version.js";
+import { parseVersion } from "./runtimes/version.js";
 
 type ProjectRequest = {
   cookies: Record<string, string | undefined>;
@@ -23,7 +23,9 @@ export interface RuntimeRouteDeps {
 }
 
 const RuntimeIdParam = z.enum(RUNTIME_IDS);
-const SaveBody = z.object({ runtimes: z.object({ php: RuntimeSelection.optional() }) });
+const SaveBody = z.object({
+  runtimes: z.object(Object.fromEntries(RUNTIME_IDS.map((id) => [id, RuntimeSelection.optional()])) as Record<RuntimeId, z.ZodOptional<typeof RuntimeSelection>>),
+});
 const InstallBody = z.object({ version: z.string().trim().optional() }).default({});
 
 /**
@@ -129,7 +131,7 @@ async function startWanted(
     const want = await runtimes.wanted(id, selection);
     // Already satisfied by something installed: nothing to fetch. An
     // update is its own button, never a side effect of saving.
-    if (!want || pickVersion(selection, runtimes.installed(id))) return;
+    if (!want || runtimes.pickInstalled(id, selection)) return;
     await runtimes.install(id, want, projectId);
   } catch (error) {
     log.warn({ err: error }, `could not install ${id} ${selection}`);

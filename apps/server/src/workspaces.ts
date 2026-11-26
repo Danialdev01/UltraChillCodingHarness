@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, getTableName, inArray, sql, type Column, type SQL } from "drizzle-orm";
+import { and, asc, eq, getTableName, inArray, isNull, sql, type Column, type SQL } from "drizzle-orm";
 import {
   previews,
   projects,
@@ -818,6 +818,20 @@ export class WorkspaceService {
   }
 
   /** A project's dev-server port for the port watcher: null when it has none, or serves a folder. */
+  /**
+   * A framework profile's preview port (plan3 §3.4), set only while the
+   * project has none: at creation, by the same owner who would otherwise
+   * set it in the Preview dialog. A static export names its folder instead.
+   */
+  async setPreviewDefault(projectId: string, port: number | null, staticDir: string | null): Promise<void> {
+    if (port === null && staticDir === null) return;
+    await this.db
+      .update(projects)
+      // A static folder still needs a subdomain port (index.ts STATIC_PREVIEW_PORT).
+      .set({ previewPort: port ?? 8080, previewStaticDir: staticDir })
+      .where(and(eq(projects.id, projectId), isNull(projects.previewPort)));
+  }
+
   async previewPortOf(projectId: string): Promise<number | null> {
     const [row] = await this.db
       .select({ port: projects.previewPort, staticDir: projects.previewStaticDir })

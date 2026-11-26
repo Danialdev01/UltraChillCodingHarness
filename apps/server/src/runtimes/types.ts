@@ -2,9 +2,9 @@ import type { RuntimeId } from "@ucch/protocol";
 
 /**
  * A language runtime the server can install versions of, and a project can
- * pick one of. PHP is the only one today; Node, .NET, Cargo and the rest are
- * each one more of these, registered in `registry.ts` -- the manager, the
- * routes and the settings card need nothing new for them.
+ * pick one of: PHP, Composer, Node, Bun, .NET and Rust, registered in
+ * `registry.ts` -- the manager, the routes and the settings card need
+ * nothing new for another.
  *
  * An installed version is a folder, `RUNTIMES_ROOT/{id}/{version}`, holding
  * `bin/{binary}` for every name in `binaries`. A project uses one by having
@@ -31,11 +31,29 @@ export interface RuntimeProvider {
 
   /** What the project's own files require (`composer.json`'s `require.php`), if they say. */
   constraintOf?(root: string): string | null;
+
+  /**
+   * The selection a constraint means, when it names one outright:
+   * `rust-toolchain.toml`'s `nightly`, `global.json`'s `9.0.100`. Null when
+   * the constraint is a range the selection cannot say.
+   */
+  selectionFor?(constraint: string): string | null;
+
+  /** Variables a process using `version` (installed at `dir`) needs: `DOTNET_ROOT`, `RUSTUP_TOOLCHAIN`. */
+  processEnv?(dir: string, version: string): Record<string, string>;
+
+  /** What else an uninstall removes besides the version's folder (rustup's toolchain). */
+  remove?(version: string): Promise<void>;
 }
 
 export interface RuntimeRelease {
   version: string;
   url: string;
+  /** `lts`, from the index: what the `lts` selection picks. Kept beside an installed version. */
+  tags?: string[];
+  /** The download's digest, when the index publishes one: checked before anything is unpacked. */
+  sha256?: string;
+  sha512?: string;
 }
 
 export interface InstallContext {

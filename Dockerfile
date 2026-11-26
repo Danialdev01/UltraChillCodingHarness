@@ -137,6 +137,12 @@ ENV NODE_ENV=production
 ARG TYPST_VERSION=0.13.1
 ARG PANDOC_VERSION=3.6
 ARG MERMAID_CLI_VERSION=11.4.2
+# Framework profiles (plan3): a C toolchain for native npm/composer/cargo
+# builds, OpenSSL headers for Rust crates, ICU for .NET, and clang + lld
+# for the Rust profile's fast linker. mold and sccache are opt-in:
+#   --build-arg WITH_MOLD=1 --build-arg WITH_SCCACHE=1
+ARG WITH_MOLD=0
+ARG WITH_SCCACHE=0
 # Fail with a reason, not a 404 or an exec format error further down.
 RUN [ "$(dpkg --print-architecture)" = amd64 ] \
   || { echo "UCCH's image is x86_64 only (pandoc, typst and s6-overlay are amd64 downloads)" >&2; exit 1; }
@@ -148,6 +154,8 @@ RUN apt-get update \
     python3 python3-venv poppler-utils libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
     tesseract-ocr tesseract-ocr-eng graphviz chromium \
     fonts-inter fonts-jetbrains-mono fonts-noto-core fonts-dejavu-core \
+    build-essential pkg-config libssl-dev libicu72 clang lld \
+    $([ "$WITH_MOLD" = 1 ] && echo mold) $([ "$WITH_SCCACHE" = 1 ] && echo sccache) \
   && curl -fsSL -o /tmp/pandoc.deb "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-amd64.deb" \
   && dpkg -i /tmp/pandoc.deb && rm /tmp/pandoc.deb \
   && curl -fsSL "https://github.com/typst/typst/releases/download/v${TYPST_VERSION}/typst-x86_64-unknown-linux-musl.tar.xz" \

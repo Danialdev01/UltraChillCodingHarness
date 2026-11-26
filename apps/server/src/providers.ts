@@ -125,6 +125,8 @@ export class ProviderService {
      * `php` is the one the project's terminal runs.
      */
     private readonly runtimePath?: (cwd: string) => string | null,
+    /** The project's other variables for a run in `cwd`: package caches, framework settings (plan3 §2.6). */
+    private readonly runtimeEnv?: (cwd: string) => Record<string, string> | null,
   ) {}
 
   /**
@@ -303,7 +305,9 @@ export class ProviderService {
       provider,
       ctx: (cwd) => {
         const prefix = this.runtimePath?.(cwd);
-        return { cwd, env: prefix ? { ...env, PATH: prependPath(prefix, env.PATH) } : env, host: this.host };
+        // Under the provider's own: a project cannot point a CLI's HOME or keys elsewhere.
+        const base = { ...(this.runtimeEnv?.(cwd) ?? {}), ...env };
+        return { cwd, env: prefix ? { ...base, PATH: prependPath(prefix, env.PATH) } : base, host: this.host };
       },
     };
   }

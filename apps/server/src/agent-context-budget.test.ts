@@ -13,6 +13,8 @@ import { COLLABORATION_GUIDE } from "./agent-messaging.js";
 import { assembleCliInstructions, type CliInstructionsInput } from "./cli-instructions.js";
 import { COUNCIL_MODERATOR_BRIEF, COUNCIL_OPENING_BRIEF, COUNCIL_ROUND_BRIEF } from "./council.js";
 import { PEER_REVIEW_BRIEF, PEER_REVIEW_FIX_BRIEF } from "./peer-review.js";
+import { frameworkSection } from "./framework-profile.js";
+import { FRAMEWORK_IDS, planFramework } from "@ucch/protocol";
 
 /**
  * How many bytes of instructions UCCH hands each harness, on fixed fixture
@@ -83,6 +85,11 @@ function measure(): Record<string, number> {
   figures["deliberation.council_opening"] = bytes(COUNCIL_OPENING_BRIEF);
   figures["deliberation.council_round"] = bytes(COUNCIL_ROUND_BRIEF);
   figures["deliberation.council_moderator"] = bytes(COUNCIL_MODERATOR_BRIEF);
+  // Plan3 §3.5: each framework's `## Framework` section of `.agent/index.md`, at its defaults.
+  for (const id of FRAMEWORK_IDS) {
+    const plan = planFramework(id);
+    figures[`framework.${id}`] = bytes(frameworkSection({ framework: id, options: {} }, plan, plan.runtimes));
+  }
   return figures;
 }
 
@@ -118,5 +125,6 @@ describe("the instructions each harness is handed", () => {
     })) {
       expect(bytes(block), name).toBeLessThanOrEqual(MAX_BLOCK_BYTES);
     }
+    for (const id of FRAMEWORK_IDS) expect(figures[`framework.${id}`], `framework.${id}`).toBeLessThanOrEqual(MAX_BLOCK_BYTES);
   });
 });

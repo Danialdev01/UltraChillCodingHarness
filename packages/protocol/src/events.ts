@@ -5,6 +5,7 @@ import { MessageKnowledge } from "./knowledge.js";
 import { BranchName, PreviewHash, ProjectHash, ThreadHash } from "./ids.js";
 import { COUNCIL_MAX, COUNCIL_MAX_ROUNDS, COUNCIL_MIN, PEER_REVIEW_MAX_REVIEWERS, PROJECT_MODES } from "./plain.js";
 import type { ProjectTask } from "./tasks.js";
+import { FrameworkChoiceSchema } from "./framework-file.js";
 
 /** A row carried whole in an event: checked only for being an object, its type is the server's. */
 const isRecord = (value: unknown): boolean => typeof value === "object" && value !== null;
@@ -63,6 +64,8 @@ const ProjectCreated = z.object({
   sessionBranches: z.boolean().optional(),
   /** The owner's git account to authenticate with. Absent: whichever matches the URL. */
   gitAccountId: z.string().uuid().optional(),
+  /** The framework profile to set up (plan3); absent on older events and for "auto-detect". */
+  framework: FrameworkChoiceSchema.optional(),
 });
 
 const ProjectCloned = z.object({
@@ -82,6 +85,21 @@ const ProjectCloned = z.object({
    * project itself is fine; the database is what is missing.
    */
   databaseError: z.string().optional(),
+  /** The framework's starter project could not be made; the project opens without it. */
+  scaffoldError: z.string().optional(),
+  /** The framework chosen does not look like the repository's ("Repository looks like Laravel"). */
+  frameworkWarning: z.string().optional(),
+});
+
+/**
+ * A project's framework profile chosen or changed after creation (plan3
+ * §3.6), or the auto-detect offer dismissed (`framework: null`). The
+ * framework reactor applies it to `.agent/`; the files are the record.
+ */
+const ProjectFrameworkChanged = z.object({
+  type: z.literal("project.framework_changed"),
+  projectId: z.string().uuid(),
+  framework: FrameworkChoiceSchema.nullable(),
 });
 
 /**
@@ -1629,6 +1647,7 @@ const ReviewFailed = z.object({
 export const DomainEvent = z.discriminatedUnion("type", [
   ProjectCreated,
   ProjectCloned,
+  ProjectFrameworkChanged,
   ProjectStackDetected,
   ContainerStateChanged,
   ThreadCreated,

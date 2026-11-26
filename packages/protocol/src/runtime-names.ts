@@ -4,28 +4,46 @@
  * `@ucch/protocol/plain`, and `runtimes.ts` builds the file's schema from
  * them.
  *
- * Only PHP today. A runtime added later (node, dotnet, cargo, ...) is one
- * more id here and one more provider on the server; the file, the routes
- * and the settings card are already per runtime.
+ * A runtime is one id here and one provider on the server; the file, the
+ * routes and the settings card are per runtime. Framework profiles
+ * (`frameworks.ts`, plan3) choose among them.
  */
 
 export const RUNTIMES_FILE = ".agent/runtimes.json";
 
-export const RUNTIME_IDS = ["php"] as const;
+export const RUNTIME_IDS = ["php", "composer", "node", "bun", "dotnet", "rust"] as const;
 export type RuntimeId = (typeof RUNTIME_IDS)[number];
 
 export const RUNTIME_LABELS: Record<RuntimeId, string> = {
   php: "PHP",
+  composer: "Composer",
+  node: "Node.js",
+  bun: "Bun",
+  dotnet: ".NET SDK",
+  rust: "Rust",
 };
+
+/**
+ * The runtimes every project gets without asking: PHP, as before profiles.
+ * The rest are linked only when `.agent/runtimes.json` names them, so a
+ * project never downloads a toolchain it does not use.
+ */
+export const IMPLICIT_RUNTIMES: readonly RuntimeId[] = ["php"];
+
+/** Selection words that name a release channel rather than a number. */
+export const RUNTIME_CHANNELS = ["lts", "stable", "beta", "nightly"] as const;
 
 /**
  * What a project asks for:
  * - `latest`: the newest stable version installed on the server (the default);
  * - `system`: whatever the server's own PATH has, no managed version at all;
+ * - `lts`: the newest long-term-support release (Node, .NET, Composer);
+ * - `stable`, `beta`, `nightly`: that channel's newest (Rust);
+ * - `22`: the newest installed release of that major;
  * - `8.4`: the newest installed patch of that line;
  * - `8.4.12`: exactly that version.
  */
-export const RUNTIME_SELECTION_PATTERN = /^(latest|system|\d{1,3}\.\d{1,3}(\.\d{1,3})?)$/;
+export const RUNTIME_SELECTION_PATTERN = /^(latest|system|lts|stable|beta|nightly|\d{1,3}(\.\d{1,3}(\.\d{1,3})?)?)$/;
 export const RUNTIME_DEFAULT_SELECTION = "latest";
 
 /** A download in flight, as the settings card shows it. */
@@ -40,8 +58,10 @@ export interface RuntimeInstallProgress {
 export interface ProjectRuntimeStatus {
   id: RuntimeId;
   label: string;
-  /** What `.agent/runtimes.json` asks for, `latest` when it says nothing. */
+  /** What `.agent/runtimes.json` asks for: `latest` for PHP when it says nothing, `system` for the rest. */
   selection: string;
+  /** Whether the project uses it: PHP always, the rest once its file names them. */
+  used: boolean;
   /** The installed version the project uses; null means the system one. */
   resolved: string | null;
   /** The server's own version (`php` on its PATH), null when there is none. */

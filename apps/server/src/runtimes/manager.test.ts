@@ -195,3 +195,73 @@ describe("RuntimeManager", () => {
     expect(readSelections(project).error).toMatch(/php\.version/);
   });
 });
+
+describe("runtimes a project names (plan3 §2)", () => {
+  /** A Node-like provider: links that are themselves links, and an LTS tag from the index. */
+  function nodeLike(versions: { version: string; lts?: boolean }[]) {
+    const provider = fakeProvider(versions.map((v) => v.version));
+    return {
+      ...provider,
+      id: "node" as const,
+      binaries: ["node", "npm"],
+      async listAvailable() {
+        return versions.map((v): RuntimeRelease => ({ version: v.version, url: `https://example.test/${v.version}`, ...(v.lts ? { tags: ["lts"] } : {}) }));
+      },
+      async install(release: RuntimeRelease, at: string) {
+        await mkdir(join(at, "bin"), { recursive: true });
+        await writeFile(join(at, "bin", "node"), "#!/bin/sh\n");
+        await chmod(join(at, "bin", "node"), 0o755);
+        // npm is a link inside the version, as in Node's own tarball.
+        const { symlink } = await import("node:fs/promises");
+        await symlink("node", join(at, "bin", "npm"));
+      },
+      processEnv: (at: string, version: string) => ({ NODE_TEST_ROOT: at, NODE_TEST_VERSION: version }),
+    } satisfies RuntimeProvider;
+  }
+
+  function managerWith(providers: Record<string, RuntimeProvider>, workspaceOf?: (id: string) => string | null) {
+    return new RuntimeManager({
+      root: join(dir, "runtimes"),
+      workspaceRoot: workspaces,
+      providers,
+      autoInstall: false,
+      ...(workspaceOf ? { workspaceOf } : {}),
+    });
+  }
+
+  it("links a non-implicit runtime only once runtimes.json names it, and picks lts by the index's tag", async () => {
+    const node = nodeLike([{ version: "26.1.0" }, { version: "24.3.0", lts: true }]);
+    const m = managerWith({ php: fakeProvider([]), node });
+    await m.install("node", "26.1.0");
+    await m.install("node", "24.3.0");
+    expect(m.reconcile(PROJECT, project)).toEqual({ php: null, node: null });
+    expect(existsSync(join(dir, "runtimes", "projects", PROJECT, "bin", "node"))).toBe(false);
+
+    await writeSelections(project, { node: "lts" });
+    expect(m.reconcile(PROJECT, project)).toEqual({ php: null, node: "24.3.0" });
+    expect(readlinkSync(join(dir, "runtimes", "projects", PROJECT, "bin", "npm"))).toBe("../../../node/24.3.0/bin/npm");
+    expect(await m.wanted("node", "lts")).toBe("24.3.0");
+    const status = await m.status(PROJECT, project);
+    expect(status.runtimes.map((r) => [r.id, r.used, r.selection])).toEqual([
+      ["php", true, "latest"],
+      ["node", true, "lts"],
+    ]);
+  });
+
+  it("gives each workspace its own package caches, and a project with no known workspace its own", async () => {
+    const node = nodeLike([{ version: "24.3.0", lts: true }]);
+    const m = managerWith({ node }, (id) => (id === PROJECT ? "ws-a" : null));
+    await m.install("node", "24.3.0");
+    await writeSelections(project, { node: "24" });
+    const env = m.envFor(join(project, "src"));
+    expect(env.CARGO_HOME).toBe(join(dir, "runtimes", "cache", "w-ws-a", "cargo"));
+    expect(env.npm_config_cache).toBe(join(dir, "runtimes", "cache", "w-ws-a", "npm"));
+    expect(env.CARGO_INSTALL_ROOT).toBe(join(dir, "runtimes", "projects", PROJECT));
+    expect(env.NODE_TEST_VERSION).toBe("24.3.0");
+
+    const other = join(workspaces, OTHER);
+    mkdirSync(other, { recursive: true });
+    expect(m.envFor(other).NUGET_PACKAGES).toBe(join(dir, "runtimes", "cache", `p-${OTHER}`, "nuget"));
+    expect(m.envFor(dir)).toEqual({});
+  });
+});

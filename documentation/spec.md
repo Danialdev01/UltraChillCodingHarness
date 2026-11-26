@@ -66,15 +66,18 @@ Per member, an owner or admin can allow or refuse **creating projects** and **st
 
 A **mode** (`research`, `development`, `creative_design`) is chosen too. A `development` project can also get a **dev database**: an engine and a name, created on the embedded Postgres or MariaDB as the `dev` user.
 
+A `development` project can also pick a **framework**: Laravel, Next.js, React, ASP.NET, Rust or Other. Each has a few options (runtime version, package manager, bundler, dev server, test runner, …) and a "Will set up" summary of what it adds: runtime versions, command buttons, the preview port and the first download size. For an Empty or New Repo project a **Generate starter** switch runs the framework's own generator before the first commit; for a Git source the repository's own requirements win over the choices. What is set up lives in `.agent/framework.json`, `.agent/runtimes.json` and `.agent/commands.json`, so it travels with the repository. A starter that fails is reported as a toast and the project is created without it.
+
 **Flow.** The dialog dispatches `project.create` over `/ws`, and `decide()` checks `project.create` permission. Then:
 1. `project.created` is appended and the `projects` row projected.
 2. The clone reactor (`clone.ts`) clones into `WORKSPACE_ROOT/{projectId}` with progress, then records `project.cloned`.
 3. `detectStack` reads the root files (Laravel, Next.js, Nuxt, Astro, Svelte, Angular, React, Vue, Vite, Deno, Bun, Node, Django, Python, Rust, Go, Rails/Ruby, Kotlin, Java, Dart, Elixir, Swift, …) and records `project.stack_detected`. The stack icon appears in the sidebar.
 
-The stack is re-checked every 5 turns.
+The stack is re-checked every 5 turns. A project whose stack matches a framework profile and has no `.agent/framework.json` shows an "Optimize for Laravel?" bar above the chat; accepting applies the profile at its defaults, closing it records the dismissal.
 
 **Manage** (`/{ws}/p/{project}/manage`): four figures (two of them, uptime and context, are placeholders and labelled as such), then tabs:
 - **Git**: remote settings.
+- **Environment** (`?tab=runtimes`): the project's framework and its options (changing them re-applies the profile: what it wrote and nobody edited follows, the rest stays), then one card per runtime the project uses (PHP, Composer, Node, Bun, .NET, Rust) with its version, channel or `system`, and "Add a runtime".
 - **Activity**.
 - **Preferences**:
   - preview port or folder;

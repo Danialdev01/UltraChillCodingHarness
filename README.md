@@ -298,6 +298,9 @@ The `dev` user may create as many databases as you like on both servers; add the
 | `PG_JIT` | `off` | Short queries pay JIT's start-up for nothing. |
 | `PG_WAL_COMPRESSION` / `PG_MAX_WAL_SIZE` / `PG_CHECKPOINT_COMPLETION_TARGET` | `on` / `2GB` / `0.9` | Fewer, smoother checkpoints. |
 | `PG_IDLE_IN_TRANSACTION_TIMEOUT` | `5min` | A transaction left open this long (a stuck dev server's) is ended. |
+| `RUNTIMES_ROOT` | `runtimes` beside `CREDS_ROOT` | Where per-project PHP, Composer, Node, Bun, .NET and Rust versions are downloaded and linked. |
+| `RUNTIMES_AUTO_INSTALL` | `true` | Download the version a project's `.agent/runtimes.json` asks for when it is missing (and PHP at boot). Off, only the Environment tab's Install downloads. |
+| `FRAMEWORK_SCAFFOLD` | `on` | Let the New Project dialog generate a framework's starter (`composer create-project`, `create-next-app`, `dotnet new`, `cargo init`, …). Set `off` without outbound registry access. |
 | `PEER_REVIEW_MAX_COST_USD` | `2.00` | The most one `@reviewer` run may spend across its reviewers; past it the run is stopped and its card says so. |
 | `COUNCIL_MAX_COST_USD` | `5.00` | The most one `@council` may spend across its members and rounds. |
 

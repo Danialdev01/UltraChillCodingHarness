@@ -121,6 +121,8 @@ export interface HostExecutorOptions {
    * `php` here is the one its terminal runs. Null leaves PATH as it is.
    */
   pathPrefix?: () => string | null;
+  /** Variables the project's processes get (package caches, framework settings), asked for at every command. */
+  extraEnv?: () => Record<string, string> | null;
   /**
    * Folders outside the workspace the file tools may read by absolute path:
    * this turn's knowledge bases, kept once in the server's store rather than
@@ -245,7 +247,7 @@ export class HostExecutor implements Executor {
   #run(command: string, args: string[], cwd: string, options: ExecOptions): Promise<ExecResult> {
     const cap = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
-    const env = safeEnv();
+    const env = { ...(this.options.extraEnv?.() ?? {}), ...safeEnv() };
     const prefix = this.options.pathPrefix?.();
     if (prefix) env.PATH = `${prefix}:${env.PATH}`;
     const [file, ...rest] = this.options.wrapArgv?.([command, ...args], env, cwd) ?? [command, ...args];

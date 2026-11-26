@@ -191,6 +191,8 @@ export interface AgentOptions {
    * project's runtime versions (runtimes/manager.ts `pathFor`).
    */
   runtimePath?: (cwd: string) => string | null;
+  /** The project's other variables for a process in `cwd` (plan3 §2.6). */
+  runtimeEnv?: (cwd: string) => Record<string, string> | null;
   /**
    * The CLI providers. Optional so a harness can run with the native loop
    * alone; a turn that asks for one then fails with a message saying so.
@@ -2160,6 +2162,7 @@ export class AgentTurnReactor {
           heavyJobs: this.options.heavyJobs,
           wrapArgv: this.options.wrapArgv,
           pathPrefix: () => this.options.runtimePath?.(workspace) ?? null,
+          extraEnv: () => this.options.runtimeEnv?.(workspace) ?? null,
           ...(turnKnowledge?.dirs.length ? { readOnlyRoots: turnKnowledge.dirs } : {}),
         }),
         ...(this.options.uploads ? { uploads: this.options.uploads } : {}),
@@ -3763,6 +3766,7 @@ export class AgentTurnReactor {
           heavyJobs: this.options.heavyJobs,
           wrapArgv: this.options.wrapArgv,
           pathPrefix: () => this.options.runtimePath?.(input.workspace) ?? null,
+          extraEnv: () => this.options.runtimeEnv?.(input.workspace) ?? null,
         }),
         complete: streamCompletion,
         signal: turnSignal,
@@ -3857,6 +3861,7 @@ export class AgentTurnReactor {
           heavyJobs: this.options.heavyJobs,
           wrapArgv: this.options.wrapArgv,
           pathPrefix: () => this.options.runtimePath?.(input.workspace) ?? null,
+          extraEnv: () => this.options.runtimeEnv?.(input.workspace) ?? null,
         }),
       complete: streamCompletion,
       signal: input.signal,
@@ -3941,6 +3946,7 @@ export class AgentTurnReactor {
           heavyJobs: this.options.heavyJobs,
           wrapArgv: this.options.wrapArgv,
           pathPrefix: () => this.options.runtimePath?.(workspace) ?? null,
+          extraEnv: () => this.options.runtimeEnv?.(workspace) ?? null,
         }),
         complete: streamCompletion,
         signal: input.signal,

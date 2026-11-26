@@ -15,6 +15,9 @@ import {
   GITHUB_LOGIN_ACCOUNT,
   AgentPermissionMode,
   can,
+  frameworkForStack,
+  type FrameworksResponse,
+  type ProjectFrameworkResponse,
   DEFAULT_AGENT_PERMISSION_MODE,
   MAX_AVATAR_BYTES,
   MAX_INLINE_ATTACHMENT_CHARS,
@@ -41,6 +44,8 @@ import { researchBackends } from "./research.js";
 import { DIAGRAM_FILES, diagramAsk, extractMermaid, isDiagramKind, type DiagramKind } from "./diagrams.js";
 import { CloneReactor, ensureWorkspaceRoot, listRemoteBranches } from "./clone.js";
 import { WorktreeReactor } from "./worktrees.js";
+import { linesOf } from "./runtimes/version.js";
+import { FrameworkService, frameworkProcessEnv, readFrameworkFile } from "./framework-profile.js";
 import { SharedAgentFiles, sharedAgentFileOf } from "./agent-shared-files.js";
 import { ProjectGit, SettleRefusedError } from "./project-git.js";
 import { emptyTrash, removeProjectFolders, stopProjectProcesses } from "./project-files.js";
@@ -206,10 +211,19 @@ const recovered = await failInterruptedTurns(db, store, (error) => console.error
  */
 const runtimesRoot = config.RUNTIMES_ROOT ?? join(dirname(config.CREDS_ROOT), "runtimes");
 await mkdir(runtimesRoot, { recursive: true });
+/**
+ * Each project's workspace, for its package caches (plan3 §2.6): read once
+ * at boot, and filled in as projects are created. Unknown, a project gets
+ * caches of its own, never another workspace's.
+ */
+const projectWorkspaces = new Map<string, string>(
+  (await db.select({ id: projects.id, workspaceId: projects.workspaceId }).from(projects)).map((row) => [row.id, row.workspaceId]),
+);
 const runtimes = new RuntimeManager({
   root: runtimesRoot,
   workspaceRoot: config.WORKSPACE_ROOT,
-  providers: createRuntimeProviders(),
+  workspaceOf: (projectId) => projectWorkspaces.get(projectId) ?? null,
+  providers: createRuntimeProviders(runtimesRoot),
   autoInstall: config.RUNTIMES_AUTO_INSTALL,
   changed: (projectId) =>
     bus.publish({
@@ -220,6 +234,24 @@ const runtimes = new RuntimeManager({
     }),
   log: (error, context) => app.log.warn({ err: error }, context),
 });
+
+/** Framework profiles applied at creation and changed later (plan3). */
+const frameworks = new FrameworkService({
+  runtimes,
+  scaffold: config.FRAMEWORK_SCAFFOLD,
+  wrapArgv: (argv) => wrapChild(argv),
+  log: (error, context) => app.log.warn({ err: error }, context),
+});
+
+/**
+ * Everything a project's process gets besides PATH: the runtimes' caches
+ * and homes, and the framework's own variables (`framework.json`).
+ */
+const projectEnv = (cwd: string): Record<string, string> | null => {
+  const projectId = projectIdOfPath(config.WORKSPACE_ROOT, cwd);
+  if (!projectId) return null;
+  return { ...runtimes.envFor(cwd), ...frameworkProcessEnv(projectRoot(config.WORKSPACE_ROOT, projectId)) };
+};
 
 // A message whose turn never opened before the restart left its thread
 // `queued`, refusing every new message. Released through the log, not a
@@ -294,6 +326,7 @@ const providerService = new ProviderService(
     isRepo: (cwd) => existsSync(join(cwd, ".git")),
   }),
   (cwd) => runtimes.pathFor(cwd),
+  projectEnv,
 );
 
 /**
@@ -485,6 +518,7 @@ const agentTurns = new AgentTurnReactor(
     heavyJobs: new HeavyJobGate(config.DOC_JOBS_MAX, documents.kitDir),
     wrapArgv: wrapChild,
     runtimePath: (cwd) => runtimes.pathFor(cwd),
+    runtimeEnv: projectEnv,
     // Decided once, at boot: in production the shell plugin loads only when
     // it has been asked for explicitly.
     registry: { allowHostShell: shellPluginEnabled(config) },
@@ -609,6 +643,8 @@ const clones = new CloneReactor(
         config.SECRET_KEY,
       );
     },
+    frameworks,
+    setPreviewDefault: (projectId, port, staticDir) => workspaceService.setPreviewDefault(projectId, port, staticDir),
   },
   (error, event) => app.log.error({ err: error, projectId: event.projectId }, "clone failed"),
 );
@@ -677,6 +713,7 @@ const terminals = new TerminalReactor(
       bus.publishToUser(userId, { type: "resource.changed", projectId, resource: "terminals" }),
     wrapArgv: wrapTerminal,
     runtimePath: (cwd) => runtimes.pathFor(cwd),
+    runtimeEnv: projectEnv,
     // `claude` and `codex` started by hand get the OMP bridge when the
     // workspace has it on (solution §10.3).
     ompBridge: new TerminalBridge({
@@ -730,6 +767,22 @@ const reactors: Reactors = {
   react(command: Command, events, principal) {
     agentTurns.react(command, events, principal);
     clones.react(command, events);
+    for (const event of events) {
+      if (event.type === "project.created") projectWorkspaces.set(event.projectId, event.workspaceId);
+      // A framework chosen or changed later (plan3 §3.6): applied to the
+      // checkout's `.agent/` files, which every page then reads again.
+      if (event.type === "project.framework_changed") {
+        const { projectId, framework } = event;
+        void frameworks
+          .change(projectRoot(config.WORKSPACE_ROOT, projectId), framework)
+          .catch((error: unknown) => app.log.warn({ err: error, projectId }, "could not apply the framework profile"))
+          .finally(() => {
+            for (const resource of ["runtimes", "commands"] as const) {
+              bus.publish({ seq: null, projectId, threadId: null, event: { type: "resource.changed", projectId, resource } });
+            }
+          });
+      }
+    }
     worktrees.react(command, events);
     terminals.react(command, principal.userId);
   },
@@ -3847,6 +3900,65 @@ app.patch<{ Params: { hash: string } }>("/api/projects/:hash/deliberation", asyn
   if (!state) return reply.code(404).send({ error: "project not found" });
   if ("error" in state) return reply.code(403).send({ error: "only a workspace admin can change the reviewer and council defaults" });
   return state;
+});
+
+/**
+ * Framework profiles (plan3 §1.4, §3.7). The profiles themselves are in
+ * `@ucch/protocol`; this answers what the server adds: whether it may make
+ * starters, which optional tools it has, and the version lines its runtimes
+ * offer. And per project: the chosen framework, or the one its stack
+ * suggests. Changing it is the `project.framework_set` command.
+ */
+const frameworkTools = Object.fromEntries(
+  (["mold", "sccache", "lld", "clang"] as const).map((tool) => [
+    tool,
+    (process.env.PATH ?? "").split(":").some((dir) => dir && existsSync(join(dir, tool === "lld" ? "ld.lld" : tool))),
+  ]),
+) as FrameworksResponse["tools"];
+
+app.get("/api/frameworks", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const lines: FrameworksResponse["lines"] = {};
+  await Promise.all(
+    runtimes.providers.map(async (provider) => {
+      const versions = await runtimes.available(provider.id).then(
+        (releases) => releases.map((r) => r.version),
+        () => runtimes.installed(provider.id),
+      );
+      const releases = versions.filter((v) => !v.includes("-"));
+      if (provider.id === "php") lines.php = linesOf(releases).slice(0, 6);
+      else if (provider.id === "node" || provider.id === "dotnet") {
+        lines[provider.id] = [...new Set(releases.map((v) => v.split(".")[0]!))].slice(0, 6);
+      }
+    }),
+  );
+  const response: FrameworksResponse = {
+    scaffold: config.FRAMEWORK_SCAFFOLD,
+    tools: frameworkTools,
+    runtimes: runtimes.providers.map((p) => p.id),
+    lines,
+  };
+  return response;
+});
+
+app.get<{ Params: { hash: string } }>("/api/projects/:hash/framework", async (request, reply) => {
+  const principal = await auth.resolveSession(request.cookies[SESSION_COOKIE]);
+  if (!principal) return reply.code(401).send({ error: "unauthorized" });
+  const project = await workspaceService.findByHash(request.params.hash, principal.userId);
+  if (!project) return reply.code(404).send({ error: "project not found" });
+  const { file, error } = readFrameworkFile(projectRoot(config.WORKSPACE_ROOT, project.id));
+  const response: ProjectFrameworkResponse = {
+    framework: file?.framework ?? null,
+    options: (file?.options ?? {}) as ProjectFrameworkResponse["options"],
+    dismissed: file?.dismissed === true,
+    overrides: (file?.overrides ?? {}) as Record<string, string>,
+    error,
+    suggested: !file && !error ? frameworkForStack(project.stack) : null,
+    stack: project.stack,
+    canChange: project.membership ? can(project.membership, "project.write") : false,
+  };
+  return response;
 });
 
 registerPublicRoutes(app, {

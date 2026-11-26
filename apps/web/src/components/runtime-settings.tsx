@@ -21,9 +21,11 @@ import {
 import type { Project } from "@/lib/session"
 
 /**
- * The project's runtime versions, on the manage page's Runtimes tab: one
- * card per runtime (PHP today), each choosing what `.agent/runtimes.json`
- * says and showing what that resolves to on this server.
+ * The project's runtime versions, on the manage page's Environment tab:
+ * one card per runtime the project uses (PHP always; Node, Bun, .NET, Rust
+ * and Composer once `.agent/runtimes.json` names them, which a framework
+ * profile does), each choosing what the file says and showing what that
+ * resolves to on this server. The others can be added from a row below.
  *
  * While an install is downloading the card polls; otherwise it refetches on
  * the server's `resource.changed{runtimes}` like every other cached list.
@@ -55,20 +57,95 @@ export function RuntimeSettings({ project }: { project: Project }) {
           {data.error} -- the project uses the defaults until it is fixed or saved again here.
         </p>
       )}
-      {data.runtimes.map((runtime) => (
-        <RuntimeCard
-          key={runtime.id}
-          hash={project.hash}
-          runtime={runtime}
-          onResult={(next) => {
-            setData(next)
-            if (next.runtimes.some((r) => r.installing.length > 0)) setPolling(true)
-          }}
-        />
-      ))}
+      {data.runtimes
+        .filter((runtime) => runtime.used)
+        .map((runtime) => (
+          <RuntimeCard
+            key={runtime.id}
+            hash={project.hash}
+            runtime={runtime}
+            onResult={(next) => {
+              setData(next)
+              if (next.runtimes.some((r) => r.installing.length > 0)) setPolling(true)
+            }}
+          />
+        ))}
+      <AddRuntime
+        hash={project.hash}
+        unused={data.runtimes.filter((runtime) => !runtime.used)}
+        onResult={(next) => {
+          setData(next)
+          if (next.runtimes.some((r) => r.installing.length > 0)) setPolling(true)
+        }}
+      />
     </div>
   )
 }
+
+/** The runtimes the project does not use yet, each one click from its default selection. */
+function AddRuntime({
+  hash,
+  unused,
+  onResult,
+}: {
+  hash: string
+  unused: ProjectRuntimeStatus[]
+  onResult: (next: ProjectRuntimesResponse) => void
+}) {
+  const [pending, setPending] = React.useState<string | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  if (unused.length === 0) return null
+  const add = async (runtime: ProjectRuntimeStatus) => {
+    setPending(runtime.id)
+    setError(null)
+    try {
+      onResult(await selectRuntime(hash, runtime.id, DEFAULT_SELECTION[runtime.id] ?? "latest"))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not add it.")
+    } finally {
+      setPending(null)
+    }
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-dashed p-4" data-testid="add-runtime">
+      <p className="text-sm font-medium">Add a runtime</p>
+      <p className="text-muted-foreground text-xs">
+        Downloaded to this server on first use and linked into this project only; until then its terminals use the server&apos;s own.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {unused.map((runtime) => (
+          <Button key={runtime.id} size="sm" variant="outline" disabled={pending !== null} onClick={() => void add(runtime)}>
+            {pending === runtime.id ? <Loader2Icon className="animate-spin" /> : <DownloadIcon />}
+            {runtime.label}
+          </Button>
+        ))}
+      </div>
+      {error && (
+        <p role="alert" className="text-destructive text-sm">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** What "Add" chooses: the long-term-support line where a runtime has one. */
+const DEFAULT_SELECTION: Partial<Record<string, string>> = { node: "lts", dotnet: "lts", rust: "stable" }
+
+/** Channel words each runtime offers above its version lines. */
+const CHANNELS: Partial<Record<string, { value: string; label: string }[]>> = {
+  node: [{ value: "lts", label: "LTS (long-term support)" }],
+  dotnet: [{ value: "lts", label: "LTS (long-term support)" }],
+  composer: [{ value: "lts", label: "2.2 LTS" }],
+  rust: [
+    { value: "stable", label: "Stable channel" },
+    { value: "beta", label: "Beta channel" },
+    { value: "nightly", label: "Nightly channel" },
+  ],
+}
+
+/** Runtimes whose lines are majors (`24`, `10`), not `x.y`. */
+const BY_MAJOR = new Set(["node", "dotnet", "bun"])
 
 function RuntimeCardSkeleton() {
   return (
@@ -81,11 +158,13 @@ function RuntimeCardSkeleton() {
 }
 
 /** Every `x.y` line among some versions, newest first. */
-function linesOf(versions: string[]): string[] {
+function linesOf(versions: string[], byMajor = false): string[] {
   const seen = new Set<string>()
   for (const v of versions) {
+    if (v.includes("-")) continue
     const [major, minor] = v.split(".")
-    if (major !== undefined && minor !== undefined) seen.add(`${major}.${minor}`)
+    if (major !== undefined && byMajor) seen.add(major)
+    else if (major !== undefined && minor !== undefined) seen.add(`${major}.${minor}`)
   }
   return [...seen].sort((a, b) => {
     const [am = 0, an = 0] = a.split(".").map(Number)
@@ -99,6 +178,8 @@ const isExact = (selection: string) => /^\d+\.\d+\.\d+$/.test(selection)
 function describeSelection(selection: string): string {
   if (selection === "latest") return "Latest"
   if (selection === "system") return "Server's own"
+  if (selection === "lts") return "LTS"
+  if (selection === "stable" || selection === "beta" || selection === "nightly") return `The ${selection} channel`
   if (isExact(selection)) return `Pinned to ${selection}`
   return `${selection}.x`
 }
@@ -133,7 +214,10 @@ function RuntimeCard({
   }
 
   const offered = runtime.available ?? []
-  const lines = linesOf([...offered, ...runtime.installed])
+  const lines = linesOf([...offered, ...runtime.installed], BY_MAJOR.has(runtime.id))
+  const channels = CHANNELS[runtime.id] ?? []
+  // A selection none of the groups lists (a hand-edited `22.4`) still shows as itself.
+  const listed = new Set(["latest", "system", ...channels.map((c) => c.value), ...lines])
   const newest = offered[0] ?? runtime.installed[0] ?? null
   const exactChoices = [...new Set([...runtime.installed, ...(isExact(runtime.selection) ? [runtime.selection] : [])])]
   const using = runtime.selection === "system" ? runtime.system : runtime.resolved
@@ -168,7 +252,15 @@ function RuntimeCard({
                 disabled={pending !== null}
                 onChange={(selection) => void act("select", () => selectRuntime(hash, runtime.id, selection))}
               >
-                <option value="latest">Latest stable{newest ? ` (${newest})` : ""}</option>
+                <option value="latest">Latest stable{newest && !newest.includes("-") ? ` (${newest})` : ""}</option>
+                {channels.map((channel) => (
+                  <option key={channel.value} value={channel.value}>
+                    {channel.label}
+                  </option>
+                ))}
+                {!listed.has(runtime.selection) && !isExact(runtime.selection) && (
+                  <option value={runtime.selection}>{describeSelection(runtime.selection)}</option>
+                )}
                 <optgroup label="Version line (gets patch updates)">
                   {lines.map((line) => {
                     const have = runtime.installed.find((v) => v.startsWith(`${line}.`))
@@ -210,8 +302,9 @@ function RuntimeCard({
           <FieldDescription>
             {describeSelection(runtime.selection)}
             {runtime.selection === "latest" && " follows the newest version installed on this server."}
-            {!isExact(runtime.selection) && runtime.selection !== "latest" && runtime.selection !== "system" &&
-              " uses the newest installed patch of that line."}
+            {/^\d/.test(runtime.selection) && !isExact(runtime.selection) && " uses the newest installed release of that line."}
+            {runtime.selection === "lts" && " uses the newest long-term-support release installed."}
+            {["stable", "beta", "nightly"].includes(runtime.selection) && " uses the newest toolchain of that channel installed."}
             {isExact(runtime.selection) && " stays on that version until you change it."}
             {runtime.selection === "system" && " uses whatever the server itself has installed."} Open terminals switch
             on their next command.
@@ -263,7 +356,7 @@ function RuntimeCard({
               <CheckCircle2Icon className="text-success size-4 shrink-0" />
             )}
             <span>
-              <code className="font-mono">composer.json</code> requires{" "}
+              The repository requires{" "}
               <code className="font-mono">{runtime.constraint}</code>
               {runtime.satisfies === false && using ? ` -- ${using} does not meet it.` : ""}
               {runtime.satisfies === null ? " (not checked)" : ""}

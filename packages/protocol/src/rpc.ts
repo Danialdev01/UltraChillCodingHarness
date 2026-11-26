@@ -230,6 +230,7 @@ export type ServerFrame = z.infer<typeof ServerFrame>;
  */
 export const REQUIRED_SCOPE: Record<CommandType, Scope> = {
   "project.create": "write",
+  "project.framework_set": "write",
   "project.start": "exec",
   "project.stop": "exec",
   "project.delete": "admin",

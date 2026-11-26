@@ -89,5 +89,7 @@ export const qk = {
   runtimes: {
     all: ["runtimes"] as const,
     list: (projectHash: string) => ["runtimes", projectHash] as const,
+    /** Its framework profile (`.agent/framework.json`), refetched with the runtimes it sits beside. */
+    framework: (projectHash: string) => ["runtimes", projectHash, "framework"] as const,
   },
 } as const;

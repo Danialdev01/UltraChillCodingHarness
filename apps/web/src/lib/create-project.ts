@@ -10,6 +10,10 @@ export interface CreatedProject {
   hash: string;
   /** Why the development database could not be made, when one was asked for. */
   databaseError?: string;
+  /** Why the framework's starter project was not made (plan3 §3.2). */
+  scaffoldError?: string;
+  /** The chosen framework does not match what the repository looks like. */
+  frameworkWarning?: string;
 }
 
 /**
@@ -42,7 +46,9 @@ export async function createProject(
     // reactor says it has finished rather than after a guessed delay.
     onStage?.("cloning");
     await client.subscribe({ name: "project", projectId: event.projectId });
-    await waitForClone(client, event.projectId);
+    // A starter waits for its toolchain's first download and then the
+    // starter tool itself, so it is given far longer than a clone.
+    await waitForClone(client, event.projectId, command.framework?.scaffold ? 25 * 60_000 : undefined);
 
     const cloned = client.events.find(
       (e) => e.event.type === "project.cloned" && e.event.projectId === event.projectId,
@@ -53,6 +59,8 @@ export async function createProject(
       ...(cloned?.type === "project.cloned" && cloned.databaseError
         ? { databaseError: cloned.databaseError }
         : {}),
+      ...(cloned?.type === "project.cloned" && cloned.scaffoldError ? { scaffoldError: cloned.scaffoldError } : {}),
+      ...(cloned?.type === "project.cloned" && cloned.frameworkWarning ? { frameworkWarning: cloned.frameworkWarning } : {}),
     };
   } finally {
     client.close();

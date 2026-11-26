@@ -26,6 +26,7 @@ export * from "./keys.js";
 export * from "./text-replacement.js";
 export * from "./project-command-limits.js";
 export * from "./runtime-names.js";
+export * from "./frameworks.js";
 export * from "./model-routing.js";
 export * from "./agent-directives.js";
 export * from "./model-profiles.js";

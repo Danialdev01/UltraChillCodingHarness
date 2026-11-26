@@ -1,0 +1,122 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`framework profiles (plan3 §1.5) > aspnet at its defaults 1`] = `
+{
+  "commands": [
+    "dev: dotnet watch run --no-launch-profile",
+    "build: dotnet build -c Debug",
+    "test: dotnet test",
+    "format: dotnet format",
+    "publish: dotnet publish -c Release",
+  ],
+  "env": {},
+  "previewPort": 5000,
+  "processEnv": {
+    "ASPNETCORE_ENVIRONMENT": "Development",
+    "ASPNETCORE_URLS": "http://0.0.0.0:5000",
+    "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+    "DOTNET_NOLOGO": "1",
+  },
+  "runtimes": {
+    "dotnet": "lts",
+  },
+}
+`;
+
+exports[`framework profiles (plan3 §1.5) > laravel at its defaults 1`] = `
+{
+  "commands": [
+    "dev: php artisan serve --host=0.0.0.0 --port=8000",
+    "install: composer install",
+    "migrate: php artisan migrate",
+    "test: php artisan test",
+    "lint: ./vendor/bin/pint",
+    "assets-dev: npm run dev",
+    "assets-build: npm run build",
+    "queue: php artisan queue:work",
+    "schedule: php artisan schedule:work",
+  ],
+  "env": {
+    "APP_DEBUG": "true",
+    "APP_ENV": "local",
+  },
+  "previewPort": 8000,
+  "processEnv": {
+    "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
+    "COREPACK_ENABLE_STRICT": "0",
+  },
+  "runtimes": {
+    "composer": "latest",
+    "node": "lts",
+    "php": "latest",
+  },
+}
+`;
+
+exports[`framework profiles (plan3 §1.5) > nextjs at its defaults 1`] = `
+{
+  "commands": [
+    "dev: pnpm exec next dev -H 0.0.0.0 -p 3000",
+    "install: pnpm install",
+    "build: pnpm build",
+    "start: pnpm exec next start -H 0.0.0.0 -p 3000",
+    "lint: pnpm exec eslint .",
+    "typecheck: pnpm exec tsc --noEmit",
+    "test: pnpm test",
+    "format: pnpm exec prettier --write .",
+  ],
+  "env": {},
+  "previewPort": 3000,
+  "processEnv": {
+    "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
+    "COREPACK_ENABLE_STRICT": "0",
+    "NEXT_TELEMETRY_DISABLED": "1",
+  },
+  "runtimes": {
+    "node": "lts",
+  },
+}
+`;
+
+exports[`framework profiles (plan3 §1.5) > react at its defaults 1`] = `
+{
+  "commands": [
+    "dev: pnpm exec vite --host 0.0.0.0 --port 5173",
+    "install: pnpm install",
+    "build: pnpm build",
+    "typecheck: pnpm exec tsc -b --noEmit",
+    "lint: pnpm lint",
+    "test: pnpm exec vitest run",
+  ],
+  "env": {},
+  "previewPort": 5173,
+  "processEnv": {
+    "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
+    "COREPACK_ENABLE_STRICT": "0",
+  },
+  "runtimes": {
+    "node": "lts",
+  },
+}
+`;
+
+exports[`framework profiles (plan3 §1.5) > rust at its defaults 1`] = `
+{
+  "commands": [
+    "dev: (command -v cargo-watch >/dev/null || cargo install --locked cargo-watch) && cargo watch -x 'run'",
+    "build: cargo build",
+    "test: cargo test",
+    "lint: cargo clippy -- -D warnings",
+    "format: cargo fmt",
+  ],
+  "env": {},
+  "previewPort": null,
+  "processEnv": {
+    "CARGO_TERM_COLOR": "always",
+    "RUST_BACKTRACE": "1",
+  },
+  "runtimes": {
+    "rust": "stable",
+  },
+}
+`;

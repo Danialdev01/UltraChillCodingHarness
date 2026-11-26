@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync } from "node:fs";
-import { mkdir, rename, rm } from "node:fs/promises";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 import {
+  IMPLICIT_RUNTIMES,
   RUNTIME_DEFAULT_SELECTION,
   RUNTIME_IDS,
   RUNTIME_LABELS,
@@ -20,7 +21,7 @@ import { agentPath, writeIfChanged } from "../agent-sync.js";
 import { refreshIndexFiles } from "../dev-database.js";
 import { projectIdOfPath, projectRoot } from "../trees.js";
 import type { RuntimeProvider, RuntimeRelease } from "./types.js";
-import { compareVersions, newestFirst, parseVersion, pickVersion, satisfiesConstraint } from "./version.js";
+import { compareVersions, newestFirst, parseVersion, pickVersion, satisfiesConstraint, type TagsOf } from "./version.js";
 
 /**
  * Per-project runtime versions, installed once per server and shared.
@@ -41,8 +42,10 @@ import { compareVersions, newestFirst, parseVersion, pickVersion, satisfiesConst
  * it; the link is only a cache of what that file resolves to, and is
  * checked again at every spawn, so a `git pull` that changes the file takes
  * effect without anyone pressing anything. A runtime the file does not name
- * is `latest`: the newest version installed. With nothing installed the link
- * is absent and PATH falls through to the system's own `php`.
+ * is `latest` for PHP (`IMPLICIT_RUNTIMES`) and absent for the rest: a
+ * project gets Node, .NET or Rust linked only once its file names them,
+ * which is what a framework profile writes. With nothing installed the link
+ * is absent and PATH falls through to the system's own.
  */
 
 const AVAILABLE_TTL_MS = 6 * 60 * 60_000;
@@ -59,6 +62,11 @@ export interface RuntimeManagerOptions {
   providers: Partial<Record<RuntimeId, RuntimeProvider>>;
   /** Download a version on its own when a project's selection has none installed. */
   autoInstall: boolean;
+  /**
+   * The workspace a project is in, for its package caches; null when not
+   * known yet, which gives the project caches of its own.
+   */
+  workspaceOf?(projectId: string): string | null;
   /** An install a project waits on started, finished or failed: its pages refetch. */
   changed?(projectId: string): void;
   log?(error: unknown, context: string): void;
@@ -77,6 +85,9 @@ interface Install {
   progress: RuntimeInstallProgress;
   waiters: Set<string>;
 }
+
+/** Beside an installed version: what its index said of it (`lts`), for selections made later. */
+const TAGS_FILE = ".ucch-tags.json";
 
 /** `.agent/runtimes.json` of a checkout, read synchronously (a terminal opens synchronously). */
 export function readSelections(root: string): RuntimeSelections {
@@ -173,13 +184,40 @@ export class RuntimeManager {
         if (!parseVersion(name)) return false;
         return provider.binaries.every((binary) => {
           try {
-            return lstatSync(join(this.#versionDir(id, name), "bin", binary)).isFile();
+            // Followed: npm, bunx and Rust's tools are links inside the version.
+            return statSync(join(this.#versionDir(id, name), "bin", binary)).isFile();
           } catch {
             return false;
           }
         });
       }),
     );
+  }
+
+  /** The installed version a selection picks, null for none. */
+  pickInstalled(id: RuntimeId, selection: string): string | null {
+    return pickVersion(selection, this.installed(id), this.#installedTags(id));
+  }
+
+  /**
+   * The tags kept beside each installed version; for one installed without
+   * them (by an older server), what the cached download index says.
+   */
+  #installedTags(id: RuntimeId): TagsOf {
+    return (version) => {
+      try {
+        const tags = JSON.parse(readFileSync(join(this.#versionDir(id, version), TAGS_FILE), "utf8")) as unknown;
+        return Array.isArray(tags) ? tags.filter((t): t is string => typeof t === "string") : [];
+      } catch {
+        return this.#available.get(id)?.releases?.find((r) => r.version === version)?.tags ?? [];
+      }
+    };
+  }
+
+  /** The tags the download index gives each version. */
+  #availableTags(releases: RuntimeRelease[]): TagsOf {
+    const byVersion = new Map(releases.map((r) => [r.version, r.tags ?? []]));
+    return (version) => byVersion.get(version) ?? [];
   }
 
   /** What can be downloaded, cached for hours (and a failure for minutes). */
@@ -252,6 +290,7 @@ export class RuntimeManager {
             entry.progress = { version, received, total };
           },
         });
+        if (release.tags?.length) await writeFile(join(temp, TAGS_FILE), JSON.stringify(release.tags));
         await rename(temp, this.#versionDir(id, version)).catch(async (error: NodeJS.ErrnoException) => {
           // Installed by another process in the meantime: theirs stands.
           if (error.code !== "ENOTEMPTY" && error.code !== "EEXIST") throw error;
@@ -320,6 +359,7 @@ export class RuntimeManager {
         `${RUNTIME_LABELS[id]} ${version} is in use by ${users.length} project${users.length === 1 ? "" : "s"}`,
       );
     }
+    await this.#provider(id).remove?.(version);
     await rm(this.#versionDir(id, version), { recursive: true, force: true });
   }
 
@@ -340,8 +380,8 @@ export class RuntimeManager {
     const { selections } = readSelections(root);
     const resolved = {} as Record<RuntimeId, string | null>;
     for (const provider of this.providers) {
-      const selection = selections[provider.id] ?? RUNTIME_DEFAULT_SELECTION;
-      const version = pickVersion(selection, this.installed(provider.id));
+      const selection = this.#selection(provider.id, selections);
+      const version = pickVersion(selection, this.installed(provider.id), this.#installedTags(provider.id));
       resolved[provider.id] = version;
       for (const binary of provider.binaries) {
         const link = join(bin, binary);
@@ -351,6 +391,52 @@ export class RuntimeManager {
       if (!version && selection !== "system") this.#autoInstall(provider.id, selection, projectId);
     }
     return resolved;
+  }
+
+  /** What a project asks for: its file's word, `latest` for an implicit runtime, else `system` (nothing linked). */
+  #selection(id: RuntimeId, selections: Partial<Record<RuntimeId, string>>): string {
+    return selections[id] ?? (IMPLICIT_RUNTIMES.includes(id) ? RUNTIME_DEFAULT_SELECTION : "system");
+  }
+
+  /**
+   * The variables every process started in `cwd` gets besides PATH (plan3
+   * §2.6): each package manager's cache in a folder of the project's
+   * workspace -- never shared between workspaces, so one tenant's build
+   * cannot poison another's cache -- and what a linked runtime needs
+   * (`DOTNET_ROOT`, `RUSTUP_TOOLCHAIN`). `cargo install` lands in the
+   * project's own bin folder, which is already on PATH. Empty when `cwd`
+   * is not in a project. Never throws.
+   */
+  envFor(cwd: string): Record<string, string> {
+    const projectId = projectIdOfPath(this.options.workspaceRoot, cwd);
+    if (!projectId) return {};
+    try {
+      const workspace = this.options.workspaceOf?.(projectId) ?? null;
+      const cache = join(this.options.root, "cache", workspace ? `w-${workspace}` : `p-${projectId}`);
+      mkdirSync(cache, { recursive: true, mode: 0o700 });
+      const env: Record<string, string> = {
+        CARGO_HOME: join(cache, "cargo"),
+        CARGO_INSTALL_ROOT: join(this.options.root, "projects", projectId),
+        NUGET_PACKAGES: join(cache, "nuget"),
+        DOTNET_CLI_HOME: join(cache, "dotnet"),
+        COMPOSER_HOME: join(cache, "composer"),
+        COMPOSER_CACHE_DIR: join(cache, "composer", "cache"),
+        npm_config_cache: join(cache, "npm"),
+        npm_config_store_dir: join(cache, "pnpm-store"),
+        COREPACK_HOME: join(cache, "corepack"),
+        YARN_CACHE_FOLDER: join(cache, "yarn"),
+        BUN_INSTALL_CACHE_DIR: join(cache, "bun"),
+      };
+      const resolved = this.reconcile(projectId, projectRoot(this.options.workspaceRoot, projectId));
+      for (const provider of this.providers) {
+        const version = resolved[provider.id];
+        if (version && provider.processEnv) Object.assign(env, provider.processEnv(this.#versionDir(provider.id, version), version));
+      }
+      return env;
+    } catch (error) {
+      this.options.log?.(error, "could not set up a project's runtime environment");
+      return {};
+    }
   }
 
   /**
@@ -370,9 +456,27 @@ export class RuntimeManager {
     }
   }
 
-  /** At boot: the newest stable version of each runtime nothing is installed of. */
+  /**
+   * At boot: what a download cut short by a restart left behind (a
+   * half-unpacked `.tmp-*` folder, rustup's installer), then the newest
+   * stable version of each implicit runtime nothing is installed of.
+   */
   ensureDefaults(): void {
+    for (const id of RUNTIME_IDS) {
+      let names: string[] = [];
+      try {
+        names = readdirSync(join(this.options.root, id));
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (name.startsWith(".tmp-") || name.startsWith(".rustup-init-")) {
+          rmSync(join(this.options.root, id, name), { recursive: true, force: true });
+        }
+      }
+    }
     for (const provider of this.providers) {
+      if (!IMPLICIT_RUNTIMES.includes(provider.id)) continue;
       if (this.installed(provider.id).length === 0) this.#autoInstall(provider.id, RUNTIME_DEFAULT_SELECTION);
     }
   }
@@ -398,9 +502,11 @@ export class RuntimeManager {
   /** The downloadable version a selection would take: what "Update" installs. */
   async wanted(id: RuntimeId, selection: string): Promise<string | null> {
     if (selection === "system") return null;
+    const releases = await this.available(id);
     return pickVersion(
       selection,
-      (await this.available(id)).map((r) => r.version),
+      releases.map((r) => r.version),
+      this.#availableTags(releases),
     );
   }
 
@@ -421,16 +527,19 @@ export class RuntimeManager {
     const runtimes: ProjectRuntimeStatus[] = [];
     for (const provider of this.providers) {
       const id = provider.id;
-      const selection = selections[id] ?? RUNTIME_DEFAULT_SELECTION;
+      const selection = this.#selection(id, selections);
       let available: string[] | null = null;
+      let availableTags: TagsOf = () => [];
       let availableError: string | null = null;
       try {
-        available = (await this.available(id)).map((r) => r.version);
+        const releases = await this.available(id);
+        available = releases.map((r) => r.version);
+        availableTags = this.#availableTags(releases);
       } catch (e) {
         availableError = e instanceof Error ? e.message : String(e);
       }
       const current = resolved[id] ?? null;
-      const want = available && selection !== "system" ? pickVersion(selection, available) : null;
+      const want = available && selection !== "system" ? pickVersion(selection, available, availableTags) : null;
       const exact = parseVersion(selection) !== null;
       const system = await this.systemVersion(id);
       const constraint = provider.constraintOf?.(root) ?? null;
@@ -439,6 +548,7 @@ export class RuntimeManager {
         id,
         label: RUNTIME_LABELS[id],
         selection,
+        used: IMPLICIT_RUNTIMES.includes(id) || selections[id] !== undefined,
         resolved: current,
         system,
         installed: this.installed(id),

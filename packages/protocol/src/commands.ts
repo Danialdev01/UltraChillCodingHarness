@@ -4,6 +4,7 @@ import { MessageImage, MessageMode, PlanStage, ProjectMode, ProviderId, Reviewer
 import { PEER_REVIEW_MAX_REVIEWERS } from "./plain.js";
 import { BranchName, PreviewHash, ThreadHash } from "./ids.js";
 import { MessageKnowledge } from "./knowledge.js";
+import { FrameworkChoiceSchema } from "./framework-file.js";
 
 /**
  * Commands are the only way a client changes anything.
@@ -41,6 +42,15 @@ const ProjectCreate = z.object({
   sessionBranches: z.boolean().optional(),
   /** The connected git account the repository was picked from; git uses it first. */
   gitAccountId: z.string().uuid().optional(),
+  /** A framework profile to set up (plan3). Development projects only. */
+  framework: FrameworkChoiceSchema.optional(),
+});
+
+/** Choose or change a project's framework profile; null dismisses the auto-detect offer (plan3 §3.6, §3.7). */
+const ProjectFrameworkSet = z.object({
+  type: z.literal("project.framework_set"),
+  projectId: z.string().uuid(),
+  framework: FrameworkChoiceSchema.nullable(),
 });
 
 const ProjectStart = z.object({
@@ -498,6 +508,7 @@ const ReviewRun = z.object({
 
 export const Command = z.discriminatedUnion("type", [
   ProjectCreate,
+  ProjectFrameworkSet,
   ProjectStart,
   ProjectStop,
   ProjectDelete,

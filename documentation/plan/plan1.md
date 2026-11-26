@@ -99,7 +99,14 @@
 
 ## Verification
 
-- [ ] Unit tests: `pnpm --filter <pkg> test <file>` for each touched package. Per the memory note, don't use `pnpm test -- X`, because that runs everything.
-- [ ] Snapshot and budget tests pass, and the diff of the updated snapshots reads as intended.
+- [x] Unit tests: `pnpm --filter <pkg> test <file>` for each touched package. Per the memory note, don't use `pnpm test -- X`, because that runs everything.
+- [x] Snapshot and budget tests pass, and the diff of the updated snapshots reads as intended.
 - [ ] Manual check in the running app: start a Claude Code thread and a Codex thread and open the thread's `context.injected` rows. They show the UCCH rules, runtime info and guides in the expected order. Ask "which model are you?" (should answer from runtime info). Ask for a small change (should not commit, should cite files as links, and the final reply should state what was verified). Start a plan draft (read-only, no default-mode text). Start a subagent (doesn't spawn subagents, ends with the report format).
 - [ ] Codex resume: send a second message on the same thread. No duplicated knowledge, and `<user_request>` fencing is present. A `/command` message is sent unchanged.
+
+**Status (2026-11-26):**
+- The unit and snapshot/budget suites pass: 281 files, 3736 tests.
+- Not done:
+  - 5.3 (the paid eval) was skipped by choice.
+  - The two manual thread checks above need signed-in Claude Code and Codex accounts, which weren't run in this pass.
+

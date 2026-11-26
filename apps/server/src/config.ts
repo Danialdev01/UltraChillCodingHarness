@@ -220,8 +220,8 @@ const Env = z.object({
   RUNTIMES_ROOT: z.string().optional(),
 
   /**
-   * Download the newest stable version of each runtime at boot when none is
-   * installed, and whatever version a project's `.agent/runtimes.json` asks
+   * Download the newest stable PHP at boot when none is installed (the
+   * other runtimes only once a project names them), and whatever version a project's `.agent/runtimes.json` asks
    * for when it is missing. Off, only an explicit install from the project's
    * Runtimes tab downloads anything; until then projects use the system's.
    */
@@ -229,6 +229,17 @@ const Env = z.object({
     .string()
     .optional()
     .transform((v) => v === undefined || v === "true" || v === "1"),
+
+  /**
+   * Whether the New Project dialog may generate a framework's starter
+   * project (`composer create-project`, `create-next-app`, `dotnet new`,
+   * `cargo init`; plan3 §3.2). They fetch from the package registries; a
+   * server without outbound access sets this off and the toggle is hidden.
+   */
+  FRAMEWORK_SCAFFOLD: z
+    .enum(["on", "off", "true", "false", "1", "0"])
+    .optional()
+    .transform((v) => v === undefined || v === "on" || v === "true" || v === "1"),
 
   /**
    * CLI-provider turns one account may have in flight at once. A

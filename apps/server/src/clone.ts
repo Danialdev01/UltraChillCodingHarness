@@ -18,6 +18,7 @@ import { redactToken } from "./github.js";
 
 export { CREDENTIAL_HELPER };
 import { DrainableWorker } from "./worker.js";
+import { frameworkWarning, type FrameworkService } from "./framework-profile.js";
 
 type ProjectCreated = Extract<DomainEvent, { type: "project.created" }>;
 type ProjectCloned = Extract<DomainEvent, { type: "project.cloned" }>;
@@ -60,6 +61,21 @@ export interface CloneOptions {
   registerConnection?: (event: ProjectCreated, server: DbTarget, name: string) => Promise<void>;
   /** Overrides how a dev server is opened. For tests. */
   adapterFor?: (target: DbTarget, db: string | null) => DbAdapter;
+  /** Sets a project up for the framework it was created with (plan3 §3.3). */
+  frameworks?: FrameworkService;
+  /** The profile's preview port, set when the project has none yet (plan3 §3.4). */
+  setPreviewDefault?: (projectId: string, port: number | null, staticDir: string | null) => Promise<void>;
+}
+
+/**
+ * Whether a checkout holds nothing yet but what a start writes: `.git`, the
+ * README `git init` makes, `.agent/`, `.env`, `.gitignore`. A New Repo
+ * project cloned from a repository GitHub just made looks the same. Only
+ * such a folder gets a framework's starter.
+ */
+async function onlyStarterFiles(dir: string): Promise<boolean> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  return names.every((name) => [".git", "README.md", ".agent", ".env", ".gitignore", "LICENSE", ".gitattributes"].includes(name));
 }
 
 /** Who an initial commit is attributed to when the account says nothing. */
@@ -140,11 +156,35 @@ export class CloneReactor {
     // here is reported on the event and the project opens regardless.
     const server = event.database ? this.options.devDatabases?.[event.database.engine] : undefined;
     let databaseError: string | undefined;
+    let scaffoldError: string | undefined;
     let settled = false;
-    const settle = async (stack: string) => {
+    const settle = async () => {
       databaseError = event.database ? await this.#database(event, dest, server) : undefined;
+      // The framework before the context: the starter is what the stack is
+      // detected from, and the profile's section goes into index.md.
+      let framework: string | undefined;
+      if (event.framework && this.options.frameworks) {
+        try {
+          const result = await this.options.frameworks.setUp(event.projectId, dest, event.framework, {
+            projectName: event.name,
+            empty: await onlyStarterFiles(dest),
+          });
+          scaffoldError = result.scaffoldError;
+          framework = result.section;
+          await this.options.setPreviewDefault?.(event.projectId, result.previewPort, result.previewStaticDir).catch(() => {});
+        } catch (error) {
+          scaffoldError = `The framework profile could not be applied: ${describe(error)}`;
+        }
+      }
+      const stack = await detectStack(dest);
       await ensureProjectInfo(dest, (description) =>
-        renderContext({ event, stack, ...(server ? { server } : {}), ...(description ? { description } : {}) }),
+        renderContext({
+          event,
+          stack,
+          ...(server ? { server } : {}),
+          ...(description ? { description } : {}),
+          ...(framework ? { framework } : {}),
+        }),
       );
       settled = true;
     };
@@ -161,7 +201,7 @@ export class CloneReactor {
         // Settled before the first commit, so a started project opens on a
         // clean tree: the settings and the ignore rule are in the commit, and
         // `.env` is ignored by the time it is made.
-        await this.#init(event, dest, credentials, timeoutMs, async () => settle(await detectStack(dest)));
+        await this.#init(event, dest, credentials, timeoutMs, settle);
       } else {
         await this.#fetch(event, event.repoUrl, dest, credentials, timeoutMs);
       }
@@ -171,9 +211,10 @@ export class CloneReactor {
     // What the clone landed on, which is the project's base branch: the
     // asked-for one, or the remote's own default when that did not exist.
     const branch = (await runGit(["branch", "--show-current"], dest, timeoutMs).catch(() => "")).trim();
-    const stack = await detectStack(dest);
     // A cloned repository's are left uncommitted, for its people to review.
-    if (!settled) await settle(stack);
+    if (!settled) await settle();
+    const stack = await detectStack(dest);
+    const warning = event.framework ? frameworkWarning(event.framework.id, stack) : undefined;
 
     await this.append({
       type: "project.cloned",
@@ -182,6 +223,8 @@ export class CloneReactor {
       stack,
       ...(branch ? { branch } : {}),
       ...(databaseError ? { databaseError } : {}),
+      ...(scaffoldError ? { scaffoldError } : {}),
+      ...(warning ? { frameworkWarning: warning } : {}),
     });
   }
 

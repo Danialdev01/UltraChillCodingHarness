@@ -18,5 +18,10 @@
   "deliberation.peer_review_fix": 241,
   "deliberation.council_opening": 495,
   "deliberation.council_round": 570,
-  "deliberation.council_moderator": 367
+  "deliberation.council_moderator": 367,
+  "framework.laravel": 446,
+  "framework.nextjs": 522,
+  "framework.react": 430,
+  "framework.aspnet": 556,
+  "framework.rust": 477
 }

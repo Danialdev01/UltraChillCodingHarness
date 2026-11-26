@@ -3,25 +3,38 @@
  * means, which download it would want, and whether a version meets a
  * project's own constraint (composer.json's `require.php`).
  *
- * Plain `major.minor.patch` only. The runtimes offered are releases, never
- * pre-releases, so there is no ordering of `-RC1` against `-beta2` to get
- * right here.
+ * `major.minor.patch`, with an optional tag for Rust's beta and nightly
+ * toolchains, which order below the release of the same numbers.
  */
 
 export type Version = readonly [number, number, number];
 
-const FULL = /^(\d+)\.(\d+)\.(\d+)$/;
+/** `1.101.0-beta.3` and `1.102.0-nightly.20261125` too: Rust's channels are versions with a tag. */
+const FULL = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z][0-9A-Za-z.]*))?$/;
 
-/** `8.4.12` as numbers; null for anything that is not exactly that shape. */
+/** `8.4.12` as numbers; null for anything that is not exactly that shape (a pre-release tag is allowed). */
 export function parseVersion(text: string): Version | null {
   const match = FULL.exec(text.trim());
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
+/** `beta.3` for `1.101.0-beta.3`; null for a release. */
+export function prereleaseOf(text: string): string | null {
+  return FULL.exec(text.trim())?.[4] ?? null;
+}
+
+/** Numbers first; at the same numbers a release is newer than any pre-release of it. */
 export function compareVersions(a: string, b: string): number {
   const x = parseVersion(a) ?? [0, 0, 0];
   const y = parseVersion(b) ?? [0, 0, 0];
-  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+  const byNumber = x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+  if (byNumber) return byNumber;
+  const p = prereleaseOf(a);
+  const q = prereleaseOf(b);
+  if (p === q) return 0;
+  if (p === null) return 1;
+  if (q === null) return -1;
+  return p.localeCompare(q, "en", { numeric: true });
 }
 
 /** Valid versions, newest first, each once. */
@@ -37,14 +50,30 @@ export function lineOf(version: string): string {
 
 /** Every `x.y` line in a list, newest first. */
 export function linesOf(versions: Iterable<string>): string[] {
-  return [...new Set(newestFirst(versions).map(lineOf))];
+  return [...new Set(newestFirst(versions).filter((v) => !prereleaseOf(v)).map(lineOf))];
 }
 
-/** Whether a version is one a selection accepts at all. `system` accepts none. */
-export function matchesSelection(selection: string, version: string): boolean {
-  if (selection === "system") return false;
-  if (selection === "latest") return parseVersion(version) !== null;
+/** What a release is besides its number: `lts`, from the provider's index. */
+export type TagsOf = (version: string) => readonly string[];
+
+const NO_TAGS: TagsOf = () => [];
+
+/**
+ * Whether a version is one a selection accepts at all. `system` accepts
+ * none; `latest`, `stable`, a major and a line accept releases only;
+ * `beta` and `nightly` accept that channel's builds; `lts` accepts what the
+ * provider's index called long-term support.
+ */
+export function matchesSelection(selection: string, version: string, tagsOf: TagsOf = NO_TAGS): boolean {
+  const v = parseVersion(version);
+  if (!v || selection === "system") return false;
+  const pre = prereleaseOf(version);
+  if (selection === "beta" || selection === "nightly") return pre?.startsWith(selection) ?? false;
+  if (pre) return parseVersion(selection) !== null && selection === version;
+  if (selection === "latest" || selection === "stable") return true;
+  if (selection === "lts") return tagsOf(version).includes("lts");
   if (parseVersion(selection)) return selection === version;
+  if (/^\d+$/.test(selection)) return v[0] === Number(selection);
   return lineOf(version) === selection;
 }
 
@@ -53,8 +82,8 @@ export function matchesSelection(selection: string, version: string): boolean {
  * against what is installed (what the project runs) and against what is
  * downloadable (what it would run after an update).
  */
-export function pickVersion(selection: string, versions: Iterable<string>): string | null {
-  return newestFirst(versions).find((v) => matchesSelection(selection, v)) ?? null;
+export function pickVersion(selection: string, versions: Iterable<string>, tagsOf: TagsOf = NO_TAGS): string | null {
+  return newestFirst(versions).find((v) => matchesSelection(selection, v, tagsOf)) ?? null;
 }
 
 // --- composer constraints ----------------------------------------------------

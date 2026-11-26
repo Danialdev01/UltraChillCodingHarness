@@ -2,7 +2,7 @@
 export const MANAGE_TABS = [
   { id: "git", label: "Git" },
   { id: "activity", label: "Activity" },
-  { id: "runtimes", label: "Runtimes" },
+  { id: "runtimes", label: "Environment" },
   { id: "project-key", label: "Project key" },
   { id: "accounts", label: "Accounts" },
   { id: "preferences", label: "Preferences" },

@@ -14,11 +14,20 @@ import { RUNTIME_SELECTION_PATTERN } from "./plain.js";
 export const RuntimeSelection = z
   .string()
   .trim()
-  .regex(RUNTIME_SELECTION_PATTERN, "latest, system, a line like 8.4, or a version like 8.4.12");
+  .regex(RUNTIME_SELECTION_PATTERN, "latest, system, lts, stable, beta, nightly, a major like 22, a line like 8.4, or a version like 8.4.12");
 
 export const RuntimeChoice = z.object({ version: RuntimeSelection });
 export type RuntimeChoice = z.infer<typeof RuntimeChoice>;
 
 /** Unknown runtimes are kept as they are, so a newer server's file survives an older one. */
-export const RuntimesFile = z.object({ php: RuntimeChoice.optional() }).passthrough();
+export const RuntimesFile = z
+  .object({
+    php: RuntimeChoice.optional(),
+    composer: RuntimeChoice.optional(),
+    node: RuntimeChoice.optional(),
+    bun: RuntimeChoice.optional(),
+    dotnet: RuntimeChoice.optional(),
+    rust: RuntimeChoice.optional(),
+  })
+  .passthrough();
 export type RuntimesFile = z.infer<typeof RuntimesFile>;

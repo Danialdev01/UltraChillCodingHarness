@@ -95,6 +95,70 @@ export async function writeDatabaseUrl(dir: string, url: string): Promise<void> 
 }
 
 /**
+ * Adds the variables `.env` does not have yet, leaving every line already
+ * there as it is (plan3 §3.1: a profile never overwrites a value someone
+ * wrote). Answers the names it added. Same file rules as `DATABASE_URL`:
+ * never through a symlink, mode 0600.
+ */
+export async function writeEnvDefaults(dir: string, vars: Record<string, string>): Promise<string[]> {
+  const names = Object.keys(vars).filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  if (names.length === 0) return [];
+  const path = join(dir, ".env");
+  await refuseLink(path);
+  const current = await readFile(path, "utf8").catch(() => "");
+  const present = new Set(
+    current
+      .split("\n")
+      .map((line) => /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)?.[1])
+      .filter((name): name is string => Boolean(name)),
+  );
+  const added = names.filter((name) => !present.has(name));
+  if (added.length === 0) return [];
+  const quote = (value: string) => (/^[A-Za-z0-9_./:@-]*$/.test(value) ? value : JSON.stringify(value));
+  const lines = added.map((name) => `${name}=${quote(vars[name]!)}`).join("\n");
+  const sep = current && !current.endsWith("\n") ? "\n" : "";
+  await writeFile(path, `${current}${sep}${lines}\n`, { mode: 0o600 });
+  return added;
+}
+
+/** The framework section of `index.md` sits between these, rewritten when the profile changes. */
+const FRAMEWORK_START = "<!-- agent:framework:start -->";
+const FRAMEWORK_END = "<!-- agent:framework:end -->";
+
+/** `section` (a `## Framework` block) wrapped in its markers. */
+export function frameworkBlock(section: string): string {
+  return `${FRAMEWORK_START}\n${section.trim()}\n${FRAMEWORK_END}`;
+}
+
+/**
+ * Puts the framework section into `index.md`: replacing the marked block,
+ * or -- when the file has none -- before the file list. Everything else in
+ * the file stays as whoever wrote it left it. Null removes the block.
+ */
+export async function writeFrameworkSection(dir: string, section: string | null): Promise<void> {
+  const index = join(dir, AGENT_INDEX);
+  const info = await lstat(index).catch(() => null);
+  if (!info?.isFile()) return;
+  const current = await readFile(index, "utf8");
+  const block = section ? frameworkBlock(section) : "";
+  const start = current.indexOf(FRAMEWORK_START);
+  const end = current.indexOf(FRAMEWORK_END, start);
+  let next: string;
+  if (start >= 0 && end > start) {
+    next = current.slice(0, start) + block + current.slice(end + FRAMEWORK_END.length);
+    if (!block) next = next.replace(/\n{3,}/g, "\n\n");
+  } else if (!block) {
+    return;
+  } else {
+    const files = current.indexOf("## Files in .agent");
+    const at = files >= 0 ? files : current.indexOf(FILES_START) >= 0 ? current.indexOf(FILES_START) : current.length;
+    const head = current.slice(0, at).replace(/\n*$/, "\n\n");
+    next = `${head}${block}\n\n${current.slice(at)}`;
+  }
+  if (next !== current) await writeFile(index, next);
+}
+
+/**
  * Makes sure `.gitignore` covers `entry`. The `.env` carries a password, and a
  * commit is the easiest way for one to leave the machine.
  */
@@ -131,6 +195,8 @@ export interface ProjectContext {
   server?: DbTarget;
   /** What the application is, from `readProjectDescription`. */
   description?: string;
+  /** The `## Framework` section a profile wrote (plan3 §3.5). */
+  framework?: string;
 }
 
 /**
@@ -139,7 +205,7 @@ export interface ProjectContext {
  * No password: the file is meant to be committed if anybody wants it, and the
  * full connection string is in `.env` for whatever actually connects.
  */
-export function renderContext({ event, stack, server, description }: ProjectContext): string {
+export function renderContext({ event, stack, server, description, framework }: ProjectContext): string {
   const mode = event.mode ?? "development";
   const lines = [
     `# ${event.name}`,
@@ -177,6 +243,7 @@ export function renderContext({ event, stack, server, description }: ProjectCont
     lines.push("", "## Development database", "", "None. The project was created without one.");
   }
 
+  if (framework) lines.push("", frameworkBlock(framework));
   lines.push("", AGENT_GUIDE);
   return `${lines.join("\n")}\n`;
 }

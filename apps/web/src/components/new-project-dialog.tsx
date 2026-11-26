@@ -61,6 +61,14 @@ import {
 } from "@/components/form-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createProject } from "@/lib/create-project";
+import {
+  FrameworkOptionsFields,
+  FrameworkPicker,
+  FrameworkSummary,
+  useFrameworkServer,
+  type FrameworkPick,
+} from "@/components/framework-options";
+import { FRAMEWORK_LABELS, type FrameworkOptions } from "@ucch/protocol/plain";
 import { setupProjectKey } from "@/lib/env-api";
 import { unlockProject } from "@/lib/project-key-store";
 import { newKeyProblem } from "@/lib/project-key";
@@ -188,6 +196,15 @@ export function NewProjectDialog({
   const [projectKeyConfirm, setProjectKeyConfirm] = React.useState("");
   /** Each session on a `ucch/{hash}` branch of its own; off, they commit to the base branch. */
   const [sessionBranches, setSessionBranches] = React.useState(true);
+  /**
+   * The framework profile (plan3 §4.1): "other" -- auto-detect, nothing
+   * written -- for a repository, nothing chosen yet for a start from empty.
+   */
+  const [framework, setFramework] = React.useState<FrameworkPick>("other");
+  const [frameworkOptions, setFrameworkOptions] = React.useState<FrameworkOptions>({});
+  /** Generate the framework's starter project: on for a start from nothing. */
+  const [starter, setStarter] = React.useState(true);
+  const { server: frameworkServer } = useFrameworkServer();
 
   // -- The Git tab: every connected account's repositories ---------------------
   const [gitAccounts, setGitAccounts] = React.useState<GitRepoAccount[]>([]);
@@ -244,6 +261,9 @@ export function NewProjectDialog({
     setProjectKey("");
     setProjectKeyConfirm("");
     setSessionBranches(true);
+    setFramework("other");
+    setFrameworkOptions({});
+    setStarter(true);
     setGitAccounts([]);
     setRepos(null);
     setReposError(null);
@@ -476,10 +496,21 @@ export function NewProjectDialog({
         mode: ProjectMode;
         database?: ProjectDatabase;
         sessionBranches: boolean;
+        framework?: { id: Exclude<FrameworkPick, "other" | null>; options: FrameworkOptions; scaffold?: boolean };
       }
     | null => {
     if (!dbNameValid) return null;
-    const what = { mode, sessionBranches, ...(database ? { database } : {}) };
+    const chosen =
+      mode === "development" && framework && framework !== "other"
+        ? {
+            framework: {
+              id: framework,
+              options: frameworkOptions,
+              ...(source !== "git" && starter && frameworkServer?.scaffold ? { scaffold: true } : {}),
+            },
+          }
+        : {};
+    const what = { mode, sessionBranches, ...(database ? { database } : {}), ...chosen };
     if (source === "git" && gitMode === "list") {
       if (!picked || !name.trim()) return null;
       return { repoUrl: picked.cloneUrl, ...accountOf(picked.accountId), name: name.trim(), branch: pickedBranch || picked.defaultBranch, ...what };
@@ -495,7 +526,7 @@ export function NewProjectDialog({
     return { name: name.trim(), ...what };
     // `database` is rebuilt each render; its parts are the real dependencies.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, gitMode, picked, name, pickedBranch, repoUrl, branch, mode, engine, dbName, dbNameValid, sessionBranches, hostUsable, repoOwner]);
+  }, [source, gitMode, picked, name, pickedBranch, repoUrl, branch, mode, engine, dbName, dbNameValid, sessionBranches, hostUsable, repoOwner, framework, frameworkOptions, starter, frameworkServer?.scaffold]);
 
   // Blank is fine: the key is optional. Typed, it must be one that can be set up.
   const projectKeyError = projectKey || projectKeyConfirm ? newKeyProblem(projectKey, projectKeyConfirm) : null;
@@ -532,6 +563,12 @@ export function NewProjectDialog({
       // the reason travels with it.
       if (created.databaseError) {
         toast({ title: "No development database", description: created.databaseError, tone: "error" });
+      }
+      if (created.scaffoldError) {
+        toast({ title: "No starter project", description: created.scaffoldError, tone: "error" });
+      }
+      if (created.frameworkWarning) {
+        toast({ title: "Check the framework", description: `${created.frameworkWarning} Change it under Manage → Environment.` });
       }
       // Not part of `project.create`: commands are kept as events, and the
       // key must never be written down. Set up once the project's files exist.
@@ -639,9 +676,11 @@ export function NewProjectDialog({
           {stage === "repo"
             ? "Creating repository…"
             : stage === "cloning"
-              ? source === "empty"
-                ? "Initialising…"
-                : "Cloning…"
+              ? command?.framework?.scaffold
+                ? `Generating the ${FRAMEWORK_LABELS[command.framework.id]} starter…`
+                : source === "empty"
+                  ? "Initialising…"
+                  : "Cloning…"
               : stage === "creating"
                 ? "Creating…"
                 : "Create project"}
@@ -652,6 +691,8 @@ export function NewProjectDialog({
               value={source}
               onChange={(value) => {
                 setSource(value);
+                // A repository is detected by default; a start from nothing asks.
+                setFramework((current) => (value === "git" ? (current ?? "other") : current === "other" ? null : current));
                 // An untouched name is re-derived by the effect above rather
                 // than carried over; a typed one is kept, made fit to name a
                 // repository where the tab needs one.
@@ -903,6 +944,36 @@ export function NewProjectDialog({
                 />
               </div>
             </div>
+
+            {mode === "development" && (
+              <div className="flex flex-col gap-2.5">
+                <span id="new-project-framework-label" className={LABEL}>
+                  Framework <span className="text-(--fd-text-disabled)">· sets up its runtime, commands and preview</span>
+                </span>
+                <FrameworkPicker value={framework} onChange={setFramework} disabled={busy} labelledBy="new-project-framework-label" />
+                {framework && framework !== "other" && (
+                  <>
+                    <FrameworkOptionsFields
+                      id={framework}
+                      values={frameworkOptions}
+                      onChange={setFrameworkOptions}
+                      source={source === "git" ? "repo" : "empty"}
+                      disabled={busy}
+                      idPrefix="new-project-framework"
+                    />
+                    {source !== "git" && frameworkServer?.scaffold && (
+                      <div className="flex items-center justify-between gap-3 rounded-[8px] border border-(--fd-border-subtle) bg-(--fd-field-muted) px-2.5 py-2">
+                        <span id="new-project-starter-label" className={LABEL}>
+                          Generate a starter project
+                        </span>
+                        <Switch checked={starter} onCheckedChange={setStarter} disabled={busy} aria-labelledby="new-project-starter-label" />
+                      </div>
+                    )}
+                    <FrameworkSummary id={framework} values={frameworkOptions} fromRepo={source === "git"} />
+                  </>
+                )}
+              </div>
+            )}
 
             {mode !== "development" && (
               <Callout className="-mt-2">

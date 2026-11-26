@@ -3,6 +3,7 @@
 import * as React from "react"
 import dynamic from "next/dynamic"
 
+import { FrameworkSuggestion } from "@/components/framework-settings"
 import { ChatDock, ChatPortal } from "@/components/chat-dock"
 import { useCurrentProject, useFilesPanel, type ViewMode } from "@/components/files-panel"
 import type { DocLocation } from "@/components/notes/notes-workspace"
@@ -93,6 +94,8 @@ export function ProjectWorkspace({ project: seed, session }: { project: Project;
       {!docked && (
         // Relative, for the details card that floats at its top right.
         <div className={mode === "chat" ? "@container/session relative flex min-h-0 flex-1 flex-col" : "hidden"}>
+          {/* "This looks like Laravel": shown only while it has something to offer (plan3 §3.7). */}
+          {mode === "chat" && <FrameworkSuggestion project={project} />}
           <ChatDock className="flex min-h-0 flex-1 flex-col" />
           {mode === "chat" && <SessionContextCard project={project} session={session} />}
         </div>

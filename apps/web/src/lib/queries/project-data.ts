@@ -3,6 +3,7 @@ import type { TaskSettings } from "@ucch/protocol"
 
 import { listCommands } from "../commands-api"
 import { listRuntimes } from "../runtimes-api"
+import { fetchProjectFramework } from "../frameworks-api"
 import { fetchTree } from "../files-api"
 import { listEnvVars } from "../env-api"
 import { listNotes } from "../notes-api"
@@ -56,5 +57,7 @@ export const projectQueries = {
   commands: (hash: string) => ({ queryKey: qk.commands.list(hash), queryFn: () => listCommands(hash), persist: true }),
   // Not persisted: install progress and "update available" go stale fast.
   runtimes: (hash: string) => ({ queryKey: qk.runtimes.list(hash), queryFn: () => listRuntimes(hash), persist: false }),
+  // Its framework profile and the one its stack suggests (plan3 §4.6): small, and it changes rarely.
+  framework: (hash: string) => ({ queryKey: qk.runtimes.framework(hash), queryFn: () => fetchProjectFramework(hash), persist: true }),
   filesTree: (target: ProjectTarget) => ({ queryKey: treeKey(target), queryFn: () => fetchTree(target), persist: true }),
 } satisfies Record<string, (arg: never) => ProjectQuery<unknown>>

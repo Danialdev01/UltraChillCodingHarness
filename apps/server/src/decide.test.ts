@@ -1193,3 +1193,32 @@ describe("@reviewer and @council", () => {
     expect(cancel("completed")).toMatchObject({ error: { code: "conflict" } });
   });
 });
+
+describe("framework profiles (plan3 §1.3, §3.6)", () => {
+  it("carries a valid framework onto project.created, and refuses a bad one", () => {
+    const create = (framework: unknown, mode?: string) =>
+      run({ workspace: workspace() }, Command.parse({ type: "project.create", workspaceId: WORKSPACE, name: "app", ...(mode ? { mode } : {}), framework }));
+    expect(create({ id: "rust", options: { toolchain: "nightly" }, scaffold: true })).toMatchObject({
+      ok: true,
+      events: [{ type: "project.created", framework: { id: "rust", options: { toolchain: "nightly" }, scaffold: true } }],
+    });
+    expect(create({ id: "rust", options: { watch: "nodemon" } })).toMatchObject({ ok: false, error: { code: "invalid", message: expect.stringMatching(/Watch/) } });
+    expect(create({ id: "rust", options: { flavour: "x" } })).toMatchObject({ ok: false, error: { code: "invalid" } });
+    expect(create({ id: "laravel", options: {} }, "research")).toMatchObject({ ok: false, error: { message: expect.stringMatching(/development/) } });
+    expect(() => Command.parse({ type: "project.create", workspaceId: WORKSPACE, name: "a", framework: { id: "django" } })).toThrow();
+  });
+
+  it("records a change of framework, or a dismissal, for a member who may write", () => {
+    expect(run({ project: project() }, { type: "project.framework_set", projectId: PROJECT, framework: { id: "react", options: { test: "none" } } })).toEqual({
+      ok: true,
+      events: [{ type: "project.framework_changed", projectId: PROJECT, framework: { id: "react", options: { test: "none" } } }],
+    });
+    expect(run({ project: project() }, { type: "project.framework_set", projectId: PROJECT, framework: null })).toMatchObject({
+      ok: true,
+      events: [{ framework: null }],
+    });
+    expect(
+      run({ project: project(), workspace: workspace({ membership: member({ role: "viewer" }) }) }, { type: "project.framework_set", projectId: PROJECT, framework: null }),
+    ).toMatchObject({ ok: false });
+  });
+});

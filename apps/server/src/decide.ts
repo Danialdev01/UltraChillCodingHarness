@@ -1,4 +1,5 @@
-import { can, effectiveCredentialSource, normalizeWorkspacePath, parseDirectives, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
+import {
+  frameworkChoiceError, can, effectiveCredentialSource, normalizeWorkspacePath, parseDirectives, resolveCredentialSource, sessionBranch } from "@ucch/protocol";
 import type {
   Command,
   ContainerState,
@@ -175,6 +176,11 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
       if (command.database && mode !== "development") {
         return fail("invalid", "only a development project can have a database");
       }
+      if (command.framework) {
+        if (mode !== "development") return fail("invalid", "only a development project can have a framework profile");
+        const error = frameworkChoiceError(command.framework.id, command.framework.options);
+        if (error) return fail("invalid", error);
+      }
 
       return ok([
         {
@@ -191,8 +197,21 @@ export function decide(state: DecisionState, command: Command, ctx: DecisionCont
           database: command.database ?? null,
           sessionBranches: command.sessionBranches ?? true,
           ...(command.gitAccountId ? { gitAccountId: command.gitAccountId } : {}),
+          ...(command.framework ? { framework: command.framework } : {}),
         },
       ]);
+    }
+
+    case "project.framework_set": {
+      const project = requireProject(state, ctx, "project.write");
+      if ("error" in project) return project.decision;
+      if (command.framework) {
+        const error = frameworkChoiceError(command.framework.id, command.framework.options);
+        if (error) return fail("invalid", error);
+      }
+      // A starter is made only at creation, into an empty folder.
+      const framework = command.framework ? { id: command.framework.id, options: command.framework.options } : null;
+      return ok([{ type: "project.framework_changed", projectId: project.value.id, framework }]);
     }
 
     case "project.start": {

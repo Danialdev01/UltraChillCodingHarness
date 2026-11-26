@@ -186,6 +186,8 @@ export interface TerminalOptions {
    * the new one on its next command.
    */
   runtimePath?: (cwd: string) => string | null;
+  /** The project's other variables for a terminal in `cwd` (plan3 §2.6). */
+  runtimeEnv?: (cwd: string) => Record<string, string> | null;
   /**
    * The OMP bridge for CLIs started by hand (`terminal-bridge.ts`, OM6.7):
    * a project shell gets `UCCH_OMP_MCP` = `path(...)` when it starts, and
@@ -758,6 +760,7 @@ export class TerminalReactor {
     // not found" happens in a terminal where node is plainly installed.
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(terminalEnv())) if (value !== undefined) env[name] = value;
+    for (const [name, value] of Object.entries(this.options.runtimeEnv?.(cwd) ?? {})) env[name] ??= value;
     env.UCCH_ROOT = cwd;
     const runtimes = this.options.runtimePath?.(cwd);
     if (runtimes) {

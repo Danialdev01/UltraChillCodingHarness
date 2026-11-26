@@ -7,6 +7,7 @@ import { GitRemoteSettings } from "@/components/git/remote-settings"
 import { ProjectAccountSettings } from "@/components/project-account-settings"
 import { ProjectKeySettings } from "@/components/project-key-settings"
 import { ProjectPreferences } from "@/components/project-preferences"
+import { FrameworkSettings } from "@/components/framework-settings"
 import { RuntimeSettings } from "@/components/runtime-settings"
 import { Tabs, TabsIndicator, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
 import { MANAGE_TABS, manageTabOf, type ManageTab } from "@/lib/manage-tabs"
@@ -51,8 +52,12 @@ export function ManageTabs({ project, initialTab }: { project: Project; initialT
         </div>
       </TabsPanel>
 
+      {/* Still `?tab=runtimes`, so old links land here. */}
       <TabsPanel value="runtimes">
-        <RuntimeSettings project={project} />
+        <div className="flex flex-col gap-4">
+          <FrameworkSettings project={project} />
+          <RuntimeSettings project={project} />
+        </div>
       </TabsPanel>
 
       <TabsPanel value="project-key">
