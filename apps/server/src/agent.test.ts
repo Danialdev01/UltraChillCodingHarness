@@ -1052,6 +1052,36 @@ describe("an OMP turn", () => {
       expect(dispatched).toEqual([]);
     });
 
+    it("runs an idle compaction as a turn of its own, closed `compacted` (plan2 §3.3)", async () => {
+      const bound = await boundThread();
+      const creds = join(root, "creds");
+      const providers = new ProviderService(
+        {} as Database,
+        { CREDS_ROOT: creds } as Config,
+        new HostProcessHost(),
+        createProviders({ claudeBin: "claude", codexBin: "codex", ompBin: OMP_BIN }),
+      );
+      const scheduler = new TurnScheduler({ cliPerUser: 2, cliTotal: 2, nativeTotal: 2, ompTotal: 1 });
+      const { agent, appended } = reactorWith(
+        { workspaceRoot: join(root, "workspaces"), secretKey: SECRET, defaultModel: "anthropic/claude-sonnet-4.5", cliEnabled: true, providers, scheduler },
+        [bound],
+        // The idle turn's model, read before it opens.
+        [{ model: "anthropic/claude-sonnet-4.5" }],
+        [owner],
+        [keyed],
+        [{ model: "anthropic/claude-sonnet-4.5" }],
+      );
+      agent.react({ type: "thread.compact", threadId: THREAD, idle: true }, [
+        { type: "thread.compaction_requested", threadId: THREAD, method: "compact", idle: true },
+      ]);
+      await until(appended, (event) => event.type === "agent.turn_completed" || event.type === "agent.turn_failed");
+      const events = appended.flat();
+      const started = events.find((e) => e.type === "turn.started") as { turnId: string } | undefined;
+      expect(started).toMatchObject({ type: "turn.started", threadId: THREAD, model: "anthropic/claude-sonnet-4.5", provider: "omp" });
+      expect(events.map((e) => e.type).slice(-2)).toEqual(["thread.compaction_finished", "agent.turn_completed"]);
+      expect(events.at(-1)).toMatchObject({ turnId: started!.turnId, stopReason: "compacted", costUsd: 0 });
+    });
+
     it("frees the thread with the reason when there is nothing to fold", async () => {
       const { agent, appended } = compactReactor({ ...thread, provider: "omp", providerSessionId: null }, keyed);
       agent.react({ type: "thread.compact", threadId: THREAD }, [{ type: "thread.compaction_requested", threadId: THREAD, method: "compact" }]);

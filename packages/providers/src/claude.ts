@@ -609,7 +609,6 @@ export class ClaudeNormaliser implements Normaliser {
       cacheRead: u.cacheReadInputTokens,
       creation5m: n(creation.ephemeral_5m_input_tokens),
       creation1h: n(creation.ephemeral_1h_input_tokens),
-      creationTotal: u.cacheCreationInputTokens,
       previousTtlMs: this.#cacheTtlMs,
     });
     this.#cacheExpiresAt = expiry?.expiresAtMs ?? null;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  clipToBytes,
   CACHE_TTL_1H_MS,
   CACHE_TTL_5M_MS,
   cacheExpiry,
@@ -79,7 +80,6 @@ describe("cacheExpiry (plan2 §2.1)", () => {
     ["an hour's write", { creation1h: 20_333, creation5m: 0, cacheRead: 0 }, CACHE_TTL_1H_MS],
     ["both lifetimes: the hour wins", { creation1h: 10, creation5m: 10, cacheRead: 5 }, CACHE_TTL_1H_MS],
     ["five minutes' write", { creation1h: 0, creation5m: 500, cacheRead: 0 }, CACHE_TTL_5M_MS],
-    ["a write with no split", { creation1h: 0, creation5m: 0, cacheRead: 0, creationTotal: 300 }, CACHE_TTL_5M_MS],
     ["a read, refreshed by the lifetime it was written with", { creation1h: 0, creation5m: 0, cacheRead: 9_000, previousTtlMs: CACHE_TTL_1H_MS }, CACHE_TTL_1H_MS],
   ])("%s", (_name, input, ttl) => {
     expect(cacheExpiry({ requestStartMs: start, ...input })).toEqual({ expiresAtMs: start + ttl, ttlMs: ttl });
@@ -88,6 +88,8 @@ describe("cacheExpiry (plan2 §2.1)", () => {
   it("does not know for a read whose lifetime is unknown, or a call that touched no cache", () => {
     expect(cacheExpiry({ requestStartMs: start, creation1h: 0, creation5m: 0, cacheRead: 9_000 })).toBeNull();
     expect(cacheExpiry({ requestStartMs: start, creation1h: 0, creation5m: 0, cacheRead: 0, previousTtlMs: CACHE_TTL_1H_MS })).toBeNull();
+    // A write the CLI did not split by lifetime: unknown, not a guessed 5m.
+    expect(cacheExpiry({ requestStartMs: start, creation1h: 0, creation5m: 0, cacheRead: 0 })).toBeNull();
   });
 });
 
@@ -210,5 +212,27 @@ describe("offerCompactOnResume (plan2 §3.7)", () => {
     expect(offerCompactOnResume(reading({ usedTokens: 199_999 }), now)).toBe(false);
     expect(offerCompactOnResume(reading({ cacheExpiresAt: null }), now)).toBe(false);
     expect(offerCompactOnResume(reading({ harness: "codex" }), now)).toBe(false);
+  });
+});
+
+describe("clipToBytes (plan2 §3.5)", () => {
+  const notice = "\n[cut]";
+  const size = (text: string) => new TextEncoder().encode(text).length;
+  it("leaves text that fits alone", () => {
+    expect(clipToBytes("short", 100, notice)).toBe("short");
+  });
+  it("keeps the result, notice included, within the budget", () => {
+    const out = clipToBytes("x".repeat(500), 100, notice);
+    expect(size(out)).toBeLessThanOrEqual(100);
+    expect(out.endsWith(notice)).toBe(true);
+  });
+  it("never splits a multi-byte character", () => {
+    const out = clipToBytes("é".repeat(100), 51, notice);
+    expect(size(out)).toBeLessThanOrEqual(51);
+    expect(out).not.toContain("\uFFFD");
+    expect(out.replace(notice, "")).toMatch(/^é+$/);
+  });
+  it("is empty when not even the notice fits", () => {
+    expect(clipToBytes("x".repeat(50), 3, notice)).toBe("");
   });
 });

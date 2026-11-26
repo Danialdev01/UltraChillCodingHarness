@@ -1,6 +1,6 @@
 import { CodexSubagents, withCodexSubagents } from "./codex-subagents.js";
 import { statSync } from "node:fs";
-import { cliContextWindow, codexCompactThreshold, occupancy, type DomainEvent, type FileDiff, type ReasoningEffort, type TokenUsage } from "@ucch/protocol";
+import { cacheHitRatio, cliContextWindow, codexCompactThreshold, occupancy, type DomainEvent, type FileDiff, type ReasoningEffort, type TokenUsage } from "@ucch/protocol";
 import { CODEX_IMAGE_INSTRUCTIONS, codexRollout, rolloutImagePaths, withCodexImages } from "./codex-images.js";
 import { codexFileDiffs, fileDiffEvent } from "./file-diff.js";
 import { lastCallUsage, readCodexRollout, turnUsage } from "./codex-rollout.js";
@@ -813,6 +813,7 @@ export function withCodexContext(input: ProviderRunInput, start: () => AgentRun,
         const last = reading?.last ?? null;
         const call = last ? lastCallUsage(last) : null;
         const usedTokens = last ? last.total || occupancy(call!) : null;
+        const first = reading?.first ?? null;
         yield {
           type: "context.usage",
           ...ids,
@@ -821,6 +822,7 @@ export function withCodexContext(input: ProviderRunInput, start: () => AgentRun,
           thresholdTokens: windowTokens ? codexCompactThreshold(windowTokens) : null,
           status: usedTokens && usedTokens > 0 ? (reading?.windowTokens ? "complete" : "partial") : "unavailable",
           cachedTokens: call ? call.cacheReadInputTokens : null,
+          ...(first ? { cacheHitRatio: cacheHitRatio(lastCallUsage(first)) } : {}),
           harness: "codex",
           model: input.model ?? null,
           at: new Date(now()).toISOString(),

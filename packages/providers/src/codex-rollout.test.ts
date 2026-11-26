@@ -46,6 +46,8 @@ describe("the Codex rollout (codex-cli 0.170.0)", () => {
     const { reading, before } = await readCodexRollout(path, offset);
     expect(before).toEqual({ input: 15549, cached: 12160, output: 5, total: 15554 });
     expect(reading.last).toEqual({ input: 15567, cached: 15360, output: 5, total: 15572 });
+    // The turn's first call: what came back from the cache on resume (plan2 §2.2).
+    expect(reading.first).toEqual({ input: 15567, cached: 15360, output: 5, total: 15572 });
     expect(reading.total).toEqual({ input: 31116, cached: 27520, output: 10, total: 31126 });
     // The turn's own share of the running total, which is what stdout reported for it.
     expect(turnUsage(reading.total!, before)).toEqual({ inputTokens: 207, outputTokens: 5, cacheReadInputTokens: 15360, cacheCreationInputTokens: 0 });
@@ -118,6 +120,7 @@ describe("withCodexContext", () => {
       thresholdTokens: 427_500,
       status: "complete",
       cachedTokens: 15360,
+      cacheHitRatio: 15360 / 15567,
       harness: "codex",
       model: "gpt-6.1-sol",
       at: "2026-11-21T10:33:01.000Z",

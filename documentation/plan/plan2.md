@@ -63,7 +63,7 @@
 
 ## Tasks
 
-Implementation review (2026-11-21): checked items have their implementation wired into the runtime. Unchecked items are partially implemented; the remaining differences are recorded below. Checkmarks do not imply that live CLI, database or browser verification has passed. The comparison sections above describe the original baseline.
+Implementation review (2026-11-21, completed 2026-11-26): every task has its implementation wired into the runtime. The 2026-11-26 section below records how the last seven partial tasks were closed, and the two accepted exceptions. Checkmarks do not imply that live CLI, database or browser verification has passed. The comparison sections above describe the original baseline.
 
 ### Phase 1: Exact, persisted readings (fixes gaps 1–5, 10)
 
@@ -91,21 +91,21 @@ Implementation review (2026-11-21): checked items have their implementation wire
 
 ### Phase 2: Keep the prompt cache warm (fixes gaps 6, 7)
 
-- [ ] **2.1 Cache expiry for Claude.** In `ClaudeNormaliser` (`claude.ts:414`), record the time each `message_start` arrives as the request start. Read `usage.cache_creation.ephemeral_{1h,5m}_input_tokens` and set `cacheExpiresAt = requestStart + TTL`.
+- [x] **2.1 Cache expiry for Claude.** In `ClaudeNormaliser` (`claude.ts:414`), record the time each `message_start` arrives as the request start. Read `usage.cache_creation.ephemeral_{1h,5m}_input_tokens` and set `cacheExpiresAt = requestStart + TTL`.
   - A fully cached request (no creation) keeps the previous expiry pushed forward by the previous TTL, because a cache hit refreshes the cache.
   - Otherwise the expiry is unknown.
   - Carry it on `ContextReading`.
-- [ ] **2.2 Cache hit metric for CLI turns.** Per turn, `cacheHitRatio = cacheRead / (input + cacheRead + cacheCreation)` for the first call of a resumed turn.
+- [x] **2.2 Cache hit metric for CLI turns.** Per turn, `cacheHitRatio = cacheRead / (input + cacheRead + cacheCreation)` for the first call of a resumed turn.
   - When the first call is within `cacheExpiresAt` and reads 0 from the cache, emit the same warning the native loop does (`loop.ts:328`), with the prefix hash from 2.3.
   - Show "cache warm · Nm left" in the session card tooltip.
-- [ ] **2.3 Fixed prefix per session.** Compute the Claude `--append-system-prompt` text once per session and store `{text, sha256}` with the session (an event payload on `agent.session_started`, or a column next to `provider_session_id`). Resumed turns reuse the stored text unchanged.
+- [x] **2.3 Fixed prefix per session.** Compute the Claude `--append-system-prompt` text once per session and store `{text, sha256}` with the session (an event payload on `agent.session_started`, or a column next to `provider_session_id`). Resumed turns reuse the stored text unchanged.
   - Knowledge that changed mid-session (`.agent/` notes) goes in the user message as `<project-knowledge-update>` with only the diff, and only when the hash changed.
   - Log the hash on every turn.
 - [x] **2.4 Fixed tool set per session.** Open the bridge MCP with the same tool list for the life of a session (decide once at session start), so `--mcp-config` doesn't change mid-session.
   - Check that Claude Code defers UCCH bridge tools behind ToolSearch.
   - Mark only the essentials as `_meta["anthropic/alwaysLoad"]`, as t3code does.
 - [x] **2.5 Stop resending guides on Codex.** Remove the per-turn append of `COLLABORATION_GUIDE` / `UCCH_AGENT_GUIDE` in resumed Codex prompts (`agent.ts:2207`). Re-send them once, only on the first turn after a Codex compaction, which is detected from the rollout `compacted` event (1.3). This coordinates with plan1 §Codex resume, which owns the text.
-- [ ] **2.6 Size budget test.** Snapshot the bytes of the Claude append, the Codex instructions and the bridge tool list (name + description + inputSchema) in `packages/protocol/src/agent-context-budget.json`. A test fails when any of them grows without the JSON being updated. This shares the harness from plan1 §1.x.
+- [x] **2.6 Size budget test.** Snapshot the bytes of the Claude append, the Codex instructions and the bridge tool list (name + description + inputSchema) in `packages/protocol/src/agent-context-budget.json`. A test fails when any of them grows without the JSON being updated. This shares the harness from plan1 §1.x.
 
 ### Phase 3: Compact inside the session, at the right time (fixes gaps 8, 9)
 
@@ -117,13 +117,13 @@ Implementation review (2026-11-21): checked items have their implementation wire
   - **Codex:** check whether `codex exec resume <id> "/compact"` compacts. If not, use `codex app-server` `thread/compact/start` (the app-server client already exists at `codex.ts:46` / `:141`).
   - **OMP:** already has a manual compact (`decide.ts:528`). Use it here as well.
   - `decide.ts:500-527`: `thread.handoff auto` maps to compact for all CLIs. A handover to a new session happens only when compaction is unavailable or fails.
-- [ ] **3.3 Idle compaction while the cache is warm** (t3code's `idleCompactionWindow`, adapted). When a turn completes on Claude with `usedTokens ≥ max(200k, 0.5 × compactThreshold)` and `cacheExpiresAt` is known, schedule `/compact` at `cacheExpiresAt − 2 min`.
+- [x] **3.3 Idle compaction while the cache is warm** (t3code's `idleCompactionWindow`, adapted). When a turn completes on Claude with `usedTokens ≥ max(200k, 0.5 × compactThreshold)` and `cacheExpiresAt` is known, schedule `/compact` at `cacheExpiresAt − 2 min`.
   - Same skip rules as t3code: the thread is busy or queued, a permission is pending, subagents or background work are running, the last turn was `/compact`, the harness or model changed, the thread is archived, or there is a newer turn.
   - **Better than t3code:** store the due time in the database (`threads.idle_compact_at`) and re-arm on startup in `apps/server/src/index.ts`, so a restart does not lose it.
   - Setting: off / on (default on above the threshold).
   - The compaction is shown as a turn in the thread.
-- [ ] **3.4 Check before each turn.** Before dispatching a turn, compare `reading.usedTokens + estimate(newText) + attachments (8k per image, 4k per file) + workReserve(max(16k, window/4))` with the window. If it is over, run 3.2 first, then send the message.
-- [ ] **3.5 Handover that works without OMP, with a budget** (still needed for harness switches and expired transcripts).
+- [x] **3.4 Check before each turn.** Before dispatching a turn, compare `reading.usedTokens + estimate(newText) + attachments (8k per image, 4k per file) + workReserve(max(16k, window/4))` with the window. If it is over, run 3.2 first, then send the message.
+- [x] **3.5 Handover that works without OMP, with a budget** (still needed for harness switches and expired transcripts).
   - `#writeBrief` (`agent.ts:1636`) uses the thread's own harness in one-shot mode (`claude -p` / `codex exec`) when OMP or the OpenRouter key is missing.
   - If that also fails, it falls back to the deterministic `conversationRecap` instead of failing silently. Surface the failure as a thread notice.
   - Both the brief and the recap use t3code's `handoffBudget` formula: cap 16k tokens and keep a work reserve. Port the formula to `context-budget.ts`.
@@ -155,15 +155,16 @@ Implementation review (2026-11-21): checked items have their implementation wire
 | 3.6–3.7 | Missing-transcript recaps use `sinceCleared`; Claude transcript lookup uses the turn cwd. Expired large Claude sessions receive a compact/keep/never choice, with the opt-out persisted per thread. |
 | 4.1 | Startup calls `failInterruptedTurns` in `restart-recovery.ts`, appending `agent.turn_failed` for open interrupted turns before returning threads to idle. |
 
-Remaining work on unchecked tasks:
+Closed on 2026-11-26 (the seven tasks that were partial):
 
-- **2.1:** Claude captures message-start timing, split TTLs and cache-hit refreshes. However, `cacheExpiry` assumes five minutes when creation tokens exist without a TTL breakdown (`creationTotal > 0`); the plan requires unknown expiry otherwise. Reconcile that fallback with the stated contract.
-- **2.2:** Claude emits the first call's hit ratio, resumed warm-cache misses log the prefix hash, and the session tooltip shows cache warmth. Codex `withCodexContext` emits only last-call cached tokens, without a first-call `cacheHitRatio`; OMP also lacks that metric. CLI coverage is incomplete.
-- **2.3:** Prefix text/hash persistence, per-turn hash logging and knowledge diffs exist. `planSessionPrefix` deliberately rebuilds Claude's prefix on model, effort or bridge changes even with the same resume token (`session-prefix.test.ts` explicitly tests this). That differs from keeping the text unchanged for the entire native session; either enforce the invariant or document an accepted exception in the task.
-- **2.6:** Instruction and bridge size snapshots/tests exist in `apps/server/src/agent-context-budget.json` and `packages/omp-bridge/src/tools-budget.json`. Both tests allow 5% growth without updating a snapshot, whereas the task requires a failure on any growth. The split snapshot locations are an implementation adaptation.
-- **3.3:** Database due times, startup re-arming, the enabled setting, threshold calculation and most skip rules exist. `#idleCompactDue` does not compare the reading's model with the current model, and its background-work check covers child threads and reactor runs rather than all background work. Idle compaction records compaction events/dividers without creating the separate turn requested here.
-- **3.4:** `overWindow` implements the formula, but the dispatch check in `#turn` runs only for resumed, top-level Claude/Codex sessions. OMP and subagent turns do not pass through this preflight. A failed preflight compaction is caught and the message still proceeds without a successful-compaction or handover guarantee.
-- **3.5:** Own-harness brief generation, deterministic recap fallback and failure notices exist, along with the shared budget formula. `#writeBrief` does not account for the destination's fixed prefix or attachments. Its clipping helper appends a truncation notice after taking the full character budget, so the final brief can exceed that budget; UTF-8 bytes are also not enforced by this character slice. Complete budget enforcement before marking the task done.
+- **2.1:** `cacheExpiry` no longer guesses five minutes for a cache write the CLI did not split by lifetime. Such a write now gives an unknown expiry, as the contract says. The `creationTotal` input is gone (`context-budget.ts`, `claude.ts`), and the test asserts `null`.
+- **2.2:** Codex: `foldRolloutLine` keeps the turn's first `last_token_usage` (`reading.first`), and `withCodexContext` emits `cacheHitRatio` from it (`codex-rollout.test.ts`). **Accepted exception, OMP:** `get_session_stats` reports only running session totals, never per-call usage, so a first-call ratio cannot be derived for OMP. It is left out rather than approximated from the turn's sum.
+- **2.3:** **Accepted exception:** Claude's prefix is rebuilt, with the same resume token, when the model, effort or bridge changes. The runtime-info block names the model and effort, so keeping the old text would tell the agent the wrong model. Within one model, effort and tool set, the text is byte-stable, and knowledge changes arrive as `<project-knowledge-update>` deltas. `session-prefix.test.ts` pins both behaviours.
+- **2.6:** The 5% tolerance is gone from `apps/server/src/agent-context-budget.test.ts` and `packages/omp-bridge/src/tools-budget.test.ts`. Any growth past the recorded figure fails, until the JSON is updated in the same commit.
+- **3.3:** `#idleCompactDue` skips when the reading was taken on another model than the session's last turn. Its background-work check now also counts running deliberations (`agent_deliberations`) and background subagent runs (`agent_runs`). An idle compaction opens a turn of its own (`turn.started`, which ends `agent.turn_completed { stopReason: "compacted" }` or `agent.turn_failed`), covered by an `agent.test.ts` case. A compaction the person asks for is still maintenance, drawn only as its divider.
+- **3.4:** The preflight now runs for subagent and child turns as well. It excludes OMP, which compacts itself at its own `contextThreshold` before a prompt crosses it. When the message would not fit (`overWindow`) and the compaction fails or produces nothing, the turn starts a fresh session on a `#writeBrief` brief of the old one (`handoffMessage`). If no brief can be written either, the turn fails and says why. It no longer overflows silently.
+- **3.5:** `#writeBrief` counts the destination's fixed prefix (`FRESH_PREFIX_TOKENS`: the CLI's own system prompt and tools plus UCCH's instructions) and the message's attachments. It clips with `clipToBytes`, which keeps the notice inside the budget and never splits a UTF-8 character (`context-budget.test.ts`).
+- The "3 failing OMP assertions" from the first review were fixed in commit 2222e0b. `agent.test.ts` now expects the 55% OMP threshold (`110000` for a 200k window).
 
 Validation performed for this review:
 

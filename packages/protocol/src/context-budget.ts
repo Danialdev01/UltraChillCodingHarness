@@ -207,21 +207,20 @@ export const CACHE_TTL_1H_MS = 60 * 60_000;
  * an hour when any of it was written for an hour, else five minutes. A call
  * that only read from the cache refreshed it, so the expiry moves on by the
  * lifetime the cache was written with (`previousTtlMs`). Anything else --
- * no cache touched, or a read with no known lifetime -- is unknown.
+ * no cache touched, a read with no known lifetime, or a write the CLI did
+ * not split by lifetime -- is unknown, never a guessed five minutes.
  */
 export function cacheExpiry(input: {
   requestStartMs: number;
   cacheRead: number;
   creation5m: number;
   creation1h: number;
-  /** All the call wrote, for a CLI that does not split it by lifetime. */
-  creationTotal?: number;
   previousTtlMs?: number | null;
 }): { expiresAtMs: number; ttlMs: number } | null {
   const ttl =
     input.creation1h > 0
       ? CACHE_TTL_1H_MS
-      : input.creation5m > 0 || (input.creationTotal ?? 0) > 0
+      : input.creation5m > 0
         ? CACHE_TTL_5M_MS
         : input.cacheRead > 0 && input.previousTtlMs
           ? input.previousTtlMs
@@ -270,6 +269,37 @@ export function handoffBudgetTokens(input: {
     attachmentTokens(input) -
     workReserveTokens(input.windowTokens);
   return Math.max(0, Math.min(HANDOFF_CAP_TOKENS, room));
+}
+
+/**
+ * What a fresh session on each harness already holds before any history is
+ * imported: the CLI's own system prompt and tool list plus UCCH's fixed
+ * instructions (`agent-context-budget.json`'s `*.every_tool`). Estimates,
+ * rounded up, for `handoffBudgetTokens`' `nativeTokens` -- the brief must
+ * leave room for them, not assume an empty window.
+ */
+export const FRESH_PREFIX_TOKENS: Record<ProviderId, number> = {
+  claude: 20_000,
+  codex: 12_000,
+  omp: 10_000,
+  native: 2_000,
+};
+
+/**
+ * `text` held to `maxBytes` of UTF-8, `notice` included: when it has to be
+ * cut, the cut leaves room for the notice and never splits a character.
+ */
+export function clipToBytes(text: string, maxBytes: number, notice: string): string {
+  // TextEncoder rather than Buffer: this module is imported by the browser too.
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(text);
+  if (bytes.length <= maxBytes) return text;
+  const room = maxBytes - encoder.encode(notice).length;
+  if (room <= 0) return "";
+  let end = room;
+  // Back off continuation bytes (10xxxxxx) to the start of a character.
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return new TextDecoder().decode(bytes.subarray(0, end)) + notice;
 }
 
 /** `handoffBudgetTokens` in characters, by the shared estimate, held to the byte cap. */

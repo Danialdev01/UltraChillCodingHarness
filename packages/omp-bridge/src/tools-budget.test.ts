@@ -13,12 +13,11 @@ import { ALWAYS_LOAD, createBridgeServer } from "./server.js";
  * instructions): each tool's name, description and input schema as the CLI
  * lists them, and of those the ones every Claude Code call carries
  * (`anthropic/alwaysLoad`; the rest wait behind ToolSearch). A fixture that
- * grows more than `TOLERANCE` past its figure fails; a change meant to grow
+ * grows past its figure by even a byte fails; a change meant to grow
  * one updates the JSON in the same commit:
  * `UCCH_UPDATE_CONTEXT_BUDGET=1 npx vitest run packages/omp-bridge/src/tools-budget.test.ts`.
  */
 const BUDGET_FILE = new URL("./tools-budget.json", import.meta.url);
-const TOLERANCE = 1.05;
 const FAKE_OMP = join(import.meta.dirname, "../../../scripts/load/fake-omp.mjs");
 
 const FIXTURES: Record<string, NodeJS.ProcessEnv> = {
@@ -64,7 +63,7 @@ describe("the tool definitions the bridge hands a CLI", async () => {
 
   for (const [name, size] of Object.entries(figures)) {
     it(`${name} stays within its budget`, () => {
-      expect(size, `${name} is ${size} bytes; its budget is ${budget[name]}`).toBeLessThanOrEqual(Math.floor((budget[name] ?? 0) * TOLERANCE));
+      expect(size, `${name} is ${size} bytes; its budget is ${budget[name]}`).toBeLessThanOrEqual(budget[name] ?? 0);
     });
   }
 });

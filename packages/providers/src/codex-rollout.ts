@@ -38,6 +38,12 @@ export interface CodexTokenCount {
 export interface CodexRolloutReading {
   /** The last call's usage, or null when the read found no `token_count`. */
   last: CodexTokenCount | null;
+  /**
+   * The first call's usage in the read: on a resumed turn, how much of the
+   * session came back from the prompt cache (plan2 §2.2). Absent on a
+   * reading built before this field existed.
+   */
+  first?: CodexTokenCount | null;
   /** The running total at the last `token_count` read. */
   total: CodexTokenCount | null;
   /** The model's window, from the last `token_count` that named it. */
@@ -76,6 +82,7 @@ export function foldRolloutLine(reading: CodexRolloutReading, line: string): voi
   const last = tokenCount(info.last_token_usage);
   const total = tokenCount(info.total_token_usage);
   if (last) {
+    if (!reading.first) reading.first = last;
     reading.last = last;
     const pending = reading.compactions.at(-1);
     if (pending && pending.tokensAfter === null) pending.tokensAfter = last.total;
@@ -91,8 +98,8 @@ export function foldRolloutLine(reading: CodexRolloutReading, line: string): voi
  * Resolves empty for a file that cannot be read.
  */
 export async function readCodexRollout(path: string, offset = 0): Promise<{ before: CodexTokenCount | null; reading: CodexRolloutReading }> {
-  const earlier: CodexRolloutReading = { last: null, total: null, windowTokens: null, compactions: [] };
-  const reading: CodexRolloutReading = { last: null, total: null, windowTokens: null, compactions: [] };
+  const earlier: CodexRolloutReading = { last: null, first: null, total: null, windowTokens: null, compactions: [] };
+  const reading: CodexRolloutReading = { last: null, first: null, total: null, windowTokens: null, compactions: [] };
   const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
   let at = 0;
   try {

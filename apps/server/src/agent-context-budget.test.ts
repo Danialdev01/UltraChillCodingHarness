@@ -17,13 +17,12 @@ import { assembleCliInstructions, type CliInstructionsInput } from "./cli-instru
  * turns (plan1 §5.1, after t3code's `AgentContextBudget.test.ts`).
  *
  * The figures are recorded in `agent-context-budget.json`; a turn that
- * grows more than `TOLERANCE` past its figure fails here, so instruction
+ * grows past its figure by even a byte fails here, so instruction
  * bloat is caught in review rather than paid for on every turn. A change
  * that means to grow them updates the JSON in the same commit:
  * `UCCH_UPDATE_CONTEXT_BUDGET=1 npx vitest run apps/server/src/agent-context-budget.test.ts`.
  */
 const BUDGET_FILE = new URL("./agent-context-budget.json", import.meta.url);
-const TOLERANCE = 1.05;
 /** The most any one fixed block may be. */
 const MAX_BLOCK_BYTES = 1_500;
 
@@ -93,7 +92,7 @@ describe("the instructions each harness is handed", () => {
 
   for (const [name, size] of Object.entries(figures)) {
     it(`${name} stays within its budget`, () => {
-      expect(size, `${name} is ${size} bytes; its budget is ${budget[name]}`).toBeLessThanOrEqual(Math.floor((budget[name] ?? 0) * TOLERANCE));
+      expect(size, `${name} is ${size} bytes; its budget is ${budget[name]}`).toBeLessThanOrEqual(budget[name] ?? 0);
     });
   }
 

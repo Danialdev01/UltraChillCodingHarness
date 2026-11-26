@@ -4,7 +4,7 @@ import type { ProfileRef } from "./profile-ref.js";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { and, count, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
-import { agentDeliberations, events, projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
+import { agentDeliberations, agentRuns, events, projects, threads, turns, users, workspaces, type AgentProfile, type Database } from "@ucch/db";
 import {
   HostExecutor,
   hostToolSchemas,
@@ -29,7 +29,9 @@ import {
   type PickHarness,
   type ReviewerDirective,
   cliContextWindow,
+  clipToBytes,
   estimateTokens,
+  FRESH_PREFIX_TOKENS,
   handoffBudgetChars,
   handoffBudgetTokens,
   IDLE_COMPACT_LEAD_MS,
@@ -1259,14 +1261,34 @@ export class AgentTurnReactor {
       .select({ n: count() })
       .from(threads)
       .where(and(eq(threads.parentThreadId, threadId), inArray(threads.status, ["queued", "running", "cancelling"])));
+    // Other work still under way for this session: a review or a council it
+    // asked for (whose children may not have started yet), or a background
+    // subagent run that has not reported back.
+    const [deliberating] = await this.db
+      .select({ n: count() })
+      .from(agentDeliberations)
+      .where(and(eq(agentDeliberations.threadId, threadId), eq(agentDeliberations.status, "running")));
+    const [backgroundRuns] = await this.db
+      .select({ n: count() })
+      .from(agentRuns)
+      .where(and(eq(agentRuns.parentThreadId, threadId), eq(agentRuns.status, "running")));
+    // The model the session last ran on: a reading taken on another one
+    // says nothing about this session's cache.
+    const [lastTurn] = await this.db
+      .select({ model: turns.model })
+      .from(turns)
+      .where(eq(turns.threadId, threadId))
+      .orderBy(desc(turns.seq))
+      .limit(1);
+    const modelChanged = Boolean(lastTurn?.model && row.contextReading?.model && lastTurn.model !== row.contextReading.model);
     const skip = idleCompactionSkip({
       enabled: readAgentSettings(row.agent).idleCompaction.enabled,
       status: row.status,
       archived: row.archivedAt !== null,
       pendingRequests: openRequests(history),
-      backgroundWork: (running?.n ?? 0) > 0 || this.#running.has(threadId),
+      backgroundWork: (running?.n ?? 0) > 0 || (deliberating?.n ?? 0) > 0 || (backgroundRuns?.n ?? 0) > 0 || this.#running.has(threadId),
       lastWasCompaction: lastWasCompaction(history),
-      harnessChanged: row.provider !== "claude" || row.contextReading?.harness !== row.provider || !row.providerSessionId,
+      harnessChanged: row.provider !== "claude" || row.contextReading?.harness !== row.provider || !row.providerSessionId || modelChanged,
       newerTurn,
     });
     if (skip) return;
@@ -1965,16 +1987,20 @@ export class AgentTurnReactor {
         // (plan2 §3.4, §3.7) -- under this turn, so the divider is its own.
         // What the thread keeps of the session, as the CLI turn reads it.
         const session = { sessionPrefix: thread.sessionPrefix ?? null, contextReading: thread.contextReading ?? null };
-        if (resumeToken && !subagentId && !thread.parentThreadId && (provider === "claude" || provider === "codex")) {
+        // Subagent and child turns are checked too: a child's session fills
+        // up like any other. OMP is not: it compacts itself before a prompt
+        // that would cross its own threshold (`contextThreshold`).
+        if (resumeToken && (provider === "claude" || provider === "codex")) {
           const reading = thread.contextReading?.harness === provider ? thread.contextReading : null;
           let compactFirst = false;
-          if (provider === "claude" && !unattended && !thread.resumeCompactPromptOff && offerCompactOnResume(reading, Date.now())) {
+          const topLevel = !subagentId && !thread.parentThreadId;
+          if (topLevel && provider === "claude" && !unattended && !thread.resumeCompactPromptOff && offerCompactOnResume(reading, Date.now())) {
             compactFirst = (await this.#askCompactOnResume(threadId, reading!, controller.signal, append)) === "compact";
           }
           const files = Math.max(0, (images?.length ?? 0) - pictures.length);
-          if (!compactFirst && overWindow({ reading, messageTokens: estimateTokens(prompt.length), images: pictures.length, files })) {
-            compactFirst = true;
-          }
+          // The message would not fit: compacting is no longer optional.
+          const mustFit = overWindow({ reading, messageTokens: estimateTokens(prompt.length), images: pictures.length, files });
+          if (mustFit) compactFirst = true;
           if (compactFirst && !controller.signal.aborted) {
             const made = await this.#compactSession(
               { ...thread, providerSessionId: resumeToken },
@@ -1994,6 +2020,41 @@ export class AgentTurnReactor {
               if (folded?.type === "context.usage") session.contextReading = readingOf(folded);
               // Codex's history lost its instructions with the rest (plan2 §2.5).
               if (provider === "codex" && session.sessionPrefix) session.sessionPrefix = { ...session.sessionPrefix, resend: true };
+            } else if (mustFit && !controller.signal.aborted) {
+              // The session could not be folded and the message will not fit
+              // in it: the turn starts a new session on a brief of this one
+              // (plan2 §3.4), rather than overflowing the old one. No brief
+              // at all fails the turn, saying why.
+              const handed = await this.#writeBrief(thread, undefined, controller.signal, {
+                provider,
+                model: cliModel,
+                message: prompt,
+                images: pictures.length,
+                files,
+              }).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+              if (handed instanceof Error) {
+                await append([
+                  {
+                    type: "agent.turn_failed",
+                    threadId,
+                    turnId,
+                    error: `The session is too full for this message, and it could neither be compacted nor handed over: ${handed.message}`.slice(0, 2_000),
+                  },
+                ]);
+                return;
+              }
+              await append([
+                {
+                  type: "context.injected",
+                  threadId,
+                  turnId,
+                  source: "system_prompt",
+                  content: [handed.note, handed.brief].filter(Boolean).join("\n\n"),
+                },
+              ]);
+              resumeToken = null;
+              session.contextReading = null;
+              prompt = handoffMessage(handed.brief, prompt);
             }
           }
           if (controller.signal.aborted) {
@@ -2322,7 +2383,9 @@ export class AgentTurnReactor {
    * process of its own. No turn opens -- nothing is asked of the model but
    * the summary -- so what it made lands as a `context.injected` with no
    * turn, which the chat draws under the last answer, and the reading the
-   * meter shows after it.
+   * meter shows after it. The exception is an idle compaction (plan2
+   * §3.3), which nobody asked for: it opens a turn of its own, closed
+   * `compacted` or failed, so the thread shows that it ran.
    *
    * It takes a slot like a turn, and a stop reaches it like a turn's
    * (`#running`). Every way out ends with `thread.compaction_finished`,
@@ -2351,6 +2414,33 @@ export class AgentTurnReactor {
     let error: string | undefined;
     let release: (() => void) | undefined;
     let overlay: { dispose(): Promise<void> } | undefined;
+    // An idle compaction is a turn of its own in the thread (plan2 §3.3):
+    // nobody asked for it, so the chat shows when it ran and how it ended.
+    // One the person asked for is maintenance, drawn as its divider only.
+    let idleTurn: { turnId: string } | undefined;
+    if (flags.idle) {
+      const [last] = await this.db
+        .select({ model: turns.model })
+        .from(turns)
+        .where(eq(turns.threadId, threadId))
+        .orderBy(desc(turns.seq))
+        .limit(1)
+        .catch(() => []);
+      idleTurn = { turnId: randomUUID() };
+      const opened: DomainEvent[] = [
+        {
+          type: "turn.started",
+          threadId,
+          turnId: idleTurn.turnId,
+          ...(last?.model ? { model: last.model } : {}),
+          ...(thread.provider ? { provider: thread.provider as "claude" } : {}),
+        },
+      ];
+      await this.store.append({ projectId: thread.projectId, threadId }, opened, (tx) => applyProjection(tx, opened, null)).catch((caught: unknown) => {
+        this.onError(caught);
+        idleTurn = undefined;
+      });
+    }
     try {
       const owner = await this.#owner(thread.projectId, thread);
       if (!owner) throw new Error("there is nobody to bill this thread to");
@@ -2358,7 +2448,7 @@ export class AgentTurnReactor {
         const provider = thread.provider;
         release = await this.#scheduler.acquire({ ownerId: owner.id, kind: turnKindOf(provider), threadId, signal: controller.signal });
         const account = await this.#profileFor(thread.projectId, owner, thread.profileId, provider);
-        made = await this.#compactSession(thread, owner, provider, account ? toRef(account) : null, controller.signal);
+        made = await this.#compactSession(thread, owner, provider, account ? toRef(account) : null, controller.signal, idleTurn);
       } else {
         if (!thread.providerSessionId) throw new Error("this thread has no OMP session to compact yet");
         const providers = this.options.providers;
@@ -2417,9 +2507,15 @@ export class AgentTurnReactor {
       if (this.#running.get(threadId) === controller) this.#running.delete(threadId);
       // The due time this was armed for is spent, however it went.
       if (flags.idle) await this.db.update(threads).set({ idleCompactAt: null }).where(eq(threads.id, threadId)).catch(this.onError);
+      const closing: DomainEvent[] = !idleTurn
+        ? []
+        : error
+          ? [{ type: "agent.turn_failed", threadId, turnId: idleTurn.turnId, error: error.slice(0, 2_000) }]
+          : [{ type: "agent.turn_completed", threadId, turnId: idleTurn.turnId, stopReason: "compacted", usage: ZERO_USAGE, costUsd: 0 }];
       const events: DomainEvent[] = [
         ...made,
         { type: "thread.compaction_finished", threadId, method, ...(error ? { error: error.slice(0, 2_000) } : {}) },
+        ...closing,
       ];
       await this.store
         .append({ projectId: thread.projectId, threadId }, events, (tx) => applyProjection(tx, events, null))
@@ -2556,17 +2652,22 @@ export class AgentTurnReactor {
     thread: typeof threads.$inferSelect,
     focus: string | undefined,
     signal: AbortSignal,
-    target: { provider: ProviderId; model?: string | undefined; message?: string | undefined },
+    target: { provider: ProviderId; model?: string | undefined; message?: string | undefined; images?: number; files?: number },
   ): Promise<{ brief: string; note?: string }> {
     const history = await this.store.threadHistory(thread.id);
     // What the agent can still see: nothing from before a clear.
     const events = sinceCleared(history.map((stored) => stored.event));
     const tokens = handoffBudgetTokens({
       windowTokens: cliContextWindow(target.provider, target.model ?? null) ?? (target.provider === "native" || target.provider === "omp" ? 128_000 : null),
+      // The new session's own system prompt, tools and UCCH's instructions.
+      nativeTokens: FRESH_PREFIX_TOKENS[target.provider],
       messageTokens: estimateTokens(target.message?.length ?? 0),
+      images: target.images ?? 0,
+      files: target.files ?? 0,
     });
     const chars = handoffBudgetChars(tokens);
-    const clip = (text: string) => (text.length > chars ? `${text.slice(0, chars)}\n\n[… the brief ran past its budget and was cut]` : text);
+    // Held to the budget with the notice inside it, in UTF-8 bytes.
+    const clip = (text: string) => clipToBytes(text, chars, "\n\n[… the brief ran past its budget and was cut]");
     const failures: string[] = [];
     const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
