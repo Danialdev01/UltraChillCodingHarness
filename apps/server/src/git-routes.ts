@@ -64,6 +64,8 @@ const LogQuery = z.object({
 /** What git says when the failure is the user's situation rather than ours. */
 const USER_FAULT =
   /CONFLICT|would be overwritten|non-fast-forward|nothing to commit|nothing added to commit|no upstream|not something we can merge|no tracking information|already exists|rejected|not a git repository|no such remote|does not have any commits|MERGE_HEAD|not currently on a branch|unmerged files|failed to push some refs/i;
+/** GitHub refuses a push touching `.github/workflows/` from a token without the `workflow` scope. */
+const WORKFLOW_SCOPE_FAULT = /without `?workflow`? scope|refusing to allow .* to create or update workflow/i;
 const AUTH_FAULT = /Authentication failed|could not read Username|Permission denied|Invalid username or (token|password)|403/i;
 
 /**
@@ -457,6 +459,15 @@ function failure(error: unknown, reply: FastifyReply): void {
   }
   if (error instanceof GitError) {
     const message = scrub(error.stderr.trim() || error.message);
+    if (WORKFLOW_SCOPE_FAULT.test(message)) {
+      void reply.code(403).send({
+        error:
+          "GitHub refused the push because it changes a file in .github/workflows and this token lacks the workflow scope. " +
+          "Give the token the workflow scope (classic) or Workflows: Read and write (fine-grained), then replace it in Settings → Git Provider.",
+        needsToken: true,
+      });
+      return;
+    }
     if (AUTH_FAULT.test(message)) {
       void reply.code(403).send({ error: message, needsToken: true });
       return;

@@ -47,8 +47,9 @@ const INFO: Record<GitProvider, ProviderInfo> = {
     tokensPath: "https://github.com/settings/tokens",
     scopes: (
       <>
-        Classic tokens need the {code("repo")} scope. Fine-grained tokens need contents and metadata, with write access
-        to push, and administration to create repositories.
+        Classic tokens need the {code("repo")} and {code("workflow")} scopes. Fine-grained tokens need contents,
+        metadata and workflows, with write access to push, and administration to create repositories. Without{" "}
+        {code("workflow")}, GitHub refuses any push that changes {code(".github/workflows")}.
       </>
     ),
   },
